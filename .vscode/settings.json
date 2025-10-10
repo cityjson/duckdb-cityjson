@@ -1,0 +1,23 @@
+{
+  "cmake.sourceDirectory": "${workspaceFolder}/duckdb",
+  "cmake.buildDirectory": "${workspaceFolder}/build/debug/",
+  "cmake.configureSettings": {
+    "CMAKE_TOOLCHAIN_FILE": "Users/hideba/vcpkg/scripts/buildsystems/vcpkg.cmake",
+    "VCPKG_MANIFEST_DIR": "${workspaceFolder}/",
+    "VCPKG_BUILD": "1",
+    "GEN": "ninja",
+  },
+  "cmake.configureArgs": [
+    "-DDUCKDB_EXTENSION_CONFIGS=${workspaceFolder}/extension_config.cmake",
+    "-DEXTENSION_STATIC_BUILD=1",
+    "-DBUILD_PARQUET_EXTENSION=1",
+    "-DCMAKE_BUILD_TYPE=Debug",
+    "-Wno-unused-variable"
+  ],
+  "files.associations": {
+    "quack_extension.hpp": "cpp"
+  },
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "cmake.autoSelectActiveFolder": true,
+  "cmake.configureOnOpen": true
+}
