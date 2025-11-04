@@ -69,6 +69,6 @@ int main() {
 
 ## References
 
-- DuckDB C++ API: <https://duckdb.org/docs/api/cplusplus>
-- CityJSON specification: <https://www.cityjson.org/>
+- DuckDB C++ API: <https://duckdb.org/docs/stable/clients/c/api>
+- CityJSON specification: <https://www.cityjson.org/specs/2.0.1/>
 - DuckDB headers: `duckdb/src/include/duckdb.hpp`, `duckdb/src/include/duckdb/common/types.hpp`
