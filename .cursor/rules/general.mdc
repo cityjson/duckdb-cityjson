@@ -19,6 +19,10 @@ This document provides guidance to coding agents focusing on C++ deliverables wh
 3. For release artifacts run `make`.
 4. You only need CMake or other C++ build tools when producing auxiliary C++ binaries/tests.
 
+## Architecture Overview
+
+YOU SHOULD REFERENCE THE DESIGN_DOC.md FILE FOR THE ARCHITECTURAL OVERVIEW.
+
 ## Using the Extension from C++
 
 - Include DuckDB's header (`duckdb.hpp`) from the DuckDB submodule or your system installation.

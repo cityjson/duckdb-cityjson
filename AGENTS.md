@@ -9,6 +9,10 @@ This document provides guidance to coding agents focusing on C++ deliverables wh
 - C++ work in this repository usually targets integration scenarios: embedding the extension in C++ applications, authoring DuckDB C++ tests or utilities, and validating the FFI boundary between the Rust extension and DuckDB's C++ API.
 - CityJSON data layout mirrors the CityParquet schema exposed by the extension. Inspect the column set through `DESCRIBE` statements or the SQL tests under `test/sql/` to map values in C++.
 
+## Architecture Overview
+
+YOU SHOULD REFERENCE THE DESIGN_DOC.md FILE FOR THE ARCHITECTURAL OVERVIEW.
+
 ## Build & Tooling
 
 1. Run `make` once to prepare the DuckDB build environment. To make use of cache, try to use `GEN=ninja make` instead.
