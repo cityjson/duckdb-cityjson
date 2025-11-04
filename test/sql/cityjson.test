@@ -1,0 +1,23 @@
+# name: test/sql/cityjson.test
+# description: test cityjson extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT cityjson('Sam');
+----
+Catalog Error: Scalar Function with name cityjson does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require cityjson
+
+# Confirm the extension works
+query I
+SELECT cityjson('Sam');
+----
+Cityjson Sam 🐥
+
+query I
+SELECT cityjson_openssl_version('Michael') ILIKE 'Cityjson Michael, my linked OpenSSL version is OpenSSL%';
+----
+true
