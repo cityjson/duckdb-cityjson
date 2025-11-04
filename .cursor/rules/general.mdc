@@ -1,0 +1,74 @@
+---
+alwaysApply: true
+---
+
+# C++ Agent Guide
+
+This document provides guidance to coding agents focusing on C++ deliverables when working in the DuckDB CityJSON Extension repository.
+
+## Repository Context
+
+- The loadable extension itself is implemented in Rust and exposes DuckDB SQL functions.
+- C++ work in this repository usually targets integration scenarios: embedding the extension in C++ applications, authoring DuckDB C++ tests or utilities, and validating the FFI boundary between the Rust extension and DuckDB's C++ API.
+- CityJSON data layout details live in `cityparquet/schema/duckdb.rs` and `src/column.rs`; treat them as the ground truth when mapping values in C++.
+
+## Build & Tooling
+
+1. Run `make` once to prepare the DuckDB build environment. To make use of cache, try to use `GEN=ninja make` instead.
+2. Build debug binaries with `make test_debug`. The loadable module lands in `build/debug/extension/cityjson/`. To use DuckDB with loadable extension, exec `./build/release/duckdb`.
+3. For release artifacts run `make`.
+4. You only need CMake or other C++ build tools when producing auxiliary C++ binaries/tests.
+
+## Using the Extension from C++
+
+- Include DuckDB's header (`duckdb.hpp`) from the DuckDB submodule or your system installation.
+- Load the extension dynamically at runtime; the module requires DuckDB 1.4.1 (matching the bundled submodule).
+- Example snippet:
+
+```cpp
+#include "duckdb.hpp"
+
+int main() {
+    duckdb::DuckDB db;
+    duckdb::Connection conn(db);
+    conn.Query("LOAD './build/debug/extension/cityjson/cityjson.duckdb_extension';");
+    auto result = conn.Query("SELECT * FROM read_cityjson('example.city.json');");
+    if (result->HasError()) {
+        throw std::runtime_error(result->GetError());
+    }
+    // Access result->GetValue(row, column) to inspect rows.
+    return 0;
+}
+```
+
+- Remember to start DuckDB with unsigned extensions enabled (`allow_unsigned_extensions=true`) when required.
+
+## Interop Notes
+
+- The Rust extension uses Arrow-style column buffers under the hood. When exchanging data with C++, prefer DuckDB logical types and `Value` helpers instead of manual buffer manipulation.
+- Geometry coordinates are stored as `LIST<STRUCT<x DOUBLE, y DOUBLE, z DOUBLE>>` columns. Consult `src/reader.rs` for decoding logic if you need to reproduce it in C++.
+- Metadata such as transforms and CRS live in JSON columns; use DuckDB's JSON functions from C++ queries rather than custom parsers where possible.
+
+## Testing
+
+- Primary tests live under `test/sql/*.test`. Run them with `make test` or `make test_debug` after C++ changes that impact observable behaviour.
+- For C++ unit tests, link against DuckDB's testing utilities (located in the DuckDB submodule). Keep them in `test/cpp/` if you introduce new suites.
+- Always verify sample CityJSON files across `read_*` and `write_*` functions to ensure encoding parity with the Rust implementation.
+
+## Performance & Memory Guidance
+
+- Batch operations through SQL queries rather than row-by-row API calls; DuckDB's vectorised execution is far more efficient.
+- When marshalling large geometries from C++, avoid unnecessary copies. Use `duckdb::Appender` for bulk inserts into staging tables.
+- Be mindful of transform metadata; reapply the same scale/offset semantics as the Rust code when emitting raw coordinates.
+
+## Contribution Workflow
+
+- Mirror the Rust code style for documentation and naming when adding C++ bridging code. Use `clang-format` with DuckDB's style if you add new `.cc`/`.hh` files.
+- Keep FFI boundaries minimal. Expose new Rust capabilities through SQL functions first; only add direct C/C++ hooks when unavoidable.
+- Document any new SQL surface area in both `README.md` and the relevant `.test` files so Rust and C++ contributors share the same contract.
+
+## References
+
+- DuckDB C++ API: <https://duckdb.org/docs/api/cplusplus>
+- CityJSON specification: <https://www.cityjson.org/>
+- Rust extension internals: `src/lib.rs`, `src/column.rs`, and `src/reader.rs`
