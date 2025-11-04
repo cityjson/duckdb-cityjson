@@ -49,105 +49,203 @@ extern "C" void extension_entrypoint(Connection& con) {
 
 ### 2.1 DuckDB Table Function Lifecycle
 
-The extension implements DuckDB's table function interface with three phases:
+The extension implements DuckDB's table function interface through function pointers and state objects:
 
 ```cpp
 /**
- * Table Function Interface (VTab pattern)
+ * Table Function Interface
  *
- * DuckDB calls these methods in sequence:
- * 1. BIND:  Parse parameters, infer schema, prepare bind data
- * 2. INIT:  Initialize per-thread state, get column projections
- * 3. FUNC:  Execute function repeatedly to output data chunks
+ * DuckDB TableFunction consists of:
+ * 1. BIND:  table_function_bind_t - Parse parameters, infer schema, return FunctionData
+ * 2. INIT_GLOBAL: table_function_init_global_t - Initialize shared global state
+ * 3. INIT_LOCAL: table_function_init_local_t - Initialize thread-local state
+ * 4. FUNCTION: table_function_t - Execute function repeatedly to output data chunks
+ *
+ * Key DuckDB types used:
+ * - TableFunction: Main function descriptor class
+ * - FunctionData: Base class for bind-time data (must be const after bind)
+ * - GlobalTableFunctionState: Base class for global execution state
+ * - LocalTableFunctionState: Base class for thread-local execution state
  */
-class CityJSONReaderVTab {
-public:
-    using InitData = CityJSONInitData;
-    using BindData = CityJSONReaderBindData;
 
-    /**
-     * BIND PHASE: Called once during query planning
-     * - Parse function parameters (file path, options)
-     * - Open file and infer schema from sampled data
-     * - Register output columns with DuckDB
-     * - Prepare metadata and chunked data structures
-     *
-     * @param bind BindInfo containing function parameters
-     * @return BindData with metadata, columns, and data chunks
-     */
-    static BindData Bind(const BindInfo& bind);
+/**
+ * BIND PHASE: Called once during query planning
+ * Signature: unique_ptr<FunctionData> (*table_function_bind_t)(
+ *     ClientContext &context,
+ *     TableFunctionBindInput &input,
+ *     vector<LogicalType> &return_types,
+ *     vector<string> &names
+ * );
+ *
+ * Responsibilities:
+ * - Parse function parameters from input.inputs (positional) and input.named_parameters
+ * - Open file and infer schema from sampled data
+ * - Populate return_types and names vectors with output columns
+ * - Return custom FunctionData subclass with metadata, columns, and data chunks
+ *
+ * @param context DuckDB client context
+ * @param input Contains inputs, named_parameters, and table_function reference
+ * @param return_types [OUT] Output column types
+ * @param names [OUT] Output column names
+ * @return Unique pointer to custom FunctionData implementation
+ */
+unique_ptr<FunctionData> CityJSONBind(
+    ClientContext &context,
+    TableFunctionBindInput &input,
+    vector<LogicalType> &return_types,
+    vector<string> &names
+);
 
-    /**
-     * INIT PHASE: Called once per thread before execution
-     * - Initialize per-thread state (batch counter)
-     * - Receive column projections (which columns to output)
-     *
-     * @param init_info InitInfo with column projection info
-     * @return InitData with execution state
-     */
-    static InitData Init(const InitInfo& init_info);
+/**
+ * INIT_GLOBAL PHASE: Called once before parallel execution
+ * Signature: unique_ptr<GlobalTableFunctionState> (*table_function_init_global_t)(
+ *     ClientContext &context,
+ *     TableFunctionInitInput &input
+ * );
+ *
+ * Responsibilities:
+ * - Initialize shared state (e.g., atomic counters for chunk distribution)
+ * - Access bind data via input.bind_data
+ * - Determine parallelism via MaxThreads() method
+ *
+ * @param context DuckDB client context
+ * @param input Contains bind_data, column_ids, projection_ids, filters
+ * @return Unique pointer to custom GlobalTableFunctionState implementation
+ */
+unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(
+    ClientContext &context,
+    TableFunctionInitInput &input
+);
 
-    /**
-     * FUNC PHASE: Called repeatedly to produce output
-     * - Called repeatedly until all data is output
-     * - Each call outputs up to VECTOR_SIZE rows (typically 2048)
-     * - Must respect column projections
-     * - Set output.SetLength(0) when done
-     *
-     * @param func TableFunctionInfo with bind/init data
-     * @param output DataChunk to write results to
-     */
-    static void Func(const TableFunctionInfo<VTab>& func,
-                     DataChunk& output);
+/**
+ * INIT_LOCAL PHASE: Called once per thread before execution
+ * Signature: unique_ptr<LocalTableFunctionState> (*table_function_init_local_t)(
+ *     ExecutionContext &context,
+ *     TableFunctionInitInput &input,
+ *     GlobalTableFunctionState *global_state
+ * );
+ *
+ * Responsibilities:
+ * - Initialize thread-local state
+ * - Store column projections from input.projection_ids
+ * - Access global state for coordination
+ *
+ * @param context DuckDB execution context
+ * @param input Contains bind_data, column_ids, projection_ids, filters
+ * @param global_state Shared global state
+ * @return Unique pointer to custom LocalTableFunctionState implementation
+ */
+unique_ptr<LocalTableFunctionState> CityJSONInitLocal(
+    ExecutionContext &context,
+    TableFunctionInitInput &input,
+    GlobalTableFunctionState *global_state
+);
 
-    /**
-     * Parameter definitions for the table function
-     * @return Vector of parameter types (positional then named)
-     */
-    static vector<LogicalType> Parameters();
+/**
+ * FUNCTION PHASE: Called repeatedly to produce output
+ * Signature: void (*table_function_t)(
+ *     ClientContext &context,
+ *     TableFunctionInput &data,
+ *     DataChunk &output
+ * );
+ *
+ * Responsibilities:
+ * - Called repeatedly until all data is output
+ * - Each call outputs up to STANDARD_VECTOR_SIZE rows (typically 2048)
+ * - Must respect column projections from local state
+ * - Call output.SetCardinality(0) when done
+ *
+ * @param context DuckDB client context
+ * @param data Contains bind_data, local_state, global_state
+ * @param output DataChunk to write results to
+ */
+void CityJSONFunction(
+    ClientContext &context,
+    TableFunctionInput &data,
+    DataChunk &output
+);
 
-    /**
-     * Whether the function supports filter/projection pushdown
-     * @return false (not implemented in current version)
-     */
-    static bool SupportsPushdown() { return false; }
-};
+/**
+ * Registration Example
+ */
+void RegisterCityJSONFunction(ExtensionLoader &loader) {
+    // Create TableFunction with name, parameter types, and function pointer
+    TableFunction read_cityjson("read_cityjson",
+                                {LogicalType::VARCHAR},  // positional parameters
+                                CityJSONFunction,        // main function
+                                CityJSONBind,            // bind function
+                                CityJSONInitGlobal,      // global init (optional)
+                                CityJSONInitLocal);      // local init (optional)
+
+    // Add named parameters
+    read_cityjson.named_parameters["sample_lines"] = LogicalType::INTEGER;
+
+    // Configure pushdown capabilities
+    read_cityjson.projection_pushdown = true;
+    read_cityjson.filter_pushdown = false;
+
+    // Register the function
+    loader.RegisterFunction(read_cityjson);
+}
 ```
 
 ### 2.2 Data Structures
 
 ```cpp
 /**
- * Parameters extracted from SQL function call
- * Example: SELECT * FROM read_cityjson('file.jsonl', sample_lines=100)
- */
-struct CityJSONReaderParams {
-    string file_name;                // Required: path or URL to CityJSON file
-    optional<size_t> sample_lines;   // Optional: number of lines to sample for schema inference (default: 100)
-
-    // Reserved for future use:
-    // optional<size_t> max_lines;   // Limit number of lines to read
-    // optional<size_t> offset;      // Skip first N lines
-};
-
-/**
  * Bind-time data persisted throughout query execution
- * Created during BIND phase, shared across all FUNC calls
+ * Must inherit from FunctionData and be immutable after bind
+ * Created during BIND phase, shared across all threads
  */
-struct CityJSONReaderBindData {
+struct CityJSONBindData : public FunctionData {
     string file_name;                    // File path or URL
     CityJSON metadata;                   // CityJSON metadata (version, CRS, transform, etc.)
     CityJSONFeatureChunk chunks;         // All features chunked for processing
     vector<Column> columns;              // Inferred column schema
+
+    // Required: FunctionData copy method for serialization
+    unique_ptr<FunctionData> Copy() const override {
+        auto result = make_uniq<CityJSONBindData>();
+        result->file_name = file_name;
+        result->metadata = metadata;
+        result->chunks = chunks;
+        result->columns = columns;
+        return std::move(result);
+    }
+
+    // Required: FunctionData equality method
+    bool Equals(const FunctionData &other_p) const override {
+        auto &other = other_p.Cast<CityJSONBindData>();
+        return file_name == other.file_name;
+    }
 };
 
 /**
- * Per-thread execution state
- * Created during INIT phase for each parallel thread
+ * Global execution state shared across all threads
+ * Created during INIT_GLOBAL phase
+ * Use atomic operations for thread-safe coordination
  */
-struct CityJSONInitData {
+struct CityJSONGlobalState : public GlobalTableFunctionState {
     atomic<size_t> batch_index;          // Current batch being processed (atomic for thread safety)
-    vector<size_t> projections;          // Column indices to output (DuckDB projection pushdown)
+
+    CityJSONGlobalState() : batch_index(0) {}
+
+    // Optional: Control parallelism
+    idx_t MaxThreads() const override {
+        // Return number of chunks or MAX_THREADS for unlimited
+        return GlobalTableFunctionState::MAX_THREADS;
+    }
+};
+
+/**
+ * Thread-local execution state
+ * Created during INIT_LOCAL phase for each parallel thread
+ */
+struct CityJSONLocalState : public LocalTableFunctionState {
+    vector<column_t> column_ids;         // Column IDs being read
+    vector<idx_t> projection_ids;        // Column indices to output (projection pushdown)
+
+    CityJSONLocalState() = default;
 };
 ```
 
@@ -289,96 +387,102 @@ vector<Column> GetDefinedColumns();
 
 ## 4. Parameter System
 
-### 4.1 Parameter Traits
+### 4.1 Parameter Declaration
+
+Parameters are declared in the TableFunction constructor and named_parameters map:
 
 ```cpp
 /**
- * Trait for positional parameters
- *
- * Template specializations define behavior for each parameter type
+ * Declare table function parameters
  */
-template<typename T>
-struct PositionalParam {
-    /**
-     * Get the DuckDB logical type for this parameter
-     * @return LogicalType for parameter validation
-     */
-    static LogicalType Type();
+TableFunction CreateReadCityJSONFunction() {
+    // Positional parameters: vector<LogicalType>
+    vector<LogicalType> arguments = {LogicalType::VARCHAR};
 
-    /**
-     * Read parameter value from BindInfo
-     * @param bind BindInfo from DuckDB
-     * @param index 0-based parameter index
-     * @return Parsed parameter value
-     * @throws CityJSONError if parameter is invalid
-     */
-    static T Read(const BindInfo& bind, size_t index);
-};
+    TableFunction func("read_cityjson", arguments, CityJSONFunction,
+                       CityJSONBind, CityJSONInitGlobal, CityJSONInitLocal);
 
-/**
- * Trait for named parameters (keyword arguments)
- *
- * Template specializations define behavior for each parameter type
- */
-template<typename T>
-struct NamedParam {
-    /**
-     * Get the parameter name as used in SQL
-     * @return Parameter name string
-     */
-    static const char* Name();
+    // Named parameters: named_parameter_map_t (unordered_map<string, LogicalType>)
+    func.named_parameters["sample_lines"] = LogicalType::INTEGER;
+    func.named_parameters["max_lines"] = LogicalType::BIGINT;
 
-    /**
-     * Get the DuckDB logical type for this parameter
-     * @return LogicalType for parameter validation
-     */
-    static LogicalType Type();
-
-    /**
-     * Read named parameter value from BindInfo
-     * Returns nullopt if parameter not provided
-     *
-     * @param bind BindInfo from DuckDB
-     * @return Optional parameter value
-     * @throws CityJSONError if parameter is invalid
-     */
-    static optional<T> Read(const BindInfo& bind);
-
-    /**
-     * Cast DuckDB Value to parameter type
-     * @param value DuckDB Value from bind info
-     * @return Typed parameter value
-     * @throws CityJSONError if cast fails
-     */
-    static T Cast(const Value& value);
-};
+    return func;
+}
 ```
 
-### 4.2 Concrete Parameter Implementations
+### 4.2 Parameter Reading in Bind Function
+
+Parameters are accessed through `TableFunctionBindInput`:
 
 ```cpp
 /**
- * Positional parameter 0: file name
- * Type: VARCHAR (required)
+ * Read parameters in bind function
  */
-struct FileNameParam {
-    using Type = string;
-    static LogicalType ParamType() { return LogicalType::VARCHAR; }
-    static string Read(const BindInfo& bind, size_t index);
-};
+unique_ptr<FunctionData> CityJSONBind(ClientContext &context,
+                                       TableFunctionBindInput &input,
+                                       vector<LogicalType> &return_types,
+                                       vector<string> &names) {
+    auto result = make_uniq<CityJSONBindData>();
 
+    // Read positional parameters from input.inputs (vector<Value>&)
+    if (input.inputs.empty()) {
+        throw BinderException("read_cityjson requires a file name argument");
+    }
+    result->file_name = input.inputs[0].ToString();
+
+    // Read named parameters from input.named_parameters (named_parameter_map_t&)
+    size_t sample_lines = 100;  // default
+    auto sample_it = input.named_parameters.find("sample_lines");
+    if (sample_it != input.named_parameters.end()) {
+        sample_lines = sample_it->second.GetValue<int64_t>();
+    }
+
+    // Alternative: use helper for named parameters with defaults
+    auto max_lines_it = input.named_parameters.find("max_lines");
+    optional<size_t> max_lines;
+    if (max_lines_it != input.named_parameters.end()) {
+        max_lines = max_lines_it->second.GetValue<int64_t>();
+    }
+
+    // ... rest of bind logic
+    return std::move(result);
+}
+```
+
+### 4.3 Value Type Casting
+
+DuckDB's Value class provides type-safe casting:
+
+```cpp
 /**
- * Named parameter: sample_lines
- * Type: INTEGER (optional, default: 100)
- *
- * Controls how many features to sample for schema inference
+ * Common Value casting patterns
  */
-struct SampleLinesParam {
-    using Type = size_t;
-    static const char* Name() { return "sample_lines"; }
-    static LogicalType ParamType() { return LogicalType::INTEGER; }
-    static optional<size_t> Read(const BindInfo& bind);
-};
+void ParameterExamples(const Value &value) {
+    // Basic types
+    auto str = value.ToString();                    // VARCHAR
+    auto i64 = value.GetValue<int64_t>();          // BIGINT
+    auto i32 = value.GetValue<int32_t>();          // INTEGER
+    auto dbl = value.GetValue<double>();           // DOUBLE
+    auto boolean = value.GetValue<bool>();         // BOOLEAN
+
+    // Check type before casting
+    if (value.type().id() == LogicalTypeId::VARCHAR) {
+        string str_val = value.ToString();
+    }
+
+    // Handle NULL values
+    if (value.IsNull()) {
+        // Use default value
+    }
+
+    // List parameters (e.g., list of strings)
+    if (value.type().id() == LogicalTypeId::LIST) {
+        auto list = ListValue::GetChildren(value);
+        for (auto &item : list) {
+            string item_str = item.ToString();
+        }
+    }
+}
 ```
 
 ---
@@ -621,113 +725,156 @@ public:
  * BIND phase processes SQL function call into execution plan
  *
  * Execution order:
- * 1. Parse parameters from SQL
+ * 1. Parse parameters from TableFunctionBindInput
  * 2. Open file and create appropriate reader
  * 3. Sample N features for schema inference
  * 4. Infer column types from samples
- * 5. Read all chunks into memory
- * 6. Register columns with DuckDB
- * 7. Return bind data
+ * 5. Read all chunks into memory (or prepare for lazy loading)
+ * 6. Populate return_types and names vectors
+ * 7. Return FunctionData
  */
-CityJSONReaderBindData CityJSONReaderVTab::Bind(const BindInfo& bind) {
+unique_ptr<FunctionData> CityJSONBind(ClientContext &context,
+                                       TableFunctionBindInput &input,
+                                       vector<LogicalType> &return_types,
+                                       vector<string> &names) {
+    auto bind_data = make_uniq<CityJSONBindData>();
+
     // Step 1: Parse parameters
-    CityJSONReaderParams params = CityJSONReaderParams::FromBindInfo(bind);
+    if (input.inputs.empty()) {
+        throw BinderException("read_cityjson requires a file name");
+    }
+    bind_data->file_name = input.inputs[0].ToString();
+
+    size_t sample_lines = 100;
+    auto sample_it = input.named_parameters.find("sample_lines");
+    if (sample_it != input.named_parameters.end()) {
+        sample_lines = sample_it->second.GetValue<int64_t>();
+    }
 
     // Step 2: Open file (validates accessibility)
-    auto reader = OpenAnyCityJSONFile(params.file_name);
+    auto reader = OpenAnyCityJSONFile(bind_data->file_name);
 
-    // Step 3: Infer schema
-    size_t sample_size = params.sample_lines.value_or(100);
-    vector<Column> columns = reader->Columns();  // Uses sample_size internally
+    // Step 3: Read metadata
+    bind_data->metadata = reader->ReadMetadata();
 
-    // Step 4: Load all chunks
-    CityJSONFeatureChunk chunks = reader->ReadAllChunks();
+    // Step 4: Infer schema from sample
+    bind_data->columns = reader->InferColumns(sample_lines);
 
-    // Step 5: Read metadata
-    CityJSON metadata = reader->ReadMetadata();
+    // Step 5: Load all chunks (future: lazy loading)
+    bind_data->chunks = reader->ReadAllChunks();
 
-    // Step 6: Register columns with DuckDB
-    for (const auto& column : columns) {
-        LogicalTypeId type_id = ColumnTypeUtils::ToLogicalTypeId(column.kind);
-        bind.AddResultColumn(column.name, LogicalType(type_id));
+    // Step 6: Register columns with DuckDB via output parameters
+    for (const auto& column : bind_data->columns) {
+        LogicalType duckdb_type = ColumnTypeUtils::ToDuckDBType(column.kind);
+        return_types.push_back(duckdb_type);
+        names.push_back(column.name);
     }
 
     // Step 7: Return bind data
-    return CityJSONReaderBindData{
-        .file_name = params.file_name,
-        .metadata = metadata,
-        .chunks = chunks,
-        .columns = columns
-    };
+    return std::move(bind_data);
 }
 ```
 
-### 6.2 INIT Phase Flow
+### 6.2 INIT_GLOBAL Phase Flow
 
 ```cpp
 /**
- * INIT phase initializes per-thread execution state
+ * INIT_GLOBAL phase initializes shared state for parallel execution
  *
  * Execution order:
- * 1. Get column projections from DuckDB
- * 2. Initialize atomic batch counter
- * 3. Return init data
+ * 1. Create global state with atomic batch counter
+ * 2. Optionally configure parallelism via MaxThreads()
  */
-CityJSONInitData CityJSONReaderVTab::Init(const InitInfo& init_info) {
-    // Get column indices to output (projection pushdown)
-    vector<size_t> projections;
-    for (idx_t idx : init_info.GetColumnIndices()) {
-        projections.push_back(static_cast<size_t>(idx));
-    }
+unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(
+    ClientContext &context,
+    TableFunctionInitInput &input) {
 
-    return CityJSONInitData{
-        .batch_index = 0,
-        .projections = projections
-    };
+    auto global_state = make_uniq<CityJSONGlobalState>();
+
+    // Initialize atomic counter for chunk distribution
+    global_state->batch_index = 0;
+
+    // Access bind data if needed
+    auto &bind_data = input.bind_data->Cast<CityJSONBindData>();
+    // Could use bind_data to determine optimal parallelism
+
+    return std::move(global_state);
 }
 ```
 
-### 6.3 FUNC Phase Flow
+### 6.3 INIT_LOCAL Phase Flow
 
 ```cpp
 /**
- * FUNC phase outputs data in batches of VECTOR_SIZE rows
+ * INIT_LOCAL phase initializes thread-local execution state
  *
  * Execution order:
- * 1. Get next batch index (atomic increment)
- * 2. Calculate starting position in chunks
- * 3. Create output vectors for projected columns
+ * 1. Create local state
+ * 2. Store column IDs and projection IDs from input
+ * 3. Access global state for coordination if needed
+ */
+unique_ptr<LocalTableFunctionState> CityJSONInitLocal(
+    ExecutionContext &context,
+    TableFunctionInitInput &input,
+    GlobalTableFunctionState *global_state) {
+
+    auto local_state = make_uniq<CityJSONLocalState>();
+
+    // Store column IDs being scanned
+    local_state->column_ids = input.column_ids;
+
+    // Store projection IDs (which columns to actually output)
+    local_state->projection_ids = input.projection_ids;
+
+    // Access global state if coordination needed
+    auto &global = global_state->Cast<CityJSONGlobalState>();
+
+    return std::move(local_state);
+}
+```
+
+### 6.4 FUNCTION Phase Flow
+
+```cpp
+/**
+ * FUNCTION phase outputs data in batches of STANDARD_VECTOR_SIZE rows
+ *
+ * Execution order:
+ * 1. Cast and access bind_data, local_state, global_state
+ * 2. Get next batch index (atomic increment from global state)
+ * 3. Calculate starting position in chunks
  * 4. Iterate through city objects across chunks
- * 5. Write data to vectors
- * 6. Set output length (0 means done)
+ * 5. Write data to output DataChunk vectors
+ * 6. Set output cardinality (0 means done)
  *
  * Key constraints:
- * - Maximum VECTOR_SIZE rows per call (typically 2048)
- * - Must respect column projections
+ * - Maximum STANDARD_VECTOR_SIZE rows per call (typically 2048)
+ * - Must respect column projections from local_state
  * - Must handle multi-chunk iteration
- * - Must track position across calls
+ * - Thread-safe through atomic batch_index
  */
-void CityJSONReaderVTab::Func(
-    const TableFunctionInfo<VTab>& func,
-    DataChunk& output
-) {
-    const auto& bind_data = func.GetBindData();
-    auto& init_data = func.GetInitData();
+void CityJSONFunction(ClientContext &context,
+                      TableFunctionInput &data,
+                      DataChunk &output) {
+    // Step 1: Access state objects
+    auto &bind_data = data.bind_data->Cast<CityJSONBindData>();
+    auto &local_state = data.local_state->Cast<CityJSONLocalState>();
+    auto &global_state = data.global_state->Cast<CityJSONGlobalState>();
 
-    const size_t VECTOR_SIZE = 2048;  // DuckDB standard vector size
+    // Step 2: Get next batch (thread-safe atomic increment)
+    size_t batch_idx = global_state.batch_index.fetch_add(1);
 
-    // Step 1: Get next batch
-    size_t batch_idx = init_data.batch_index.fetch_add(1);
-
-    // Step 2: Calculate starting position
+    const size_t VECTOR_SIZE = STANDARD_VECTOR_SIZE;  // DuckDB constant, typically 2048
     size_t global_offset = batch_idx * VECTOR_SIZE;
+
+    // Step 3: Calculate starting position
     size_t remaining_to_skip = global_offset;
     size_t chunk_idx = 0;
     size_t start_row_in_chunk = 0;
 
     // Find which chunk contains our starting position
     while (chunk_idx < bind_data.chunks.ChunkCount()) {
-        size_t chunk_size = bind_data.chunks.CityObjectCount(chunk_idx).value();
+        size_t chunk_size = bind_data.chunks.CityObjectCount(chunk_idx).value_or(0);
         if (remaining_to_skip < chunk_size) {
             start_row_in_chunk = remaining_to_skip;
             break;
@@ -738,35 +885,28 @@ void CityJSONReaderVTab::Func(
 
     // If exhausted all chunks, signal completion
     if (chunk_idx >= bind_data.chunks.ChunkCount()) {
-        output.SetLength(0);
+        output.SetCardinality(0);
         return;
     }
 
-    // Step 3: Create output vectors
-    vector<Vector*> vectors = CreateVectors(
-        output,
-        bind_data.columns,
-        init_data.projections
-    );
+    // Step 4: Initialize output vectors
+    output.Reset();
+    idx_t output_row = 0;
 
-    size_t output_row = 0;
-
-    // Step 4: Iterate through city objects
-    while (chunk_idx < bind_data.chunks.ChunkCount() &&
-           output_row < VECTOR_SIZE) {
-
+    // Step 5: Iterate through city objects
+    while (chunk_idx < bind_data.chunks.ChunkCount() && output_row < VECTOR_SIZE) {
         auto chunk_opt = bind_data.chunks.GetChunk(chunk_idx);
         if (!chunk_opt) break;
 
-        auto& chunk = *chunk_opt;
+        auto &chunk = *chunk_opt;
         size_t current_row_in_chunk = 0;
 
         // Iterate features in chunk
-        for (const auto& feature : chunk) {
-            const string& feature_id = feature.id;
+        for (const auto &feature : chunk) {
+            const string &feature_id = feature.id;
 
             // Iterate city objects in feature
-            for (const auto& [city_object_id, city_object] : feature.city_objects) {
+            for (const auto &[city_object_id, city_object] : feature.city_objects) {
                 // Skip rows before starting position
                 if (current_row_in_chunk < start_row_in_chunk) {
                     current_row_in_chunk++;
@@ -778,24 +918,25 @@ void CityJSONReaderVTab::Func(
                     goto batch_complete;
                 }
 
-                // Step 5: Write data for projected columns
-                for (size_t vec_idx = 0; vec_idx < init_data.projections.size(); vec_idx++) {
-                    size_t col_idx = init_data.projections[vec_idx];
-                    const Column& column = bind_data.columns[col_idx];
-                    Vector* vector = vectors[vec_idx];
+                // Write data for each projected column
+                for (idx_t proj_idx = 0; proj_idx < local_state.projection_ids.size(); proj_idx++) {
+                    idx_t col_idx = local_state.projection_ids[proj_idx];
+                    const Column &column = bind_data.columns[col_idx];
 
-                    // Special handling for id and feature_id
+                    // Get output vector for this column
+                    auto &output_vector = output.data[proj_idx];
+
+                    // Special handling for predefined columns
                     if (column.name == "id") {
-                        FlatVector::GetData<string_t>(vector)[output_row] =
-                            StringVector::AddString(vector, city_object_id);
+                        FlatVector::GetData<string_t>(output_vector)[output_row] =
+                            StringVector::AddString(output_vector, city_object_id);
                     } else if (column.name == "feature_id") {
-                        FlatVector::GetData<string_t>(vector)[output_row] =
-                            StringVector::AddString(vector, feature_id);
+                        FlatVector::GetData<string_t>(output_vector)[output_row] =
+                            StringVector::AddString(output_vector, feature_id);
                     } else {
                         // Extract and write attribute
-                        json::Value value = CityObjectUtils::GetAttributeValue(
-                            city_object, column);
-                        WriteToVector(column, value, vector, output_row);
+                        json::Value value = CityObjectUtils::GetAttributeValue(city_object, column);
+                        WriteToVector(column, value, output_vector, output_row);
                     }
                 }
 
@@ -810,16 +951,249 @@ void CityJSONReaderVTab::Func(
     }
 
 batch_complete:
-    // Step 6: Set output length
-    output.SetLength(output_row);
+    // Step 6: Set output cardinality
+    output.SetCardinality(output_row);
 }
 ```
 
 ---
 
-## 7. Vector Writing System
+## 7. Optional Table Function Callbacks
 
-### 7.1 Vector Type Abstraction
+DuckDB's `TableFunction` class provides many optional callback functions for advanced features. This section documents the most relevant ones for the CityJSON extension.
+
+### 7.1 Pushdown Capabilities
+
+```cpp
+/**
+ * Configure pushdown support in table function
+ */
+void ConfigurePushdown(TableFunction &func) {
+    // Projection pushdown: Only read columns that are actually used
+    func.projection_pushdown = true;
+
+    // Filter pushdown: Push WHERE clauses into the scan
+    func.filter_pushdown = false;  // Not yet implemented
+
+    // Filter prune: Remove filter columns from output if not used elsewhere
+    func.filter_prune = false;
+
+    // Sampling pushdown: Push SAMPLE clause into scan
+    func.sampling_pushdown = false;
+
+    // Late materialization: Delay reading columns until needed
+    func.late_materialization = false;
+}
+```
+
+### 7.2 Statistics and Cardinality
+
+```cpp
+/**
+ * table_function_cardinality_t: Estimate number of rows
+ * Used by query optimizer for planning
+ */
+unique_ptr<NodeStatistics> CityJSONCardinality(
+    ClientContext &context,
+    const FunctionData *bind_data_p) {
+
+    auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
+
+    // Count total city objects across all chunks
+    size_t total_rows = 0;
+    for (size_t i = 0; i < bind_data.chunks.ChunkCount(); i++) {
+        total_rows += bind_data.chunks.CityObjectCount(i).value_or(0);
+    }
+
+    // Return estimated cardinality
+    return make_uniq<NodeStatistics>(total_rows);
+}
+
+/**
+ * table_statistics_t: Provide column-level statistics
+ * Used for filter selectivity estimation
+ */
+unique_ptr<BaseStatistics> CityJSONStatistics(
+    ClientContext &context,
+    const FunctionData *bind_data,
+    column_t column_index) {
+
+    // Return statistics for specific column (min, max, null count, etc.)
+    // Not implemented in initial version
+    return nullptr;
+}
+```
+
+### 7.3 Progress Reporting
+
+```cpp
+/**
+ * table_function_progress_t: Report scan progress
+ * Used for progress bars and query monitoring
+ */
+double CityJSONProgress(ClientContext &context,
+                        const FunctionData *bind_data_p,
+                        const GlobalTableFunctionState *global_state_p) {
+
+    auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
+    auto &global_state = global_state_p->Cast<CityJSONGlobalState>();
+
+    size_t total_batches = (bind_data.total_rows + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE;
+    size_t completed_batches = global_state.batch_index.load();
+
+    // Return percentage complete (0.0 to 1.0)
+    return std::min(1.0, static_cast<double>(completed_batches) / total_batches);
+}
+```
+
+### 7.4 Serialization (for distributed execution)
+
+```cpp
+/**
+ * table_function_serialize_t: Serialize bind data
+ * Used when shipping queries to remote nodes
+ */
+void CityJSONSerialize(Serializer &serializer,
+                       const optional_ptr<FunctionData> bind_data_p,
+                       const TableFunction &function) {
+
+    auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
+
+    // Serialize only necessary data (not full chunks)
+    serializer.WriteProperty("file_name", bind_data.file_name);
+    // ... serialize other metadata
+}
+
+/**
+ * table_function_deserialize_t: Deserialize bind data
+ * Reconstruct state on remote node
+ */
+unique_ptr<FunctionData> CityJSONDeserialize(
+    Deserializer &deserializer,
+    TableFunction &function) {
+
+    auto result = make_uniq<CityJSONBindData>();
+
+    // Deserialize metadata
+    result->file_name = deserializer.ReadProperty<string>("file_name");
+
+    // Re-open file and load chunks on remote node
+    // ... reconstruction logic
+
+    return std::move(result);
+}
+```
+
+### 7.5 Filter and Type Pushdown
+
+```cpp
+/**
+ * table_function_pushdown_complex_filter_t: Push complex filters into scan
+ * Allows pushing arbitrary expressions like: WHERE ST_Intersects(geom, bbox)
+ */
+void CityJSONPushdownComplexFilter(
+    ClientContext &context,
+    LogicalGet &get,
+    FunctionData *bind_data_p,
+    vector<unique_ptr<Expression>> &filters) {
+
+    auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
+
+    // Iterate through filters and extract pushable ones
+    for (auto it = filters.begin(); it != filters.end();) {
+        auto &filter = *it;
+
+        // Example: Push bounding box filters
+        if (IsBoundingBoxFilter(filter.get())) {
+            // Store filter in bind_data for use in scan
+            bind_data.spatial_filter = ExtractBoundingBox(filter.get());
+            // Remove from filters list (we'll handle it)
+            it = filters.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+/**
+ * table_function_type_pushdown_t: Adapt to requested types
+ * Called when query requests specific types (e.g., after CAST)
+ */
+void CityJSONTypePushdown(
+    ClientContext &context,
+    optional_ptr<FunctionData> bind_data_p,
+    const unordered_map<idx_t, LogicalType> &new_column_types) {
+
+    auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
+
+    // Update bind data to reflect requested types
+    for (auto &[col_idx, new_type] : new_column_types) {
+        // Adjust column types if compatible
+        bind_data.columns[col_idx].requested_type = new_type;
+    }
+}
+```
+
+### 7.6 Multi-File Support
+
+```cpp
+/**
+ * table_function_get_multi_file_reader_t: Custom multi-file reader
+ * For table functions that support reading multiple files with globbing
+ */
+unique_ptr<MultiFileReader> CityJSONGetMultiFileReader(const TableFunction &) {
+    // Return custom MultiFileReader implementation
+    // Enables patterns like: read_cityjson('data/*.city.jsonl')
+    return make_uniq<CityJSONMultiFileReader>();
+}
+```
+
+### 7.7 Complete Registration Example
+
+```cpp
+/**
+ * Register table function with all optional callbacks
+ */
+void RegisterCityJSONWithCallbacks(ExtensionLoader &loader) {
+    TableFunction func("read_cityjson",
+                       {LogicalType::VARCHAR},
+                       CityJSONFunction,
+                       CityJSONBind,
+                       CityJSONInitGlobal,
+                       CityJSONInitLocal);
+
+    // Named parameters
+    func.named_parameters["sample_lines"] = LogicalType::INTEGER;
+
+    // Pushdown configuration
+    func.projection_pushdown = true;
+    func.filter_pushdown = false;
+
+    // Optional callbacks
+    func.cardinality = CityJSONCardinality;
+    func.statistics = CityJSONStatistics;
+    func.table_scan_progress = CityJSONProgress;
+
+    // Serialization (for distributed execution)
+    func.serialize = CityJSONSerialize;
+    func.deserialize = CityJSONDeserialize;
+
+    // Advanced pushdown
+    func.pushdown_complex_filter = CityJSONPushdownComplexFilter;
+    func.type_pushdown = CityJSONTypePushdown;
+
+    // Multi-file support
+    func.get_multi_file_reader = CityJSONGetMultiFileReader;
+
+    loader.RegisterFunction(func);
+}
+```
+
+---
+
+## 8. Vector Writing System
+
+### 8.1 Vector Type Abstraction
 
 ```cpp
 /**
@@ -860,7 +1234,7 @@ public:
 };
 ```
 
-### 7.2 Vector Creation
+### 8.2 Vector Creation
 
 ```cpp
 /**
@@ -883,7 +1257,7 @@ vector<VectorWrapper> CreateVectors(
 );
 ```
 
-### 7.3 Value Writing Interface
+### 8.3 Value Writing Interface
 
 ```cpp
 /**
@@ -978,7 +1352,7 @@ void WriteGeographicalExtent(
 );
 ```
 
-### 7.4 Temporal Type Parsing
+### 8.4 Temporal Type Parsing
 
 ```cpp
 /**
@@ -1016,9 +1390,9 @@ int64_t ParseTimeString(const string& time_str);
 
 ---
 
-## 8. Error Handling
+## 9. Error Handling
 
-### 8.1 Error Type Hierarchy
+### 9.1 Error Type Hierarchy
 
 ```cpp
 /**
@@ -1086,29 +1460,29 @@ using Result = std::expected<T, CityJSONError>;  // C++23
 
 ---
 
-## 9. Implementation Notes
+## 10. Implementation Notes
 
-### 9.1 Memory Management
+### 10.1 Memory Management
 
 - **Bind Data Lifetime**: Created once during BIND, shared across all FUNC calls
 - **Init Data Lifetime**: Created once per thread during INIT, used in all FUNC calls for that thread
 - **String Storage**: Use DuckDB's `StringVector::AddString` for proper lifetime management
 - **Vector Size**: Always respect `VECTOR_SIZE` (typically 2048) to avoid memory corruption
 
-### 9.2 Concurrency
+### 10.2 Concurrency
 
 - **Thread Safety**: Batch index uses atomic operations for thread-safe increments
 - **Shared State**: Bind data is read-only after creation, safe for concurrent access
 - **Per-Thread State**: Init data is thread-local, no synchronization needed
 
-### 9.3 Performance Considerations
+### 10.3 Performance Considerations
 
 - **Schema Inference**: Sample only N features (default 100) to avoid reading entire file
 - **Chunking**: Process data in VECTOR_SIZE batches for efficient SIMD operations
 - **Pointer Arithmetic**: Use direct memory writes for primitives instead of API calls
 - **String Interning**: Consider string dictionary for repeated values
 
-### 9.4 Testing Strategy
+### 10.4 Testing Strategy
 
 - **Unit Tests**: Test each component in isolation
   - Column type inference
@@ -1127,7 +1501,7 @@ using Result = std::expected<T, CityJSONError>;  // C++23
   - See `test/sql/*.test` files in repository
   - Test various SQL queries and projections
 
-### 9.5 Future Enhancements
+### 10.5 Future Enhancements
 
 - **True Streaming**: Implement lazy chunk loading for large files
 - **Projection Pushdown**: Implement `SupportsPushdown()` to avoid reading unused columns
@@ -1137,19 +1511,13 @@ using Result = std::expected<T, CityJSONError>;  // C++23
 
 ---
 
-## 10. References
+## 11. References
 
 ### Documentation
 
 - [CityJSON Specification](https://www.cityjson.org/specs/)
 - [CityJSON Text Sequences](https://www.cityjson.org/specs/#text-sequences-cityjsonfeature)
-- [DuckDB Extension API](https://duckdb.org/docs/dev/api_overview)
-- [DuckDB C++ API](https://github.com/duckdb/duckdb/tree/master/src/include/duckdb)
-
-### Related Projects
-
-- [cjseq Library](https://github.com/hugoledoux/cjseq) - CityJSON parsing
-- [cityparquet](https://github.com/VCityTeam/cityparquet) - CityParquet schema reference
+- [DuckDB C++ API](https://duckdb.org/docs/stable/clients/c/api)
 
 ### Code References
 
@@ -1158,7 +1526,3 @@ using Result = std::expected<T, CityJSONError>;  // C++23
 - Test files: `test/sql/*.test`
 
 ---
-
-**Document Version**: 1.0
-**Last Updated**: 2025-11-04
-**Author**: Architecture extracted from Rust implementation for C++ port

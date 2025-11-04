@@ -28,12 +28,13 @@ inline void CityjsonOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &st
 
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register a scalar function
-	auto cityjson_scalar_function = ScalarFunction("cityjson", {LogicalType::VARCHAR}, LogicalType::VARCHAR, CityjsonScalarFun);
+	auto cityjson_scalar_function =
+	    ScalarFunction("cityjson", {LogicalType::VARCHAR}, LogicalType::VARCHAR, CityjsonScalarFun);
 	loader.RegisterFunction(cityjson_scalar_function);
 
 	// Register another scalar function
-	auto cityjson_openssl_version_scalar_function = ScalarFunction("cityjson_openssl_version", {LogicalType::VARCHAR},
-	                                                            LogicalType::VARCHAR, CityjsonOpenSSLVersionScalarFun);
+	auto cityjson_openssl_version_scalar_function = ScalarFunction(
+	    "cityjson_openssl_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, CityjsonOpenSSLVersionScalarFun);
 	loader.RegisterFunction(cityjson_openssl_version_scalar_function);
 }
 

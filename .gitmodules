@@ -6,3 +6,6 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = main
+[submodule "cityparquet"]
+	path = cityparquet
+	url = git@github.com:HideBa/cityparquet.git
