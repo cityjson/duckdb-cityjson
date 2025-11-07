@@ -9,3 +9,9 @@
 [submodule "cityparquet"]
 	path = cityparquet
 	url = git@github.com:HideBa/cityparquet.git
+[submodule "src/external/cjseq"]
+	path = src/external/cjseq
+	url = git@github.com:cityjson/cjseq.git
+	branch = Cpp_suppport
+[submodule "external/cjseq"]
+	branch = Cpp_support
