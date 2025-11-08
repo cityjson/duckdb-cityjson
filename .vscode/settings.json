@@ -19,5 +19,9 @@
   },
   "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
   "cmake.autoSelectActiveFolder": true,
-  "cmake.configureOnOpen": true
+  "cmake.configureOnOpen": true,
+  "[cpp]": {
+    "editor.defaultFormatter": "xaver.clang-format"
+  },
+  "clang-format.executable": "/opt/homebrew/bin/clang-format"
 }
