@@ -1,41 +1,15 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "cityjson_extension.hpp"
+#include "cityjson/table_function.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/function/scalar_function.hpp"
-#include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
-
-// OpenSSL linked through vcpkg
-#include <openssl/opensslv.h>
 
 namespace duckdb {
 
-inline void CityjsonScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "Cityjson " + name.GetString() + " 🐥");
-	});
-}
-
-inline void CityjsonOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "Cityjson " + name.GetString() + ", my linked OpenSSL version is " +
-		                                           OPENSSL_VERSION_TEXT);
-	});
-}
-
 static void LoadInternal(ExtensionLoader &loader) {
-	// Register a scalar function
-	auto cityjson_scalar_function =
-	    ScalarFunction("cityjson", {LogicalType::VARCHAR}, LogicalType::VARCHAR, CityjsonScalarFun);
-	loader.RegisterFunction(cityjson_scalar_function);
-
-	// Register another scalar function
-	auto cityjson_openssl_version_scalar_function = ScalarFunction(
-	    "cityjson_openssl_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, CityjsonOpenSSLVersionScalarFun);
-	loader.RegisterFunction(cityjson_openssl_version_scalar_function);
+	// Register the read_cityjson table function
+	cityjson::RegisterCityJSONTableFunction(*loader.GetDatabase().instance);
 }
 
 void CityjsonExtension::Load(ExtensionLoader &loader) {
