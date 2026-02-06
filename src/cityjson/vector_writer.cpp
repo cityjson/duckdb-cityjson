@@ -311,9 +311,49 @@ void WriteToVector(const Column &col, const json &value, VectorWrapper &wrapper,
 		break;
 	}
 
+	case ColumnType::GeometryWKB: {
+		// Note: WKB data should be pre-encoded and passed directly
+		// For now, we set NULL - actual WKB encoding is done at a higher level
+		FlatVector::SetNull(*wrapper.AsFlatMut(), row, true);
+		break;
+	}
+
+	case ColumnType::GeometryPropertiesJson: {
+		// Geometry properties stored as JSON string
+		WritePrimitive(wrapper.AsFlatMut(), row, value.dump());
+		break;
+	}
+
 	default:
 		throw CityJSONError::Other("Unsupported column type: " + std::string(ColumnTypeUtils::ToString(col.kind)));
 	}
+}
+
+// ============================================================
+// WKB and Geometry Properties Writers
+// ============================================================
+
+void WriteGeometryWKB(Vector *blob_vec, const std::vector<uint8_t> &wkb_data, size_t row) {
+	if (wkb_data.empty()) {
+		FlatVector::SetNull(*blob_vec, row, true);
+		return;
+	}
+
+	// Create blob from WKB data
+	auto blob =
+	    StringVector::AddStringOrBlob(*blob_vec, reinterpret_cast<const char *>(wkb_data.data()), wkb_data.size());
+	FlatVector::GetData<string_t>(*blob_vec)[row] = blob;
+}
+
+void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
+	if (properties.is_null()) {
+		FlatVector::SetNull(*vec, row, true);
+		return;
+	}
+
+	// Serialize to JSON string
+	std::string json_str = properties.dump();
+	FlatVector::GetData<string_t>(*vec)[row] = StringVector::AddString(*vec, json_str);
 }
 
 } // namespace cityjson

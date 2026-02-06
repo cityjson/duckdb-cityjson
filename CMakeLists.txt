@@ -33,6 +33,10 @@ set(EXTENSION_SOURCES
     src/cityjson/local_cityjson_reader.cpp
     src/cityjson/local_cityjsonseq_reader.cpp
     src/cityjson/reader_factory.cpp
+    # Geometry encoding layer
+    src/cityjson/wkb_encoder.cpp
+    src/cityjson/geometry_properties.cpp
+    src/cityjson/lod_table.cpp
     # Vector writer layer
     src/cityjson/vector_writer.cpp
     # Table function layer
@@ -45,6 +49,9 @@ set(EXTENSION_SOURCES
     src/cityjson/scan_function.cpp
     src/cityjson/optional_callbacks.cpp
     src/cityjson/table_function_registration.cpp
+    # Metadata table
+    src/cityjson/metadata_table.cpp
+    src/cityjson/metadata_table_function.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

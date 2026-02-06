@@ -1,5 +1,7 @@
 #include "cityjson/city_object_utils.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/wkb_encoder.hpp"
+#include "cityjson/geometry_properties.hpp"
 #include <map>
 #include <set>
 #include <algorithm>
@@ -187,6 +189,22 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	std::sort(result.begin(), result.end(), [](const Column &a, const Column &b) { return a.name < b.name; });
 
 	return result;
+}
+
+// ============================================================
+// CityObjectUtils - Geometry Encoding
+// ============================================================
+
+std::vector<uint8_t> CityObjectUtils::GetGeometryWKB(const Geometry &geometry,
+                                                     const std::vector<std::array<double, 3>> &vertices,
+                                                     const std::optional<Transform> &transform) {
+	return WKBEncoder::Encode(geometry, vertices, transform);
+}
+
+json CityObjectUtils::GetGeometryPropertiesJson(const Geometry &geometry, const std::optional<std::string> &object_id) {
+	// Note: object_id parameter reserved for future use
+	(void)object_id; // Suppress unused parameter warning
+	return GeometryPropertiesSerializer::Serialize(geometry);
 }
 
 } // namespace cityjson

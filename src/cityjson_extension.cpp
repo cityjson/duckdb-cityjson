@@ -2,6 +2,7 @@
 
 #include "cityjson_extension.hpp"
 #include "cityjson/table_function.hpp"
+#include "cityjson/metadata_table_function.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 
@@ -10,6 +11,9 @@ namespace duckdb {
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register the read_cityjson table function
 	cityjson::RegisterCityJSONTableFunction(loader);
+
+	// Register the cityjson_metadata table function
+	cityjson::RegisterMetadataTableFunction(loader);
 }
 
 void CityjsonExtension::Load(ExtensionLoader &loader) {

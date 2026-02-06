@@ -16,44 +16,46 @@ namespace cityjson {
  */
 class VectorWrapper {
 public:
-    /**
-     * Construct vector wrapper
-     *
-     * @param type Type of vector (Flat, List, Struct)
-     * @param vector Pointer to DuckDB Vector
-     */
-    VectorWrapper(VectorType type, Vector* vector);
+	/**
+	 * Construct vector wrapper
+	 *
+	 * @param type Type of vector (Flat, List, Struct)
+	 * @param vector Pointer to DuckDB Vector
+	 */
+	VectorWrapper(VectorType type, Vector *vector);
 
-    /**
-     * Get as flat vector (for primitives and strings)
-     * @return Pointer to Vector
-     * @throws CityJSONError::DuckDBError if vector type is not Flat
-     */
-    Vector* AsFlatMut();
+	/**
+	 * Get as flat vector (for primitives and strings)
+	 * @return Pointer to Vector
+	 * @throws CityJSONError::DuckDBError if vector type is not Flat
+	 */
+	Vector *AsFlatMut();
 
-    /**
-     * Get as list vector (for LIST types)
-     * @return Pointer to Vector
-     * @throws CityJSONError::DuckDBError if vector type is not List
-     */
-    Vector* AsListMut();
+	/**
+	 * Get as list vector (for LIST types)
+	 * @return Pointer to Vector
+	 * @throws CityJSONError::DuckDBError if vector type is not List
+	 */
+	Vector *AsListMut();
 
-    /**
-     * Get as struct vector (for STRUCT types)
-     * @return Pointer to Vector
-     * @throws CityJSONError::DuckDBError if vector type is not Struct
-     */
-    Vector* AsStructMut();
+	/**
+	 * Get as struct vector (for STRUCT types)
+	 * @return Pointer to Vector
+	 * @throws CityJSONError::DuckDBError if vector type is not Struct
+	 */
+	Vector *AsStructMut();
 
-    /**
-     * Get vector type
-     * @return VectorType enum value
-     */
-    VectorType GetType() const { return type_; }
+	/**
+	 * Get vector type
+	 * @return VectorType enum value
+	 */
+	VectorType GetType() const {
+		return type_;
+	}
 
 private:
-    VectorType type_;       // Type of vector
-    Vector* vector_;        // Pointer to DuckDB vector
+	VectorType type_; // Type of vector
+	Vector *vector_;  // Pointer to DuckDB vector
 };
 
 /**
@@ -72,11 +74,8 @@ private:
  * @param projected_column_ids Indices of projected columns in schema
  * @return Vector of VectorWrapper objects (one per projected column)
  */
-std::vector<VectorWrapper> CreateVectors(
-    DataChunk& output,
-    const std::vector<Column>& columns,
-    const std::vector<idx_t>& projected_column_ids
-);
+std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Column> &columns,
+                                         const std::vector<idx_t> &projected_column_ids);
 
 /**
  * Write JSON value to DuckDB vector at specified row
@@ -97,12 +96,7 @@ std::vector<VectorWrapper> CreateVectors(
  * @param row Row index to write to (0-based)
  * @throws CityJSONError on conversion failure or type mismatch
  */
-void WriteToVector(
-    const Column& col,
-    const json& value,
-    VectorWrapper& wrapper,
-    size_t row
-);
+void WriteToVector(const Column &col, const json &value, VectorWrapper &wrapper, size_t row);
 
 /**
  * Write primitive value to flat vector
@@ -120,8 +114,8 @@ void WriteToVector(
  * @param row Row index to write to
  * @param value Value to write
  */
-template<typename T>
-void WritePrimitive(Vector* vec, size_t row, T value);
+template <typename T>
+void WritePrimitive(Vector *vec, size_t row, T value);
 
 /**
  * Write array of strings to list vector
@@ -140,7 +134,7 @@ void WritePrimitive(Vector* vec, size_t row, T value);
  * @param row Row index in parent vector
  * @throws CityJSONError if value is not an array
  */
-void WriteVarcharArray(Vector* list_vec, const json& value, size_t row);
+void WriteVarcharArray(Vector *list_vec, const json &value, size_t row);
 
 /**
  * Write geometry to struct vector
@@ -157,7 +151,7 @@ void WriteVarcharArray(Vector* list_vec, const json& value, size_t row);
  * @param row Row index in struct vector
  * @throws CityJSONError if value is not a valid geometry object
  */
-void WriteGeometry(Vector* struct_vec, const json& value, size_t row);
+void WriteGeometry(Vector *struct_vec, const json &value, size_t row);
 
 /**
  * Write geographical extent to struct vector
@@ -174,7 +168,27 @@ void WriteGeometry(Vector* struct_vec, const json& value, size_t row);
  * @param row Row index in struct vector
  * @throws CityJSONError if value is not a valid extent array
  */
-void WriteGeographicalExtent(Vector* struct_vec, const json& value, size_t row);
+void WriteGeographicalExtent(Vector *struct_vec, const json &value, size_t row);
+
+/**
+ * Write WKB geometry data to blob vector
+ * Handles GeometryWKB BLOB type
+ *
+ * @param blob_vec Pointer to blob vector
+ * @param wkb_data WKB binary data
+ * @param row Row index in vector
+ */
+void WriteGeometryWKB(Vector *blob_vec, const std::vector<uint8_t> &wkb_data, size_t row);
+
+/**
+ * Write geometry properties JSON to varchar vector
+ * Handles GeometryPropertiesJson type (stored as VARCHAR)
+ *
+ * @param vec Pointer to varchar vector
+ * @param properties JSON object containing geometry properties
+ * @param row Row index in vector
+ */
+void WriteGeometryProperties(Vector *vec, const json &properties, size_t row);
 
 } // namespace cityjson
 } // namespace duckdb

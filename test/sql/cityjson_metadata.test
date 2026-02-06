@@ -1,0 +1,67 @@
+# name: test/sql/cityjson_metadata.test
+# description: Test cityjson_metadata table function
+# group: [cityjson]
+
+require cityjson
+
+# Test cityjson_metadata function returns single row
+query I
+SELECT count(*) FROM cityjson_metadata('test/data/minimal.city.json');
+----
+1
+
+# Test version is extracted correctly
+query T
+SELECT version FROM cityjson_metadata('test/data/minimal.city.json');
+----
+2.0
+
+# Test city_objects_count is correct
+query I
+SELECT city_objects_count FROM cityjson_metadata('test/data/minimal.city.json');
+----
+1
+
+# Test transform_scale struct has correct fields
+query T
+SELECT transform_scale.x FROM cityjson_metadata('test/data/minimal.city.json');
+----
+1.0
+
+# Test transform_scale struct values
+query III
+SELECT transform_scale.x, transform_scale.y, transform_scale.z FROM cityjson_metadata('test/data/minimal.city.json');
+----
+1.0	1.0	1.0
+
+# Test transform_translate struct values
+query III
+SELECT transform_translate.x, transform_translate.y, transform_translate.z FROM cityjson_metadata('test/data/minimal.city.json');
+----
+0.0	0.0	0.0
+
+# Test that metadata and city objects can be read together (separate tables pattern)
+statement ok
+CREATE TABLE meta_test AS SELECT * FROM cityjson_metadata('test/data/minimal.city.json');
+
+statement ok
+CREATE TABLE objects_test AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+# Verify both tables have the expected row counts
+query II
+SELECT (SELECT count(*) FROM meta_test), (SELECT count(*) FROM objects_test);
+----
+1	1
+
+# Clean up
+statement ok
+DROP TABLE meta_test;
+
+statement ok
+DROP TABLE objects_test;
+
+# Test error handling for non-existent file
+statement error
+SELECT * FROM cityjson_metadata('test/data/nonexistent.city.json');
+----
+Failed to open CityJSON file
