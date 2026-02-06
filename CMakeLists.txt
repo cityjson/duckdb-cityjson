@@ -49,7 +49,7 @@ set(EXTENSION_SOURCES
     src/cityjson/scan_function.cpp
     src/cityjson/optional_callbacks.cpp
     src/cityjson/table_function_registration.cpp
-    # Metadata table 
+    # Metadata table
     src/cityjson/metadata_table.cpp
     src/cityjson/metadata_table_function.cpp
 )
