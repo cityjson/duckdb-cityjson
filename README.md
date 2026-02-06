@@ -1,65 +1,79 @@
-# Cityjson
+# DuckDB CityJSON Extension
 
-This repository is based on <https://github.com/duckdb/extension-template>, check it out if you want to build and ship your own DuckDB extension.
+A DuckDB extension for reading and querying [CityJSON](https://www.cityjson.org/) files directly in DuckDB.
 
----
+## Features
 
-This extension, Cityjson, allow you to ... <extension_goal>.
+- **Read CityJSON files** (`.city.json` and `.cityjsonl` / CityJSON Sequences)
+- **Automatic schema inference** from CityJSON attributes
+- **Per-LOD geometry encoding** with WKB (Well-Known Binary) format for GIS compatibility
+- **Multiple geometry LODs** (Levels of Detail) support
+- **Semantic surface metadata** preservation
+
+## Usage
+
+### Basic Reading (Default Mode)
+
+Read CityJSON files with geometry stored as structured JSON:
+
+```sql
+-- Load the extension
+LOAD cityjson;
+
+-- Read a CityJSON file
+SELECT * FROM read_cityjson('path/to/file.city.json');
+
+-- Query specific columns
+SELECT id, object_type, measuredHeight
+FROM read_cityjson('buildings.city.json')
+WHERE object_type = 'Building';
+```
+
+### Per-LOD Reading with WKB Geometry (Recommended for GIS)
+
+Use the `lod` parameter to get geometry encoded as WKB (BLOB), compatible with spatial extensions:
+
+```sql
+-- Read with LOD 2.2 geometry as WKB
+SELECT id, object_type, geometry, geometry_properties
+FROM read_cityjson('buildings.city.json', lod => '2.2');
+```
+
+This mode produces:
+
+- **`geometry`** (BLOB): WKB-encoded geometry, compatible with PostGIS/Spatial extensions
+- **`geometry_properties`** (VARCHAR): JSON with geometry metadata (type, LOD, semantics)
+
+### Schema Comparison
+
+| Mode                     | Geometry Column | Format                      | Use Case                         |
+| ------------------------ | --------------- | --------------------------- | -------------------------------- |
+| Default                  | `geom_lodX_Y`   | STRUCT with JSON boundaries | Full CityJSON preservation       |
+| Per-LOD (`lod => '...'`) | `geometry`      | WKB BLOB                    | GIS analysis, spatial operations |
 
 ## Building
 
-### Managing dependencies
+### Prerequisites
 
-DuckDB extensions uses VCPKG for dependency management. Enabling VCPKG is very simple: follow the [installation instructions](https://vcpkg.io/en/getting-started) or just run the following:
+- CMake 3.10+
+- C++17 compatible compiler
+- DuckDB source (git submodule)
 
-```shell
-git clone https://github.com/Microsoft/vcpkg.git
-./vcpkg/bootstrap-vcpkg.sh
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
-
-Note: VCPKG is only required for extensions that want to rely on it for dependency management. If you want to develop an extension without dependencies, or want to do your own dependency management, just skip this step. Note that the example extension uses VCPKG to build with a dependency for instructive purposes, so when skipping this step the build may not work without removing the dependency.
-
-### Build steps
-
-Now to build the extension, run:
+### Build Steps
 
 ```sh
-make
-```
+# Clone with submodules
+git clone --recurse-submodules https://github.com/your-repo/duckdb-cityjson-extension.git
+cd duckdb-cityjson-extension
 
-The main binaries that will be built are:
-
-```sh
-./build/release/duckdb
-./build/release/test/unittest
-./build/release/extension/cityjson/cityjson.duckdb_extension
-```
-
-- `duckdb` is the binary for the duckdb shell with the extension code automatically loaded.
-- `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
-- `cityjson.duckdb_extension` is the loadable binary as it would be distributed.
-
-### Speedy build
-
-```
+# Build (with ninja for faster builds)
 GEN=ninja make
 ```
 
-## Running the extension
+### Running Tests
 
-To run the extension code, simply start the shell with `./build/release/duckdb`.
-
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `cityjson()` that takes a string arguments and returns a string:
-
-```
-D select cityjson('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ Cityjson Jane 🐥 │
-└───────────────┘
+```sh
+make test
 ```
 
 ## Running the tests

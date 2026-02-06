@@ -1,5 +1,6 @@
 #include "cityjson/table_function.hpp"
 #include "cityjson/reader.hpp"
+#include "cityjson/lod_table.hpp"
 #include "duckdb/common/exception.hpp"
 
 namespace duckdb {
@@ -15,8 +16,13 @@ unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindI
 	}
 	result->file_name = StringValue::Get(input.inputs[0]);
 
-	// Parse named parameters (sample_lines is optional, default handled by reader)
-	// For now, we use the default sample_lines in the reader
+	// Parse named parameters
+	for (auto &kv : input.named_parameters) {
+		if (kv.first == "lod") {
+			result->target_lod = StringValue::Get(kv.second);
+			result->use_wkb_encoding = true; // Enable WKB encoding when LOD is specified
+		}
+	}
 
 	// Open reader
 	std::unique_ptr<CityJSONReader> reader;
@@ -33,18 +39,49 @@ unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindI
 		throw BinderException("Failed to read CityJSON metadata: " + std::string(e.what()));
 	}
 
-	// Infer schema from samples
-	try {
-		result->columns = reader->Columns();
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to infer schema: " + std::string(e.what()));
-	}
-
-	// Load all data
+	// Load all data first (needed for schema inference)
 	try {
 		result->chunks = reader->ReadAllChunks();
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to read CityJSON data: " + std::string(e.what()));
+	}
+
+	// Infer schema - use LOD table schema if LOD is specified
+	if (result->target_lod.has_value()) {
+		// Get all features from chunks
+		std::vector<CityJSONFeature> all_features;
+		for (size_t i = 0; i < result->chunks.ChunkCount(); i++) {
+			auto chunk = result->chunks.GetChunk(i);
+			if (chunk) {
+				all_features.insert(all_features.end(), chunk->begin(), chunk->end());
+			}
+		}
+
+		// Use LODTableUtils to get the per-LOD schema
+		auto lod_tables = LODTableUtils::InferLODTables(all_features);
+
+		// Find the table for the requested LOD
+		bool found = false;
+		for (const auto &table : lod_tables) {
+			if (table.lod_value == result->target_lod.value()) {
+				result->columns = table.columns;
+				found = true;
+				break;
+			}
+		}
+
+		if (!found) {
+			throw BinderException("LOD '" + result->target_lod.value() +
+			                      "' not found in CityJSON file. Available LODs: " +
+			                      (lod_tables.empty() ? "none" : lod_tables[0].lod_value));
+		}
+	} else {
+		// Use traditional column inference (no WKB encoding)
+		try {
+			result->columns = reader->Columns();
+		} catch (const CityJSONError &e) {
+			throw BinderException("Failed to infer schema: " + std::string(e.what()));
+		}
 	}
 
 	// Populate return types and names

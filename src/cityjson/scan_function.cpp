@@ -83,12 +83,42 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 				if (remaining == 0)
 					break;
 
+				// For WKB encoding mode, find the geometry matching the target LOD
+				std::optional<Geometry> target_geom;
+				if (bind_data.use_wkb_encoding && bind_data.target_lod.has_value()) {
+					target_geom = city_obj.GetGeometryAtLOD(bind_data.target_lod.value());
+				}
+
 				// Write data for each projected column
 				for (size_t col_idx = 0; col_idx < projected_cols.size(); col_idx++) {
 					size_t schema_idx = projected_cols[col_idx];
 					const Column &col = bind_data.columns[schema_idx];
 
-					// Get value based on column type
+					// Handle WKB geometry column
+					if (col.kind == ColumnType::GeometryWKB) {
+						if (target_geom.has_value() && bind_data.metadata.vertices.has_value()) {
+							// Encode geometry to WKB
+							auto wkb_data = CityObjectUtils::GetGeometryWKB(
+							    target_geom.value(), bind_data.metadata.vertices.value(), bind_data.metadata.transform);
+							WriteGeometryWKB(wrappers[col_idx].AsFlatMut(), wkb_data, output_row);
+						} else {
+							FlatVector::SetNull(*wrappers[col_idx].AsFlatMut(), output_row, true);
+						}
+						continue;
+					}
+
+					// Handle geometry properties column
+					if (col.kind == ColumnType::GeometryPropertiesJson) {
+						if (target_geom.has_value()) {
+							auto props = CityObjectUtils::GetGeometryPropertiesJson(target_geom.value());
+							WriteGeometryProperties(wrappers[col_idx].AsFlatMut(), props, output_row);
+						} else {
+							FlatVector::SetNull(*wrappers[col_idx].AsFlatMut(), output_row, true);
+						}
+						continue;
+					}
+
+					// Get value based on column type (standard handling)
 					json value;
 
 					if (col.name == "id") {

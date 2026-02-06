@@ -24,13 +24,15 @@ namespace cityjson {
  * Contains file information, metadata, chunks, and schema
  */
 struct CityJSONBindData : public TableFunctionData {
-    std::string file_name;                  // Path to CityJSON file
-    CityJSON metadata;                      // CityJSON metadata
-    CityJSONFeatureChunk chunks;            // All data divided into chunks
-    std::vector<Column> columns;            // Complete column schema
+	std::string file_name;                 // Path to CityJSON file
+	CityJSON metadata;                     // CityJSON metadata
+	CityJSONFeatureChunk chunks;           // All data divided into chunks
+	std::vector<Column> columns;           // Complete column schema
+	std::optional<std::string> target_lod; // Optional: filter to specific LOD
+	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
 
-    unique_ptr<FunctionData> Copy() const override;
-    bool Equals(const FunctionData &other) const override;
+	unique_ptr<FunctionData> Copy() const override;
+	bool Equals(const FunctionData &other) const override;
 };
 
 // ============================================================
@@ -42,11 +44,11 @@ struct CityJSONBindData : public TableFunctionData {
  * Shared across all threads
  */
 struct CityJSONGlobalState : public GlobalTableFunctionState {
-    std::atomic<size_t> batch_index;        // Current batch index for parallel scanning
+	std::atomic<size_t> batch_index; // Current batch index for parallel scanning
 
-    CityJSONGlobalState();
+	CityJSONGlobalState();
 
-    idx_t MaxThreads() const override;
+	idx_t MaxThreads() const override;
 };
 
 // ============================================================
@@ -58,8 +60,8 @@ struct CityJSONGlobalState : public GlobalTableFunctionState {
  * Thread-local storage for projection information
  */
 struct CityJSONLocalState : public LocalTableFunctionState {
-    vector<column_t> column_ids;            // Column IDs for projection
-    vector<idx_t> projection_ids;           // Projection indices
+	vector<column_t> column_ids;  // Column IDs for projection
+	vector<idx_t> projection_ids; // Projection indices
 };
 
 // ============================================================
@@ -69,64 +71,41 @@ struct CityJSONLocalState : public LocalTableFunctionState {
 /**
  * Bind callback - schema inference and data loading
  */
-unique_ptr<FunctionData> CityJSONBind(
-    ClientContext &context,
-    TableFunctionBindInput &input,
-    vector<LogicalType> &return_types,
-    vector<string> &names
-);
+unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindInput &input,
+                                      vector<LogicalType> &return_types, vector<string> &names);
 
 /**
  * Init global state callback
  */
-unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(
-    ClientContext &context,
-    TableFunctionInitInput &input
-);
+unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(ClientContext &context, TableFunctionInitInput &input);
 
 /**
  * Init local state callback
  */
-unique_ptr<LocalTableFunctionState> CityJSONInitLocal(
-    ExecutionContext &context,
-    TableFunctionInitInput &input,
-    GlobalTableFunctionState *global_state
-);
+unique_ptr<LocalTableFunctionState> CityJSONInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
+                                                      GlobalTableFunctionState *global_state);
 
 /**
  * Scan function - main data reading logic
  */
-void CityJSONScan(
-    ClientContext &context,
-    TableFunctionInput &data,
-    DataChunk &output
-);
+void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &output);
 
 /**
  * Cardinality callback - estimate number of rows
  */
-unique_ptr<NodeStatistics> CityJSONCardinality(
-    ClientContext &context,
-    const FunctionData *bind_data_p
-);
+unique_ptr<NodeStatistics> CityJSONCardinality(ClientContext &context, const FunctionData *bind_data_p);
 
 /**
  * Progress callback - track scan progress
  */
-double CityJSONProgress(
-    ClientContext &context,
-    const FunctionData *bind_data_p,
-    const GlobalTableFunctionState *global_state_p
-);
+double CityJSONProgress(ClientContext &context, const FunctionData *bind_data_p,
+                        const GlobalTableFunctionState *global_state_p);
 
 /**
  * Statistics callback - column statistics (optional)
  */
-unique_ptr<BaseStatistics> CityJSONStatistics(
-    ClientContext &context,
-    const FunctionData *bind_data_p,
-    column_t column_index
-);
+unique_ptr<BaseStatistics> CityJSONStatistics(ClientContext &context, const FunctionData *bind_data_p,
+                                              column_t column_index);
 
 // ============================================================
 // Registration

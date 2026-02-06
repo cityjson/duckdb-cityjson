@@ -35,6 +35,10 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 		       "VARCHAR)";
 	case ColumnType::GeographicalExtent:
 		return "STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)";
+	case ColumnType::GeometryWKB:
+		return "BLOB";
+	case ColumnType::GeometryPropertiesJson:
+		return "JSON";
 	default:
 		return "UNKNOWN";
 	}
@@ -64,6 +68,10 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 		return LogicalTypeId::STRUCT;
 	case ColumnType::GeographicalExtent:
 		return LogicalTypeId::STRUCT;
+	case ColumnType::GeometryWKB:
+		return LogicalTypeId::BLOB;
+	case ColumnType::GeometryPropertiesJson:
+		return LogicalTypeId::VARCHAR; // JSON stored as VARCHAR
 	default:
 		return LogicalTypeId::INVALID;
 	}
@@ -118,6 +126,12 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		children.push_back(std::make_pair("max_z", LogicalType::DOUBLE));
 		return LogicalType::STRUCT(children);
 	}
+
+	case ColumnType::GeometryWKB:
+		return LogicalType::BLOB;
+
+	case ColumnType::GeometryPropertiesJson:
+		return LogicalType::VARCHAR; // JSON stored as VARCHAR
 
 	default:
 		return LogicalType::INVALID;
@@ -174,6 +188,12 @@ ColumnType ColumnTypeUtils::Parse(const std::string &name) {
 	}
 	if (lower_name == "geographicalextent" || lower_name == "extent") {
 		return ColumnType::GeographicalExtent;
+	}
+	if (lower_name == "geometrywkb" || lower_name == "wkb" || lower_name == "blob") {
+		return ColumnType::GeometryWKB;
+	}
+	if (lower_name == "geometrypropertiesjson" || lower_name == "geometry_properties") {
+		return ColumnType::GeometryPropertiesJson;
 	}
 
 	// Not found - throw error
@@ -325,7 +345,8 @@ bool ColumnTypeUtils::IsTemporal(ColumnType type) {
 
 bool ColumnTypeUtils::IsComplex(ColumnType type) {
 	return type == ColumnType::Json || type == ColumnType::VarcharArray || type == ColumnType::Geometry ||
-	       type == ColumnType::GeographicalExtent;
+	       type == ColumnType::GeographicalExtent || type == ColumnType::GeometryWKB ||
+	       type == ColumnType::GeometryPropertiesJson;
 }
 
 // ============================================================

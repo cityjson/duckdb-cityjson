@@ -9,6 +9,8 @@ unique_ptr<FunctionData> CityJSONBindData::Copy() const {
 	result->metadata = metadata;
 	result->chunks = chunks;
 	result->columns = columns;
+	result->target_lod = target_lod;
+	result->use_wkb_encoding = use_wkb_encoding;
 	return std::move(result);
 }
 

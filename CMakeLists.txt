@@ -33,6 +33,10 @@ set(EXTENSION_SOURCES
     src/cityjson/local_cityjson_reader.cpp
     src/cityjson/local_cityjsonseq_reader.cpp
     src/cityjson/reader_factory.cpp
+    # Geometry encoding layer
+    src/cityjson/wkb_encoder.cpp
+    src/cityjson/geometry_properties.cpp
+    src/cityjson/lod_table.cpp
     # Vector writer layer
     src/cityjson/vector_writer.cpp
     # Table function layer

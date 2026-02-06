@@ -10,6 +10,7 @@ TableFunction CreateReadCityJSONTableFunction() {
 
 	// Named parameters
 	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
+	func.named_parameters["lod"] = LogicalType::VARCHAR; // Filter to specific LOD (e.g., "2.2")
 
 	// Set callbacks
 	func.init_global = CityJSONInitGlobal;

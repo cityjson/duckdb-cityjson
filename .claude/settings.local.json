@@ -15,7 +15,16 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(gh run list:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(python3:*)",
+      "Bash(grep:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git submodule status:*)",
+      "Bash(git submodule)",
+      "WebSearch",
+      "mcp__zread__read_file",
+      "mcp__zread__search_doc"
     ]
   }
 }

@@ -1,0 +1,82 @@
+# name: test/sql/cityjson_wkb.test
+# description: Test WKB geometry encoding for CityJSON
+# group: [cityjson]
+
+# This test file validates the WKB encoding infrastructure and the
+# LOD parameter for read_cityjson() that enables per-LOD table schema.
+
+require cityjson
+
+# Test basic CityJSON reading still works with new encoding infrastructure
+statement ok
+CREATE TABLE buildings AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+# Verify the table was created and has geometry data
+query I
+SELECT COUNT(*) FROM buildings;
+----
+1
+
+# Verify geometry column exists (current format: STRUCT with boundaries as JSON string)
+query T
+SELECT typeof(geom_lod2_2) FROM buildings WHERE geom_lod2_2 IS NOT NULL;
+----
+STRUCT(lod VARCHAR, "type" VARCHAR, boundaries VARCHAR, semantics VARCHAR, material VARCHAR, texture VARCHAR)
+
+# Verify geometry type is correctly parsed
+query T
+SELECT geom_lod2_2.type FROM buildings;
+----
+Solid
+
+# Verify LOD is correctly parsed
+query T
+SELECT geom_lod2_2.lod FROM buildings;
+----
+2.2
+
+# Clean up
+statement ok
+DROP TABLE buildings;
+
+# ============================================================
+# Tests for LOD parameter with WKB geometry encoding
+# ============================================================
+
+# Test reading with LOD parameter (uses per-LOD table schema with WKB encoding)
+statement ok
+CREATE TABLE buildings_lod AS SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '2.2');
+
+# Verify the table has the expected columns for per-LOD schema
+query I
+SELECT COUNT(*) FROM buildings_lod;
+----
+1
+
+# Verify the 'geometry' column exists and is a BLOB (WKB format)
+query T
+SELECT typeof(geometry) FROM buildings_lod;
+----
+BLOB
+
+# Verify 'geometry_properties' column exists and is VARCHAR (JSON)
+query T
+SELECT typeof(geometry_properties) FROM buildings_lod;
+----
+VARCHAR
+
+# Verify 'object_type' column exists
+query T
+SELECT object_type FROM buildings_lod;
+----
+Building
+
+# Cleanup
+statement ok
+DROP TABLE buildings_lod;
+
+# Test that invalid LOD throws an error
+statement error
+SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '9.9');
+----
+LOD '9.9' not found
