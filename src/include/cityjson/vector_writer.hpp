@@ -75,7 +75,7 @@ private:
 std::vector<VectorWrapper> CreateVectors(
     DataChunk& output,
     const std::vector<Column>& columns,
-    const std::vector<size_t>& projected_column_ids
+    const std::vector<idx_t>& projected_column_ids
 );
 
 /**

@@ -1,6 +1,7 @@
 #include "cityjson/temporal_parser.hpp"
 #include "cityjson/error.hpp"
 #include "duckdb.hpp"
+#include "duckdb/common/types/time.hpp"
 #include <regex>
 #include <sstream>
 #include <iomanip>

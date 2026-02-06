@@ -90,7 +90,7 @@ con = duckdb.connect(':memory:', config={'allow_unsigned_extensions' : 'true'})
 NodeJS:
 
 ```js
-db = new duckdb.Database(':memory:', {"allow_unsigned_extensions": "true"});
+db = new duckdb.Database(":memory:", { allow_unsigned_extensions: "true" });
 ```
 
 Secondly, you will need to set the repository endpoint in DuckDB to the HTTP url of your bucket + version of the extension

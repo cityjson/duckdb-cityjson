@@ -10,6 +10,9 @@
 #include <memory>
 
 namespace duckdb {
+
+class ExtensionLoader;
+
 namespace cityjson {
 
 // ============================================================
@@ -26,8 +29,8 @@ struct CityJSONBindData : public TableFunctionData {
     CityJSONFeatureChunk chunks;            // All data divided into chunks
     std::vector<Column> columns;            // Complete column schema
 
-    unique_ptr<TableFunctionData> Copy() const override;
-    bool Equals(const TableFunctionData &other) const override;
+    unique_ptr<FunctionData> Copy() const override;
+    bool Equals(const FunctionData &other) const override;
 };
 
 // ============================================================
@@ -137,7 +140,7 @@ TableFunction CreateReadCityJSONTableFunction();
 /**
  * Register read_cityjson function with database
  */
-void RegisterCityJSONTableFunction(DatabaseInstance &db);
+void RegisterCityJSONTableFunction(ExtensionLoader &loader);
 
 } // namespace cityjson
 } // namespace duckdb

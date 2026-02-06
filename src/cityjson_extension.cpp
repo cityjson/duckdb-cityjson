@@ -9,7 +9,7 @@ namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register the read_cityjson table function
-	cityjson::RegisterCityJSONTableFunction(*loader.GetDatabase().instance);
+	cityjson::RegisterCityJSONTableFunction(loader);
 }
 
 void CityjsonExtension::Load(ExtensionLoader &loader) {

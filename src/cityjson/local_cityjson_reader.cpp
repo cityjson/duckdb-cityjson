@@ -8,9 +8,6 @@ namespace cityjson {
 
 using namespace json_utils;
 
-// Standard vector size for DuckDB
-constexpr size_t STANDARD_VECTOR_SIZE = 2048;
-
 // ============================================================
 // Constructor
 // ============================================================

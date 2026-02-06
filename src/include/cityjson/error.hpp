@@ -4,7 +4,7 @@
 #include <exception>
 #include <string>
 #include <optional>
-#include <expected>
+#include <variant>
 
 namespace duckdb {
 namespace cityjson {
@@ -113,10 +113,24 @@ public:
 
 /**
  * Result type for error propagation
- * Uses C++23 std::expected or falls back to alternative implementation
+ * Uses std::variant for C++17 compatibility (alternatively to C++23 std::expected)
  */
 template<typename T>
-using Result = std::expected<T, CityJSONError>;
+class Result {
+private:
+    std::variant<T, CityJSONError> value_;
+
+public:
+    Result(T value) : value_(std::move(value)) {}
+    Result(CityJSONError error) : value_(std::move(error)) {}
+
+    bool HasError() const { return std::holds_alternative<CityJSONError>(value_); }
+    const T& GetValue() const { return std::get<T>(value_); }
+    const CityJSONError& GetError() const { return std::get<CityJSONError>(value_); }
+
+    explicit operator bool() const { return !HasError(); }
+    const T& operator*() const { return GetValue(); }
+};
 
 } // namespace cityjson
 } // namespace duckdb

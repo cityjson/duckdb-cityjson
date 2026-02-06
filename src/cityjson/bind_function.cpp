@@ -23,7 +23,7 @@ unique_ptr<FunctionData> CityJSONBind(
     // For now, we use the default sample_lines in the reader
 
     // Open reader
-    unique_ptr<CityJSONReader> reader;
+    std::unique_ptr<CityJSONReader> reader;
     try {
         reader = OpenAnyCityJSONFile(result->file_name);
     } catch (const CityJSONError& e) {
