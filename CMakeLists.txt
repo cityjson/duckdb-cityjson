@@ -7,6 +7,7 @@ set(TARGET_NAME cityjson)
 # used in cmake with find_package. Feel free to remove or replace with other dependencies.
 # Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
 find_package(OpenSSL REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
@@ -16,7 +17,35 @@ include_directories(src/include)
 
 set(CJSEQ_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/external/cjseq)
 
-set(EXTENSION_SOURCES src/cityjson_extension.cpp)
+set(EXTENSION_SOURCES
+    src/cityjson_extension.cpp
+    # Foundation layer
+    src/cityjson/error.cpp
+    src/cityjson/types.cpp
+    src/cityjson/json_utils.cpp
+    src/cityjson/cityjson_types.cpp
+    src/cityjson/column_types.cpp
+    src/cityjson/temporal_parser.cpp
+    # Utility layer
+    src/cityjson/city_object_utils.cpp
+    # Reader layer
+    src/cityjson/reader.cpp
+    src/cityjson/local_cityjson_reader.cpp
+    src/cityjson/local_cityjsonseq_reader.cpp
+    src/cityjson/reader_factory.cpp
+    # Vector writer layer
+    src/cityjson/vector_writer.cpp
+    # Table function layer
+    src/cityjson/bind_data.cpp
+    src/cityjson/global_state.cpp
+    src/cityjson/local_state.cpp
+    src/cityjson/bind_function.cpp
+    src/cityjson/init_global.cpp
+    src/cityjson/init_local.cpp
+    src/cityjson/scan_function.cpp
+    src/cityjson/optional_callbacks.cpp
+    src/cityjson/table_function_registration.cpp
+)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
@@ -47,9 +76,9 @@ if(EXISTS ${CJSEQ_CPP_DIR})
   endif()
 endif()
 
-# Link OpenSSL in both the static library as the loadable extension
-set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
-set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
+# Link OpenSSL and nlohmann_json in both the static library as the loadable extension
+set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
+set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
 
 install(
   TARGETS ${EXTENSION_NAME}

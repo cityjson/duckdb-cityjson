@@ -8,10 +8,8 @@
 	branch = main
 [submodule "cityparquet"]
 	path = cityparquet
-	url = git@github.com:HideBa/cityparquet.git
+	url = https://github.com/HideBa/cityparquet
 [submodule "src/external/cjseq"]
 	path = src/external/cjseq
-	url = git@github.com:cityjson/cjseq.git
-	branch = Cpp_suppport
-[submodule "external/cjseq"]
+	url = https://github.com/cityjson/cjseq
 	branch = Cpp_support

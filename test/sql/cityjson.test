@@ -1,23 +1,62 @@
 # name: test/sql/cityjson.test
-# description: test cityjson extension
-# group: [sql]
+# description: Test read_cityjson table function
+# group: [cityjson]
 
-# Before we load the extension, this will fail
-statement error
-SELECT cityjson('Sam');
-----
-Catalog Error: Scalar Function with name cityjson does not exist!
-
-# Require statement will ensure this test is run with this extension loaded
 require cityjson
 
-# Confirm the extension works
-query I
-SELECT cityjson('Sam');
-----
-Cityjson Sam 🐥
+# Test basic CityJSON reading
+statement ok
+CREATE TABLE buildings AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
 
+# Verify the table was created
 query I
-SELECT cityjson_openssl_version('Michael') ILIKE 'Cityjson Michael, my linked OpenSSL version is OpenSSL%';
+SELECT COUNT(*) FROM buildings;
 ----
-true
+1
+
+# Check that we have the expected columns
+query I
+SELECT COUNT(*) FROM (SELECT * FROM buildings LIMIT 0);
+----
+0
+
+# Test feature_id column
+query I
+SELECT COUNT(*) FROM buildings WHERE feature_id IS NOT NULL;
+----
+1
+
+# Test object_type column
+query T
+SELECT object_type FROM buildings;
+----
+Building
+
+# Test attribute column (yearOfConstruction)
+query I
+SELECT yearOfConstruction FROM buildings;
+----
+2020
+
+# Test CityJSONSeq format
+statement ok
+CREATE TABLE buildings_seq AS SELECT * FROM read_cityjson('test/data/sample.city.jsonl');
+
+# Verify we got 2 buildings from the sequence file
+query I
+SELECT COUNT(*) FROM buildings_seq;
+----
+2
+
+# Test that both buildings have the correct type
+query I
+SELECT COUNT(*) FROM buildings_seq WHERE object_type = 'Building';
+----
+2
+
+# Clean up
+statement ok
+DROP TABLE buildings;
+
+statement ok
+DROP TABLE buildings_seq;

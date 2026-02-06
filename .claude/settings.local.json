@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(echo:*)",
+      "Bash(./build/release/duckdb:*)",
+      "Bash(GEN=ninja make:*)",
+      "Bash(./build/release/test/unittest:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh api:*)",
+      "Bash(gh repo view:*)",
+      "Bash(git config:*)",
+      "Bash(git submodule sync:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh run list:*)",
+      "Bash(xargs:*)"
+    ]
+  }
+}
