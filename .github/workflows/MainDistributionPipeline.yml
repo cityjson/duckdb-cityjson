@@ -17,7 +17,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.1
     with:
       duckdb_version: v1.4.1
-      ci_tools_version: v1.4.1
+      ci_tools_version: v1.4.4
       extension_name: cityjson
 
   code-quality-check:
@@ -25,6 +25,6 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.1
     with:
       duckdb_version: v1.4.1
-      ci_tools_version: v1.4.1
+      ci_tools_version: v1.4.4
       extension_name: cityjson
       format_checks: 'format;tidy'
