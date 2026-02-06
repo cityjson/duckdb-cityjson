@@ -49,6 +49,9 @@ set(EXTENSION_SOURCES
     src/cityjson/scan_function.cpp
     src/cityjson/optional_callbacks.cpp
     src/cityjson/table_function_registration.cpp
+    # Metadata table 
+    src/cityjson/metadata_table.cpp
+    src/cityjson/metadata_table_function.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

@@ -5,6 +5,7 @@ A DuckDB extension for reading and querying [CityJSON](https://www.cityjson.org/
 ## Features
 
 - **Read CityJSON files** (`.city.json` and `.cityjsonl` / CityJSON Sequences)
+- **Read CityJSON metadata** as structured DuckDB types (transform, CRS, point of contact)
 - **Automatic schema inference** from CityJSON attributes
 - **Per-LOD geometry encoding** with WKB (Well-Known Binary) format for GIS compatibility
 - **Multiple geometry LODs** (Levels of Detail) support
@@ -50,6 +51,59 @@ This mode produces:
 | ------------------------ | --------------- | --------------------------- | -------------------------------- |
 | Default                  | `geom_lodX_Y`   | STRUCT with JSON boundaries | Full CityJSON preservation       |
 | Per-LOD (`lod => '...'`) | `geometry`      | WKB BLOB                    | GIS analysis, spatial operations |
+
+### Reading Metadata
+
+Use `cityjson_metadata` to get dataset-level metadata as a single row with structured types:
+
+```sql
+-- Get metadata from a CityJSON file
+SELECT * FROM cityjson_metadata('buildings.city.json');
+
+-- Query specific metadata fields
+SELECT version, city_objects_count, transform_scale
+FROM cityjson_metadata('buildings.city.json');
+
+-- Access nested struct fields
+SELECT
+    transform_scale.x AS scale_x,
+    transform_translate.x AS translate_x,
+    reference_system.authority AS crs_authority,
+    reference_system.code AS crs_code
+FROM cityjson_metadata('buildings.city.json');
+```
+
+The metadata table includes:
+
+| Column              | Type             | Description                    |
+| ------------------- | ---------------- | ------------------------------ |
+| version             | VARCHAR          | CityJSON version (e.g., "2.0") |
+| identifier          | VARCHAR          | Dataset identifier             |
+| title               | VARCHAR          | Dataset title                  |
+| reference_date      | DATE             | Reference date                 |
+| transform_scale     | STRUCT(x,y,z)    | Coordinate transform scale     |
+| transform_translate | STRUCT(x,y,z)    | Coordinate transform offset    |
+| geographical_extent | STRUCT(6 fields) | Bounding box                   |
+| reference_system    | STRUCT           | CRS information                |
+| point_of_contact    | STRUCT           | Contact information            |
+| city_objects_count  | BIGINT           | Total number of city objects   |
+
+### Multi-Table Pattern
+
+Create separate tables for metadata and city objects for comprehensive analysis:
+
+```sql
+-- Create metadata table
+CREATE TABLE meta AS SELECT * FROM cityjson_metadata('buildings.city.json');
+
+-- Create city objects table
+CREATE TABLE buildings AS SELECT * FROM read_cityjson('buildings.city.json');
+
+-- Cross-reference queries
+SELECT b.*, m.version, m.reference_system.code AS epsg
+FROM buildings b, meta m
+WHERE b.object_type = 'Building';
+```
 
 ## Building
 
