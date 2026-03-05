@@ -10,11 +10,15 @@ namespace cityjson {
 using namespace json_utils;
 
 // ============================================================
-// Constructor
+// Constructors
 // ============================================================
 
 LocalCityJSONSeqReader::LocalCityJSONSeqReader(const std::string &file_path, size_t sample_lines)
     : file_path_(file_path), sample_lines_(sample_lines) {
+}
+
+LocalCityJSONSeqReader::LocalCityJSONSeqReader(const std::string &name, std::string content, size_t sample_lines)
+    : file_path_(name), sample_lines_(sample_lines), content_(std::move(content)) {
 }
 
 // ============================================================
@@ -23,6 +27,21 @@ LocalCityJSONSeqReader::LocalCityJSONSeqReader(const std::string &file_path, siz
 
 std::string LocalCityJSONSeqReader::Name() const {
 	return file_path_;
+}
+
+// ============================================================
+// OpenStream (internal helper)
+// ============================================================
+
+std::unique_ptr<std::istream> LocalCityJSONSeqReader::OpenStream() const {
+	if (content_.has_value()) {
+		return std::make_unique<std::istringstream>(content_.value());
+	}
+	auto file = std::make_unique<std::ifstream>(file_path_);
+	if (!file->is_open()) {
+		throw CityJSONError::FileRead("Failed to open file: " + file_path_);
+	}
+	return file;
 }
 
 // ============================================================
@@ -35,15 +54,11 @@ CityJSON LocalCityJSONSeqReader::ReadMetadata() const {
 		return cached_metadata_.value();
 	}
 
-	// Open file
-	std::ifstream file(file_path_);
-	if (!file.is_open()) {
-		throw CityJSONError::FileRead("Failed to open file: " + file_path_);
-	}
+	auto stream = OpenStream();
 
 	// Read first line (metadata record)
 	std::string line;
-	if (!std::getline(file, line)) {
+	if (!std::getline(*stream, line)) {
 		throw CityJSONError::Sequence("CityJSONSeq file is empty");
 	}
 
@@ -68,23 +83,19 @@ CityJSON LocalCityJSONSeqReader::ReadMetadata() const {
 // ============================================================
 
 std::vector<CityJSONFeature> LocalCityJSONSeqReader::ReadNFeatures(size_t n) const {
-	// Open file
-	std::ifstream file(file_path_);
-	if (!file.is_open()) {
-		throw CityJSONError::FileRead("Failed to open file: " + file_path_);
-	}
+	auto stream = OpenStream();
 
 	std::vector<CityJSONFeature> features;
 	std::string line;
 
 	// Skip first line (metadata)
-	if (!std::getline(file, line)) {
+	if (!std::getline(*stream, line)) {
 		throw CityJSONError::Sequence("CityJSONSeq file is empty");
 	}
 
 	// Read next N feature lines
 	size_t count = 0;
-	while (count < n && std::getline(file, line)) {
+	while (count < n && std::getline(*stream, line)) {
 		if (line.empty()) {
 			continue; // Skip empty lines
 		}
@@ -109,24 +120,20 @@ std::vector<CityJSONFeature> LocalCityJSONSeqReader::ReadNFeatures(size_t n) con
 // ============================================================
 
 CityJSONFeatureChunk LocalCityJSONSeqReader::ReadAllChunks() const {
-	// Open file
-	std::ifstream file(file_path_);
-	if (!file.is_open()) {
-		throw CityJSONError::FileRead("Failed to open file: " + file_path_);
-	}
+	auto stream = OpenStream();
 
 	std::vector<CityJSONFeature> features;
 	std::string line;
 	size_t line_number = 0;
 
 	// Skip first line (metadata)
-	if (!std::getline(file, line)) {
+	if (!std::getline(*stream, line)) {
 		throw CityJSONError::Sequence("CityJSONSeq file is empty");
 	}
 	line_number++;
 
 	// Read all remaining lines
-	while (std::getline(file, line)) {
+	while (std::getline(*stream, line)) {
 		line_number++;
 
 		if (line.empty()) {

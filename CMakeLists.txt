@@ -51,6 +51,12 @@ set(EXTENSION_SOURCES
     # Metadata table
     src/cityjson/metadata_table.cpp
     src/cityjson/metadata_table_function.cpp
+    # FlatCityBuf (compiled always but guarded by #ifdef CITYJSON_HAS_FCB)
+    src/cityjson/flatcitybuf_reader.cpp
+    src/cityjson/flatcitybuf_table_function.cpp
+    # COPY TO
+    src/cityjson/copy_function.cpp
+    src/cityjson/cityjson_writer.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
@@ -79,6 +85,25 @@ if(EXISTS ${CJSEQ_CPP_DIR})
   if(TARGET cjseq)
     set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES cjseq)
     set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES cjseq)
+  endif()
+endif()
+
+# Optional: FlatCityBuf support
+# To enable, set -DCITYJSON_ENABLE_FCB=ON and ensure libfcb_cpp is available
+option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" OFF)
+if(CITYJSON_ENABLE_FCB)
+  include(FetchContent)
+  FetchContent_Declare(
+    flatcitybuf
+    GIT_REPOSITORY https://github.com/cityjson/flatcitybuf.git
+    GIT_TAG main
+  )
+  FetchContent_MakeAvailable(flatcitybuf)
+  if(TARGET fcb_cpp)
+    target_compile_definitions(${EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
+    target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
+    set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES fcb_cpp)
+    set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES fcb_cpp)
   endif()
 endif()
 

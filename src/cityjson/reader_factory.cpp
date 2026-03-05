@@ -1,4 +1,8 @@
 #include "cityjson/reader.hpp"
+#include "cityjson/json_utils.hpp"
+#ifdef CITYJSON_HAS_FCB
+#include "cityjson/flatcitybuf_reader.hpp"
+#endif
 #include <algorithm>
 #include <fstream>
 
@@ -55,6 +59,21 @@ static bool IsLikelyCityJSONSeq(const std::string &file_name) {
 	return has_cityjson_type && !has_city_objects;
 }
 
+/**
+ * Detect format from content string (first line heuristic)
+ */
+static bool IsLikelyCityJSONSeqFromContent(const std::string &content) {
+	// Find the first newline
+	auto pos = content.find('\n');
+	std::string first_line = (pos != std::string::npos) ? content.substr(0, pos) : content;
+
+	bool has_cityjson_type =
+	    first_line.find("\"type\"") != std::string::npos && first_line.find("\"CityJSON\"") != std::string::npos;
+	bool has_city_objects = first_line.find("\"CityObjects\"") != std::string::npos;
+
+	return has_cityjson_type && !has_city_objects;
+}
+
 std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name) {
 	// Check if file exists
 	std::ifstream test_file(file_name);
@@ -84,6 +103,38 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name
 	} else {
 		// Default to CityJSON format
 		return std::make_unique<LocalCityJSONReader>(file_name, DEFAULT_SAMPLE_LINES);
+	}
+}
+
+std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &context, const std::string &file_name) {
+	// Read file content using DuckDB FileSystem (supports HTTP, S3, GCS, etc.)
+	std::string content = json_utils::ReadFileContent(context, file_name);
+
+#ifdef CITYJSON_HAS_FCB
+	// FlatCityBuf format
+	if (EndsWith(file_name, ".fcb")) {
+		return std::make_unique<FlatCityBufReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
+	}
+#endif
+
+	// Try to detect format from extension first
+	if (EndsWith(file_name, ".city.jsonl") || EndsWith(file_name, ".jsonl")) {
+		return std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
+	}
+
+	if (EndsWith(file_name, ".city.json") || EndsWith(file_name, ".json")) {
+		if (IsLikelyCityJSONSeqFromContent(content)) {
+			return std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
+		} else {
+			return std::make_unique<LocalCityJSONReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
+		}
+	}
+
+	// Unknown extension - detect from content
+	if (IsLikelyCityJSONSeqFromContent(content)) {
+		return std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
+	} else {
+		return std::make_unique<LocalCityJSONReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
 	}
 }
 

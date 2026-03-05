@@ -3,6 +3,10 @@
 #include "cityjson_extension.hpp"
 #include "cityjson/table_function.hpp"
 #include "cityjson/metadata_table_function.hpp"
+#include "cityjson/copy_function.hpp"
+#ifdef CITYJSON_HAS_FCB
+#include "cityjson/flatcitybuf_table_function.hpp"
+#endif
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 
@@ -20,6 +24,16 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register the cityjsonseq_metadata table function (dedicated CityJSONSeq metadata reader)
 	cityjson::RegisterCityJSONSeqMetadataTableFunction(loader);
+
+	// Register COPY TO functions (cityjson and cityjsonseq formats)
+	cityjson::RegisterCityJSONCopyFunction(loader);
+	cityjson::RegisterCityJSONSeqCopyFunction(loader);
+
+#ifdef CITYJSON_HAS_FCB
+	// Register FlatCityBuf functions
+	cityjson::RegisterFlatCityBufTableFunction(loader);
+	cityjson::RegisterFlatCityBufMetadataTableFunction(loader);
+#endif
 }
 
 void CityjsonExtension::Load(ExtensionLoader &loader) {

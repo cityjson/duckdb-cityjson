@@ -1,6 +1,7 @@
 #include "cityjson/metadata_table_function.hpp"
 #include "cityjson/metadata_table.hpp"
 #include "cityjson/reader.hpp"
+#include "cityjson/json_utils.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 namespace duckdb {
@@ -46,7 +47,7 @@ static unique_ptr<FunctionData> MetadataBind(ClientContext &context, TableFuncti
 	// Create reader using factory function
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		reader = OpenAnyCityJSONFile(result->file_name);
+		reader = OpenAnyCityJSONFile(context, result->file_name);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSON file: " + std::string(e.what()));
 	}
@@ -128,10 +129,11 @@ static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFun
 	// Get file path from argument
 	result->file_name = StringValue::Get(input.inputs[0]);
 
-	// Always create a LocalCityJSONSeqReader — reads first line as metadata
+	// Read file via DuckDB FileSystem, then create CityJSONSeq reader
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name);
+		std::string content = json_utils::ReadFileContent(context, result->file_name);
+		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name, std::move(content), 100);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}

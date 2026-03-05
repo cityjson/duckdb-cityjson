@@ -6,6 +6,10 @@
 #include <optional>
 
 namespace duckdb {
+class ClientContext;
+}
+
+namespace duckdb {
 namespace cityjson {
 
 /**
@@ -176,6 +180,17 @@ std::optional<json> GetOptionalArray(const json& obj, const std::string& key);
  * @return true if key exists and is not null
  */
 bool HasKey(const json& obj, const std::string& key);
+
+/**
+ * Read entire file content using DuckDB's FileSystem API
+ * Supports local files, HTTP, S3, GCS URLs via registered file systems
+ *
+ * @param context DuckDB client context (provides FileSystem access)
+ * @param file_path Path or URL to the file
+ * @return File content as a string
+ * @throws CityJSONError if file cannot be read
+ */
+std::string ReadFileContent(duckdb::ClientContext &context, const std::string &file_path);
 
 /**
  * Validate JSON has required keys

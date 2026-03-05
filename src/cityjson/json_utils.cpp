@@ -1,10 +1,24 @@
 #include "cityjson/json_utils.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/common/file_system.hpp"
 #include <fstream>
 #include <sstream>
 
 namespace duckdb {
 namespace cityjson {
 namespace json_utils {
+
+std::string ReadFileContent(duckdb::ClientContext &context, const std::string &file_path) {
+	auto &fs = duckdb::FileSystem::GetFileSystem(context);
+	auto handle = fs.OpenFile(file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
+	if (!handle) {
+		throw CityJSONError::FileRead("Failed to open file: " + file_path);
+	}
+	auto file_size = handle->GetFileSize();
+	std::string content(file_size, '\0');
+	handle->Read(const_cast<char *>(content.data()), file_size);
+	return content;
+}
 
 json ParseJson(const std::string &str) {
 	try {
