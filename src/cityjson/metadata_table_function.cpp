@@ -120,5 +120,63 @@ void RegisterMetadataTableFunction(ExtensionLoader &loader) {
 	loader.RegisterFunction(func);
 }
 
+// Bind function for cityjsonseq_metadata — always uses LocalCityJSONSeqReader
+static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFunctionBindInput &input,
+                                                vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<MetadataBindData>();
+
+	// Get file path from argument
+	result->file_name = StringValue::Get(input.inputs[0]);
+
+	// Always create a LocalCityJSONSeqReader — reads first line as metadata
+	std::unique_ptr<CityJSONReader> reader;
+	try {
+		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name);
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
+	}
+
+	// Read metadata from first line
+	try {
+		result->metadata = reader->ReadMetadata();
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to read CityJSONSeq metadata: " + std::string(e.what()));
+	}
+
+	// Count city objects from second line onwards
+	result->city_objects_count = 0;
+	try {
+		auto chunks = reader->ReadAllChunks();
+		for (size_t i = 0; i < chunks.ChunkCount(); i++) {
+			auto chunk = chunks.GetChunk(i);
+			if (chunk) {
+				for (const auto &feature : *chunk) {
+					result->city_objects_count += feature.city_objects.size();
+				}
+			}
+		}
+	} catch (const CityJSONError &e) {
+		// Silently ignore if we can't count - set to 0
+		result->city_objects_count = 0;
+	}
+
+	// Set return types and names
+	return_types = MetadataTableUtils::GetMetadataTableTypes();
+	names = MetadataTableUtils::GetMetadataTableNames();
+
+	return std::move(result);
+}
+
+TableFunction CreateCityJSONSeqMetadataTableFunction() {
+	TableFunction func("cityjsonseq_metadata", {LogicalType::VARCHAR}, MetadataScan, SeqMetadataBind);
+	func.init_global = MetadataInitGlobal;
+	return func;
+}
+
+void RegisterCityJSONSeqMetadataTableFunction(ExtensionLoader &loader) {
+	auto func = CreateCityJSONSeqMetadataTableFunction();
+	loader.RegisterFunction(func);
+}
+
 } // namespace cityjson
 } // namespace duckdb

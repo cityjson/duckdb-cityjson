@@ -208,18 +208,21 @@ Geometry Geometry::FromJson(const json &obj) {
 		throw CityJSONError::InvalidGeometry("Geometry must be a JSON object");
 	}
 
-	ValidateRequiredKeys(obj, {"type", "lod", "boundaries"});
+	// lod is optional per the CityJSON spec (especially in CityJSONFeature lines)
+	ValidateRequiredKeys(obj, {"type", "boundaries"});
 
 	Geometry result;
 	result.type = obj["type"].get<std::string>();
 
-	// LOD can be string or number
-	if (obj["lod"].is_string()) {
-		result.lod = obj["lod"].get<std::string>();
-	} else if (obj["lod"].is_number()) {
-		result.lod = std::to_string(obj["lod"].get<double>());
-	} else {
-		throw CityJSONError::InvalidGeometry("LOD must be a string or number");
+	// LOD can be string or number (optional — default to empty string if missing)
+	if (obj.contains("lod")) {
+		if (obj["lod"].is_string()) {
+			result.lod = obj["lod"].get<std::string>();
+		} else if (obj["lod"].is_number()) {
+			result.lod = std::to_string(obj["lod"].get<double>());
+		} else {
+			throw CityJSONError::InvalidGeometry("LOD must be a string or number");
+		}
 	}
 
 	result.boundaries = obj["boundaries"];
@@ -421,6 +424,16 @@ CityJSONFeature CityJSONFeature::FromJson(const json &obj) {
 
 	for (auto &[obj_id, obj_data] : city_objs.items()) {
 		result.city_objects[obj_id] = CityObject::FromJson(obj_data);
+	}
+
+	// Parse per-feature local vertex pool (CityJSONSeq format)
+	// Geometry boundary indices in this feature reference these local vertices
+	if (obj.contains("vertices") && obj["vertices"].is_array()) {
+		for (const auto &vertex : obj["vertices"]) {
+			if (vertex.is_array() && vertex.size() == 3) {
+				result.vertices.push_back({vertex[0].get<double>(), vertex[1].get<double>(), vertex[2].get<double>()});
+			}
+		}
 	}
 
 	return result;

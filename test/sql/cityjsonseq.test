@@ -1,0 +1,104 @@
+# name: test/sql/cityjsonseq.test
+# description: Test read_cityjsonseq and cityjsonseq_metadata table functions
+# group: [cityjson]
+
+require cityjson
+
+# ============================================================
+# read_cityjsonseq basic tests
+# ============================================================
+
+# Test basic CityJSONSeq reading - should return 2 city objects
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl');
+----
+2
+
+# Test feature_id column is populated from per-line feature ids
+query II
+SELECT feature_id, object_type FROM read_cityjsonseq('test/data/sample.city.jsonl') ORDER BY feature_id;
+----
+feature1	Building
+feature2	Building
+
+# Test that city object id (building id) is the 'id' column, not the feature id
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE id IS NOT NULL;
+----
+2
+
+# Test attribute columns are inferred from CityJSONFeature objects
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE yearOfConstruction IS NOT NULL;
+----
+2
+
+# Test year values
+query I
+SELECT yearOfConstruction FROM read_cityjsonseq('test/data/sample.city.jsonl') ORDER BY yearOfConstruction;
+----
+2020
+2021
+
+# ============================================================
+# cityjsonseq_metadata basic tests
+# ============================================================
+
+# Test cityjsonseq_metadata returns a single row
+query I
+SELECT COUNT(*) FROM cityjsonseq_metadata('test/data/sample.city.jsonl');
+----
+1
+
+# Test version is read from first line
+query T
+SELECT version FROM cityjsonseq_metadata('test/data/sample.city.jsonl');
+----
+2.0
+
+# Test city_objects_count reflects objects across all features (2 buildings)
+query I
+SELECT city_objects_count FROM cityjsonseq_metadata('test/data/sample.city.jsonl');
+----
+2
+
+# Test transform_scale from first-line metadata
+query III
+SELECT transform_scale.x, transform_scale.y, transform_scale.z FROM cityjsonseq_metadata('test/data/sample.city.jsonl');
+----
+1.0	1.0	1.0
+
+# Test transform_translate from first-line metadata
+query III
+SELECT transform_translate.x, transform_translate.y, transform_translate.z FROM cityjsonseq_metadata('test/data/sample.city.jsonl');
+----
+0.0	0.0	0.0
+
+# ============================================================
+# Error handling
+# ============================================================
+
+# Test error on non-existent file
+statement error
+SELECT * FROM read_cityjsonseq('test/data/nonexistent.city.jsonl');
+----
+
+# Test error on non-existent file for metadata
+statement error
+SELECT * FROM cityjsonseq_metadata('test/data/nonexistent.city.jsonl');
+----
+
+# ============================================================
+# Clean-up
+# ============================================================
+
+statement ok
+CREATE TABLE seq_buildings AS SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl');
+
+query I
+SELECT COUNT(*) FROM seq_buildings;
+----
+2
+
+statement ok
+DROP TABLE seq_buildings;

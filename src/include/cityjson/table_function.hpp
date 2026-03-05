@@ -69,10 +69,18 @@ struct CityJSONLocalState : public LocalTableFunctionState {
 // ============================================================
 
 /**
- * Bind callback - schema inference and data loading
+ * Bind callback for read_cityjson - schema inference and data loading
+ * Uses format auto-detection
  */
 unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindInput &input,
                                       vector<LogicalType> &return_types, vector<string> &names);
+
+/**
+ * Bind callback for read_cityjsonseq - schema inference and data loading
+ * Always uses LocalCityJSONSeqReader (no auto-detection)
+ */
+unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBindInput &input,
+                                         vector<LogicalType> &return_types, vector<string> &names);
 
 /**
  * Init global state callback
@@ -120,6 +128,17 @@ TableFunction CreateReadCityJSONTableFunction();
  * Register read_cityjson function with database
  */
 void RegisterCityJSONTableFunction(ExtensionLoader &loader);
+
+/**
+ * Create read_cityjsonseq table function
+ * Always reads .jsonl files as CityJSONTextSequence
+ */
+TableFunction CreateReadCityJSONSeqTableFunction();
+
+/**
+ * Register read_cityjsonseq function with database
+ */
+void RegisterCityJSONSeqTableFunction(ExtensionLoader &loader);
 
 } // namespace cityjson
 } // namespace duckdb

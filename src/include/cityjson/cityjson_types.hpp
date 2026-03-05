@@ -212,6 +212,8 @@ struct CityJSONFeature {
 	std::string id;                                 // Feature ID
 	std::string type;                               // Always "CityJSONFeature"
 	std::map<std::string, CityObject> city_objects; // CityObjects in this feature
+	// Per-feature local vertex pool (CityJSONSeq): geometry boundary indices reference this
+	std::vector<std::array<double, 3>> vertices;
 
 	CityJSONFeature() : type("CityJSONFeature") {
 	}

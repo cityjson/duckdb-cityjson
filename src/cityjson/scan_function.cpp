@@ -89,6 +89,16 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 					target_geom = city_obj.GetGeometryAtLOD(bind_data.target_lod.value());
 				}
 
+				// Resolve which vertex pool to use for WKB encoding:
+				// - CityJSONSeq: each feature has its own local vertex pool (feature.vertices)
+				// - Regular CityJSON: global vertex pool in bind_data.metadata.vertices
+				const std::vector<std::array<double, 3>> *vertex_pool = nullptr;
+				if (!feature.vertices.empty()) {
+					vertex_pool = &feature.vertices;
+				} else if (bind_data.metadata.vertices.has_value() && !bind_data.metadata.vertices->empty()) {
+					vertex_pool = &bind_data.metadata.vertices.value();
+				}
+
 				// Write data for each projected column
 				for (size_t col_idx = 0; col_idx < projected_cols.size(); col_idx++) {
 					size_t schema_idx = projected_cols[col_idx];
@@ -96,10 +106,10 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 
 					// Handle WKB geometry column
 					if (col.kind == ColumnType::GeometryWKB) {
-						if (target_geom.has_value() && bind_data.metadata.vertices.has_value()) {
-							// Encode geometry to WKB
-							auto wkb_data = CityObjectUtils::GetGeometryWKB(
-							    target_geom.value(), bind_data.metadata.vertices.value(), bind_data.metadata.transform);
+						if (target_geom.has_value() && vertex_pool != nullptr) {
+							// Encode geometry to WKB using the resolved vertex pool
+							auto wkb_data = CityObjectUtils::GetGeometryWKB(target_geom.value(), *vertex_pool,
+							                                                bind_data.metadata.transform);
 							WriteGeometryWKB(wrappers[col_idx].AsFlatMut(), wkb_data, output_row);
 						} else {
 							FlatVector::SetNull(*wrappers[col_idx].AsFlatMut(), output_row, true);

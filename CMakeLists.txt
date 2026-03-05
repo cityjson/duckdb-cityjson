@@ -6,7 +6,6 @@ set(TARGET_NAME cityjson)
 # DuckDB's extension distribution supports vcpkg. As such, dependencies can be added in ./vcpkg.json and then
 # used in cmake with find_package. Feel free to remove or replace with other dependencies.
 # Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
-find_package(OpenSSL REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
@@ -83,9 +82,20 @@ if(EXISTS ${CJSEQ_CPP_DIR})
   endif()
 endif()
 
-# Link OpenSSL and nlohmann_json in both the static library as the loadable extension
-set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
-set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
+# Find OpenSSL after DuckDB targets are set up
+find_package(OpenSSL REQUIRED)
+
+# Link OpenSSL and nlohmann_json in both the static library and the loadable extension
+# Use imported targets if available, fall back to raw variables otherwise
+if(TARGET OpenSSL::SSL)
+  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
+  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
+else()
+  target_include_directories(${EXTENSION_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
+  target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
+  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json)
+  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json)
+endif()
 
 install(
   TARGETS ${EXTENSION_NAME}

@@ -16,5 +16,16 @@ void RegisterMetadataTableFunction(ExtensionLoader &loader);
  */
 TableFunction CreateMetadataTableFunction();
 
+/**
+ * Create the cityjsonseq_metadata table function
+ * Always reads metadata from a CityJSONSeq (.jsonl) file (first line)
+ */
+TableFunction CreateCityJSONSeqMetadataTableFunction();
+
+/**
+ * Register the cityjsonseq_metadata table function
+ */
+void RegisterCityJSONSeqMetadataTableFunction(ExtensionLoader &loader);
+
 } // namespace cityjson
 } // namespace duckdb
