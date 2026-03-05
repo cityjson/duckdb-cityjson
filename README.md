@@ -1,68 +1,111 @@
 # DuckDB CityJSON Extension
 
-A DuckDB extension for reading and querying [CityJSON](https://www.cityjson.org/) files directly in DuckDB.
+A DuckDB extension for reading and querying [CityJSON](https://www.cityjson.org/) and [CityJSONSeq](https://www.cityjson.org/cityjsonseq/) files directly in DuckDB.
 
 ## Features
 
-- **Read CityJSON files** (`.city.json` and `.cityjsonl` / CityJSON Sequences)
-- **Read CityJSON metadata** as structured DuckDB types (transform, CRS, point of contact)
+- **Read CityJSON files** (`.city.json`) — full CityJSON documents
+- **Read CityJSONSeq files** (`.city.jsonl`) — line-delimited CityJSONFeature streams
+- **Metadata functions** for both formats — transform, CRS, object counts, etc.
 - **Automatic schema inference** from CityJSON attributes
 - **Per-LOD geometry encoding** with WKB (Well-Known Binary) format for GIS compatibility
 - **Multiple geometry LODs** (Levels of Detail) support
 - **Semantic surface metadata** preservation
 
+## Functions
+
+| Function                     | Input         | Description                           |
+| ---------------------------- | ------------- | ------------------------------------- |
+| `read_cityjson(path)`        | `.city.json`  | Read all CityObjects as rows          |
+| `read_cityjsonseq(path)`     | `.city.jsonl` | Read CityJSONFeature records as rows  |
+| `cityjson_metadata(path)`    | `.city.json`  | Dataset metadata as a single row      |
+| `cityjsonseq_metadata(path)` | `.city.jsonl` | Dataset metadata from the header line |
+
 ## Usage
 
-### Basic Reading (Default Mode)
-
-Read CityJSON files with geometry stored as structured JSON:
+### Reading CityJSON
 
 ```sql
--- Load the extension
 LOAD cityjson;
 
--- Read a CityJSON file
+-- Read all city objects
 SELECT * FROM read_cityjson('path/to/file.city.json');
 
--- Query specific columns
+-- Filter by type
 SELECT id, object_type, measuredHeight
 FROM read_cityjson('buildings.city.json')
 WHERE object_type = 'Building';
+
+-- Get metadata
+SELECT * FROM cityjson_metadata('buildings.city.json');
+```
+
+### Reading CityJSONSeq
+
+CityJSONSeq (`.city.jsonl`) is a line-delimited format where:
+
+- Line 1: CityJSON metadata header
+- Line 2+: One `CityJSONFeature` per line, each with its own local vertex pool
+
+```sql
+-- Read all city objects from a CityJSONSeq file
+SELECT * FROM read_cityjsonseq('path/to/file.city.jsonl');
+
+-- Filter by feature and object type
+SELECT feature_id, id, object_type
+FROM read_cityjsonseq('railway.city.jsonl')
+WHERE object_type = 'Railway';
+
+-- Get metadata from the header line
+SELECT version, city_objects_count FROM cityjsonseq_metadata('railway.city.jsonl');
 ```
 
 ### Per-LOD Reading with WKB Geometry (Recommended for GIS)
 
-Use the `lod` parameter to get geometry encoded as WKB (BLOB), compatible with spatial extensions:
+Use the `lod` parameter to get geometry encoded as WKB (BLOB), compatible with spatial extensions.
+Works with both `read_cityjson` and `read_cityjsonseq`.
 
 ```sql
--- Read with LOD 2.2 geometry as WKB
+-- Read with a specific LOD — geometry returned as WKB BLOB
 SELECT id, object_type, geometry, geometry_properties
 FROM read_cityjson('buildings.city.json', lod => '2.2');
+
+-- Same for CityJSONSeq
+SELECT id, feature_id, geometry
+FROM read_cityjsonseq('railway.city.jsonl', lod => '3');
 ```
 
 This mode produces:
 
-- **`geometry`** (BLOB): WKB-encoded geometry, compatible with PostGIS/Spatial extensions
+- **`geometry`** (BLOB): WKB-encoded geometry, compatible with PostGIS / DuckDB Spatial
 - **`geometry_properties`** (VARCHAR): JSON with geometry metadata (type, LOD, semantics)
 
-### Schema Comparison
+To use with DuckDB Spatial:
+
+```sql
+LOAD spatial;
+SELECT id, ST_GeomFromWKB(geometry) AS geom
+FROM read_cityjsonseq('railway.city.jsonl', lod => '3')
+WHERE geometry IS NOT NULL;
+```
+
+### Schema Modes
 
 | Mode                     | Geometry Column | Format                      | Use Case                         |
 | ------------------------ | --------------- | --------------------------- | -------------------------------- |
 | Default                  | `geom_lodX_Y`   | STRUCT with JSON boundaries | Full CityJSON preservation       |
 | Per-LOD (`lod => '...'`) | `geometry`      | WKB BLOB                    | GIS analysis, spatial operations |
 
-### Reading Metadata
-
-Use `cityjson_metadata` to get dataset-level metadata as a single row with structured types:
+### Metadata Functions
 
 ```sql
--- Get metadata from a CityJSON file
-SELECT * FROM cityjson_metadata('buildings.city.json');
-
--- Query specific metadata fields
-SELECT version, city_objects_count, transform_scale
+-- CityJSON metadata (single row)
+SELECT version, city_objects_count, transform_scale, reference_system
 FROM cityjson_metadata('buildings.city.json');
+
+-- CityJSONSeq metadata (reads header line only)
+SELECT version, city_objects_count
+FROM cityjsonseq_metadata('railway.city.jsonl');
 
 -- Access nested struct fields
 SELECT
@@ -73,33 +116,31 @@ SELECT
 FROM cityjson_metadata('buildings.city.json');
 ```
 
-The metadata table includes:
+Metadata columns:
 
-| Column              | Type             | Description                    |
-| ------------------- | ---------------- | ------------------------------ |
-| version             | VARCHAR          | CityJSON version (e.g., "2.0") |
-| identifier          | VARCHAR          | Dataset identifier             |
-| title               | VARCHAR          | Dataset title                  |
-| reference_date      | DATE             | Reference date                 |
-| transform_scale     | STRUCT(x,y,z)    | Coordinate transform scale     |
-| transform_translate | STRUCT(x,y,z)    | Coordinate transform offset    |
-| geographical_extent | STRUCT(6 fields) | Bounding box                   |
-| reference_system    | STRUCT           | CRS information                |
-| point_of_contact    | STRUCT           | Contact information            |
-| city_objects_count  | BIGINT           | Total number of city objects   |
+| Column                | Type             | Description                      |
+| --------------------- | ---------------- | -------------------------------- |
+| `version`             | VARCHAR          | CityJSON version (e.g., `"2.0"`) |
+| `identifier`          | VARCHAR          | Dataset identifier               |
+| `title`               | VARCHAR          | Dataset title                    |
+| `reference_date`      | DATE             | Reference date                   |
+| `transform_scale`     | STRUCT(x,y,z)    | Coordinate transform scale       |
+| `transform_translate` | STRUCT(x,y,z)    | Coordinate transform offset      |
+| `geographical_extent` | STRUCT(6 fields) | Bounding box                     |
+| `reference_system`    | STRUCT           | CRS information                  |
+| `point_of_contact`    | STRUCT           | Contact information              |
+| `city_objects_count`  | BIGINT           | Total number of city objects     |
 
 ### Multi-Table Pattern
 
-Create separate tables for metadata and city objects for comprehensive analysis:
-
 ```sql
--- Create metadata table
+-- Metadata table
 CREATE TABLE meta AS SELECT * FROM cityjson_metadata('buildings.city.json');
 
--- Create city objects table
+-- City objects table
 CREATE TABLE buildings AS SELECT * FROM read_cityjson('buildings.city.json');
 
--- Cross-reference queries
+-- Join
 SELECT b.*, m.version, m.reference_system.code AS epsg
 FROM buildings b, meta m
 WHERE b.object_type = 'Building';
@@ -120,8 +161,11 @@ WHERE b.object_type = 'Building';
 git clone --recurse-submodules https://github.com/your-repo/duckdb-cityjson-extension.git
 cd duckdb-cityjson-extension
 
-# Build (with ninja for faster builds)
+# Build (ninja is faster)
 GEN=ninja make
+
+# Incremental rebuild after changes
+cmake --build build/release --target cityjson_extension cityjson_loadable_extension duckdb
 ```
 
 ### Running Tests
@@ -130,50 +174,8 @@ GEN=ninja make
 make test
 ```
 
-## Running the tests
+SQL tests live in `test/sql/`. Always run tests after making changes.
 
-Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
+## Development
 
-```sh
-make test
-```
-
-### Installing the deployed binaries
-
-To install your extension binaries from S3, you will need to do two things. Firstly, DuckDB should be launched with the
-`allow_unsigned_extensions` option set to true. How to set this will depend on the client you're using. Some examples:
-
-CLI:
-
-```shell
-duckdb -unsigned
-```
-
-Python:
-
-```python
-con = duckdb.connect(':memory:', config={'allow_unsigned_extensions' : 'true'})
-```
-
-NodeJS:
-
-```js
-db = new duckdb.Database(":memory:", { allow_unsigned_extensions: "true" });
-```
-
-Secondly, you will need to set the repository endpoint in DuckDB to the HTTP url of your bucket + version of the extension
-you want to install. To do this run the following SQL query in DuckDB:
-
-```sql
-SET custom_extension_repository='bucket.s3.eu-west-1.amazonaws.com/<your_extension_name>/latest';
-```
-
-Note that the `/latest` path will allow you to install the latest extension version available for your current version of
-DuckDB. To specify a specific version, you can pass the version instead.
-
-After running these steps, you can install and load your extension using the regular INSTALL/LOAD commands in DuckDB:
-
-```sql
-INSTALL cityjson
-LOAD cityjson
-```
+See [`CLAUDE.md`](CLAUDE.md) for the agent guide covering architecture, file layout, build workflow, and contribution patterns.

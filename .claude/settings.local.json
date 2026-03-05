@@ -24,7 +24,15 @@
       "Bash(git submodule)",
       "WebSearch",
       "mcp__zread__read_file",
-      "mcp__zread__search_doc"
+      "mcp__zread__search_doc",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.cityjson.org)",
+      "mcp__plugin_serena_serena__list_dir",
+      "mcp__plugin_serena_serena__find_file",
+      "mcp__plugin_serena_serena__activate_project",
+      "mcp__plugin_serena_serena__read_file",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "mcp__plugin_serena_serena__list_memories"
     ]
   }
 }

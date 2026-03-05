@@ -1,75 +1,145 @@
+# Agent Guide
 
-# C++ Agent Guide
-
-This document provides guidance to coding agents focusing on C++ deliverables when working in the DuckDB CityJSON Extension repository.
+This document provides guidance to coding agents working in the DuckDB CityJSON Extension repository.
 
 ## Repository Context
 
-- The loadable extension itself is implemented in Rust and exposes DuckDB SQL functions.
-- C++ work in this repository usually targets integration scenarios: embedding the extension in C++ applications, authoring DuckDB C++ tests or utilities, and validating the FFI boundary between the Rust extension and DuckDB's C++ API.
-- CityJSON data layout mirrors the CityParquet schema exposed by the extension. Inspect the column set through `DESCRIBE` statements or the SQL tests under `test/sql/` to map values in C++.
+This is a **C++ DuckDB extension** that registers SQL table functions for reading CityJSON and CityJSONSeq files.
+It is **not Rust** — the entire extension is written in C++17.
+
+Key entry points:
+
+- `src/cityjson_extension.cpp` — extension loader (`LoadInternal`), registers all functions
+- `src/cityjson/` — all implementation files
+- `src/include/cityjson/` — all headers
+- `test/sql/` — SQL-based tests
+- `test/data/` — sample `.city.json` and `.city.jsonl` files
 
 ## Architecture Overview
 
-YOU SHOULD REFERENCE THE DESIGN_DOC.md FILE FOR THE ARCHITECTURAL OVERVIEW.
+### Registered SQL Functions
+
+| Function                     | File                                     | Description                      |
+| ---------------------------- | ---------------------------------------- | -------------------------------- |
+| `read_cityjson(path)`        | `bind_function.cpp`, `scan_function.cpp` | Read CityJSON (`.city.json`)     |
+| `read_cityjsonseq(path)`     | `bind_function.cpp`, `scan_function.cpp` | Read CityJSONSeq (`.city.jsonl`) |
+| `cityjson_metadata(path)`    | `metadata_table_function.cpp`            | Metadata for CityJSON            |
+| `cityjsonseq_metadata(path)` | `metadata_table_function.cpp`            | Metadata for CityJSONSeq         |
+
+### Key Source Files
+
+| File                           | Purpose                                                                               |
+| ------------------------------ | ------------------------------------------------------------------------------------- |
+| `cityjson_types.hpp/cpp`       | Core data types: `CityJSON`, `CityJSONFeature`, `CityObject`, `Geometry`, `Transform` |
+| `reader.hpp`                   | Abstract `CityJSONReader` interface                                                   |
+| `reader_factory.cpp`           | `OpenAnyCityJSONFile()` — auto-detects format by extension                            |
+| `local_cityjsonreader.cpp`     | Reads `.city.json` (full CityJSON)                                                    |
+| `local_cityjsonseq_reader.cpp` | Reads `.city.jsonl` (CityJSONSeq, line-delimited)                                     |
+| `bind_function.cpp`            | `CityJSONBind` / `CityJSONSeqBind` — schema inference, chunk loading                  |
+| `scan_function.cpp`            | `CityJSONScan` — iterates CityObjects, writes to DuckDB vectors                       |
+| `city_object_utils.cpp`        | Attribute extraction, geometry encoding, schema inference                             |
+| `lod_table.cpp`                | LOD-based schema inference for `lod=` mode                                            |
+| `wkb_encoder.cpp`              | WKB geometry encoding                                                                 |
+| `metadata_table_function.cpp`  | `cityjson_metadata` and `cityjsonseq_metadata` implementations                        |
+
+### CityJSONSeq Format
+
+- Line 1: CityJSON metadata header (`"type": "CityJSON"`) — used by `*_metadata` functions
+- Line 2+: `CityJSONFeature` records (`"type": "CityJSONFeature"`) — each has its own local `"vertices"` array
+- **Important**: per-feature `"vertices"` are local to that feature; geometry boundary indices reference them, not the global header vertices
+
+### LOD / WKB Mode
+
+When `lod='X'` is passed:
+
+- Schema switches to `geometry` (BLOB/WKB) + `geometry_properties` (VARCHAR/JSON)
+- Per-feature vertex pool is used for CityJSONSeq; global metadata vertices used for regular CityJSON
+- `GetGeometryAtLOD()` finds the geometry matching the requested LOD string
+- `lod` field in geometry objects is optional (not all features declare it)
 
 ## Build & Tooling
 
-1. Run `make` once to prepare the DuckDB build environment. To make use of cache, try to use `GEN=ninja make` instead.
-2. Build debug binaries with `make test_debug`. The loadable module lands in `build/debug/extension/cityjson/`. To use DuckDB with loadable extension, exec `./build/release/duckdb`.
-3. For release artifacts run `make`.
-4. You only need CMake or other C++ build tools when producing auxiliary C++ binaries/tests.
+```sh
+# Initial setup (once)
+GEN=ninja make
 
-## Using the Extension from C++
+# Incremental rebuild of extension + duckdb binary
+cmake --build build/release --target cityjson_extension cityjson_loadable_extension duckdb
 
-- Include DuckDB's header (`duckdb.hpp`) from the DuckDB submodule or your system installation.
-- Load the extension dynamically at runtime; the module requires DuckDB 1.4.1 (matching the bundled submodule).
-- Example snippet:
+# Or full rebuild
+make release
+```
+
+The `duckdb` binary is statically linked with the extension. Always rebuild it after code changes to test interactively:
+
+```sh
+./build/release/duckdb -c "SELECT COUNT(*) FROM read_cityjson('test/data/minimal.city.json');"
+```
+
+## ⚠️ Always Run Tests After Changes
+
+**Whenever you make code changes, you MUST run the tests before considering the task done.**
+
+```sh
+# Run all SQL tests
+cmake --build build/release --target cityjson_extension cityjson_loadable_extension duckdb
+./build/release/duckdb -c "SELECT * FROM read_cityjson('test/data/minimal.city.json');"
+./build/release/duckdb -c "SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl');"
+```
+
+Or run the full test suite:
+
+```sh
+make test
+```
+
+Tests live in `test/sql/*.test`. Always verify:
+
+1. `read_cityjson` still works on `.city.json` files
+2. `read_cityjsonseq` works on `.city.jsonl` files
+3. `lod=` option works for both
+4. `cityjson_metadata` / `cityjsonseq_metadata` return correct rows
+
+## Common Patterns
+
+### Adding a New Named Parameter
+
+1. Add to `func.named_parameters["param_name"] = LogicalType::...` in `table_function_registration.cpp`
+2. Parse it in `CityJSONBind` / `CityJSONSeqBind` in `bind_function.cpp`
+3. Store on `CityJSONBindData`
+4. Use in `CityJSONScan` in `scan_function.cpp`
+
+### Adding a New Predefined Column
+
+1. Add to `GetDefinedColumns()` in `column_types.cpp`
+2. Handle in `CityObjectUtils::GetAttributeValue()` in `city_object_utils.cpp`
+3. Add `IsPredefinedColumn()` check if needed
+
+### Geometry Parsing
+
+`Geometry::FromJson` in `cityjson_types.cpp`:
+
+- `type` and `boundaries` are required
+- `lod` is **optional** (default `""`)
+- `semantics`, `material`, `texture` are optional
+
+### CityJSONFeature Vertices
+
+In CityJSONSeq, each feature line has its own `"vertices"` array. These are parsed into `CityJSONFeature::vertices` and used during WKB encoding. The scan resolves the correct vertex pool per-feature:
 
 ```cpp
-#include "duckdb.hpp"
-
-int main() {
-    duckdb::DuckDB db;
-    duckdb::Connection conn(db);
-    conn.Query("LOAD './build/debug/extension/cityjson/cityjson.duckdb_extension';");
-    auto result = conn.Query("SELECT * FROM read_cityjson('example.city.json');");
-    if (result->HasError()) {
-        throw std::runtime_error(result->GetError());
-    }
-    // Access result->GetValue(row, column) to inspect rows.
-    return 0;
+// In scan_function.cpp
+const std::vector<std::array<double, 3>> *vertex_pool = nullptr;
+if (!feature.vertices.empty()) {
+    vertex_pool = &feature.vertices; // CityJSONSeq: per-feature
+} else if (bind_data.metadata.vertices.has_value()) {
+    vertex_pool = &bind_data.metadata.vertices.value(); // CityJSON: global
 }
 ```
 
-- Remember to start DuckDB with unsigned extensions enabled (`allow_unsigned_extensions=true`) when required.
-
-## Interop Notes
-
-- The Rust extension uses Arrow-style column buffers under the hood. When exchanging data with C++, prefer DuckDB logical types and `Value` helpers instead of manual buffer manipulation.
-- Geometry coordinates are stored as `LIST<STRUCT<x DOUBLE, y DOUBLE, z DOUBLE>>` columns. Use the logical type metadata returned by DuckDB (e.g., via `PRAGMA table_info`) when reproducing decode logic in C++.
-- Metadata such as transforms and CRS live in JSON columns; use DuckDB's JSON functions from C++ queries rather than custom parsers where possible.
-
-## Testing
-
-- Primary tests live under `test/sql/*.test`. Run them with `make test` or `make test_debug` after C++ changes that impact observable behaviour.
-- For C++ unit tests, link against DuckDB's testing utilities (located in the DuckDB submodule). Keep them in `test/cpp/` if you introduce new suites.
-- Always verify sample CityJSON files across `read_*` and `write_*` functions to ensure encoding parity with the Rust implementation.
-
-## Performance & Memory Guidance
-
-- Batch operations through SQL queries rather than row-by-row API calls; DuckDB's vectorised execution is far more efficient.
-- When marshalling large geometries from C++, avoid unnecessary copies. Use `duckdb::Appender` for bulk inserts into staging tables.
-- Be mindful of transform metadata; reapply the same scale/offset semantics as the Rust code when emitting raw coordinates.
-
-## Contribution Workflow
-
-- Mirror the Rust code style for documentation and naming when adding C++ bridging code. Use `clang-format` with DuckDB's style if you add new `.cc`/`.hh` files.
-- Keep FFI boundaries minimal. Expose new Rust capabilities through SQL functions first; only add direct C/C++ hooks when unavoidable.
-- Document any new SQL surface area in both `README.md` and the relevant `.test` files so Rust and C++ contributors share the same contract.
-
 ## References
 
-- DuckDB C++ API: <https://duckdb.org/docs/stable/clients/c/api>
 - CityJSON specification: <https://www.cityjson.org/specs/2.0.1/>
-- DuckDB headers: `duckdb/src/include/duckdb.hpp`, `duckdb/src/include/duckdb/common/types.hpp`
+- CityJSONSeq specification: <https://www.cityjson.org/cityjsonseq/>
+- DuckDB C++ API: <https://duckdb.org/docs/stable/clients/c/api>
+- DuckDB Extension development: <https://duckdb.org/docs/stable/dev/extensions>
