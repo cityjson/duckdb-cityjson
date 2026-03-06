@@ -101,10 +101,10 @@ static void MetadataScan(ClientContext &context, TableFunctionInput &data, DataC
 	// Create the metadata chunk
 	auto metadata_chunk = MetadataTableUtils::CreateMetadataChunk(bind_data.metadata, bind_data.city_objects_count);
 
-	// Copy to output
+	// Copy data to output (not Reference, which would dangle after metadata_chunk is destroyed)
 	output.SetCardinality(1);
 	for (idx_t col = 0; col < metadata_chunk->ColumnCount(); col++) {
-		output.data[col].Reference(metadata_chunk->data[col]);
+		output.data[col].SetValue(0, metadata_chunk->data[col].GetValue(0));
 	}
 
 	global_state.done = true;

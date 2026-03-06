@@ -162,7 +162,11 @@ Metadata Metadata::FromJson(const json &obj) {
 	result.reference_date = GetOptionalString(obj, "referenceDate");
 	result.reference_system = GetOptionalString(obj, "referenceSystem");
 	result.geographic_location = GetOptionalString(obj, "geographicLocation");
-	result.geographic_extent = GetOptionalString(obj, "geographicExtent");
+
+	// geographicalExtent is an array of 6 numbers [minx, miny, minz, maxx, maxy, maxz]
+	if (obj.contains("geographicalExtent") && obj["geographicalExtent"].is_array()) {
+		result.geographic_extent = GeographicalExtent::FromJson(obj["geographicalExtent"]);
+	}
 	result.dataset_topic_category = GetOptionalString(obj, "datasetTopicCategory");
 	result.feature_type = GetOptionalString(obj, "featureType");
 	result.metadata_standard = GetOptionalString(obj, "metadataStandard");
@@ -537,7 +541,7 @@ json CityJSON::ToJson() const {
 		if (m.geographic_location)
 			meta["geographicLocation"] = *m.geographic_location;
 		if (m.geographic_extent)
-			meta["geographicExtent"] = *m.geographic_extent;
+			meta["geographicalExtent"] = m.geographic_extent->ToJson();
 		if (m.dataset_topic_category)
 			meta["datasetTopicCategory"] = *m.dataset_topic_category;
 		if (m.feature_type)
