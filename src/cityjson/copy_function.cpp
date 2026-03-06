@@ -3,6 +3,7 @@
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/connection.hpp"
 #include "duckdb/common/types/value.hpp"
 
 namespace duckdb {
@@ -62,7 +63,10 @@ bool CityJSONCopyBindData::Equals(const FunctionData &other) const {
 // ============================================================
 
 static void ParseMetadataFromQuery(ClientContext &context, const std::string &query, CityJSONCopyBindData &bind_data) {
-	auto result = context.Query(query, false);
+	// Use a separate connection to avoid deadlock — the COPY bind already holds a lock
+	// on the current connection, so running a nested query on it would deadlock.
+	Connection conn(*context.db);
+	auto result = conn.Query(query);
 	if (result->HasError()) {
 		throw BinderException("metadata_query failed: " + result->GetError());
 	}

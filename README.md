@@ -1,112 +1,167 @@
 # DuckDB CityJSON Extension
 
-A DuckDB extension for reading and querying [CityJSON](https://www.cityjson.org/) and [CityJSONSeq](https://www.cityjson.org/cityjsonseq/) files directly in DuckDB.
+A DuckDB extension for reading, querying, and writing [CityJSON](https://www.cityjson.org/) and [CityJSONSeq](https://www.cityjson.org/cityjsonseq/) files directly in SQL.
 
 ## Features
 
-- **Read CityJSON files** (`.city.json`) — full CityJSON documents
-- **Read CityJSONSeq files** (`.city.jsonl`) — line-delimited CityJSONFeature streams
-- **Metadata functions** for both formats — transform, CRS, object counts, etc.
-- **Automatic schema inference** from CityJSON attributes
-- **Per-LOD geometry encoding** with WKB (Well-Known Binary) format for GIS compatibility
-- **Multiple geometry LODs** (Levels of Detail) support
-- **Semantic surface metadata** preservation
+- **Read CityJSON** (`.city.json`) and **CityJSONSeq** (`.city.jsonl`) files as tables
+- **Write CityJSON / CityJSONSeq** files via `COPY TO`
+- **Remote file support** — read from HTTP, HTTPS, S3, GCS URLs (requires `httpfs` extension)
+- **Metadata functions** — inspect dataset version, CRS, transform, object counts
+- **Automatic schema inference** — CityJSON attributes are mapped to DuckDB columns
+- **Per-LOD geometry** with WKB encoding for GIS/spatial compatibility
+- **FlatCityBuf** (`.fcb`) support (optional, compile-time flag)
 
-## Functions
-
-| Function                     | Input         | Description                           |
-| ---------------------------- | ------------- | ------------------------------------- |
-| `read_cityjson(path)`        | `.city.json`  | Read all CityObjects as rows          |
-| `read_cityjsonseq(path)`     | `.city.jsonl` | Read CityJSONFeature records as rows  |
-| `cityjson_metadata(path)`    | `.city.json`  | Dataset metadata as a single row      |
-| `cityjsonseq_metadata(path)` | `.city.jsonl` | Dataset metadata from the header line |
-
-## Usage
-
-### Reading CityJSON
+## Quick Start
 
 ```sql
 LOAD cityjson;
 
--- Read all city objects
-SELECT * FROM read_cityjson('path/to/file.city.json');
+-- Read a local CityJSON file
+SELECT * FROM read_cityjson('buildings.city.json');
 
--- Filter by type
+-- Read a remote CityJSONSeq file
+SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl');
+
+-- Get dataset metadata
+SELECT * FROM cityjson_metadata('buildings.city.json');
+
+-- Write query results to a CityJSON file
+COPY (SELECT * FROM read_cityjson('input.city.json'))
+TO 'output.city.json' (FORMAT cityjson);
+```
+
+## Table Functions
+
+### `read_cityjson(path [, lod => 'X.Y'])`
+
+Reads a CityJSON (`.city.json`) file. Each CityObject becomes a row.
+
+```sql
+SELECT * FROM read_cityjson('buildings.city.json');
+
+-- Filter by object type
 SELECT id, object_type, measuredHeight
 FROM read_cityjson('buildings.city.json')
 WHERE object_type = 'Building';
-
--- Get metadata
-SELECT * FROM cityjson_metadata('buildings.city.json');
 ```
 
-### Reading CityJSONSeq
+**Parameters:**
 
-CityJSONSeq (`.city.jsonl`) is a line-delimited format where:
+| Parameter      | Type    | Description                                  |
+| -------------- | ------- | -------------------------------------------- |
+| `path`         | VARCHAR | File path or URL to a `.city.json` file      |
+| `lod`          | VARCHAR | Optional. LOD to extract (e.g., `'2.2'`)     |
+| `sample_lines` | BIGINT  | Optional. Number of features to sample for schema inference (default: 100) |
 
-- Line 1: CityJSON metadata header
+### `read_cityjsonseq(path [, lod => 'X.Y'])`
+
+Reads a CityJSONSeq (`.city.jsonl`) file. Each CityObject from each CityJSONFeature line becomes a row.
+
+CityJSONSeq format:
+- Line 1: CityJSON metadata header (`"type": "CityJSON"`)
 - Line 2+: One `CityJSONFeature` per line, each with its own local vertex pool
 
 ```sql
--- Read all city objects from a CityJSONSeq file
-SELECT * FROM read_cityjsonseq('path/to/file.city.jsonl');
+SELECT * FROM read_cityjsonseq('delft.city.jsonl');
 
 -- Filter by feature and object type
 SELECT feature_id, id, object_type
 FROM read_cityjsonseq('railway.city.jsonl')
 WHERE object_type = 'Railway';
-
--- Get metadata from the header line
-SELECT version, city_objects_count FROM cityjsonseq_metadata('railway.city.jsonl');
 ```
 
-### Per-LOD Reading with WKB Geometry (Recommended for GIS)
+**Parameters:** Same as `read_cityjson`.
 
-Use the `lod` parameter to get geometry encoded as WKB (BLOB), compatible with spatial extensions.
-Works with both `read_cityjson` and `read_cityjsonseq`.
+### `cityjson_metadata(path)`
+
+Returns a single row with dataset-level metadata from a CityJSON file.
 
 ```sql
--- Read with a specific LOD — geometry returned as WKB BLOB
-SELECT id, object_type, geometry, geometry_properties
-FROM read_cityjson('buildings.city.json', lod => '2.2');
-
--- Same for CityJSONSeq
-SELECT id, feature_id, geometry
-FROM read_cityjsonseq('railway.city.jsonl', lod => '3');
+SELECT version, city_objects_count, reference_system
+FROM cityjson_metadata('buildings.city.json');
 ```
 
-This mode produces:
+### `cityjsonseq_metadata(path)`
 
-- **`geometry`** (BLOB): WKB-encoded geometry, compatible with PostGIS / DuckDB Spatial
-- **`geometry_properties`** (VARCHAR): JSON with geometry metadata (type, LOD, semantics)
+Returns a single row with metadata from the header line of a CityJSONSeq file.
 
-To use with DuckDB Spatial:
+```sql
+SELECT version, city_objects_count
+FROM cityjsonseq_metadata('delft.city.jsonl');
+```
+
+### `read_flatcitybuf(path)` (optional)
+
+Reads a FlatCityBuf (`.fcb`) file. Only available when compiled with `-DCITYJSON_ENABLE_FCB=ON`.
+
+## Output Schema
+
+### Default Mode
+
+In default mode (no `lod` parameter), the schema includes:
+
+**Predefined columns** (always present):
+
+| Column           | Type          | Description                                |
+| ---------------- | ------------- | ------------------------------------------ |
+| `id`             | VARCHAR       | CityObject identifier                      |
+| `feature_id`     | VARCHAR       | Feature identifier (file path for CityJSON, feature ID for CityJSONSeq) |
+| `object_type`    | VARCHAR       | CityJSON type (e.g., `Building`, `Road`)   |
+| `children`       | VARCHAR[]     | Child CityObject IDs                       |
+| `children_roles` | VARCHAR[]     | Roles of child objects                     |
+| `parents`        | VARCHAR[]     | Parent CityObject IDs                      |
+| `other`          | JSON (VARCHAR)| Attributes not mapped to their own columns |
+
+**Dynamic attribute columns** — inferred from the data. CityJSON attributes like `measuredHeight`, `yearOfConstruction`, etc. become their own columns with inferred types (BIGINT, DOUBLE, VARCHAR, BOOLEAN, TIMESTAMP, DATE, TIME, or JSON).
+
+**Geometry columns** — one per LOD found in the data, named `geom_lodX_Y` (e.g., `geom_lod2_2`). Each is a STRUCT:
+
+```
+STRUCT(lod VARCHAR, type VARCHAR, boundaries VARCHAR, semantics VARCHAR, material VARCHAR, texture VARCHAR)
+```
+
+### Per-LOD Mode (`lod => '...'`)
+
+When `lod` is specified, the schema switches to:
+
+| Column                | Type          | Description                                     |
+| --------------------- | ------------- | ----------------------------------------------- |
+| `id`                  | VARCHAR       | CityObject identifier                           |
+| `feature_id`          | VARCHAR       | Feature identifier                              |
+| `object_type`         | VARCHAR       | CityJSON type                                   |
+| `geometry`            | BLOB          | WKB-encoded geometry for the requested LOD      |
+| `geometry_properties` | JSON (VARCHAR)| Geometry metadata (type, semantics, material, texture) |
+| *(attributes)*        | *(inferred)*  | Dynamic attribute columns                       |
+
+Use with DuckDB Spatial:
 
 ```sql
 LOAD spatial;
 SELECT id, ST_GeomFromWKB(geometry) AS geom
-FROM read_cityjsonseq('railway.city.jsonl', lod => '3')
+FROM read_cityjsonseq('buildings.city.jsonl', lod => '2.2')
 WHERE geometry IS NOT NULL;
 ```
 
-### Schema Modes
+### Metadata Columns
 
-| Mode                     | Geometry Column | Format                      | Use Case                         |
-| ------------------------ | --------------- | --------------------------- | -------------------------------- |
-| Default                  | `geom_lodX_Y`   | STRUCT with JSON boundaries | Full CityJSON preservation       |
-| Per-LOD (`lod => '...'`) | `geometry`      | WKB BLOB                    | GIS analysis, spatial operations |
+Both `cityjson_metadata` and `cityjsonseq_metadata` return:
 
-### Metadata Functions
+| Column                | Type                                        | Description                      |
+| --------------------- | ------------------------------------------- | -------------------------------- |
+| `id`                  | INTEGER                                     | Row ID (always 1)               |
+| `version`             | VARCHAR                                     | CityJSON version (e.g., `"2.0"`) |
+| `identifier`          | VARCHAR                                     | Dataset identifier               |
+| `title`               | VARCHAR                                     | Dataset title                    |
+| `reference_date`      | DATE                                        | Reference date                   |
+| `transform_scale`     | STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)        | Coordinate transform scale       |
+| `transform_translate` | STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)        | Coordinate transform offset      |
+| `geographical_extent` | STRUCT(min_x, min_y, min_z, max_x, max_y, max_z DOUBLE) | Bounding box          |
+| `reference_system`    | STRUCT(base_url, authority, version, code VARCHAR) | CRS information            |
+| `point_of_contact`    | STRUCT(contact_name, email_address, contact_type, role, phone, website VARCHAR, address STRUCT(...)) | Contact info |
+| `city_objects_count`  | BIGINT                                      | Total number of CityObjects      |
 
 ```sql
--- CityJSON metadata (single row)
-SELECT version, city_objects_count, transform_scale, reference_system
-FROM cityjson_metadata('buildings.city.json');
-
--- CityJSONSeq metadata (reads header line only)
-SELECT version, city_objects_count
-FROM cityjsonseq_metadata('railway.city.jsonl');
-
 -- Access nested struct fields
 SELECT
     transform_scale.x AS scale_x,
@@ -116,34 +171,141 @@ SELECT
 FROM cityjson_metadata('buildings.city.json');
 ```
 
-Metadata columns:
+## COPY TO (Writing CityJSON)
 
-| Column                | Type             | Description                      |
-| --------------------- | ---------------- | -------------------------------- |
-| `version`             | VARCHAR          | CityJSON version (e.g., `"2.0"`) |
-| `identifier`          | VARCHAR          | Dataset identifier               |
-| `title`               | VARCHAR          | Dataset title                    |
-| `reference_date`      | DATE             | Reference date                   |
-| `transform_scale`     | STRUCT(x,y,z)    | Coordinate transform scale       |
-| `transform_translate` | STRUCT(x,y,z)    | Coordinate transform offset      |
-| `geographical_extent` | STRUCT(6 fields) | Bounding box                     |
-| `reference_system`    | STRUCT           | CRS information                  |
-| `point_of_contact`    | STRUCT           | Contact information              |
-| `city_objects_count`  | BIGINT           | Total number of city objects     |
+Write query results to CityJSON or CityJSONSeq files using the `COPY` statement.
 
-### Multi-Table Pattern
+### Basic Usage
 
 ```sql
--- Metadata table
-CREATE TABLE meta AS SELECT * FROM cityjson_metadata('buildings.city.json');
+-- Write to CityJSON (.city.json)
+COPY (SELECT * FROM read_cityjson('input.city.json'))
+TO 'output.city.json' (FORMAT cityjson);
 
--- City objects table
+-- Write to CityJSONSeq (.city.jsonl)
+COPY (SELECT * FROM read_cityjsonseq('input.city.jsonl'))
+TO 'output.city.jsonl' (FORMAT cityjsonseq);
+```
+
+### Options
+
+| Option              | Type    | Description                                          |
+| ------------------- | ------- | ---------------------------------------------------- |
+| `version`           | VARCHAR | CityJSON version to write (default: `"2.0"`)        |
+| `crs`               | VARCHAR | CRS identifier (e.g., `'https://www.opengis.net/def/crs/EPSG/0/7415'`) |
+| `transform_scale`   | VARCHAR | Vertex quantisation scale as `'x,y,z'` (e.g., `'0.001,0.001,0.001'`) |
+| `transform_translate` | VARCHAR | Vertex quantisation offset as `'x,y,z'` (e.g., `'0.0,0.0,0.0'`) |
+| `metadata_query`    | VARCHAR | SQL query that returns metadata columns (`version`, `crs`, `transform_scale`, `transform_translate`) |
+
+```sql
+-- Write with explicit metadata
+COPY (SELECT * FROM read_cityjson('input.city.json'))
+TO 'output.city.json' (
+    FORMAT cityjson,
+    version '2.0',
+    crs 'https://www.opengis.net/def/crs/EPSG/0/7415',
+    transform_scale '0.001,0.001,0.001',
+    transform_translate '84982.0,446857.0,0.0'
+);
+
+-- Carry metadata from the source file
+COPY (SELECT * FROM read_cityjson('input.city.json'))
+TO 'output.city.json' (
+    FORMAT cityjson,
+    metadata_query 'SELECT version, reference_system AS crs FROM cityjson_metadata(''input.city.json'')'
+);
+```
+
+### Required Columns
+
+The `COPY TO` statement requires these columns in the input query:
+
+| Column        | Required | Description                        |
+| ------------- | -------- | ---------------------------------- |
+| `id`          | Yes      | CityObject identifier              |
+| `feature_id`  | Yes      | Feature grouping key               |
+| `object_type` | Yes      | CityJSON type                      |
+| `children`    | No       | Child object IDs                   |
+| `parents`     | No       | Parent object IDs                  |
+| `geometry`    | No       | WKB geometry or geometry struct    |
+| `geometry_properties` | No | Geometry metadata JSON       |
+
+All other columns are written as CityJSON attributes.
+
+### Round-Trip Example
+
+```sql
+-- Read, filter, and write back
+COPY (
+    SELECT * FROM read_cityjsonseq('city.jsonl')
+    WHERE object_type = 'Building'
+)
+TO 'buildings_only.city.jsonl' (FORMAT cityjsonseq);
+```
+
+### CityJSON vs CityJSONSeq Output
+
+| Format       | Extension     | Vertex Pool                 | Structure                          |
+| ------------ | ------------- | --------------------------- | ---------------------------------- |
+| `cityjson`   | `.city.json`  | Single global vertex pool   | One JSON document with all objects |
+| `cityjsonseq`| `.city.jsonl` | Per-feature vertex pools    | One JSON object per line           |
+
+CityJSONSeq is preferred for large datasets — it supports streaming and lower memory usage.
+
+## Remote File Support
+
+Read files from HTTP, HTTPS, S3, and GCS URLs. The `httpfs` extension is auto-loaded when a remote URL is detected.
+
+```sql
+-- HTTPS
+SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl');
+
+-- S3
+SELECT * FROM read_cityjson('s3://my-bucket/buildings.city.json');
+
+-- If httpfs is not installed, install it first:
+INSTALL httpfs;
+```
+
+Supported URL schemes: `http://`, `https://`, `s3://`, `s3a://`, `s3n://`, `gcs://`, `gs://`, `r2://`, `hf://`.
+
+## Common Patterns
+
+### Create tables from CityJSON
+
+```sql
+CREATE TABLE meta AS SELECT * FROM cityjson_metadata('buildings.city.json');
 CREATE TABLE buildings AS SELECT * FROM read_cityjson('buildings.city.json');
 
--- Join
+-- Join metadata with objects
 SELECT b.*, m.version, m.reference_system.code AS epsg
 FROM buildings b, meta m
 WHERE b.object_type = 'Building';
+```
+
+### Filter and aggregate
+
+```sql
+-- Count objects by type
+SELECT object_type, COUNT(*) AS cnt
+FROM read_cityjsonseq('delft.city.jsonl')
+GROUP BY object_type;
+
+-- Find tall buildings
+SELECT id, measuredHeight
+FROM read_cityjson('buildings.city.json')
+WHERE object_type = 'Building' AND measuredHeight > 30
+ORDER BY measuredHeight DESC;
+```
+
+### Export subset to new file
+
+```sql
+COPY (
+    SELECT * FROM read_cityjsonseq('delft.city.jsonl')
+    WHERE object_type IN ('Building', 'BuildingPart')
+)
+TO 'delft_buildings.city.jsonl' (FORMAT cityjsonseq);
 ```
 
 ## Building
@@ -153,6 +315,7 @@ WHERE b.object_type = 'Building';
 - CMake 3.10+
 - C++17 compatible compiler
 - DuckDB source (git submodule)
+- nlohmann/json library
 
 ### Build Steps
 
@@ -161,11 +324,20 @@ WHERE b.object_type = 'Building';
 git clone --recurse-submodules https://github.com/your-repo/duckdb-cityjson-extension.git
 cd duckdb-cityjson-extension
 
-# Build (ninja is faster)
+# Build
 GEN=ninja make
 
-# Incremental rebuild after changes
+# Build with httpfs support (for remote files in the statically linked binary)
+CORE_EXTENSIONS="httpfs" GEN=ninja make
+
+# Incremental rebuild
 cmake --build build/release --target cityjson_extension cityjson_loadable_extension duckdb
+```
+
+### Optional: FlatCityBuf Support
+
+```sh
+cmake -DCITYJSON_ENABLE_FCB=ON ...
 ```
 
 ### Running Tests
@@ -174,8 +346,11 @@ cmake --build build/release --target cityjson_extension cityjson_loadable_extens
 make test
 ```
 
-SQL tests live in `test/sql/`. Always run tests after making changes.
+SQL tests live in `test/sql/`.
 
-## Development
+## References
 
-See [`CLAUDE.md`](CLAUDE.md) for the agent guide covering architecture, file layout, build workflow, and contribution patterns.
+- [CityJSON specification (v2.0.1)](https://www.cityjson.org/specs/2.0.1/)
+- [CityJSONSeq specification](https://www.cityjson.org/cityjsonseq/)
+- [DuckDB documentation](https://duckdb.org/docs/)
+- [DuckDB extension development](https://duckdb.org/docs/stable/dev/extensions)

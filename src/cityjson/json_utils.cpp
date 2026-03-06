@@ -1,6 +1,7 @@
 #include "cityjson/json_utils.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/main/extension_helper.hpp"
 #include <fstream>
 #include <sstream>
 
@@ -8,7 +9,19 @@ namespace duckdb {
 namespace cityjson {
 namespace json_utils {
 
+static bool IsRemoteFile(const std::string &path) {
+	return path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 ||
+	       path.rfind("s3://", 0) == 0 || path.rfind("s3a://", 0) == 0 ||
+	       path.rfind("s3n://", 0) == 0 || path.rfind("gcs://", 0) == 0 ||
+	       path.rfind("gs://", 0) == 0 || path.rfind("r2://", 0) == 0 ||
+	       path.rfind("hf://", 0) == 0;
+}
+
 std::string ReadFileContent(duckdb::ClientContext &context, const std::string &file_path) {
+	// Auto-load httpfs extension for remote files
+	if (IsRemoteFile(file_path)) {
+		duckdb::ExtensionHelper::AutoLoadExtension(context, "httpfs");
+	}
 	auto &fs = duckdb::FileSystem::GetFileSystem(context);
 	auto handle = fs.OpenFile(file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
 	if (!handle) {

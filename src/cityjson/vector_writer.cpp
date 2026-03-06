@@ -225,41 +225,59 @@ void WriteToVector(const Column &col, const json &value, VectorWrapper &wrapper,
 	// Dispatch based on column type
 	switch (col.kind) {
 	case ColumnType::Boolean: {
-		if (!value.is_boolean()) {
-			throw CityJSONError::ColumnTypeMismatch("BOOLEAN", value.dump());
+		if (value.is_boolean()) {
+			WritePrimitive(wrapper.AsFlatMut(), row, value.get<bool>());
+		} else if (value.is_number()) {
+			WritePrimitive(wrapper.AsFlatMut(), row, value.get<int64_t>() != 0);
+		} else if (value.is_string()) {
+			auto s = value.get<std::string>();
+			WritePrimitive(wrapper.AsFlatMut(), row, s == "true" || s == "1");
+		} else {
+			FlatVector::SetNull(*wrapper.AsFlatMut(), row, true);
 		}
-		WritePrimitive(wrapper.AsFlatMut(), row, value.get<bool>());
 		break;
 	}
 
 	case ColumnType::BigInt: {
-		if (!value.is_number()) {
-			throw CityJSONError::ColumnTypeMismatch("BIGINT", value.dump());
-		}
-		// Accept both integer and float, converting to int64
-		// This handles cases where schema inference saw integers but data has floats
 		if (value.is_number_integer()) {
 			WritePrimitive(wrapper.AsFlatMut(), row, value.get<int64_t>());
-		} else {
-			// Convert float to int (truncate)
+		} else if (value.is_number_float()) {
 			WritePrimitive(wrapper.AsFlatMut(), row, static_cast<int64_t>(value.get<double>()));
+		} else if (value.is_string()) {
+			try {
+				WritePrimitive(wrapper.AsFlatMut(), row, std::stoll(value.get<std::string>()));
+			} catch (...) {
+				FlatVector::SetNull(*wrapper.AsFlatMut(), row, true);
+			}
+		} else {
+			FlatVector::SetNull(*wrapper.AsFlatMut(), row, true);
 		}
 		break;
 	}
 
 	case ColumnType::Double: {
-		if (!value.is_number()) {
-			throw CityJSONError::ColumnTypeMismatch("DOUBLE", value.dump());
+		if (value.is_number()) {
+			WritePrimitive(wrapper.AsFlatMut(), row, value.get<double>());
+		} else if (value.is_string()) {
+			try {
+				WritePrimitive(wrapper.AsFlatMut(), row, std::stod(value.get<std::string>()));
+			} catch (...) {
+				FlatVector::SetNull(*wrapper.AsFlatMut(), row, true);
+			}
+		} else {
+			FlatVector::SetNull(*wrapper.AsFlatMut(), row, true);
 		}
-		WritePrimitive(wrapper.AsFlatMut(), row, value.get<double>());
 		break;
 	}
 
 	case ColumnType::Varchar: {
-		if (!value.is_string()) {
-			throw CityJSONError::ColumnTypeMismatch("VARCHAR", value.dump());
+		if (value.is_string()) {
+			WritePrimitive(wrapper.AsFlatMut(), row, value.get<std::string>());
+		} else {
+			// Non-string value in a VARCHAR column: convert to string representation
+			// This handles mixed-type attributes where schema inference chose VARCHAR
+			WritePrimitive(wrapper.AsFlatMut(), row, value.dump());
 		}
-		WritePrimitive(wrapper.AsFlatMut(), row, value.get<std::string>());
 		break;
 	}
 
