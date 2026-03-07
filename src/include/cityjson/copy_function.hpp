@@ -47,6 +47,11 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::string version = "2.0";
 	std::optional<std::string> crs;
 	std::optional<Transform> transform;
+	std::optional<std::string> title;
+	std::optional<std::string> identifier;
+	std::optional<std::string> reference_date;
+	std::optional<GeographicalExtent> geographical_extent;
+	std::optional<PointOfContact> point_of_contact;
 
 	// Column mapping
 	std::vector<std::string> column_names;
@@ -73,6 +78,9 @@ struct CityJSONCopyBindData : public FunctionData {
 
 struct CityJSONCopyGlobalState : public GlobalFunctionData {
 	std::mutex mutex;
+
+	// The temp file path provided by DuckDB (DuckDB renames it to the final path after Finalize)
+	std::string temp_file_path;
 
 	// Accumulated CityObjects grouped by feature_id
 	// feature_id -> [(city_object_id, CityObject json)]

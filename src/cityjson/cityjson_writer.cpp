@@ -37,14 +37,15 @@ static void CollectAndReplaceVertices(
 		return;
 	}
 
-	// At depth 0, each element is a vertex index (integer) or coordinate array
+	// At depth 0, each element is a vertex index (integer) or coordinate array [x,y,z]
 	if (depth == 0) {
 		for (auto &elem : boundaries) {
 			if (elem.is_number_integer()) {
-				// Already an index - leave as is (shouldn't happen in our generated JSON)
+				// Already an index - leave as is
 				continue;
 			}
-			if (elem.is_array() && elem.size() == 3) {
+			if (elem.is_array() && elem.size() == 3 &&
+			    elem[0].is_number() && elem[1].is_number() && elem[2].is_number()) {
 				// This is a coordinate [x, y, z]
 				std::array<double, 3> coord = {
 				    elem[0].get<double>(),
@@ -81,7 +82,46 @@ static void CollectAndReplaceVertices(
 		}
 	} else {
 		for (auto &child : boundaries) {
-			CollectAndReplaceVertices(child, vertex_map, vertex_pool, transform, depth - 1);
+			// Check if this child is actually a coordinate array [x,y,z] that we should
+			// process at this level rather than recursing into. This handles the case where
+			// WKB-decoded boundaries have [x,y,z] coordinate arrays where integer indices
+			// would normally be, which adds one nesting level.
+			if (depth == 1 && child.is_array() && child.size() == 3 &&
+			    child[0].is_number() && !child[0].is_array()) {
+				// This looks like a coordinate [x,y,z], not a sub-array to recurse into
+				// Process it as if we're at depth 0
+				std::array<double, 3> coord = {
+				    child[0].get<double>(),
+				    child[1].get<double>(),
+				    child[2].get<double>()
+				};
+
+				std::array<int64_t, 3> quantised;
+				if (transform.has_value()) {
+					quantised = QuantiseVertex(coord, transform.value());
+				} else {
+					quantised = {
+					    static_cast<int64_t>(std::round(coord[0])),
+					    static_cast<int64_t>(std::round(coord[1])),
+					    static_cast<int64_t>(std::round(coord[2]))
+					};
+				}
+
+				auto key = std::make_tuple(quantised[0], quantised[1], quantised[2]);
+				auto it = vertex_map.find(key);
+				size_t idx;
+				if (it != vertex_map.end()) {
+					idx = it->second;
+				} else {
+					idx = vertex_pool.size();
+					vertex_pool.push_back(quantised);
+					vertex_map[key] = idx;
+				}
+
+				child = static_cast<int64_t>(idx);
+			} else {
+				CollectAndReplaceVertices(child, vertex_map, vertex_pool, transform, depth - 1);
+			}
 		}
 	}
 }
@@ -127,36 +167,63 @@ std::vector<std::array<int64_t, 3>> CityJSONWriter::BuildVertexPool(
 }
 
 // ============================================================
+// BuildMetadataJson
+// ============================================================
+
+json CityJSONWriter::BuildMetadataJson(const CityJSONWriteMetadata &metadata) {
+	json meta = json::object();
+
+	if (metadata.crs.has_value()) {
+		meta["referenceSystem"] = metadata.crs.value();
+	}
+	if (metadata.title.has_value()) {
+		meta["title"] = metadata.title.value();
+	}
+	if (metadata.identifier.has_value()) {
+		meta["identifier"] = metadata.identifier.value();
+	}
+	if (metadata.reference_date.has_value()) {
+		meta["referenceDate"] = metadata.reference_date.value();
+	}
+	if (metadata.geographical_extent.has_value()) {
+		meta["geographicalExtent"] = metadata.geographical_extent->ToJson();
+	}
+	if (metadata.point_of_contact.has_value()) {
+		meta["pointOfContact"] = metadata.point_of_contact->ToJson();
+	}
+
+	return meta;
+}
+
+// ============================================================
 // WriteCityJSON
 // ============================================================
 
 void CityJSONWriter::WriteCityJSON(
     const std::string &file_path,
-    const std::string &version,
-    const std::optional<std::string> &crs,
-    const std::optional<Transform> &transform,
+    const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order) {
 
 	// Build the root CityJSON object
 	json root;
 	root["type"] = "CityJSON";
-	root["version"] = version;
+	root["version"] = metadata.version;
 
 	// Metadata
-	if (crs.has_value()) {
-		root["metadata"] = json::object();
-		root["metadata"]["referenceSystem"] = crs.value();
+	auto meta_json = BuildMetadataJson(metadata);
+	if (!meta_json.empty()) {
+		root["metadata"] = meta_json;
 	}
 
 	// Transform
-	if (transform.has_value()) {
+	if (metadata.transform.has_value()) {
 		root["transform"] = json::object();
 		root["transform"]["scale"] = json::array({
-		    transform->scale[0], transform->scale[1], transform->scale[2]
+		    metadata.transform->scale[0], metadata.transform->scale[1], metadata.transform->scale[2]
 		});
 		root["transform"]["translate"] = json::array({
-		    transform->translate[0], transform->translate[1], transform->translate[2]
+		    metadata.transform->translate[0], metadata.transform->translate[1], metadata.transform->translate[2]
 		});
 	}
 
@@ -171,7 +238,7 @@ void CityJSONWriter::WriteCityJSON(
 	}
 
 	// Build global vertex pool (replaces coordinates with indices in-place)
-	auto vertex_pool = BuildVertexPool(all_objects, transform);
+	auto vertex_pool = BuildVertexPool(all_objects, metadata.transform);
 
 	// CityObjects
 	root["CityObjects"] = json::object();
@@ -199,9 +266,7 @@ void CityJSONWriter::WriteCityJSON(
 
 void CityJSONWriter::WriteCityJSONSeq(
     const std::string &file_path,
-    const std::string &version,
-    const std::optional<std::string> &crs,
-    const std::optional<Transform> &transform,
+    const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order) {
 
@@ -213,22 +278,22 @@ void CityJSONWriter::WriteCityJSONSeq(
 	// Line 1: metadata header
 	json header;
 	header["type"] = "CityJSON";
-	header["version"] = version;
+	header["version"] = metadata.version;
 	header["CityObjects"] = json::object();
 	header["vertices"] = json::array();
 
-	if (crs.has_value()) {
-		header["metadata"] = json::object();
-		header["metadata"]["referenceSystem"] = crs.value();
+	auto meta_json = BuildMetadataJson(metadata);
+	if (!meta_json.empty()) {
+		header["metadata"] = meta_json;
 	}
 
-	if (transform.has_value()) {
+	if (metadata.transform.has_value()) {
 		header["transform"] = json::object();
 		header["transform"]["scale"] = json::array({
-		    transform->scale[0], transform->scale[1], transform->scale[2]
+		    metadata.transform->scale[0], metadata.transform->scale[1], metadata.transform->scale[2]
 		});
 		header["transform"]["translate"] = json::array({
-		    transform->translate[0], transform->translate[1], transform->translate[2]
+		    metadata.transform->translate[0], metadata.transform->translate[1], metadata.transform->translate[2]
 		});
 	}
 
@@ -243,7 +308,7 @@ void CityJSONWriter::WriteCityJSONSeq(
 		auto feature_objs = it->second;
 
 		// Build per-feature vertex pool
-		auto vertex_pool = BuildVertexPool(feature_objs, transform);
+		auto vertex_pool = BuildVertexPool(feature_objs, metadata.transform);
 
 		// Build CityJSONFeature line
 		json feature;

@@ -1,5 +1,6 @@
 #include "cityjson/copy_function.hpp"
 #include "cityjson/cityjson_writer.hpp"
+#include "cityjson/wkb_decoder.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -39,6 +40,11 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->version = version;
 	result->crs = crs;
 	result->transform = transform;
+	result->title = title;
+	result->identifier = identifier;
+	result->reference_date = reference_date;
+	result->geographical_extent = geographical_extent;
+	result->point_of_contact = point_of_contact;
 	result->column_names = column_names;
 	result->column_types = column_types;
 	result->column_roles = column_roles;
@@ -79,6 +85,20 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 	// Get column names from the result
 	auto &col_names = result->names;
 
+	// Helper to extract {x, y, z} struct into array<double, 3>
+	auto extract_xyz_struct = [](const Value &v) -> std::optional<std::array<double, 3>> {
+		if (v.IsNull() || v.type().id() != LogicalTypeId::STRUCT) return std::nullopt;
+		auto &children = StructValue::GetChildren(v);
+		if (children.size() < 3) return std::nullopt;
+		// Fields are x, y, z
+		if (children[0].IsNull() || children[1].IsNull() || children[2].IsNull()) return std::nullopt;
+		return std::array<double, 3>{
+		    children[0].GetValue<double>(),
+		    children[1].GetValue<double>(),
+		    children[2].GetValue<double>()
+		};
+	};
+
 	for (idx_t col = 0; col < col_names.size(); col++) {
 		auto &name = col_names[col];
 		auto val = chunk->data[col].GetValue(0);
@@ -87,29 +107,85 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 
 		if (name == "version") {
 			bind_data.version = val.ToString();
+		} else if (name == "title") {
+			bind_data.title = val.ToString();
+		} else if (name == "identifier") {
+			bind_data.identifier = val.ToString();
+		} else if (name == "reference_date") {
+			bind_data.reference_date = val.ToString();
 		} else if (name == "reference_system" || name == "crs") {
-			bind_data.crs = val.ToString();
-		} else if (name == "transform_scale") {
-			// Parse "x,y,z" or JSON array
-			auto s = val.ToString();
-			// Try as comma-separated
-			std::array<double, 3> scale;
-			if (sscanf(s.c_str(), "%lf,%lf,%lf", &scale[0], &scale[1], &scale[2]) == 3 ||
-			    sscanf(s.c_str(), "[%lf,%lf,%lf]", &scale[0], &scale[1], &scale[2]) == 3) {
-				if (!bind_data.transform.has_value()) {
-					bind_data.transform = Transform();
+			// Handle STRUCT {base_url, authority, version, code} or plain string
+			if (val.type().id() == LogicalTypeId::STRUCT) {
+				auto &children = StructValue::GetChildren(val);
+				// Reconstruct CRS URI: base_url + authority/version/code
+				std::string base_url = children.size() > 0 && !children[0].IsNull() ? children[0].ToString() : "";
+				std::string authority = children.size() > 1 && !children[1].IsNull() ? children[1].ToString() : "";
+				std::string version_str = children.size() > 2 && !children[2].IsNull() ? children[2].ToString() : "";
+				std::string code = children.size() > 3 && !children[3].IsNull() ? children[3].ToString() : "";
+				if (!base_url.empty() && !authority.empty()) {
+					bind_data.crs = base_url + authority + "/" + version_str + "/" + code;
+				} else if (!authority.empty() && !code.empty()) {
+					bind_data.crs = "https://www.opengis.net/def/crs/" + authority + "/" + version_str + "/" + code;
 				}
-				bind_data.transform->scale = scale;
+			} else {
+				bind_data.crs = val.ToString();
+			}
+		} else if (name == "transform_scale") {
+			if (val.type().id() == LogicalTypeId::STRUCT) {
+				auto parsed = extract_xyz_struct(val);
+				if (parsed.has_value()) {
+					if (!bind_data.transform.has_value()) bind_data.transform = Transform();
+					bind_data.transform->scale = parsed.value();
+				}
+			} else {
+				auto s = val.ToString();
+				std::array<double, 3> scale;
+				if (sscanf(s.c_str(), "%lf,%lf,%lf", &scale[0], &scale[1], &scale[2]) == 3 ||
+				    sscanf(s.c_str(), "[%lf,%lf,%lf]", &scale[0], &scale[1], &scale[2]) == 3) {
+					if (!bind_data.transform.has_value()) bind_data.transform = Transform();
+					bind_data.transform->scale = scale;
+				}
 			}
 		} else if (name == "transform_translate") {
-			auto s = val.ToString();
-			std::array<double, 3> translate;
-			if (sscanf(s.c_str(), "%lf,%lf,%lf", &translate[0], &translate[1], &translate[2]) == 3 ||
-			    sscanf(s.c_str(), "[%lf,%lf,%lf]", &translate[0], &translate[1], &translate[2]) == 3) {
-				if (!bind_data.transform.has_value()) {
-					bind_data.transform = Transform();
+			if (val.type().id() == LogicalTypeId::STRUCT) {
+				auto parsed = extract_xyz_struct(val);
+				if (parsed.has_value()) {
+					if (!bind_data.transform.has_value()) bind_data.transform = Transform();
+					bind_data.transform->translate = parsed.value();
 				}
-				bind_data.transform->translate = translate;
+			} else {
+				auto s = val.ToString();
+				std::array<double, 3> translate;
+				if (sscanf(s.c_str(), "%lf,%lf,%lf", &translate[0], &translate[1], &translate[2]) == 3 ||
+				    sscanf(s.c_str(), "[%lf,%lf,%lf]", &translate[0], &translate[1], &translate[2]) == 3) {
+					if (!bind_data.transform.has_value()) bind_data.transform = Transform();
+					bind_data.transform->translate = translate;
+				}
+			}
+		} else if (name == "geographical_extent") {
+			if (val.type().id() == LogicalTypeId::STRUCT) {
+				auto &children = StructValue::GetChildren(val);
+				if (children.size() >= 6 &&
+				    !children[0].IsNull() && !children[1].IsNull() && !children[2].IsNull() &&
+				    !children[3].IsNull() && !children[4].IsNull() && !children[5].IsNull()) {
+					bind_data.geographical_extent = GeographicalExtent(
+					    children[0].GetValue<double>(), children[1].GetValue<double>(),
+					    children[2].GetValue<double>(), children[3].GetValue<double>(),
+					    children[4].GetValue<double>(), children[5].GetValue<double>());
+				}
+			}
+		} else if (name == "point_of_contact") {
+			if (val.type().id() == LogicalTypeId::STRUCT) {
+				auto &children = StructValue::GetChildren(val);
+				// Fields: contact_name, email_address, contact_type, role, phone, website, address
+				if (children.size() >= 2 && !children[0].IsNull() && !children[1].IsNull()) {
+					PointOfContact poc(children[0].ToString(), children[1].ToString());
+					if (children.size() > 2 && !children[2].IsNull()) poc.contact_type = children[2].ToString();
+					if (children.size() > 3 && !children[3].IsNull()) poc.role = children[3].ToString();
+					if (children.size() > 4 && !children[4].IsNull()) poc.phone = children[4].ToString();
+					if (children.size() > 5 && !children[5].IsNull()) poc.website = children[5].ToString();
+					bind_data.point_of_contact = poc;
+				}
 			}
 		}
 	}
@@ -228,7 +304,9 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 
 static unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
                                                                  const string &file_path) {
-	return make_uniq<CityJSONCopyGlobalState>();
+	auto gstate = make_uniq<CityJSONCopyGlobalState>();
+	gstate->temp_file_path = file_path;
+	return std::move(gstate);
 }
 
 // ============================================================
@@ -338,40 +416,104 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 		// Geometry columns (geom_lod* or geometry)
 		json geometries = json::array();
 		for (idx_t col = 0; col < bind_data.column_roles.size(); col++) {
-			if (bind_data.column_roles[col] == CopyColumnRole::GeometryWKB) {
-				auto val = input.data[col].GetValue(row);
-				if (!val.IsNull()) {
-					// For now, store geometry as a placeholder
-					// WKB decoding back to CityJSON boundaries would be complex
-					// Instead, if there's geometry_properties with the full geometry JSON, use that
-					json geom;
-					geom["type"] = "MultiSurface";
-					geom["boundaries"] = json::array();
+			if (bind_data.column_roles[col] != CopyColumnRole::GeometryWKB) {
+				continue;
+			}
+			auto val = input.data[col].GetValue(row);
+			if (val.IsNull()) {
+				continue;
+			}
 
-					// Check column name for LOD
-					auto &col_name = bind_data.column_names[col];
-					if (col_name.size() > 8 && col_name.substr(0, 8) == "geom_lod") {
-						geom["lod"] = col_name.substr(8);
+			auto &col_type = bind_data.column_types[col];
+			auto &col_name = bind_data.column_names[col];
+
+			if (col_type.id() == LogicalTypeId::STRUCT) {
+				// Non-LOD STRUCT geometry: {lod, type, boundaries, semantics, material, texture}
+				auto &children = StructValue::GetChildren(val);
+				auto &struct_type = StructType::GetChildTypes(col_type);
+
+				json geom;
+				for (idx_t c = 0; c < struct_type.size(); c++) {
+					auto &field_name = struct_type[c].first;
+					auto &child_val = children[c];
+					if (child_val.IsNull()) continue;
+
+					if (field_name == "type") {
+						geom["type"] = child_val.ToString();
+					} else if (field_name == "lod") {
+						geom["lod"] = child_val.ToString();
+					} else if (field_name == "boundaries") {
+						try {
+							geom["boundaries"] = json_utils::ParseJson(child_val.ToString());
+						} catch (...) {
+							geom["boundaries"] = json::array();
+						}
+					} else if (field_name == "semantics") {
+						try {
+							geom["semantics"] = json_utils::ParseJson(child_val.ToString());
+						} catch (...) {}
+					} else if (field_name == "material") {
+						try {
+							geom["material"] = json_utils::ParseJson(child_val.ToString());
+						} catch (...) {}
+					} else if (field_name == "texture") {
+						try {
+							geom["texture"] = json_utils::ParseJson(child_val.ToString());
+						} catch (...) {}
 					}
-
-					geometries.push_back(geom);
 				}
+				if (!geom.contains("type")) {
+					geom["type"] = "MultiSurface";
+				}
+				if (!geom.contains("boundaries")) {
+					geom["boundaries"] = json::array();
+				}
+				geometries.push_back(geom);
+
+			} else if (col_type.id() == LogicalTypeId::BLOB) {
+				// WKB BLOB geometry: decode back to CityJSON boundaries
+				auto blob_str = val.GetValueUnsafe<string_t>();
+				auto decoded = WKBDecoder::Decode(
+				    reinterpret_cast<const uint8_t *>(blob_str.GetData()),
+				    blob_str.GetSize());
+
+				json geom;
+				geom["type"] = decoded.cityjson_type;
+				geom["boundaries"] = decoded.boundaries;
+
+				// Extract LOD from column name (geom_lod2_2 → "2.2")
+				if (col_name.size() > 8 && col_name.substr(0, 8) == "geom_lod") {
+					std::string lod = col_name.substr(8);
+					// Replace underscores with dots for LOD (e.g., "2_2" → "2.2")
+					std::replace(lod.begin(), lod.end(), '_', '.');
+					geom["lod"] = lod;
+				}
+
+				geometries.push_back(geom);
 			}
 		}
 
-		// Geometry properties (may contain full geometry info)
+		// Geometry properties (may contain LOD, semantics, material, texture, cityjsonType)
 		if (bind_data.geometry_properties_col != DConstants::INVALID_INDEX) {
 			auto val = input.data[bind_data.geometry_properties_col].GetValue(row);
-			if (!val.IsNull()) {
+			if (!val.IsNull() && !geometries.empty()) {
 				try {
 					auto props = json_utils::ParseJson(val.ToString());
-					if (props.contains("semantics") && !geometries.empty()) {
+					// Extract LOD if not already set from column name
+					if (!geometries[0].contains("lod") && props.contains("lod")) {
+						geometries[0]["lod"] = props["lod"].get<std::string>();
+					}
+					// Use cityjsonType if available (more precise than WKB-inferred type)
+					if (props.contains("cityjsonType")) {
+						geometries[0]["type"] = props["cityjsonType"].get<std::string>();
+					}
+					if (props.contains("semantics")) {
 						geometries[0]["semantics"] = props["semantics"];
 					}
-					if (props.contains("material") && !geometries.empty()) {
+					if (props.contains("material")) {
 						geometries[0]["material"] = props["material"];
 					}
-					if (props.contains("texture") && !geometries.empty()) {
+					if (props.contains("texture")) {
 						geometries[0]["texture"] = props["texture"];
 					}
 				} catch (...) {
@@ -444,20 +586,30 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &gstate = gstate_p.Cast<CityJSONCopyGlobalState>();
 
+	// Build write metadata from bind data
+	CityJSONWriteMetadata write_meta;
+	write_meta.version = bind_data.version;
+	write_meta.crs = bind_data.crs;
+	write_meta.transform = bind_data.transform;
+	write_meta.title = bind_data.title;
+	write_meta.identifier = bind_data.identifier;
+	write_meta.reference_date = bind_data.reference_date;
+	write_meta.geographical_extent = bind_data.geographical_extent;
+	write_meta.point_of_contact = bind_data.point_of_contact;
+
+	// Write to the temp file path — DuckDB will rename it to the final path after Finalize
+	auto &output_path = gstate.temp_file_path;
+
 	if (bind_data.is_seq) {
 		CityJSONWriter::WriteCityJSONSeq(
-		    bind_data.file_path,
-		    bind_data.version,
-		    bind_data.crs,
-		    bind_data.transform,
+		    output_path,
+		    write_meta,
 		    gstate.feature_objects,
 		    gstate.feature_order);
 	} else {
 		CityJSONWriter::WriteCityJSON(
-		    bind_data.file_path,
-		    bind_data.version,
-		    bind_data.crs,
-		    bind_data.transform,
+		    output_path,
+		    write_meta,
 		    gstate.feature_objects,
 		    gstate.feature_order);
 	}

@@ -34,6 +34,7 @@ set(EXTENSION_SOURCES
     src/cityjson/reader_factory.cpp
     # Geometry encoding layer
     src/cityjson/wkb_encoder.cpp
+    src/cityjson/wkb_decoder.cpp
     src/cityjson/geometry_properties.cpp
     src/cityjson/lod_table.cpp
     # Vector writer layer

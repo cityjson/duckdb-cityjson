@@ -12,6 +12,20 @@ namespace duckdb {
 namespace cityjson {
 
 /**
+ * Consolidated metadata for CityJSON write operations
+ */
+struct CityJSONWriteMetadata {
+	std::string version = "2.0";
+	std::optional<std::string> crs;
+	std::optional<Transform> transform;
+	std::optional<std::string> title;
+	std::optional<std::string> identifier;
+	std::optional<std::string> reference_date;
+	std::optional<GeographicalExtent> geographical_extent;
+	std::optional<PointOfContact> point_of_contact;
+};
+
+/**
  * Utilities for writing CityJSON and CityJSONSeq files
  */
 class CityJSONWriter {
@@ -20,17 +34,13 @@ public:
 	 * Write a complete CityJSON file (.city.json)
 	 *
 	 * @param file_path Output path
-	 * @param version CityJSON version string
-	 * @param crs Optional coordinate reference system
-	 * @param transform Optional transform (scale/translate) for vertex quantisation
+	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
 	static void WriteCityJSON(
 	    const std::string &file_path,
-	    const std::string &version,
-	    const std::optional<std::string> &crs,
-	    const std::optional<Transform> &transform,
+	    const CityJSONWriteMetadata &metadata,
 	    const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
 	    const std::vector<std::string> &feature_order);
 
@@ -40,27 +50,21 @@ public:
 	 * Line 2+: one CityJSONFeature per line with per-feature vertex pool
 	 *
 	 * @param file_path Output path
-	 * @param version CityJSON version string
-	 * @param crs Optional coordinate reference system
-	 * @param transform Optional transform (scale/translate) for vertex quantisation
+	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
 	static void WriteCityJSONSeq(
 	    const std::string &file_path,
-	    const std::string &version,
-	    const std::optional<std::string> &crs,
-	    const std::optional<Transform> &transform,
+	    const CityJSONWriteMetadata &metadata,
 	    const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
 	    const std::vector<std::string> &feature_order);
 
 private:
 	/**
-	 * Quantise a real coordinate to an integer index
+	 * Build the metadata JSON object from write metadata
 	 */
-	static std::array<int64_t, 3> QuantiseVertex(
-	    const std::array<double, 3> &coord,
-	    const Transform &transform);
+	static json BuildMetadataJson(const CityJSONWriteMetadata &metadata);
 
 	/**
 	 * Build a vertex pool from geometry boundaries, replacing coordinates with indices
