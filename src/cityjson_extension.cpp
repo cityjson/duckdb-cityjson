@@ -33,6 +33,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register FlatCityBuf functions
 	cityjson::RegisterFlatCityBufTableFunction(loader);
 	cityjson::RegisterFlatCityBufMetadataTableFunction(loader);
+	cityjson::RegisterFlatCityBufCopyFunction(loader);
 #endif
 }
 

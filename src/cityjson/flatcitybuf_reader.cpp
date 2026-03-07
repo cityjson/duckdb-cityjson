@@ -3,7 +3,7 @@
 #include "cityjson/flatcitybuf_reader.hpp"
 #include "cityjson/city_object_utils.hpp"
 #include "cityjson/json_utils.hpp"
-#include <flatcitybuf/fcb_reader.h>
+#include "fcb.h"
 
 namespace duckdb {
 namespace cityjson {
@@ -14,8 +14,8 @@ using namespace json_utils;
 // Constructor
 // ============================================================
 
-FlatCityBufReader::FlatCityBufReader(const std::string &name, std::string content, size_t sample_lines)
-    : name_(name), content_(std::move(content)), sample_lines_(sample_lines) {
+FlatCityBufReader::FlatCityBufReader(const std::string &name, const std::string &file_path, size_t sample_lines)
+    : name_(name), file_path_(file_path), sample_lines_(sample_lines) {
 }
 
 // ============================================================
@@ -35,30 +35,61 @@ CityJSON FlatCityBufReader::ReadMetadata() const {
 		return cached_metadata_.value();
 	}
 
-	// Use FCB API to read metadata from content buffer
-	auto reader = fcb_reader_open_buffer(
-	    reinterpret_cast<const uint8_t *>(content_.data()), content_.size());
-	if (!reader) {
-		throw CityJSONError::FileRead("Failed to open FCB content: " + name_);
-	}
-
-	auto meta = fcb_reader_metadata(reader);
+	// Open the FCB file and read metadata
+	auto reader = fcb::fcb_reader_open(file_path_);
+	auto meta = fcb::fcb_reader_metadata(*reader);
 
 	CityJSON metadata;
-	metadata.version = meta.version ? std::string(meta.version) : "2.0";
+	metadata.version = std::string(meta.cityjson_version);
 
-	if (meta.crs) {
-		metadata.reference_system = std::string(meta.crs);
-	}
-
+	// Extract transform from typed fields
 	if (meta.has_transform) {
 		Transform t;
-		t.scale = {meta.transform_scale[0], meta.transform_scale[1], meta.transform_scale[2]};
-		t.translate = {meta.transform_translate[0], meta.transform_translate[1], meta.transform_translate[2]};
+		t.scale = {meta.transform.scale_x, meta.transform.scale_y, meta.transform.scale_z};
+		t.translate = {meta.transform.translate_x, meta.transform.translate_y, meta.transform.translate_z};
 		metadata.transform = t;
 	}
 
-	fcb_reader_close(reader);
+	// Parse the full CityJSON header JSON for remaining metadata fields
+	std::string metadata_json_str(meta.metadata_json);
+	if (!metadata_json_str.empty()) {
+		try {
+			json cj = ParseJson(metadata_json_str);
+
+			// Parse metadata section (title, identifier, referenceDate, pointOfContact, etc.)
+			if (cj.contains("metadata") && cj["metadata"].is_object()) {
+				metadata.metadata = Metadata::FromJson(cj["metadata"]);
+			}
+
+			// Parse geographical extent from typed fields (more reliable) or from metadata
+			if (meta.has_geographical_extent) {
+				GeographicalExtent extent(meta.geographical_extent.min_x, meta.geographical_extent.min_y,
+				                          meta.geographical_extent.min_z, meta.geographical_extent.max_x,
+				                          meta.geographical_extent.max_y, meta.geographical_extent.max_z);
+				if (!metadata.metadata.has_value()) {
+					metadata.metadata = Metadata();
+				}
+				metadata.metadata->geographic_extent = extent;
+			}
+
+			// Parse CRS from metadata.referenceSystem or top-level
+			if (cj.contains("metadata") && cj["metadata"].contains("referenceSystem")) {
+				auto &rs = cj["metadata"]["referenceSystem"];
+				if (rs.is_string()) {
+					metadata.crs = CRS(rs.get<std::string>());
+				}
+			}
+
+			// Parse extensions
+			if (cj.contains("extensions") && cj["extensions"].is_object()) {
+				for (auto &[name, ext_data] : cj["extensions"].items()) {
+					metadata.extensions[name] = Extension::FromJson(ext_data);
+				}
+			}
+		} catch (const std::exception &) {
+			// If metadata_json parsing fails, we still have the typed fields above
+		}
+	}
 
 	cached_metadata_ = metadata;
 	return metadata;
@@ -69,32 +100,23 @@ CityJSON FlatCityBufReader::ReadMetadata() const {
 // ============================================================
 
 std::vector<CityJSONFeature> FlatCityBufReader::ParseAllFeatures() const {
-	auto reader = fcb_reader_open_buffer(
-	    reinterpret_cast<const uint8_t *>(content_.data()), content_.size());
-	if (!reader) {
-		throw CityJSONError::FileRead("Failed to open FCB content: " + name_);
-	}
+	auto reader = fcb::fcb_reader_open(file_path_);
 
 	std::vector<CityJSONFeature> features;
 
-	// Select all features
-	auto iter = fcb_reader_select_all(reader);
-	while (fcb_reader_iter_has_next(iter)) {
-		auto feat = fcb_reader_iter_next(iter);
-		if (feat.json_str) {
-			try {
-				json feature_obj = ParseJson(std::string(feat.json_str));
-				CityJSONFeature feature = CityJSONFeature::FromJson(feature_obj);
-				features.push_back(std::move(feature));
-			} catch (const CityJSONError &e) {
-				// Skip malformed features
-			}
+	// Select all features — this consumes the reader (Rust ownership)
+	auto iter = fcb::fcb_reader_select_all(std::move(reader));
+	while (fcb::fcb_iterator_next(*iter)) {
+		auto feat_data = fcb::fcb_iterator_current(*iter);
+		std::string json_str(feat_data.json.data(), feat_data.json.size());
+		try {
+			json feature_obj = ParseJson(json_str);
+			CityJSONFeature feature = CityJSONFeature::FromJson(feature_obj);
+			features.push_back(std::move(feature));
+		} catch (const CityJSONError &e) {
+			// Skip malformed features
 		}
-		fcb_reader_feature_free(feat);
 	}
-
-	fcb_reader_iter_free(iter);
-	fcb_reader_close(reader);
 
 	return features;
 }
@@ -104,11 +126,24 @@ std::vector<CityJSONFeature> FlatCityBufReader::ParseAllFeatures() const {
 // ============================================================
 
 std::vector<CityJSONFeature> FlatCityBufReader::ReadNFeatures(size_t n) const {
-	auto all = ParseAllFeatures();
-	if (all.size() > n) {
-		all.resize(n);
+	auto reader = fcb::fcb_reader_open(file_path_);
+
+	std::vector<CityJSONFeature> features;
+
+	auto iter = fcb::fcb_reader_select_all(std::move(reader));
+	while (fcb::fcb_iterator_next(*iter) && features.size() < n) {
+		auto feat_data = fcb::fcb_iterator_current(*iter);
+		std::string json_str(feat_data.json.data(), feat_data.json.size());
+		try {
+			json feature_obj = ParseJson(json_str);
+			CityJSONFeature feature = CityJSONFeature::FromJson(feature_obj);
+			features.push_back(std::move(feature));
+		} catch (const CityJSONError &e) {
+			// Skip malformed features
+		}
 	}
-	return all;
+
+	return features;
 }
 
 // ============================================================
@@ -169,20 +204,13 @@ std::vector<Column> FlatCityBufReader::Columns() const {
 // ============================================================
 
 std::optional<std::array<double, 4>> FlatCityBufReader::GetBBox() const {
-	auto reader = fcb_reader_open_buffer(
-	    reinterpret_cast<const uint8_t *>(content_.data()), content_.size());
-	if (!reader) {
-		return std::nullopt;
+	auto reader = fcb::fcb_reader_open(file_path_);
+	auto meta = fcb::fcb_reader_metadata(*reader);
+	if (meta.has_geographical_extent) {
+		return std::array<double, 4> {meta.geographical_extent.min_x, meta.geographical_extent.min_y,
+		                              meta.geographical_extent.max_x, meta.geographical_extent.max_y};
 	}
-
-	auto meta = fcb_reader_metadata(reader);
-	std::optional<std::array<double, 4>> result;
-	if (meta.has_bbox) {
-		result = std::array<double, 4>{meta.bbox[0], meta.bbox[1], meta.bbox[2], meta.bbox[3]};
-	}
-
-	fcb_reader_close(reader);
-	return result;
+	return std::nullopt;
 }
 
 } // namespace cityjson

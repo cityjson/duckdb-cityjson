@@ -60,6 +60,25 @@ public:
 	    const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
 	    const std::vector<std::string> &feature_order);
 
+#ifdef CITYJSON_HAS_FCB
+	/**
+	 * Write a FlatCityBuf file (.fcb)
+	 * Uses the FCB writer API to produce a cloud-optimized binary format.
+	 * Internally builds CityJSONSeq-style JSON (metadata header + per-feature JSON)
+	 * and feeds it to the FCB writer.
+	 *
+	 * @param file_path Output path
+	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
+	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
+	 * @param feature_order Ordered feature IDs
+	 */
+	static void WriteFlatCityBuf(
+	    const std::string &file_path,
+	    const CityJSONWriteMetadata &metadata,
+	    std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
+	    const std::vector<std::string> &feature_order);
+#endif
+
 private:
 	/**
 	 * Build the metadata JSON object from write metadata

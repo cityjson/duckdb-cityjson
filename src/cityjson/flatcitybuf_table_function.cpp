@@ -9,6 +9,7 @@
 #include "cityjson/column_types.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "fcb.h"
 
 namespace duckdb {
 namespace cityjson {
@@ -33,9 +34,8 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 		}
 	}
 
-	// Read FCB file via DuckDB FileSystem
-	std::string content = json_utils::ReadFileContent(context, result->file_name);
-	auto reader = std::make_unique<FlatCityBufReader>(result->file_name, std::move(content));
+	// FCB API reads directly from a local file path
+	auto reader = std::make_unique<FlatCityBufReader>(result->file_name, result->file_name);
 
 	try {
 		result->metadata = reader->ReadMetadata();
@@ -139,8 +139,7 @@ static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFun
 	auto result = make_uniq<FcbMetadataBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 
-	std::string content = json_utils::ReadFileContent(context, result->file_name);
-	auto reader = std::make_unique<FlatCityBufReader>(result->file_name, std::move(content));
+	auto reader = std::make_unique<FlatCityBufReader>(result->file_name, result->file_name);
 
 	try {
 		result->metadata = reader->ReadMetadata();
@@ -148,20 +147,10 @@ static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFun
 		throw BinderException("Failed to read FlatCityBuf metadata: " + std::string(e.what()));
 	}
 
-	result->city_objects_count = 0;
-	try {
-		auto chunks = reader->ReadAllChunks();
-		for (size_t i = 0; i < chunks.ChunkCount(); i++) {
-			auto chunk = chunks.GetChunk(i);
-			if (chunk) {
-				for (const auto &feature : *chunk) {
-					result->city_objects_count += feature.city_objects.size();
-				}
-			}
-		}
-	} catch (const CityJSONError &) {
-		result->city_objects_count = 0;
-	}
+	// Use features_count from FCB metadata for a fast count without reading all features
+	auto fcb_reader_raw = fcb::fcb_reader_open(result->file_name);
+	auto fcb_meta = fcb::fcb_reader_metadata(*fcb_reader_raw);
+	result->city_objects_count = fcb_meta.features_count;
 
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
 	names = MetadataTableUtils::GetMetadataTableNames();

@@ -1,4 +1,7 @@
 #include "cityjson/cityjson_writer.hpp"
+#ifdef CITYJSON_HAS_FCB
+#include "fcb.h"
+#endif
 #include <fstream>
 #include <cmath>
 #include <map>
@@ -327,6 +330,83 @@ void CityJSONWriter::WriteCityJSONSeq(
 		out << feature.dump() << "\n";
 	}
 }
+
+// ============================================================
+// WriteFlatCityBuf
+// ============================================================
+
+#ifdef CITYJSON_HAS_FCB
+
+void CityJSONWriter::WriteFlatCityBuf(
+    const std::string &file_path,
+    const CityJSONWriteMetadata &metadata,
+    std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
+    const std::vector<std::string> &feature_order) {
+
+	// Build the metadata header JSON (same structure as CityJSONSeq line 1)
+	json header;
+	header["type"] = "CityJSON";
+	header["version"] = metadata.version;
+	header["CityObjects"] = json::object();
+	header["vertices"] = json::array();
+
+	auto meta_json = BuildMetadataJson(metadata);
+	if (!meta_json.empty()) {
+		header["metadata"] = meta_json;
+	}
+
+	// FCB requires a transform field — use identity if none provided
+	{
+		auto &t = metadata.transform;
+		header["transform"] = json::object();
+		header["transform"]["scale"] = json::array({
+		    t.has_value() ? t->scale[0] : 1.0,
+		    t.has_value() ? t->scale[1] : 1.0,
+		    t.has_value() ? t->scale[2] : 1.0
+		});
+		header["transform"]["translate"] = json::array({
+		    t.has_value() ? t->translate[0] : 0.0,
+		    t.has_value() ? t->translate[1] : 0.0,
+		    t.has_value() ? t->translate[2] : 0.0
+		});
+	}
+
+	// Create FCB writer with metadata JSON
+	std::string header_str = header.dump();
+	auto writer = fcb::fcb_writer_new(header_str);
+
+	// Add each feature (same per-feature JSON as CityJSONSeq lines 2+)
+	for (const auto &fid : feature_order) {
+		auto it = feature_objects.find(fid);
+		if (it == feature_objects.end()) continue;
+
+		// Build per-feature vertex pool (modifies objects in-place)
+		auto &feature_objs = it->second;
+		auto vertex_pool = BuildVertexPool(feature_objs, metadata.transform);
+
+		// Build CityJSONFeature JSON
+		json feature;
+		feature["type"] = "CityJSONFeature";
+		feature["id"] = fid;
+		feature["CityObjects"] = json::object();
+		for (const auto &[obj_id, obj_json] : feature_objs) {
+			feature["CityObjects"][obj_id] = obj_json;
+		}
+
+		feature["vertices"] = json::array();
+		for (const auto &v : vertex_pool) {
+			feature["vertices"].push_back(json::array({v[0], v[1], v[2]}));
+		}
+
+		std::string feature_str = feature.dump();
+		fcb::fcb_writer_add_feature(*writer, feature_str);
+	}
+
+	// Write the FCB file to disk
+	fcb::fcb_writer_write(std::move(writer), file_path);
+}
+
+#endif // CITYJSON_HAS_FCB
 
 } // namespace cityjson
 } // namespace duckdb

@@ -17,17 +17,19 @@ namespace cityjson {
  * Reader for FlatCityBuf (.fcb) format
  * Cloud-optimized binary CityJSON format
  * Each feature is returned as CityJSONFeature JSON for reuse with existing parsing
+ *
+ * Uses the fcb:: C++ API which reads directly from file paths.
  */
 class FlatCityBufReader : public CityJSONReader {
 public:
 	/**
-	 * Construct reader from file content loaded via DuckDB FileSystem
+	 * Construct reader from a local file path
 	 *
 	 * @param name Display name (file path or URL)
-	 * @param content Raw FCB file bytes
+	 * @param file_path Local file path the FCB API will open directly
 	 * @param sample_lines Number of features to sample for schema inference
 	 */
-	FlatCityBufReader(const std::string &name, std::string content, size_t sample_lines = 100);
+	FlatCityBufReader(const std::string &name, const std::string &file_path, size_t sample_lines = 100);
 
 	std::string Name() const override;
 	CityJSON ReadMetadata() const override;
@@ -44,13 +46,13 @@ public:
 
 private:
 	std::string name_;
-	std::string content_;
+	std::string file_path_;
 	size_t sample_lines_;
 
 	mutable std::optional<CityJSON> cached_metadata_;
 	mutable std::optional<std::vector<Column>> cached_columns_;
 
-	// Parse all features from the FCB content
+	// Parse all features from the FCB file
 	std::vector<CityJSONFeature> ParseAllFeatures() const;
 };
 

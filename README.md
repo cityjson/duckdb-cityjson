@@ -29,6 +29,9 @@ SELECT * FROM cityjson_metadata('buildings.city.json');
 -- Write query results to a CityJSON file
 COPY (SELECT * FROM read_cityjson('input.city.json'))
 TO 'output.city.json' (FORMAT cityjson);
+
+-- Read a FlatCityBuf file (requires -DCITYJSON_ENABLE_FCB=ON)
+SELECT * FROM read_flatcitybuf('buildings.fcb');
 ```
 
 ## Table Functions
@@ -91,9 +94,30 @@ SELECT version, city_objects_count
 FROM cityjsonseq_metadata('delft.city.jsonl');
 ```
 
-### `read_flatcitybuf(path)` (optional)
+### `read_flatcitybuf(path [, lod => 'X.Y'])` (optional)
 
-Reads a FlatCityBuf (`.fcb`) file. Only available when compiled with `-DCITYJSON_ENABLE_FCB=ON`.
+Reads a [FlatCityBuf](https://github.com/cityjson/flatcitybuf) (`.fcb`) file. FlatCityBuf is a cloud-optimized binary format for CityJSON data.
+
+Only available when compiled with `-DCITYJSON_ENABLE_FCB=ON`.
+
+```sql
+SELECT * FROM read_flatcitybuf('buildings.fcb');
+
+-- With LOD selection
+SELECT id, object_type, ST_GeomFromWKB(geometry) AS geom
+FROM read_flatcitybuf('buildings.fcb', lod => '2.2');
+```
+
+**Parameters:** Same as `read_cityjson`.
+
+### `flatcitybuf_metadata(path)` (optional)
+
+Returns metadata from a FlatCityBuf file. Same schema as `cityjson_metadata`.
+
+```sql
+SELECT version, reference_system, city_objects_count
+FROM flatcitybuf_metadata('buildings.fcb');
+```
 
 ## Output Schema
 
@@ -173,7 +197,7 @@ FROM cityjson_metadata('buildings.city.json');
 
 ## COPY TO (Writing CityJSON)
 
-Write query results to CityJSON or CityJSONSeq files using the `COPY` statement.
+Write query results to CityJSON, CityJSONSeq, or FlatCityBuf files using the `COPY` statement.
 
 ### Basic Usage
 
@@ -185,6 +209,10 @@ TO 'output.city.json' (FORMAT cityjson);
 -- Write to CityJSONSeq (.city.jsonl)
 COPY (SELECT * FROM read_cityjsonseq('input.city.jsonl'))
 TO 'output.city.jsonl' (FORMAT cityjsonseq);
+
+-- Write to FlatCityBuf (.fcb) — requires -DCITYJSON_ENABLE_FCB=ON
+COPY (SELECT * FROM read_cityjson('input.city.json'))
+TO 'output.fcb' (FORMAT flatcitybuf);
 ```
 
 ### Options
@@ -245,12 +273,13 @@ TO 'buildings_only.city.jsonl' (FORMAT cityjsonseq);
 
 ### CityJSON vs CityJSONSeq Output
 
-| Format       | Extension     | Vertex Pool                 | Structure                          |
-| ------------ | ------------- | --------------------------- | ---------------------------------- |
-| `cityjson`   | `.city.json`  | Single global vertex pool   | One JSON document with all objects |
-| `cityjsonseq`| `.city.jsonl` | Per-feature vertex pools    | One JSON object per line           |
+| Format        | Extension     | Vertex Pool               | Structure                          |
+| ------------- | ------------- | ------------------------- | ---------------------------------- |
+| `cityjson`    | `.city.json`  | Single global vertex pool | One JSON document with all objects |
+| `cityjsonseq` | `.city.jsonl` | Per-feature vertex pools  | One JSON object per line           |
+| `flatcitybuf` | `.fcb`        | Per-feature vertex pools  | Cloud-optimized binary format      |
 
-CityJSONSeq is preferred for large datasets — it supports streaming and lower memory usage.
+CityJSONSeq is preferred for large datasets — it supports streaming and lower memory usage. FlatCityBuf adds cloud-native features (spatial indexing, range requests) and requires `-DCITYJSON_ENABLE_FCB=ON` at build time.
 
 ## Remote File Support
 
@@ -308,6 +337,22 @@ COPY (
 TO 'delft_buildings.city.jsonl' (FORMAT cityjsonseq);
 ```
 
+### Convert between formats
+
+```sql
+-- CityJSON → CityJSONSeq
+COPY (SELECT * FROM read_cityjson('input.city.json'))
+TO 'output.city.jsonl' (FORMAT cityjsonseq);
+
+-- CityJSONSeq → FlatCityBuf (requires FCB support)
+COPY (SELECT * FROM read_cityjsonseq('input.city.jsonl'))
+TO 'output.fcb' (FORMAT flatcitybuf);
+
+-- FlatCityBuf → CityJSON
+COPY (SELECT * FROM read_flatcitybuf('input.fcb'))
+TO 'output.city.json' (FORMAT cityjson);
+```
+
 ## Building
 
 ### Prerequisites
@@ -336,9 +381,18 @@ cmake --build build/release --target cityjson_extension cityjson_loadable_extens
 
 ### Optional: FlatCityBuf Support
 
+To enable reading and writing FlatCityBuf (`.fcb`) files, build with:
+
 ```sh
-cmake -DCITYJSON_ENABLE_FCB=ON ...
+EXT_FLAGS="-DCITYJSON_ENABLE_FCB=ON" GEN=ninja make
 ```
+
+This downloads pre-built FlatCityBuf binaries from [GitHub releases](https://github.com/cityjson/flatcitybuf/releases) at configure time. Supported platforms: macOS (aarch64, x86_64), Linux (aarch64, x86_64), Windows (x86_64).
+
+When enabled, the following additional functions are registered:
+- `read_flatcitybuf(path)` — read `.fcb` files
+- `flatcitybuf_metadata(path)` — read `.fcb` file metadata
+- `COPY ... TO ... (FORMAT flatcitybuf)` — write `.fcb` files
 
 ### Running Tests
 

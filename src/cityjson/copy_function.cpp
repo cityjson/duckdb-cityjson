@@ -37,6 +37,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	auto result = make_uniq<CityJSONCopyBindData>();
 	result->file_path = file_path;
 	result->is_seq = is_seq;
+	result->is_fcb = is_fcb;
 	result->version = version;
 	result->crs = crs;
 	result->transform = transform;
@@ -61,7 +62,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 
 bool CityJSONCopyBindData::Equals(const FunctionData &other) const {
 	auto &o = other.Cast<CityJSONCopyBindData>();
-	return file_path == o.file_path && is_seq == o.is_seq;
+	return file_path == o.file_path && is_seq == o.is_seq && is_fcb == o.is_fcb;
 }
 
 // ============================================================
@@ -213,6 +214,7 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	auto bind_data = make_uniq<CityJSONCopyBindData>();
 	bind_data->file_path = input.info.file_path;
 	bind_data->is_seq = (input.info.format == "cityjsonseq");
+	bind_data->is_fcb = (input.info.format == "flatcitybuf");
 
 	// Parse options
 	for (auto &option : input.info.options) {
@@ -606,6 +608,14 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 		    write_meta,
 		    gstate.feature_objects,
 		    gstate.feature_order);
+#ifdef CITYJSON_HAS_FCB
+	} else if (bind_data.is_fcb) {
+		CityJSONWriter::WriteFlatCityBuf(
+		    output_path,
+		    write_meta,
+		    gstate.feature_objects,
+		    gstate.feature_order);
+#endif
 	} else {
 		CityJSONWriter::WriteCityJSON(
 		    output_path,
@@ -642,6 +652,20 @@ void RegisterCityJSONSeqCopyFunction(ExtensionLoader &loader) {
 	function.copy_to_finalize = CityJSONCopyToFinalize;
 	loader.RegisterFunction(function);
 }
+
+#ifdef CITYJSON_HAS_FCB
+void RegisterFlatCityBufCopyFunction(ExtensionLoader &loader) {
+	CopyFunction function("flatcitybuf");
+	function.extension = "fcb";
+	function.copy_to_bind = CityJSONCopyToBind;
+	function.copy_to_initialize_global = CityJSONCopyToInitGlobal;
+	function.copy_to_initialize_local = CityJSONCopyToInitLocal;
+	function.copy_to_sink = CityJSONCopyToSink;
+	function.copy_to_combine = CityJSONCopyToCombine;
+	function.copy_to_finalize = CityJSONCopyToFinalize;
+	loader.RegisterFunction(function);
+}
+#endif
 
 } // namespace cityjson
 } // namespace duckdb

@@ -90,22 +90,108 @@ if(EXISTS ${CJSEQ_CPP_DIR})
 endif()
 
 # Optional: FlatCityBuf support
-# To enable, set -DCITYJSON_ENABLE_FCB=ON and ensure libfcb_cpp is available
+# To enable, set -DCITYJSON_ENABLE_FCB=ON
+# Downloads pre-built libfcb_cpp binaries from GitHub releases
 option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" OFF)
+set(FCB_VERSION "v0.7.5" CACHE STRING "FlatCityBuf release version to download")
 if(CITYJSON_ENABLE_FCB)
-  include(FetchContent)
-  FetchContent_Declare(
-    flatcitybuf
-    GIT_REPOSITORY https://github.com/cityjson/flatcitybuf.git
-    GIT_TAG main
-  )
-  FetchContent_MakeAvailable(flatcitybuf)
-  if(TARGET fcb_cpp)
-    target_compile_definitions(${EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
-    target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
-    set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES fcb_cpp)
-    set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES fcb_cpp)
+  # Detect platform and architecture
+  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(FCB_OS "macos")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(FCB_OS "linux")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(FCB_OS "windows")
+  else()
+    message(FATAL_ERROR "FlatCityBuf: unsupported platform ${CMAKE_SYSTEM_NAME}")
   endif()
+
+  # Normalise architecture name
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+    set(FCB_ARCH "aarch64")
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    set(FCB_ARCH "x86_64")
+  else()
+    message(FATAL_ERROR "FlatCityBuf: unsupported architecture ${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+
+  # Download pre-built binary
+  set(FCB_DIR "${CMAKE_BINARY_DIR}/fcb_cpp")
+  if(FCB_OS STREQUAL "windows")
+    set(FCB_ARCHIVE "fcb_cpp-${FCB_OS}-${FCB_ARCH}.zip")
+  else()
+    set(FCB_ARCHIVE "fcb_cpp-${FCB_OS}-${FCB_ARCH}.tar.gz")
+  endif()
+  set(FCB_URL "https://github.com/cityjson/flatcitybuf/releases/download/${FCB_VERSION}/${FCB_ARCHIVE}")
+  set(FCB_DOWNLOAD_PATH "${CMAKE_BINARY_DIR}/${FCB_ARCHIVE}")
+
+  if(NOT EXISTS "${FCB_DIR}/libfcb_cpp.a" AND NOT EXISTS "${FCB_DIR}/fcb_cpp.lib")
+    message(STATUS "Downloading FlatCityBuf ${FCB_VERSION} for ${FCB_OS}-${FCB_ARCH}...")
+    file(DOWNLOAD "${FCB_URL}" "${FCB_DOWNLOAD_PATH}" STATUS FCB_DL_STATUS)
+    list(GET FCB_DL_STATUS 0 FCB_DL_CODE)
+    if(NOT FCB_DL_CODE EQUAL 0)
+      list(GET FCB_DL_STATUS 1 FCB_DL_MSG)
+      message(FATAL_ERROR "Failed to download FlatCityBuf: ${FCB_DL_MSG}\nURL: ${FCB_URL}")
+    endif()
+
+    file(MAKE_DIRECTORY "${FCB_DIR}")
+    execute_process(
+      COMMAND ${CMAKE_COMMAND} -E tar xzf "${FCB_DOWNLOAD_PATH}"
+      WORKING_DIRECTORY "${FCB_DIR}"
+      RESULT_VARIABLE FCB_EXTRACT_RESULT
+    )
+    if(NOT FCB_EXTRACT_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to extract FlatCityBuf archive")
+    endif()
+  endif()
+
+  # Determine the static library path
+  if(FCB_OS STREQUAL "windows")
+    set(FCB_LIB_PATH "${FCB_DIR}/fcb_cpp.lib")
+  else()
+    set(FCB_LIB_PATH "${FCB_DIR}/libfcb_cpp.a")
+  endif()
+
+  # Compile lib.rs.cc (CXX bridge source) as part of the extension
+  target_sources(${EXTENSION_NAME} PRIVATE "${FCB_DIR}/lib.rs.cc")
+  target_sources(${LOADABLE_EXTENSION_NAME} PRIVATE "${FCB_DIR}/lib.rs.cc")
+
+  # Add FCB include directory
+  target_include_directories(${EXTENSION_NAME} PRIVATE "${FCB_DIR}")
+  target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE "${FCB_DIR}")
+
+  # Set compile definition
+  target_compile_definitions(${EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
+  target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
+
+  # Link the FCB static library + platform dependencies.
+  # The loadable extension (.duckdb_extension shared lib) links directly.
+  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES "${FCB_LIB_PATH}")
+
+  # Platform-specific dependencies required by the FCB Rust static library.
+  # Use find_library() on macOS to get absolute framework paths (avoids
+  # "-framework X" space-in-string issues with CMake list operations).
+  if(FCB_OS STREQUAL "macos")
+    find_library(SECURITY_FRAMEWORK Security REQUIRED)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
+    set(FCB_PLATFORM_LIBS ${SECURITY_FRAMEWORK} ${COREFOUNDATION_FRAMEWORK} ${SYSTEMCONFIGURATION_FRAMEWORK})
+  elseif(FCB_OS STREQUAL "linux")
+    set(FCB_PLATFORM_LIBS pthread dl m)
+  elseif(FCB_OS STREQUAL "windows")
+    set(FCB_PLATFORM_LIBS ws2_32 bcrypt userenv ntdll)
+  endif()
+  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${FCB_PLATFORM_LIBS})
+
+  # For the static extension: propagate FCB dependencies to any target that
+  # links libcityjson_extension.a (unittest, libduckdb.dylib, shell/duckdb).
+  # INTERFACE_LINK_LIBRARIES ensures transitive propagation through CMake.
+  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY INTERFACE_LINK_LIBRARIES "${FCB_LIB_PATH}" ${FCB_PLATFORM_LIBS})
+
+  # Also set DUCKDB_EXTRA_LINK_FLAGS for the shell target (belt-and-suspenders).
+  set(DUCKDB_EXTRA_LINK_FLAGS "${FCB_LIB_PATH};${FCB_PLATFORM_LIBS}" CACHE INTERNAL "Extra link flags" FORCE)
+
+  message(STATUS "FlatCityBuf support enabled (${FCB_VERSION}, ${FCB_OS}-${FCB_ARCH})")
 endif()
 
 # Find OpenSSL after DuckDB targets are set up
