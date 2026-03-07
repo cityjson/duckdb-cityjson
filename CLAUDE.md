@@ -137,6 +137,14 @@ if (!feature.vertices.empty()) {
 }
 ```
 
+## Future Features (Not Yet Implemented)
+
+- **Filter Pushdown** — push WHERE clauses down to readers for better performance
+- **Column Statistics** — implement column min/max statistics for query optimization
+- **Spatial Indexing** — integrate with DuckDB spatial extension for spatial queries
+- **Streaming** — support very large files without loading all data into memory during bind
+- **Compression** — support compressed CityJSON files (.gz, .bz2)
+
 ## References
 
 - CityJSON specification: <https://www.cityjson.org/specs/2.0.1/>
