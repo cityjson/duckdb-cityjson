@@ -127,9 +127,9 @@ private:
 	std::variant<T, CityJSONError> value_;
 
 public:
-	Result(T value) : value_(std::move(value)) {
+	explicit Result(T value) : value_(std::move(value)) {
 	}
-	Result(CityJSONError error) : value_(std::move(error)) {
+	explicit Result(CityJSONError error) : value_(std::move(error)) {
 	}
 
 	bool HasError() const {

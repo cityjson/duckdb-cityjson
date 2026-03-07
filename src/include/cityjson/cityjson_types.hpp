@@ -43,7 +43,7 @@ struct CRS {
 	std::optional<std::string> code;      // CRS code (e.g., "4326")
 
 	CRS() = default;
-	CRS(std::string name);
+	explicit CRS(std::string name);
 	CRS(std::string name, std::string authority, std::string code);
 
 	/**
@@ -217,7 +217,7 @@ struct CityJSONFeature {
 
 	CityJSONFeature() : type("CityJSONFeature") {
 	}
-	CityJSONFeature(std::string id) : id(std::move(id)), type("CityJSONFeature") {
+	explicit CityJSONFeature(std::string id) : id(std::move(id)), type("CityJSONFeature") {
 	}
 
 	/**

@@ -31,7 +31,7 @@ struct SemanticSurface {
 	json attributes;  // Additional surface attributes
 
 	SemanticSurface() = default;
-	SemanticSurface(std::string type) : type(std::move(type)) {
+	explicit SemanticSurface(std::string type) : type(std::move(type)) {
 	}
 };
 

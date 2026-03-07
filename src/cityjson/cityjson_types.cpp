@@ -4,7 +4,7 @@
 namespace duckdb {
 namespace cityjson {
 
-using namespace json_utils;
+using namespace json_utils; // NOLINT(google-build-using-namespace)
 
 // ============================================================
 // Transform
@@ -528,32 +528,45 @@ json CityJSON::ToJson() const {
 	if (metadata.has_value()) {
 		json meta = json::object();
 		const auto &m = metadata.value();
-		if (m.title)
+		if (m.title) {
 			meta["title"] = *m.title;
-		if (m.identifier)
+		}
+		if (m.identifier) {
 			meta["identifier"] = *m.identifier;
-		if (m.point_of_contact)
+		}
+		if (m.point_of_contact) {
 			meta["pointOfContact"] = m.point_of_contact->ToJson();
-		if (m.reference_date)
+		}
+		if (m.reference_date) {
 			meta["referenceDate"] = *m.reference_date;
-		if (m.reference_system)
+		}
+		if (m.reference_system) {
 			meta["referenceSystem"] = *m.reference_system;
-		if (m.geographic_location)
+		}
+		if (m.geographic_location) {
 			meta["geographicLocation"] = *m.geographic_location;
-		if (m.geographic_extent)
+		}
+		if (m.geographic_extent) {
 			meta["geographicalExtent"] = m.geographic_extent->ToJson();
-		if (m.dataset_topic_category)
+		}
+		if (m.dataset_topic_category) {
 			meta["datasetTopicCategory"] = *m.dataset_topic_category;
-		if (m.feature_type)
+		}
+		if (m.feature_type) {
 			meta["featureType"] = *m.feature_type;
-		if (m.metadata_standard)
+		}
+		if (m.metadata_standard) {
 			meta["metadataStandard"] = *m.metadata_standard;
-		if (m.metadata_language)
+		}
+		if (m.metadata_language) {
 			meta["metadataLanguage"] = *m.metadata_language;
-		if (m.metadata_character_set)
+		}
+		if (m.metadata_character_set) {
 			meta["metadataCharacterSet"] = *m.metadata_character_set;
-		if (m.metadata_date)
+		}
+		if (m.metadata_date) {
 			meta["metadataDate"] = *m.metadata_date;
+		}
 
 		if (!meta.empty()) {
 			result["metadata"] = meta;

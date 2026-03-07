@@ -6,7 +6,7 @@
 namespace duckdb {
 namespace cityjson {
 
-using namespace json_utils;
+using namespace json_utils; // NOLINT(google-build-using-namespace)
 
 // ============================================================
 // Constructors

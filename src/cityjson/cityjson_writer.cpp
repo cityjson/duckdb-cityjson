@@ -26,6 +26,7 @@ static std::array<int64_t, 3> QuantiseVertex(const std::array<double, 3> &coord,
 // ============================================================
 
 // Recursively walk boundaries and collect/replace vertex coordinates with indices
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 static void CollectAndReplaceVertices(json &boundaries,
                                       std::map<std::tuple<int64_t, int64_t, int64_t>, size_t> &vertex_map,
                                       std::vector<std::array<int64_t, 3>> &vertex_pool,
@@ -110,16 +111,21 @@ static void CollectAndReplaceVertices(json &boundaries,
 
 // Determine nesting depth of geometry boundaries based on geometry type
 static int GetBoundaryDepth(const std::string &geom_type) {
-	if (geom_type == "MultiPoint")
+	if (geom_type == "MultiPoint") {
 		return 1;
-	if (geom_type == "MultiLineString")
+	}
+	if (geom_type == "MultiLineString") {
 		return 2;
-	if (geom_type == "MultiSurface" || geom_type == "CompositeSurface")
+	}
+	if (geom_type == "MultiSurface" || geom_type == "CompositeSurface") {
 		return 3;
-	if (geom_type == "Solid")
+	}
+	if (geom_type == "Solid") {
 		return 4;
-	if (geom_type == "MultiSolid" || geom_type == "CompositeSolid")
+	}
+	if (geom_type == "MultiSolid" || geom_type == "CompositeSolid") {
 		return 5;
+	}
 	return 3; // default
 }
 

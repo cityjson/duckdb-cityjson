@@ -93,7 +93,7 @@ public:
 	 * @param file_path Path to .city.json file
 	 * @param sample_lines Number of features to sample for schema inference
 	 */
-	LocalCityJSONReader(const std::string &file_path, size_t sample_lines = 100);
+	explicit LocalCityJSONReader(const std::string &file_path, size_t sample_lines = 100);
 
 	/**
 	 * Construct reader from pre-loaded content
@@ -136,7 +136,7 @@ public:
 	 * @param file_path Path to .city.jsonl file
 	 * @param sample_lines Number of features to sample for schema inference
 	 */
-	LocalCityJSONSeqReader(const std::string &file_path, size_t sample_lines = 100);
+	explicit LocalCityJSONSeqReader(const std::string &file_path, size_t sample_lines = 100);
 
 	/**
 	 * Construct reader from pre-loaded content
