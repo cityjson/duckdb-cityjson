@@ -92,7 +92,7 @@ endif()
 # Optional: FlatCityBuf support
 # To enable, set -DCITYJSON_ENABLE_FCB=ON
 # Downloads pre-built libfcb_cpp binaries from GitHub releases
-option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" OFF)
+option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
 set(FCB_VERSION "v0.7.5" CACHE STRING "FlatCityBuf release version to download")
 if(CITYJSON_ENABLE_FCB)
   # Detect platform and architecture
