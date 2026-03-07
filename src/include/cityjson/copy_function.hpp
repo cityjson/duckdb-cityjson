@@ -41,8 +41,8 @@ CopyColumnRole DetectColumnRole(const std::string &name);
 
 struct CityJSONCopyBindData : public FunctionData {
 	std::string file_path;
-	bool is_seq = false;      // true for cityjsonseq format
-	bool is_fcb = false;      // true for flatcitybuf format
+	bool is_seq = false; // true for cityjsonseq format
+	bool is_fcb = false; // true for flatcitybuf format
 
 	// Metadata (from options or metadata_query)
 	std::string version = "2.0";

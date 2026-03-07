@@ -38,11 +38,9 @@ public:
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
-	static void WriteCityJSON(
-	    const std::string &file_path,
-	    const CityJSONWriteMetadata &metadata,
-	    const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
-	    const std::vector<std::string> &feature_order);
+	static void WriteCityJSON(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	                          const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
+	                          const std::vector<std::string> &feature_order);
 
 	/**
 	 * Write a CityJSONSeq file (.city.jsonl)
@@ -54,11 +52,10 @@ public:
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
-	static void WriteCityJSONSeq(
-	    const std::string &file_path,
-	    const CityJSONWriteMetadata &metadata,
-	    const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
-	    const std::vector<std::string> &feature_order);
+	static void
+	WriteCityJSONSeq(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	                 const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
+	                 const std::vector<std::string> &feature_order);
 
 #ifdef CITYJSON_HAS_FCB
 	/**
@@ -72,11 +69,9 @@ public:
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
-	static void WriteFlatCityBuf(
-	    const std::string &file_path,
-	    const CityJSONWriteMetadata &metadata,
-	    std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
-	    const std::vector<std::string> &feature_order);
+	static void WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	                             std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
+	                             const std::vector<std::string> &feature_order);
 #endif
 
 private:
@@ -89,9 +84,8 @@ private:
 	 * Build a vertex pool from geometry boundaries, replacing coordinates with indices
 	 * Returns the vertex pool and modifies the CityObject JSON in-place
 	 */
-	static std::vector<std::array<int64_t, 3>> BuildVertexPool(
-	    std::vector<std::pair<std::string, json>> &objects,
-	    const std::optional<Transform> &transform);
+	static std::vector<std::array<int64_t, 3>> BuildVertexPool(std::vector<std::pair<std::string, json>> &objects,
+	                                                           const std::optional<Transform> &transform);
 };
 
 } // namespace cityjson

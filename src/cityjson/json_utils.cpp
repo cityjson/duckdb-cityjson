@@ -10,11 +10,9 @@ namespace cityjson {
 namespace json_utils {
 
 static bool IsRemoteFile(const std::string &path) {
-	return path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 ||
-	       path.rfind("s3://", 0) == 0 || path.rfind("s3a://", 0) == 0 ||
-	       path.rfind("s3n://", 0) == 0 || path.rfind("gcs://", 0) == 0 ||
-	       path.rfind("gs://", 0) == 0 || path.rfind("r2://", 0) == 0 ||
-	       path.rfind("hf://", 0) == 0;
+	return path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 || path.rfind("s3://", 0) == 0 ||
+	       path.rfind("s3a://", 0) == 0 || path.rfind("s3n://", 0) == 0 || path.rfind("gcs://", 0) == 0 ||
+	       path.rfind("gs://", 0) == 0 || path.rfind("r2://", 0) == 0 || path.rfind("hf://", 0) == 0;
 }
 
 std::string ReadFileContent(duckdb::ClientContext &context, const std::string &file_path) {

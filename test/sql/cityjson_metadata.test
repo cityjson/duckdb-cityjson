@@ -1,6 +1,6 @@
 # name: test/sql/cityjson_metadata.test
 # description: Test cityjson_metadata table function
-# group: [cityjson]
+# group: [sql]
 
 require cityjson
 

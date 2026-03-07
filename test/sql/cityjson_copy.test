@@ -1,6 +1,6 @@
 # name: test/sql/cityjson_copy.test
 # description: Test COPY TO round-trip for CityJSON and CityJSONSeq formats
-# group: [cityjson]
+# group: [sql]
 
 require cityjson
 

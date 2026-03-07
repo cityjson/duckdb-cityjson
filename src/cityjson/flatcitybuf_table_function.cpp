@@ -19,7 +19,7 @@ namespace cityjson {
 // ============================================================
 
 static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<CityJSONBindData>();
 
 	if (input.inputs.empty()) {
@@ -131,11 +131,13 @@ struct FcbMetadataBindData : public TableFunctionData {
 
 struct FcbMetadataGlobalState : public GlobalTableFunctionState {
 	bool done = false;
-	idx_t MaxThreads() const override { return 1; }
+	idx_t MaxThreads() const override {
+		return 1;
+	}
 };
 
 static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<FcbMetadataBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 
@@ -159,7 +161,7 @@ static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFun
 }
 
 static unique_ptr<GlobalTableFunctionState> FcbMetadataInitGlobal(ClientContext &context,
-                                                                    TableFunctionInitInput &input) {
+                                                                  TableFunctionInitInput &input) {
 	return make_uniq<FcbMetadataGlobalState>();
 }
 

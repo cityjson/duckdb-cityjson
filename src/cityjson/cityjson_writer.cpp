@@ -15,14 +15,10 @@ namespace cityjson {
 // QuantiseVertex (file-local helper)
 // ============================================================
 
-static std::array<int64_t, 3> QuantiseVertex(
-    const std::array<double, 3> &coord,
-    const Transform &transform) {
-	return {
-	    static_cast<int64_t>(std::round((coord[0] - transform.translate[0]) / transform.scale[0])),
-	    static_cast<int64_t>(std::round((coord[1] - transform.translate[1]) / transform.scale[1])),
-	    static_cast<int64_t>(std::round((coord[2] - transform.translate[2]) / transform.scale[2]))
-	};
+static std::array<int64_t, 3> QuantiseVertex(const std::array<double, 3> &coord, const Transform &transform) {
+	return {static_cast<int64_t>(std::round((coord[0] - transform.translate[0]) / transform.scale[0])),
+	        static_cast<int64_t>(std::round((coord[1] - transform.translate[1]) / transform.scale[1])),
+	        static_cast<int64_t>(std::round((coord[2] - transform.translate[2]) / transform.scale[2]))};
 }
 
 // ============================================================
@@ -30,12 +26,10 @@ static std::array<int64_t, 3> QuantiseVertex(
 // ============================================================
 
 // Recursively walk boundaries and collect/replace vertex coordinates with indices
-static void CollectAndReplaceVertices(
-    json &boundaries,
-    std::map<std::tuple<int64_t, int64_t, int64_t>, size_t> &vertex_map,
-    std::vector<std::array<int64_t, 3>> &vertex_pool,
-    const std::optional<Transform> &transform,
-    int depth) {
+static void CollectAndReplaceVertices(json &boundaries,
+                                      std::map<std::tuple<int64_t, int64_t, int64_t>, size_t> &vertex_map,
+                                      std::vector<std::array<int64_t, 3>> &vertex_pool,
+                                      const std::optional<Transform> &transform, int depth) {
 	if (!boundaries.is_array()) {
 		return;
 	}
@@ -47,25 +41,18 @@ static void CollectAndReplaceVertices(
 				// Already an index - leave as is
 				continue;
 			}
-			if (elem.is_array() && elem.size() == 3 &&
-			    elem[0].is_number() && elem[1].is_number() && elem[2].is_number()) {
+			if (elem.is_array() && elem.size() == 3 && elem[0].is_number() && elem[1].is_number() &&
+			    elem[2].is_number()) {
 				// This is a coordinate [x, y, z]
-				std::array<double, 3> coord = {
-				    elem[0].get<double>(),
-				    elem[1].get<double>(),
-				    elem[2].get<double>()
-				};
+				std::array<double, 3> coord = {elem[0].get<double>(), elem[1].get<double>(), elem[2].get<double>()};
 
 				std::array<int64_t, 3> quantised;
 				if (transform.has_value()) {
 					quantised = QuantiseVertex(coord, transform.value());
 				} else {
 					// No transform: store as-is (rounded to int)
-					quantised = {
-					    static_cast<int64_t>(std::round(coord[0])),
-					    static_cast<int64_t>(std::round(coord[1])),
-					    static_cast<int64_t>(std::round(coord[2]))
-					};
+					quantised = {static_cast<int64_t>(std::round(coord[0])), static_cast<int64_t>(std::round(coord[1])),
+					             static_cast<int64_t>(std::round(coord[2]))};
 				}
 
 				auto key = std::make_tuple(quantised[0], quantised[1], quantised[2]);
@@ -89,25 +76,17 @@ static void CollectAndReplaceVertices(
 			// process at this level rather than recursing into. This handles the case where
 			// WKB-decoded boundaries have [x,y,z] coordinate arrays where integer indices
 			// would normally be, which adds one nesting level.
-			if (depth == 1 && child.is_array() && child.size() == 3 &&
-			    child[0].is_number() && !child[0].is_array()) {
+			if (depth == 1 && child.is_array() && child.size() == 3 && child[0].is_number() && !child[0].is_array()) {
 				// This looks like a coordinate [x,y,z], not a sub-array to recurse into
 				// Process it as if we're at depth 0
-				std::array<double, 3> coord = {
-				    child[0].get<double>(),
-				    child[1].get<double>(),
-				    child[2].get<double>()
-				};
+				std::array<double, 3> coord = {child[0].get<double>(), child[1].get<double>(), child[2].get<double>()};
 
 				std::array<int64_t, 3> quantised;
 				if (transform.has_value()) {
 					quantised = QuantiseVertex(coord, transform.value());
 				} else {
-					quantised = {
-					    static_cast<int64_t>(std::round(coord[0])),
-					    static_cast<int64_t>(std::round(coord[1])),
-					    static_cast<int64_t>(std::round(coord[2]))
-					};
+					quantised = {static_cast<int64_t>(std::round(coord[0])), static_cast<int64_t>(std::round(coord[1])),
+					             static_cast<int64_t>(std::round(coord[2]))};
 				}
 
 				auto key = std::make_tuple(quantised[0], quantised[1], quantised[2]);
@@ -131,11 +110,16 @@ static void CollectAndReplaceVertices(
 
 // Determine nesting depth of geometry boundaries based on geometry type
 static int GetBoundaryDepth(const std::string &geom_type) {
-	if (geom_type == "MultiPoint") return 1;
-	if (geom_type == "MultiLineString") return 2;
-	if (geom_type == "MultiSurface" || geom_type == "CompositeSurface") return 3;
-	if (geom_type == "Solid") return 4;
-	if (geom_type == "MultiSolid" || geom_type == "CompositeSolid") return 5;
+	if (geom_type == "MultiPoint")
+		return 1;
+	if (geom_type == "MultiLineString")
+		return 2;
+	if (geom_type == "MultiSurface" || geom_type == "CompositeSurface")
+		return 3;
+	if (geom_type == "Solid")
+		return 4;
+	if (geom_type == "MultiSolid" || geom_type == "CompositeSolid")
+		return 5;
 	return 3; // default
 }
 
@@ -143,9 +127,8 @@ static int GetBoundaryDepth(const std::string &geom_type) {
 // BuildVertexPool
 // ============================================================
 
-std::vector<std::array<int64_t, 3>> CityJSONWriter::BuildVertexPool(
-    std::vector<std::pair<std::string, json>> &objects,
-    const std::optional<Transform> &transform) {
+std::vector<std::array<int64_t, 3>> CityJSONWriter::BuildVertexPool(std::vector<std::pair<std::string, json>> &objects,
+                                                                    const std::optional<Transform> &transform) {
 
 	std::map<std::tuple<int64_t, int64_t, int64_t>, size_t> vertex_map;
 	std::vector<std::array<int64_t, 3>> vertex_pool;
@@ -203,8 +186,7 @@ json CityJSONWriter::BuildMetadataJson(const CityJSONWriteMetadata &metadata) {
 // ============================================================
 
 void CityJSONWriter::WriteCityJSON(
-    const std::string &file_path,
-    const CityJSONWriteMetadata &metadata,
+    const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order) {
 
@@ -222,19 +204,18 @@ void CityJSONWriter::WriteCityJSON(
 	// Transform
 	if (metadata.transform.has_value()) {
 		root["transform"] = json::object();
-		root["transform"]["scale"] = json::array({
-		    metadata.transform->scale[0], metadata.transform->scale[1], metadata.transform->scale[2]
-		});
-		root["transform"]["translate"] = json::array({
-		    metadata.transform->translate[0], metadata.transform->translate[1], metadata.transform->translate[2]
-		});
+		root["transform"]["scale"] =
+		    json::array({metadata.transform->scale[0], metadata.transform->scale[1], metadata.transform->scale[2]});
+		root["transform"]["translate"] = json::array(
+		    {metadata.transform->translate[0], metadata.transform->translate[1], metadata.transform->translate[2]});
 	}
 
 	// Collect all city objects for vertex pool building
 	std::vector<std::pair<std::string, json>> all_objects;
 	for (const auto &fid : feature_order) {
 		auto it = feature_objects.find(fid);
-		if (it == feature_objects.end()) continue;
+		if (it == feature_objects.end())
+			continue;
 		for (const auto &[obj_id, obj_json] : it->second) {
 			all_objects.emplace_back(obj_id, obj_json);
 		}
@@ -268,8 +249,7 @@ void CityJSONWriter::WriteCityJSON(
 // ============================================================
 
 void CityJSONWriter::WriteCityJSONSeq(
-    const std::string &file_path,
-    const CityJSONWriteMetadata &metadata,
+    const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order) {
 
@@ -292,12 +272,10 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 	if (metadata.transform.has_value()) {
 		header["transform"] = json::object();
-		header["transform"]["scale"] = json::array({
-		    metadata.transform->scale[0], metadata.transform->scale[1], metadata.transform->scale[2]
-		});
-		header["transform"]["translate"] = json::array({
-		    metadata.transform->translate[0], metadata.transform->translate[1], metadata.transform->translate[2]
-		});
+		header["transform"]["scale"] =
+		    json::array({metadata.transform->scale[0], metadata.transform->scale[1], metadata.transform->scale[2]});
+		header["transform"]["translate"] = json::array(
+		    {metadata.transform->translate[0], metadata.transform->translate[1], metadata.transform->translate[2]});
 	}
 
 	out << header.dump() << "\n";
@@ -305,7 +283,8 @@ void CityJSONWriter::WriteCityJSONSeq(
 	// Line 2+: one CityJSONFeature per feature_id, with per-feature vertex pool
 	for (const auto &fid : feature_order) {
 		auto it = feature_objects.find(fid);
-		if (it == feature_objects.end()) continue;
+		if (it == feature_objects.end())
+			continue;
 
 		// Copy objects for this feature (we'll modify them for vertex pool building)
 		auto feature_objs = it->second;
@@ -337,11 +316,9 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 #ifdef CITYJSON_HAS_FCB
 
-void CityJSONWriter::WriteFlatCityBuf(
-    const std::string &file_path,
-    const CityJSONWriteMetadata &metadata,
-    std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
-    const std::vector<std::string> &feature_order) {
+void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+                                      std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
+                                      const std::vector<std::string> &feature_order) {
 
 	// Build the metadata header JSON (same structure as CityJSONSeq line 1)
 	json header;
@@ -359,16 +336,11 @@ void CityJSONWriter::WriteFlatCityBuf(
 	{
 		auto &t = metadata.transform;
 		header["transform"] = json::object();
-		header["transform"]["scale"] = json::array({
-		    t.has_value() ? t->scale[0] : 1.0,
-		    t.has_value() ? t->scale[1] : 1.0,
-		    t.has_value() ? t->scale[2] : 1.0
-		});
-		header["transform"]["translate"] = json::array({
-		    t.has_value() ? t->translate[0] : 0.0,
-		    t.has_value() ? t->translate[1] : 0.0,
-		    t.has_value() ? t->translate[2] : 0.0
-		});
+		header["transform"]["scale"] = json::array(
+		    {t.has_value() ? t->scale[0] : 1.0, t.has_value() ? t->scale[1] : 1.0, t.has_value() ? t->scale[2] : 1.0});
+		header["transform"]["translate"] =
+		    json::array({t.has_value() ? t->translate[0] : 0.0, t.has_value() ? t->translate[1] : 0.0,
+		                 t.has_value() ? t->translate[2] : 0.0});
 	}
 
 	// Create FCB writer with metadata JSON
@@ -378,7 +350,8 @@ void CityJSONWriter::WriteFlatCityBuf(
 	// Add each feature (same per-feature JSON as CityJSONSeq lines 2+)
 	for (const auto &fid : feature_order) {
 		auto it = feature_objects.find(fid);
-		if (it == feature_objects.end()) continue;
+		if (it == feature_objects.end())
+			continue;
 
 		// Build per-feature vertex pool (modifies objects in-place)
 		auto &feature_objs = it->second;

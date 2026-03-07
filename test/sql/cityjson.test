@@ -1,6 +1,6 @@
 # name: test/sql/cityjson.test
 # description: Test read_cityjson table function
-# group: [cityjson]
+# group: [sql]
 
 require cityjson
 

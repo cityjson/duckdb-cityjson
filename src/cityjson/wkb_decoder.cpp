@@ -26,8 +26,7 @@ uint32_t WKBDecoder::ReadUInt32(const uint8_t *data, size_t &offset, size_t size
 	std::memcpy(&value, data + offset, 4);
 	offset += 4;
 	if (swap) {
-		value = ((value & 0xFF) << 24) | ((value & 0xFF00) << 8) |
-		        ((value >> 8) & 0xFF00) | ((value >> 24) & 0xFF);
+		value = ((value & 0xFF) << 24) | ((value & 0xFF00) << 8) | ((value >> 8) & 0xFF00) | ((value >> 24) & 0xFF);
 	}
 	return value;
 }

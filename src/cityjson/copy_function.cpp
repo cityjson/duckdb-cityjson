@@ -17,15 +17,24 @@ namespace cityjson {
 // ============================================================
 
 CopyColumnRole DetectColumnRole(const std::string &name) {
-	if (name == "id") return CopyColumnRole::Id;
-	if (name == "feature_id") return CopyColumnRole::FeatureId;
-	if (name == "object_type") return CopyColumnRole::ObjectType;
-	if (name == "children") return CopyColumnRole::Children;
-	if (name == "parents") return CopyColumnRole::Parents;
-	if (name == "children_roles") return CopyColumnRole::ChildrenRoles;
-	if (name == "geometry" || name.substr(0, 8) == "geom_lod") return CopyColumnRole::GeometryWKB;
-	if (name == "geometry_properties") return CopyColumnRole::GeometryProperties;
-	if (name == "other") return CopyColumnRole::Other;
+	if (name == "id")
+		return CopyColumnRole::Id;
+	if (name == "feature_id")
+		return CopyColumnRole::FeatureId;
+	if (name == "object_type")
+		return CopyColumnRole::ObjectType;
+	if (name == "children")
+		return CopyColumnRole::Children;
+	if (name == "parents")
+		return CopyColumnRole::Parents;
+	if (name == "children_roles")
+		return CopyColumnRole::ChildrenRoles;
+	if (name == "geometry" || name.substr(0, 8) == "geom_lod")
+		return CopyColumnRole::GeometryWKB;
+	if (name == "geometry_properties")
+		return CopyColumnRole::GeometryProperties;
+	if (name == "other")
+		return CopyColumnRole::Other;
 	return CopyColumnRole::Attribute;
 }
 
@@ -88,23 +97,24 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 
 	// Helper to extract {x, y, z} struct into array<double, 3>
 	auto extract_xyz_struct = [](const Value &v) -> std::optional<std::array<double, 3>> {
-		if (v.IsNull() || v.type().id() != LogicalTypeId::STRUCT) return std::nullopt;
+		if (v.IsNull() || v.type().id() != LogicalTypeId::STRUCT)
+			return std::nullopt;
 		auto &children = StructValue::GetChildren(v);
-		if (children.size() < 3) return std::nullopt;
+		if (children.size() < 3)
+			return std::nullopt;
 		// Fields are x, y, z
-		if (children[0].IsNull() || children[1].IsNull() || children[2].IsNull()) return std::nullopt;
-		return std::array<double, 3>{
-		    children[0].GetValue<double>(),
-		    children[1].GetValue<double>(),
-		    children[2].GetValue<double>()
-		};
+		if (children[0].IsNull() || children[1].IsNull() || children[2].IsNull())
+			return std::nullopt;
+		return std::array<double, 3> {children[0].GetValue<double>(), children[1].GetValue<double>(),
+		                              children[2].GetValue<double>()};
 	};
 
 	for (idx_t col = 0; col < col_names.size(); col++) {
 		auto &name = col_names[col];
 		auto val = chunk->data[col].GetValue(0);
 
-		if (val.IsNull()) continue;
+		if (val.IsNull())
+			continue;
 
 		if (name == "version") {
 			bind_data.version = val.ToString();
@@ -135,7 +145,8 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 			if (val.type().id() == LogicalTypeId::STRUCT) {
 				auto parsed = extract_xyz_struct(val);
 				if (parsed.has_value()) {
-					if (!bind_data.transform.has_value()) bind_data.transform = Transform();
+					if (!bind_data.transform.has_value())
+						bind_data.transform = Transform();
 					bind_data.transform->scale = parsed.value();
 				}
 			} else {
@@ -143,7 +154,8 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 				std::array<double, 3> scale;
 				if (sscanf(s.c_str(), "%lf,%lf,%lf", &scale[0], &scale[1], &scale[2]) == 3 ||
 				    sscanf(s.c_str(), "[%lf,%lf,%lf]", &scale[0], &scale[1], &scale[2]) == 3) {
-					if (!bind_data.transform.has_value()) bind_data.transform = Transform();
+					if (!bind_data.transform.has_value())
+						bind_data.transform = Transform();
 					bind_data.transform->scale = scale;
 				}
 			}
@@ -151,7 +163,8 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 			if (val.type().id() == LogicalTypeId::STRUCT) {
 				auto parsed = extract_xyz_struct(val);
 				if (parsed.has_value()) {
-					if (!bind_data.transform.has_value()) bind_data.transform = Transform();
+					if (!bind_data.transform.has_value())
+						bind_data.transform = Transform();
 					bind_data.transform->translate = parsed.value();
 				}
 			} else {
@@ -159,20 +172,19 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 				std::array<double, 3> translate;
 				if (sscanf(s.c_str(), "%lf,%lf,%lf", &translate[0], &translate[1], &translate[2]) == 3 ||
 				    sscanf(s.c_str(), "[%lf,%lf,%lf]", &translate[0], &translate[1], &translate[2]) == 3) {
-					if (!bind_data.transform.has_value()) bind_data.transform = Transform();
+					if (!bind_data.transform.has_value())
+						bind_data.transform = Transform();
 					bind_data.transform->translate = translate;
 				}
 			}
 		} else if (name == "geographical_extent") {
 			if (val.type().id() == LogicalTypeId::STRUCT) {
 				auto &children = StructValue::GetChildren(val);
-				if (children.size() >= 6 &&
-				    !children[0].IsNull() && !children[1].IsNull() && !children[2].IsNull() &&
+				if (children.size() >= 6 && !children[0].IsNull() && !children[1].IsNull() && !children[2].IsNull() &&
 				    !children[3].IsNull() && !children[4].IsNull() && !children[5].IsNull()) {
 					bind_data.geographical_extent = GeographicalExtent(
-					    children[0].GetValue<double>(), children[1].GetValue<double>(),
-					    children[2].GetValue<double>(), children[3].GetValue<double>(),
-					    children[4].GetValue<double>(), children[5].GetValue<double>());
+					    children[0].GetValue<double>(), children[1].GetValue<double>(), children[2].GetValue<double>(),
+					    children[3].GetValue<double>(), children[4].GetValue<double>(), children[5].GetValue<double>());
 				}
 			}
 		} else if (name == "point_of_contact") {
@@ -181,10 +193,14 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 				// Fields: contact_name, email_address, contact_type, role, phone, website, address
 				if (children.size() >= 2 && !children[0].IsNull() && !children[1].IsNull()) {
 					PointOfContact poc(children[0].ToString(), children[1].ToString());
-					if (children.size() > 2 && !children[2].IsNull()) poc.contact_type = children[2].ToString();
-					if (children.size() > 3 && !children[3].IsNull()) poc.role = children[3].ToString();
-					if (children.size() > 4 && !children[4].IsNull()) poc.phone = children[4].ToString();
-					if (children.size() > 5 && !children[5].IsNull()) poc.website = children[5].ToString();
+					if (children.size() > 2 && !children[2].IsNull())
+						poc.contact_type = children[2].ToString();
+					if (children.size() > 3 && !children[3].IsNull())
+						poc.role = children[3].ToString();
+					if (children.size() > 4 && !children[4].IsNull())
+						poc.phone = children[4].ToString();
+					if (children.size() > 5 && !children[5].IsNull())
+						poc.website = children[5].ToString();
 					bind_data.point_of_contact = poc;
 				}
 			}
@@ -209,8 +225,7 @@ static std::optional<std::array<double, 3>> ParseDoubleTriple(const std::string 
 // ============================================================
 
 static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
-                                                    const vector<string> &names,
-                                                    const vector<LogicalType> &sql_types) {
+                                                   const vector<string> &names, const vector<LogicalType> &sql_types) {
 	auto bind_data = make_uniq<CityJSONCopyBindData>();
 	bind_data->file_path = input.info.file_path;
 	bind_data->is_seq = (input.info.format == "cityjsonseq");
@@ -219,7 +234,8 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	// Parse options
 	for (auto &option : input.info.options) {
 		auto loption = StringUtil::Lower(option.first);
-		if (option.second.empty()) continue;
+		if (option.second.empty())
+			continue;
 
 		auto &val = option.second[0];
 
@@ -305,7 +321,7 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 // ============================================================
 
 static unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
-                                                                 const string &file_path) {
+                                                               const string &file_path) {
 	auto gstate = make_uniq<CityJSONCopyGlobalState>();
 	gstate->temp_file_path = file_path;
 	return std::move(gstate);
@@ -350,12 +366,14 @@ static json ValueToJson(const Value &val) {
 
 // Helper: parse JSON string array from a DuckDB list/varchar value
 static json ParseJsonArrayValue(const Value &val) {
-	if (val.IsNull()) return json::array();
+	if (val.IsNull())
+		return json::array();
 
 	auto str = val.ToString();
 	try {
 		auto parsed = json_utils::ParseJson(str);
-		if (parsed.is_array()) return parsed;
+		if (parsed.is_array())
+			return parsed;
 	} catch (...) {
 	}
 
@@ -367,9 +385,8 @@ static json ParseJsonArrayValue(const Value &val) {
 // COPY TO Sink
 // ============================================================
 
-static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p,
-                                 GlobalFunctionData &gstate_p, LocalFunctionData &lstate_p,
-                                 DataChunk &input) {
+static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
+                               LocalFunctionData &lstate_p, DataChunk &input) {
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &lstate = lstate_p.Cast<CityJSONCopyLocalState>();
 
@@ -438,7 +455,8 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 				for (idx_t c = 0; c < struct_type.size(); c++) {
 					auto &field_name = struct_type[c].first;
 					auto &child_val = children[c];
-					if (child_val.IsNull()) continue;
+					if (child_val.IsNull())
+						continue;
 
 					if (field_name == "type") {
 						geom["type"] = child_val.ToString();
@@ -453,15 +471,18 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 					} else if (field_name == "semantics") {
 						try {
 							geom["semantics"] = json_utils::ParseJson(child_val.ToString());
-						} catch (...) {}
+						} catch (...) {
+						}
 					} else if (field_name == "material") {
 						try {
 							geom["material"] = json_utils::ParseJson(child_val.ToString());
-						} catch (...) {}
+						} catch (...) {
+						}
 					} else if (field_name == "texture") {
 						try {
 							geom["texture"] = json_utils::ParseJson(child_val.ToString());
-						} catch (...) {}
+						} catch (...) {
+						}
 					}
 				}
 				if (!geom.contains("type")) {
@@ -475,9 +496,8 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 			} else if (col_type.id() == LogicalTypeId::BLOB) {
 				// WKB BLOB geometry: decode back to CityJSON boundaries
 				auto blob_str = val.GetValueUnsafe<string_t>();
-				auto decoded = WKBDecoder::Decode(
-				    reinterpret_cast<const uint8_t *>(blob_str.GetData()),
-				    blob_str.GetSize());
+				auto decoded =
+				    WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob_str.GetData()), blob_str.GetSize());
 
 				json geom;
 				geom["type"] = decoded.cityjson_type;
@@ -556,8 +576,8 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 // COPY TO Combine
 // ============================================================
 
-static void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data_p,
-                                    GlobalFunctionData &gstate_p, LocalFunctionData &lstate_p) {
+static void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
+                                  LocalFunctionData &lstate_p) {
 	auto &gstate = gstate_p.Cast<CityJSONCopyGlobalState>();
 	auto &lstate = lstate_p.Cast<CityJSONCopyLocalState>();
 
@@ -570,8 +590,7 @@ static void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_
 
 		auto &global_objs = gstate.feature_objects[fid];
 		auto &local_objs = lstate.local_objects[fid];
-		global_objs.insert(global_objs.end(),
-		                   std::make_move_iterator(local_objs.begin()),
+		global_objs.insert(global_objs.end(), std::make_move_iterator(local_objs.begin()),
 		                   std::make_move_iterator(local_objs.end()));
 	}
 
@@ -583,8 +602,7 @@ static void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_
 // COPY TO Finalize
 // ============================================================
 
-static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p,
-                                     GlobalFunctionData &gstate_p) {
+static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p) {
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &gstate = gstate_p.Cast<CityJSONCopyGlobalState>();
 
@@ -603,25 +621,13 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 	auto &output_path = gstate.temp_file_path;
 
 	if (bind_data.is_seq) {
-		CityJSONWriter::WriteCityJSONSeq(
-		    output_path,
-		    write_meta,
-		    gstate.feature_objects,
-		    gstate.feature_order);
+		CityJSONWriter::WriteCityJSONSeq(output_path, write_meta, gstate.feature_objects, gstate.feature_order);
 #ifdef CITYJSON_HAS_FCB
 	} else if (bind_data.is_fcb) {
-		CityJSONWriter::WriteFlatCityBuf(
-		    output_path,
-		    write_meta,
-		    gstate.feature_objects,
-		    gstate.feature_order);
+		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order);
 #endif
 	} else {
-		CityJSONWriter::WriteCityJSON(
-		    output_path,
-		    write_meta,
-		    gstate.feature_objects,
-		    gstate.feature_order);
+		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order);
 	}
 }
 

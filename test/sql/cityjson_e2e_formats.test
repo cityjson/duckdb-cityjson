@@ -1,6 +1,6 @@
 # name: test/sql/cityjson_e2e_formats.test
 # description: E2E test for all format conversion paths (CityJSON, CityJSONSeq, FlatCityBuf)
-# group: [cityjson]
+# group: [sql]
 
 # Tests all 9 conversion paths:
 #   CityJSON    → CityJSON, CityJSONSeq, FlatCityBuf

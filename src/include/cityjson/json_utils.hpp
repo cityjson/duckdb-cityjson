@@ -30,7 +30,7 @@ namespace json_utils {
  * @return Parsed JSON value
  * @throws CityJSONError if parsing fails
  */
-json ParseJson(const std::string& str);
+json ParseJson(const std::string &str);
 
 /**
  * Parse JSON from file
@@ -39,7 +39,7 @@ json ParseJson(const std::string& str);
  * @return Parsed JSON value
  * @throws CityJSONError if file cannot be read or parsing fails
  */
-json ParseJsonFile(const std::string& file_path);
+json ParseJsonFile(const std::string &file_path);
 
 /**
  * Convert JSON value to string
@@ -48,7 +48,7 @@ json ParseJsonFile(const std::string& file_path);
  * @param pretty_print Whether to format with indentation (default: false)
  * @return JSON string representation
  */
-std::string JsonToString(const json& value, bool pretty_print = false);
+std::string JsonToString(const json &value, bool pretty_print = false);
 
 /**
  * Check if JSON value is null or missing
@@ -56,7 +56,7 @@ std::string JsonToString(const json& value, bool pretty_print = false);
  * @param value JSON value to check
  * @return true if value is null or does not exist
  */
-bool IsNullOrMissing(const json& value);
+bool IsNullOrMissing(const json &value);
 
 /**
  * Get string value from JSON with default
@@ -66,7 +66,7 @@ bool IsNullOrMissing(const json& value);
  * @param default_value Default value if key is missing or null
  * @return String value or default
  */
-std::string GetString(const json& obj, const std::string& key, const std::string& default_value = "");
+std::string GetString(const json &obj, const std::string &key, const std::string &default_value = "");
 
 /**
  * Get optional string value from JSON
@@ -75,7 +75,7 @@ std::string GetString(const json& obj, const std::string& key, const std::string
  * @param key Key to lookup
  * @return Optional string value (nullopt if missing or null)
  */
-std::optional<std::string> GetOptionalString(const json& obj, const std::string& key);
+std::optional<std::string> GetOptionalString(const json &obj, const std::string &key);
 
 /**
  * Get integer value from JSON with default
@@ -85,7 +85,7 @@ std::optional<std::string> GetOptionalString(const json& obj, const std::string&
  * @param default_value Default value if key is missing or null
  * @return Integer value or default
  */
-int64_t GetInt(const json& obj, const std::string& key, int64_t default_value = 0);
+int64_t GetInt(const json &obj, const std::string &key, int64_t default_value = 0);
 
 /**
  * Get optional integer value from JSON
@@ -94,7 +94,7 @@ int64_t GetInt(const json& obj, const std::string& key, int64_t default_value = 
  * @param key Key to lookup
  * @return Optional integer value (nullopt if missing or null)
  */
-std::optional<int64_t> GetOptionalInt(const json& obj, const std::string& key);
+std::optional<int64_t> GetOptionalInt(const json &obj, const std::string &key);
 
 /**
  * Get double value from JSON with default
@@ -104,7 +104,7 @@ std::optional<int64_t> GetOptionalInt(const json& obj, const std::string& key);
  * @param default_value Default value if key is missing or null
  * @return Double value or default
  */
-double GetDouble(const json& obj, const std::string& key, double default_value = 0.0);
+double GetDouble(const json &obj, const std::string &key, double default_value = 0.0);
 
 /**
  * Get optional double value from JSON
@@ -113,7 +113,7 @@ double GetDouble(const json& obj, const std::string& key, double default_value =
  * @param key Key to lookup
  * @return Optional double value (nullopt if missing or null)
  */
-std::optional<double> GetOptionalDouble(const json& obj, const std::string& key);
+std::optional<double> GetOptionalDouble(const json &obj, const std::string &key);
 
 /**
  * Get boolean value from JSON with default
@@ -123,7 +123,7 @@ std::optional<double> GetOptionalDouble(const json& obj, const std::string& key)
  * @param default_value Default value if key is missing or null
  * @return Boolean value or default
  */
-bool GetBool(const json& obj, const std::string& key, bool default_value = false);
+bool GetBool(const json &obj, const std::string &key, bool default_value = false);
 
 /**
  * Get optional boolean value from JSON
@@ -132,7 +132,7 @@ bool GetBool(const json& obj, const std::string& key, bool default_value = false
  * @param key Key to lookup
  * @return Optional boolean value (nullopt if missing or null)
  */
-std::optional<bool> GetOptionalBool(const json& obj, const std::string& key);
+std::optional<bool> GetOptionalBool(const json &obj, const std::string &key);
 
 /**
  * Get nested JSON object
@@ -142,7 +142,7 @@ std::optional<bool> GetOptionalBool(const json& obj, const std::string& key);
  * @return Nested JSON object
  * @throws CityJSONError if key is missing or value is not an object
  */
-json GetObject(const json& obj, const std::string& key);
+json GetObject(const json &obj, const std::string &key);
 
 /**
  * Get optional nested JSON object
@@ -151,7 +151,7 @@ json GetObject(const json& obj, const std::string& key);
  * @param key Key to lookup
  * @return Optional JSON object (nullopt if missing or null)
  */
-std::optional<json> GetOptionalObject(const json& obj, const std::string& key);
+std::optional<json> GetOptionalObject(const json &obj, const std::string &key);
 
 /**
  * Get JSON array
@@ -161,7 +161,7 @@ std::optional<json> GetOptionalObject(const json& obj, const std::string& key);
  * @return JSON array
  * @throws CityJSONError if key is missing or value is not an array
  */
-json GetArray(const json& obj, const std::string& key);
+json GetArray(const json &obj, const std::string &key);
 
 /**
  * Get optional JSON array
@@ -170,7 +170,7 @@ json GetArray(const json& obj, const std::string& key);
  * @param key Key to lookup
  * @return Optional JSON array (nullopt if missing or null)
  */
-std::optional<json> GetOptionalArray(const json& obj, const std::string& key);
+std::optional<json> GetOptionalArray(const json &obj, const std::string &key);
 
 /**
  * Check if JSON object has key
@@ -179,7 +179,7 @@ std::optional<json> GetOptionalArray(const json& obj, const std::string& key);
  * @param key Key to check
  * @return true if key exists and is not null
  */
-bool HasKey(const json& obj, const std::string& key);
+bool HasKey(const json &obj, const std::string &key);
 
 /**
  * Read entire file content using DuckDB's FileSystem API
@@ -199,7 +199,7 @@ std::string ReadFileContent(duckdb::ClientContext &context, const std::string &f
  * @param required_keys List of required keys
  * @throws CityJSONError if any required key is missing
  */
-void ValidateRequiredKeys(const json& obj, const std::vector<std::string>& required_keys);
+void ValidateRequiredKeys(const json &obj, const std::vector<std::string> &required_keys);
 
 } // namespace json_utils
 } // namespace cityjson
