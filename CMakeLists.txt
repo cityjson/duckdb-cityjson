@@ -95,13 +95,26 @@ endif()
 option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
 set(FCB_VERSION "v0.7.6" CACHE STRING "FlatCityBuf release version to download")
 
-# Auto-disable FCB on musl builds — the pre-built libfcb_cpp.a is glibc-linked
+# Auto-disable FCB on Linux when the pre-built binary is incompatible.
+# The libfcb_cpp.a binary requires glibc 2.32+ (__libc_single_threaded symbol)
+# and dynamically links OpenSSL via native-tls. Disable on musl and old glibc.
 if(CITYJSON_ENABLE_FCB AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   include(CheckSymbolExists)
+  include(CheckCSourceCompiles)
   check_symbol_exists(__GLIBC__ "stdlib.h" HAVE_GLIBC)
   if(NOT HAVE_GLIBC)
     message(STATUS "FlatCityBuf: disabling on non-glibc Linux (pre-built binary requires glibc)")
     set(CITYJSON_ENABLE_FCB OFF)
+  else()
+    # Check for glibc 2.32+ symbol required by the pre-built binary
+    check_c_source_compiles("
+      extern char __libc_single_threaded;
+      int main() { return __libc_single_threaded; }
+    " HAVE_LIBC_SINGLE_THREADED)
+    if(NOT HAVE_LIBC_SINGLE_THREADED)
+      message(STATUS "FlatCityBuf: disabling (glibc too old, missing __libc_single_threaded from glibc 2.32+)")
+      set(CITYJSON_ENABLE_FCB OFF)
+    endif()
   endif()
 endif()
 
@@ -188,7 +201,7 @@ if(CITYJSON_ENABLE_FCB)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     set(FCB_PLATFORM_LIBS ${SECURITY_FRAMEWORK} ${COREFOUNDATION_FRAMEWORK} ${SYSTEMCONFIGURATION_FRAMEWORK})
   elseif(FCB_OS STREQUAL "linux")
-    set(FCB_PLATFORM_LIBS pthread dl m)
+    set(FCB_PLATFORM_LIBS pthread dl m OpenSSL::SSL OpenSSL::Crypto)
   elseif(FCB_OS STREQUAL "windows")
     set(FCB_PLATFORM_LIBS ws2_32 bcrypt userenv ntdll)
   endif()

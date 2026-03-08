@@ -159,8 +159,8 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 				auto parsed = extract_xyz_struct(val);
 				if (parsed.has_value()) {
 					if (!bind_data.transform.has_value()) {
-							bind_data.transform = Transform();
-						}
+						bind_data.transform = Transform();
+					}
 					bind_data.transform->scale = parsed.value();
 				}
 			} else {
@@ -169,8 +169,8 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 				if (sscanf(s.c_str(), "%lf,%lf,%lf", &scale[0], &scale[1], &scale[2]) == 3 ||
 				    sscanf(s.c_str(), "[%lf,%lf,%lf]", &scale[0], &scale[1], &scale[2]) == 3) {
 					if (!bind_data.transform.has_value()) {
-							bind_data.transform = Transform();
-						}
+						bind_data.transform = Transform();
+					}
 					bind_data.transform->scale = scale;
 				}
 			}
@@ -179,8 +179,8 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 				auto parsed = extract_xyz_struct(val);
 				if (parsed.has_value()) {
 					if (!bind_data.transform.has_value()) {
-							bind_data.transform = Transform();
-						}
+						bind_data.transform = Transform();
+					}
 					bind_data.transform->translate = parsed.value();
 				}
 			} else {
@@ -189,8 +189,8 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 				if (sscanf(s.c_str(), "%lf,%lf,%lf", &translate[0], &translate[1], &translate[2]) == 3 ||
 				    sscanf(s.c_str(), "[%lf,%lf,%lf]", &translate[0], &translate[1], &translate[2]) == 3) {
 					if (!bind_data.transform.has_value()) {
-							bind_data.transform = Transform();
-						}
+						bind_data.transform = Transform();
+					}
 					bind_data.transform->translate = translate;
 				}
 			}
@@ -211,17 +211,17 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 				if (children.size() >= 2 && !children[0].IsNull() && !children[1].IsNull()) {
 					PointOfContact poc(children[0].ToString(), children[1].ToString());
 					if (children.size() > 2 && !children[2].IsNull()) {
-							poc.contact_type = children[2].ToString();
-						}
+						poc.contact_type = children[2].ToString();
+					}
 					if (children.size() > 3 && !children[3].IsNull()) {
-							poc.role = children[3].ToString();
-						}
+						poc.role = children[3].ToString();
+					}
 					if (children.size() > 4 && !children[4].IsNull()) {
-							poc.phone = children[4].ToString();
-						}
+						poc.phone = children[4].ToString();
+					}
 					if (children.size() > 5 && !children[5].IsNull()) {
-							poc.website = children[5].ToString();
-						}
+						poc.website = children[5].ToString();
+					}
 					bind_data.point_of_contact = poc;
 				}
 			}
@@ -396,8 +396,8 @@ static json ParseJsonArrayValue(const Value &val) {
 	try {
 		auto parsed = json_utils::ParseJson(str);
 		if (parsed.is_array()) {
-				return parsed;
-			}
+			return parsed;
+		}
 	} catch (...) {
 	}
 
@@ -480,8 +480,8 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 					auto &field_name = struct_type[c].first;
 					auto &child_val = children[c];
 					if (child_val.IsNull()) {
-							continue;
-						}
+						continue;
+					}
 
 					if (field_name == "type") {
 						geom["type"] = child_val.ToString();
