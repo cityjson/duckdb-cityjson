@@ -1,23 +1,16 @@
 # name: test/sql/cityjson_e2e_formats.test
-# description: E2E test for all format conversion paths (CityJSON, CityJSONSeq, FlatCityBuf)
+# description: E2E test for CityJSON and CityJSONSeq format conversion paths
 # group: [sql]
 
-# Tests all 9 conversion paths:
-#   CityJSON    → CityJSON, CityJSONSeq, FlatCityBuf
-#   CityJSONSeq → CityJSON, CityJSONSeq, FlatCityBuf
-#   FlatCityBuf → CityJSON, CityJSONSeq, FlatCityBuf
-#
-# Also tests a full chain: CityJSONSeq → CityJSON → FlatCityBuf → CityJSONSeq
-# to verify data integrity across multiple conversions.
+# Tests 4 conversion paths:
+#   CityJSON    → CityJSON, CityJSONSeq
+#   CityJSONSeq → CityJSON, CityJSONSeq
 
 require cityjson
 
 # ============================================================
-# Phase 1: Establish source files for each format
+# Phase 1: Establish source files
 # ============================================================
-# Use CityJSONSeq (sample.city.jsonl) as the canonical source.
-# Generate CityJSON and FlatCityBuf from it so all three formats
-# start with identical data (2 rows).
 
 # Source: CityJSONSeq (local file, 2 rows)
 query I
@@ -35,18 +28,8 @@ SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/source.city.json');
 ----
 2
 
-# Generate source FlatCityBuf from CityJSONSeq
-statement ok
-COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
-TO '__TEST_DIR__/source.fcb' (FORMAT flatcitybuf);
-
-query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/source.fcb');
-----
-2
-
 # ============================================================
-# Phase 2: CityJSON → all formats
+# Phase 2: CityJSON → CityJSON, CityJSONSeq
 # ============================================================
 
 # CityJSON → CityJSON
@@ -69,18 +52,8 @@ SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cj_to_cjseq.city.jsonl');
 ----
 2
 
-# CityJSON → FlatCityBuf
-statement ok
-COPY (SELECT * FROM read_cityjson('__TEST_DIR__/source.city.json'))
-TO '__TEST_DIR__/cj_to_fcb.fcb' (FORMAT flatcitybuf);
-
-query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/cj_to_fcb.fcb');
-----
-2
-
 # ============================================================
-# Phase 3: CityJSONSeq → all formats
+# Phase 3: CityJSONSeq → CityJSON, CityJSONSeq
 # ============================================================
 
 # CityJSONSeq → CityJSON
@@ -103,52 +76,8 @@ SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cjseq_to_cjseq.city.jsonl');
 ----
 2
 
-# CityJSONSeq → FlatCityBuf
-statement ok
-COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
-TO '__TEST_DIR__/cjseq_to_fcb.fcb' (FORMAT flatcitybuf);
-
-query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/cjseq_to_fcb.fcb');
-----
-2
-
 # ============================================================
-# Phase 4: FlatCityBuf → all formats
-# ============================================================
-
-# FlatCityBuf → CityJSON
-statement ok
-COPY (SELECT * FROM read_flatcitybuf('__TEST_DIR__/source.fcb'))
-TO '__TEST_DIR__/fcb_to_cj.city.json' (FORMAT cityjson);
-
-query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/fcb_to_cj.city.json');
-----
-2
-
-# FlatCityBuf → CityJSONSeq
-statement ok
-COPY (SELECT * FROM read_flatcitybuf('__TEST_DIR__/source.fcb'))
-TO '__TEST_DIR__/fcb_to_cjseq.city.jsonl' (FORMAT cityjsonseq);
-
-query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/fcb_to_cjseq.city.jsonl');
-----
-2
-
-# FlatCityBuf → FlatCityBuf
-statement ok
-COPY (SELECT * FROM read_flatcitybuf('__TEST_DIR__/source.fcb'))
-TO '__TEST_DIR__/fcb_to_fcb.fcb' (FORMAT flatcitybuf);
-
-query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/fcb_to_fcb.fcb');
-----
-2
-
-# ============================================================
-# Phase 5: Metadata readable for all converted files
+# Phase 4: Metadata readable for converted files
 # ============================================================
 
 # CityJSON metadata
@@ -159,11 +88,6 @@ SELECT version FROM cityjson_metadata('__TEST_DIR__/cj_to_cj.city.json');
 
 query T
 SELECT version FROM cityjson_metadata('__TEST_DIR__/cjseq_to_cj.city.json');
-----
-2.0
-
-query T
-SELECT version FROM cityjson_metadata('__TEST_DIR__/fcb_to_cj.city.json');
 ----
 2.0
 
@@ -178,37 +102,9 @@ SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/cjseq_to_cjseq.city.jsonl
 ----
 2.0
 
-query T
-SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/fcb_to_cjseq.city.jsonl');
-----
-2.0
-
-# FlatCityBuf metadata
-query T
-SELECT version FROM flatcitybuf_metadata('__TEST_DIR__/cj_to_fcb.fcb');
-----
-2.0
-
-query T
-SELECT version FROM flatcitybuf_metadata('__TEST_DIR__/cjseq_to_fcb.fcb');
-----
-2.0
-
-query T
-SELECT version FROM flatcitybuf_metadata('__TEST_DIR__/fcb_to_fcb.fcb');
-----
-2.0
-
 # ============================================================
-# Phase 6: Data integrity — attributes preserved across formats
+# Phase 5: Data integrity — attributes preserved across formats
 # ============================================================
-
-# Load reference data
-statement ok
-CREATE TABLE ref_data AS
-SELECT id, object_type, yearOfConstruction
-FROM read_cityjsonseq('test/data/sample.city.jsonl')
-ORDER BY id;
 
 # Check CityJSON output preserves attributes
 query TI
@@ -223,95 +119,6 @@ Building	2021
 query TI
 SELECT object_type, yearOfConstruction
 FROM read_cityjsonseq('__TEST_DIR__/cj_to_cjseq.city.jsonl')
-ORDER BY yearOfConstruction;
-----
-Building	2020
-Building	2021
-
-# Check FlatCityBuf output preserves attributes
-query TI
-SELECT object_type, yearOfConstruction
-FROM read_flatcitybuf('__TEST_DIR__/cjseq_to_fcb.fcb')
-ORDER BY yearOfConstruction;
-----
-Building	2020
-Building	2021
-
-statement ok
-DROP TABLE ref_data;
-
-# ============================================================
-# Phase 7: Full chain — CityJSONSeq → CityJSON → FCB → CityJSONSeq
-# Verifies data survives multiple format conversions.
-# ============================================================
-
-# Step 1: CityJSONSeq → CityJSON (already done: cjseq_to_cj.city.json)
-
-# Step 2: CityJSON → FlatCityBuf
-statement ok
-COPY (SELECT * FROM read_cityjson('__TEST_DIR__/cjseq_to_cj.city.json'))
-TO '__TEST_DIR__/chain_step2.fcb' (FORMAT flatcitybuf);
-
-query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/chain_step2.fcb');
-----
-2
-
-# Step 3: FlatCityBuf → CityJSONSeq
-statement ok
-COPY (SELECT * FROM read_flatcitybuf('__TEST_DIR__/chain_step2.fcb'))
-TO '__TEST_DIR__/chain_step3.city.jsonl' (FORMAT cityjsonseq);
-
-query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/chain_step3.city.jsonl');
-----
-2
-
-# Verify attributes survived the full chain
-query TI
-SELECT object_type, yearOfConstruction
-FROM read_cityjsonseq('__TEST_DIR__/chain_step3.city.jsonl')
-ORDER BY yearOfConstruction;
-----
-Building	2020
-Building	2021
-
-# Verify metadata survived the full chain
-query T
-SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/chain_step3.city.jsonl');
-----
-2.0
-
-# ============================================================
-# Phase 8: Reverse chain — FlatCityBuf → CityJSONSeq → CityJSON → FCB
-# ============================================================
-
-# Step 1: FlatCityBuf → CityJSONSeq (already done: fcb_to_cjseq.city.jsonl)
-
-# Step 2: CityJSONSeq → CityJSON
-statement ok
-COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/fcb_to_cjseq.city.jsonl'))
-TO '__TEST_DIR__/rchain_step2.city.json' (FORMAT cityjson);
-
-query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rchain_step2.city.json');
-----
-2
-
-# Step 3: CityJSON → FlatCityBuf
-statement ok
-COPY (SELECT * FROM read_cityjson('__TEST_DIR__/rchain_step2.city.json'))
-TO '__TEST_DIR__/rchain_step3.fcb' (FORMAT flatcitybuf);
-
-query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/rchain_step3.fcb');
-----
-2
-
-# Verify attributes survived the reverse chain
-query TI
-SELECT object_type, yearOfConstruction
-FROM read_flatcitybuf('__TEST_DIR__/rchain_step3.fcb')
 ORDER BY yearOfConstruction;
 ----
 Building	2020

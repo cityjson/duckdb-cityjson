@@ -93,7 +93,18 @@ endif()
 # To enable, set -DCITYJSON_ENABLE_FCB=ON
 # Downloads pre-built libfcb_cpp binaries from GitHub releases
 option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
-set(FCB_VERSION "v0.7.5" CACHE STRING "FlatCityBuf release version to download")
+set(FCB_VERSION "v0.7.6" CACHE STRING "FlatCityBuf release version to download")
+
+# Auto-disable FCB on musl builds — the pre-built libfcb_cpp.a is glibc-linked
+if(CITYJSON_ENABLE_FCB AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include(CheckSymbolExists)
+  check_symbol_exists(__GLIBC__ "stdlib.h" HAVE_GLIBC)
+  if(NOT HAVE_GLIBC)
+    message(STATUS "FlatCityBuf: disabling on non-glibc Linux (pre-built binary requires glibc)")
+    set(CITYJSON_ENABLE_FCB OFF)
+  endif()
+endif()
+
 if(CITYJSON_ENABLE_FCB)
   # Detect platform and architecture
   if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
