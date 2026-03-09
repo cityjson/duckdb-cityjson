@@ -119,7 +119,7 @@ if(CITYJSON_ENABLE_FCB AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 if(CITYJSON_ENABLE_FCB)
-  # Detect platform and architecture
+  # Detect platform — gracefully disable on unsupported platforms
   if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(FCB_OS "macos")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -127,18 +127,32 @@ if(CITYJSON_ENABLE_FCB)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(FCB_OS "windows")
   else()
-    message(FATAL_ERROR "FlatCityBuf: unsupported platform ${CMAKE_SYSTEM_NAME}")
+    message(STATUS "FlatCityBuf: disabling on unsupported platform ${CMAKE_SYSTEM_NAME}")
+    set(CITYJSON_ENABLE_FCB OFF)
+  endif()
+endif()
+
+if(CITYJSON_ENABLE_FCB)
+  # Normalise architecture name.
+  # On macOS, CMAKE_OSX_ARCHITECTURES reflects the actual target arch during
+  # cross-compilation (e.g. building x86_64 on an arm64 host), whereas
+  # CMAKE_SYSTEM_PROCESSOR always reports the host architecture.
+  set(FCB_DETECTED_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_OSX_ARCHITECTURES)
+    set(FCB_DETECTED_ARCH "${CMAKE_OSX_ARCHITECTURES}")
   endif()
 
-  # Normalise architecture name
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+  if(FCB_DETECTED_ARCH MATCHES "arm64|aarch64|ARM64")
     set(FCB_ARCH "aarch64")
-  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+  elseif(FCB_DETECTED_ARCH MATCHES "x86_64|AMD64|amd64")
     set(FCB_ARCH "x86_64")
   else()
-    message(FATAL_ERROR "FlatCityBuf: unsupported architecture ${CMAKE_SYSTEM_PROCESSOR}")
+    message(STATUS "FlatCityBuf: disabling on unsupported architecture ${FCB_DETECTED_ARCH}")
+    set(CITYJSON_ENABLE_FCB OFF)
   endif()
+endif()
 
+if(CITYJSON_ENABLE_FCB)
   # Download pre-built binary
   set(FCB_DIR "${CMAKE_BINARY_DIR}/fcb_cpp")
   if(FCB_OS STREQUAL "windows")
@@ -155,20 +169,43 @@ if(CITYJSON_ENABLE_FCB)
     list(GET FCB_DL_STATUS 0 FCB_DL_CODE)
     if(NOT FCB_DL_CODE EQUAL 0)
       list(GET FCB_DL_STATUS 1 FCB_DL_MSG)
-      message(FATAL_ERROR "Failed to download FlatCityBuf: ${FCB_DL_MSG}\nURL: ${FCB_URL}")
+      message(WARNING "Failed to download FlatCityBuf: ${FCB_DL_MSG}\nURL: ${FCB_URL}")
+      set(CITYJSON_ENABLE_FCB OFF)
     endif()
+  endif()
+endif()
 
+if(CITYJSON_ENABLE_FCB)
+  if(NOT EXISTS "${FCB_DIR}/libfcb_cpp.a" AND NOT EXISTS "${FCB_DIR}/fcb_cpp.lib")
     file(MAKE_DIRECTORY "${FCB_DIR}")
+    # Use "xf" (auto-detect) rather than "xzf" (gzip-only) so both .tar.gz
+    # and .zip archives are extracted correctly.
     execute_process(
-      COMMAND ${CMAKE_COMMAND} -E tar xzf "${FCB_DOWNLOAD_PATH}"
+      COMMAND ${CMAKE_COMMAND} -E tar xf "${FCB_DOWNLOAD_PATH}"
       WORKING_DIRECTORY "${FCB_DIR}"
       RESULT_VARIABLE FCB_EXTRACT_RESULT
     )
     if(NOT FCB_EXTRACT_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to extract FlatCityBuf archive")
+      message(WARNING "Failed to extract FlatCityBuf archive")
+      set(CITYJSON_ENABLE_FCB OFF)
     endif()
   endif()
+endif()
 
+if(CITYJSON_ENABLE_FCB)
+  # Verify the expected library file exists after download/extraction
+  if(FCB_OS STREQUAL "windows")
+    set(FCB_LIB_CHECK "${FCB_DIR}/fcb_cpp.lib")
+  else()
+    set(FCB_LIB_CHECK "${FCB_DIR}/libfcb_cpp.a")
+  endif()
+  if(NOT EXISTS "${FCB_LIB_CHECK}")
+    message(WARNING "FlatCityBuf: expected library not found at ${FCB_LIB_CHECK}, disabling")
+    set(CITYJSON_ENABLE_FCB OFF)
+  endif()
+endif()
+
+if(CITYJSON_ENABLE_FCB)
   # Determine the static library path
   if(FCB_OS STREQUAL "windows")
     set(FCB_LIB_PATH "${FCB_DIR}/fcb_cpp.lib")
