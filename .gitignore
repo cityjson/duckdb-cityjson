@@ -8,5 +8,6 @@ test/python/__pycache__/
 .Rhistory
 data/
 *.parquet
-settings.local.json
+.claude/*local*
 .superset/
+Note.md
