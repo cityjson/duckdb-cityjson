@@ -150,6 +150,13 @@ if(CITYJSON_ENABLE_FCB)
     message(STATUS "FlatCityBuf: disabling on unsupported architecture ${FCB_DETECTED_ARCH}")
     set(CITYJSON_ENABLE_FCB OFF)
   endif()
+
+  # The macOS x86_64 pre-built binary in the current release is actually arm64
+  # (upstream packaging issue). Disable FCB for this target until fixed.
+  if(FCB_OS STREQUAL "macos" AND FCB_ARCH STREQUAL "x86_64")
+    message(STATUS "FlatCityBuf: disabling on macOS x86_64 (no valid pre-built binary)")
+    set(CITYJSON_ENABLE_FCB OFF)
+  endif()
 endif()
 
 if(CITYJSON_ENABLE_FCB)
