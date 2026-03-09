@@ -216,6 +216,26 @@ if(CITYJSON_ENABLE_FCB)
   set(DUCKDB_EXTRA_LINK_FLAGS "${FCB_LIB_PATH};${FCB_PLATFORM_LIBS}" CACHE INTERNAL "Extra link flags" FORCE)
 
   message(STATUS "FlatCityBuf support enabled (${FCB_VERSION}, ${FCB_OS}-${FCB_ARCH})")
+else()
+  # When FCB is disabled, replace the FCB test file with a no-op so the test
+  # runner doesn't try to call non-existent flatcitybuf functions.
+  set(FCB_TEST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/test/sql/cityjson_e2e_fcb.test")
+  if(EXISTS "${FCB_TEST_FILE}")
+    file(WRITE "${FCB_TEST_FILE}"
+      "# name: test/sql/cityjson_e2e_fcb.test\n"
+      "# description: FlatCityBuf tests (skipped — FCB not available on this platform)\n"
+      "# group: [sql]\n"
+      "\n"
+      "require cityjson\n"
+      "\n"
+      "# FCB support was disabled at build time\n"
+      "query I\n"
+      "SELECT 1;\n"
+      "----\n"
+      "1\n"
+    )
+    message(STATUS "FlatCityBuf support disabled — FCB test replaced with no-op")
+  endif()
 endif()
 
 # Find OpenSSL after DuckDB targets are set up
