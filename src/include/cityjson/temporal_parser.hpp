@@ -18,7 +18,7 @@ namespace cityjson {
  * @return Days since epoch (1970-01-01)
  * @throws CityJSONError::Conversion if format is invalid
  */
-int32_t ParseDateString(const std::string& date_str);
+int32_t ParseDateString(const std::string &date_str);
 
 /**
  * Parse timestamp string in ISO 8601 format
@@ -39,7 +39,7 @@ int32_t ParseDateString(const std::string& date_str);
  * @return Microseconds since epoch (1970-01-01 00:00:00 UTC)
  * @throws CityJSONError::Conversion if format is invalid
  */
-int64_t ParseTimestampString(const std::string& timestamp_str);
+int64_t ParseTimestampString(const std::string &timestamp_str);
 
 /**
  * Parse time string in HH:MM:SS[.ffffff] format
@@ -57,7 +57,7 @@ int64_t ParseTimestampString(const std::string& timestamp_str);
  * @return Microseconds since midnight
  * @throws CityJSONError::Conversion if format is invalid
  */
-int64_t ParseTimeString(const std::string& time_str);
+int64_t ParseTimeString(const std::string &time_str);
 
 } // namespace cityjson
 } // namespace duckdb

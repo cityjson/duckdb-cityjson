@@ -3,9 +3,15 @@
 #include "cityjson/types.hpp"
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/json_utils.hpp"
 #include <string>
 #include <vector>
 #include <memory>
+#include <istream>
+
+namespace duckdb {
+class ClientContext;
+}
 
 namespace duckdb {
 namespace cityjson {
@@ -16,63 +22,63 @@ namespace cityjson {
  */
 class CityJSONReader {
 public:
-    virtual ~CityJSONReader() = default;
+	virtual ~CityJSONReader() = default;
 
-    /**
-     * Get reader name/identifier
-     * Typically returns the file path
-     *
-     * @return Reader name
-     */
-    virtual std::string Name() const = 0;
+	/**
+	 * Get reader name/identifier
+	 * Typically returns the file path
+	 *
+	 * @return Reader name
+	 */
+	virtual std::string Name() const = 0;
 
-    /**
-     * Read CityJSON metadata (version, transform, CRS, etc.)
-     * Does not read CityObjects, only metadata fields
-     *
-     * @return CityJSON struct with metadata populated
-     * @throws CityJSONError on read or parse failure
-     */
-    virtual CityJSON ReadMetadata() const = 0;
+	/**
+	 * Read CityJSON metadata (version, transform, CRS, etc.)
+	 * Does not read CityObjects, only metadata fields
+	 *
+	 * @return CityJSON struct with metadata populated
+	 * @throws CityJSONError on read or parse failure
+	 */
+	virtual CityJSON ReadMetadata() const = 0;
 
-    /**
-     * Read the Nth chunk from the file
-     * Chunks are divided by STANDARD_VECTOR_SIZE (2048 CityObjects per chunk)
-     *
-     * @param n Chunk index (0-based)
-     * @return CityJSONFeatureChunk containing the Nth chunk
-     * @throws CityJSONError on read or parse failure
-     */
-    virtual CityJSONFeatureChunk ReadNthChunk(size_t n) const = 0;
+	/**
+	 * Read the Nth chunk from the file
+	 * Chunks are divided by STANDARD_VECTOR_SIZE (2048 CityObjects per chunk)
+	 *
+	 * @param n Chunk index (0-based)
+	 * @return CityJSONFeatureChunk containing the Nth chunk
+	 * @throws CityJSONError on read or parse failure
+	 */
+	virtual CityJSONFeatureChunk ReadNthChunk(size_t n) const = 0;
 
-    /**
-     * Read all chunks from the file
-     * Loads entire file and divides into chunks
-     *
-     * @return CityJSONFeatureChunk containing all data
-     * @throws CityJSONError on read or parse failure
-     */
-    virtual CityJSONFeatureChunk ReadAllChunks() const = 0;
+	/**
+	 * Read all chunks from the file
+	 * Loads entire file and divides into chunks
+	 *
+	 * @return CityJSONFeatureChunk containing all data
+	 * @throws CityJSONError on read or parse failure
+	 */
+	virtual CityJSONFeatureChunk ReadAllChunks() const = 0;
 
-    /**
-     * Read first N features from the file
-     * Used for schema inference and sampling
-     *
-     * @param n Number of features to read
-     * @return Vector of CityJSONFeature records
-     * @throws CityJSONError on read or parse failure
-     */
-    virtual std::vector<CityJSONFeature> ReadNFeatures(size_t n) const = 0;
+	/**
+	 * Read first N features from the file
+	 * Used for schema inference and sampling
+	 *
+	 * @param n Number of features to read
+	 * @return Vector of CityJSONFeature records
+	 * @throws CityJSONError on read or parse failure
+	 */
+	virtual std::vector<CityJSONFeature> ReadNFeatures(size_t n) const = 0;
 
-    /**
-     * Get complete column schema
-     * Includes both predefined columns and inferred attribute columns
-     * Performs schema inference by sampling features
-     *
-     * @return Vector of Column definitions
-     * @throws CityJSONError on schema inference failure
-     */
-    virtual std::vector<Column> Columns() const = 0;
+	/**
+	 * Get complete column schema
+	 * Includes both predefined columns and inferred attribute columns
+	 * Performs schema inference by sampling features
+	 *
+	 * @return Vector of Column definitions
+	 * @throws CityJSONError on schema inference failure
+	 */
+	virtual std::vector<Column> Columns() const = 0;
 };
 
 /**
@@ -81,28 +87,41 @@ public:
  */
 class LocalCityJSONReader : public CityJSONReader {
 public:
-    /**
-     * Construct reader for local CityJSON file
-     *
-     * @param file_path Path to .city.json file
-     * @param sample_lines Number of features to sample for schema inference
-     */
-    LocalCityJSONReader(const std::string& file_path, size_t sample_lines = 100);
+	/**
+	 * Construct reader for local CityJSON file
+	 *
+	 * @param file_path Path to .city.json file
+	 * @param sample_lines Number of features to sample for schema inference
+	 */
+	explicit LocalCityJSONReader(const std::string &file_path, size_t sample_lines = 100);
 
-    std::string Name() const override;
-    CityJSON ReadMetadata() const override;
-    CityJSONFeatureChunk ReadNthChunk(size_t n) const override;
-    CityJSONFeatureChunk ReadAllChunks() const override;
-    std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
-    std::vector<Column> Columns() const override;
+	/**
+	 * Construct reader from pre-loaded content
+	 *
+	 * @param name Display name (e.g. file path or URL)
+	 * @param content File content as string
+	 * @param sample_lines Number of features to sample for schema inference
+	 */
+	LocalCityJSONReader(const std::string &name, std::string content, size_t sample_lines);
+
+	std::string Name() const override;
+	CityJSON ReadMetadata() const override;
+	CityJSONFeatureChunk ReadNthChunk(size_t n) const override;
+	CityJSONFeatureChunk ReadAllChunks() const override;
+	std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
+	std::vector<Column> Columns() const override;
 
 private:
-    std::string file_path_;         // Path to CityJSON file
-    size_t sample_lines_;           // Number of features to sample for schema inference
+	std::string file_path_;              // Path to CityJSON file
+	size_t sample_lines_;                // Number of features to sample for schema inference
+	std::optional<std::string> content_; // Pre-loaded file content (for remote files)
 
-    // Caching fields (mutable for lazy initialization in const methods)
-    mutable std::optional<CityJSON> cached_metadata_;
-    mutable std::optional<std::vector<Column>> cached_columns_;
+	// Caching fields (mutable for lazy initialization in const methods)
+	mutable std::optional<CityJSON> cached_metadata_;
+	mutable std::optional<std::vector<Column>> cached_columns_;
+
+	// Internal helper: get JSON object (from content_ or file)
+	json LoadJson() const;
 };
 
 /**
@@ -111,28 +130,41 @@ private:
  */
 class LocalCityJSONSeqReader : public CityJSONReader {
 public:
-    /**
-     * Construct reader for local CityJSONSeq file
-     *
-     * @param file_path Path to .city.jsonl file
-     * @param sample_lines Number of features to sample for schema inference
-     */
-    LocalCityJSONSeqReader(const std::string& file_path, size_t sample_lines = 100);
+	/**
+	 * Construct reader for local CityJSONSeq file
+	 *
+	 * @param file_path Path to .city.jsonl file
+	 * @param sample_lines Number of features to sample for schema inference
+	 */
+	explicit LocalCityJSONSeqReader(const std::string &file_path, size_t sample_lines = 100);
 
-    std::string Name() const override;
-    CityJSON ReadMetadata() const override;
-    CityJSONFeatureChunk ReadNthChunk(size_t n) const override;
-    CityJSONFeatureChunk ReadAllChunks() const override;
-    std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
-    std::vector<Column> Columns() const override;
+	/**
+	 * Construct reader from pre-loaded content
+	 *
+	 * @param name Display name (e.g. file path or URL)
+	 * @param content File content as string
+	 * @param sample_lines Number of features to sample for schema inference
+	 */
+	LocalCityJSONSeqReader(const std::string &name, std::string content, size_t sample_lines);
+
+	std::string Name() const override;
+	CityJSON ReadMetadata() const override;
+	CityJSONFeatureChunk ReadNthChunk(size_t n) const override;
+	CityJSONFeatureChunk ReadAllChunks() const override;
+	std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
+	std::vector<Column> Columns() const override;
 
 private:
-    std::string file_path_;         // Path to CityJSONSeq file
-    size_t sample_lines_;           // Number of features to sample for schema inference
+	std::string file_path_;              // Path to CityJSONSeq file
+	size_t sample_lines_;                // Number of features to sample for schema inference
+	std::optional<std::string> content_; // Pre-loaded file content (for remote files)
 
-    // Caching fields (mutable for lazy initialization in const methods)
-    mutable std::optional<CityJSON> cached_metadata_;
-    mutable std::optional<std::vector<Column>> cached_columns_;
+	// Caching fields (mutable for lazy initialization in const methods)
+	mutable std::optional<CityJSON> cached_metadata_;
+	mutable std::optional<std::vector<Column>> cached_columns_;
+
+	// Internal helper: get an input stream (from content_ or file)
+	std::unique_ptr<std::istream> OpenStream() const;
 };
 
 /**
@@ -145,7 +177,17 @@ private:
  * @return Unique pointer to appropriate reader implementation
  * @throws CityJSONError if format cannot be determined or file doesn't exist
  */
-std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string& file_name);
+std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name);
+
+/**
+ * Factory function using DuckDB FileSystem API for remote/local files
+ * Reads file content via FileSystem, then creates the appropriate reader
+ *
+ * @param context DuckDB client context
+ * @param file_name Path or URL to CityJSON file
+ * @return Unique pointer to appropriate reader implementation
+ */
+std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &context, const std::string &file_name);
 
 } // namespace cityjson
 } // namespace duckdb

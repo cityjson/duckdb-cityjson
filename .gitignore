@@ -9,3 +9,4 @@ test/python/__pycache__/
 data/
 *.parquet
 settings.local.json
+.superset/

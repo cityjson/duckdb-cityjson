@@ -24,8 +24,9 @@ double CityJSONProgress(ClientContext &context, const FunctionData *bind_data_p,
 	auto &global_state = global_state_p->Cast<CityJSONGlobalState>();
 
 	size_t total = bind_data.chunks.TotalCityObjectCount();
-	if (total == 0)
+	if (total == 0) {
 		return 1.0;
+	}
 
 	size_t processed = global_state.batch_index.load() * STANDARD_VECTOR_SIZE;
 	return std::min(1.0, static_cast<double>(processed) / static_cast<double>(total));

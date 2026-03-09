@@ -1,0 +1,125 @@
+# name: test/sql/cityjson_e2e_formats.test
+# description: E2E test for CityJSON and CityJSONSeq format conversion paths
+# group: [sql]
+
+# Tests 4 conversion paths:
+#   CityJSON    → CityJSON, CityJSONSeq
+#   CityJSONSeq → CityJSON, CityJSONSeq
+
+require cityjson
+
+# ============================================================
+# Phase 1: Establish source files
+# ============================================================
+
+# Source: CityJSONSeq (local file, 2 rows)
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl');
+----
+2
+
+# Generate source CityJSON from CityJSONSeq
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
+TO '__TEST_DIR__/source.city.json' (FORMAT cityjson);
+
+query I
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/source.city.json');
+----
+2
+
+# ============================================================
+# Phase 2: CityJSON → CityJSON, CityJSONSeq
+# ============================================================
+
+# CityJSON → CityJSON
+statement ok
+COPY (SELECT * FROM read_cityjson('__TEST_DIR__/source.city.json'))
+TO '__TEST_DIR__/cj_to_cj.city.json' (FORMAT cityjson);
+
+query I
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/cj_to_cj.city.json');
+----
+2
+
+# CityJSON → CityJSONSeq
+statement ok
+COPY (SELECT * FROM read_cityjson('__TEST_DIR__/source.city.json'))
+TO '__TEST_DIR__/cj_to_cjseq.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cj_to_cjseq.city.jsonl');
+----
+2
+
+# ============================================================
+# Phase 3: CityJSONSeq → CityJSON, CityJSONSeq
+# ============================================================
+
+# CityJSONSeq → CityJSON
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
+TO '__TEST_DIR__/cjseq_to_cj.city.json' (FORMAT cityjson);
+
+query I
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/cjseq_to_cj.city.json');
+----
+2
+
+# CityJSONSeq → CityJSONSeq
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
+TO '__TEST_DIR__/cjseq_to_cjseq.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cjseq_to_cjseq.city.jsonl');
+----
+2
+
+# ============================================================
+# Phase 4: Metadata readable for converted files
+# ============================================================
+
+# CityJSON metadata
+query T
+SELECT version FROM cityjson_metadata('__TEST_DIR__/cj_to_cj.city.json');
+----
+2.0
+
+query T
+SELECT version FROM cityjson_metadata('__TEST_DIR__/cjseq_to_cj.city.json');
+----
+2.0
+
+# CityJSONSeq metadata
+query T
+SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/cj_to_cjseq.city.jsonl');
+----
+2.0
+
+query T
+SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/cjseq_to_cjseq.city.jsonl');
+----
+2.0
+
+# ============================================================
+# Phase 5: Data integrity — attributes preserved across formats
+# ============================================================
+
+# Check CityJSON output preserves attributes
+query TI
+SELECT object_type, yearOfConstruction
+FROM read_cityjson('__TEST_DIR__/cjseq_to_cj.city.json')
+ORDER BY yearOfConstruction;
+----
+Building	2020
+Building	2021
+
+# Check CityJSONSeq output preserves attributes
+query TI
+SELECT object_type, yearOfConstruction
+FROM read_cityjsonseq('__TEST_DIR__/cj_to_cjseq.city.jsonl')
+ORDER BY yearOfConstruction;
+----
+Building	2020
+Building	2021

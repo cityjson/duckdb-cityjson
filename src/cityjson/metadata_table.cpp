@@ -100,28 +100,20 @@ static Value CreateTransformValue(const std::optional<Transform> &transform, boo
 	return Value::STRUCT(std::move(children));
 }
 
-// Helper to create a reference system struct value
-static Value CreateReferenceSystemValue(const std::optional<CRS> &crs) {
-	if (!crs.has_value()) {
-		return Value(MetadataTableUtils::GetReferenceSystemStructType());
-	}
-
+// Helper to parse a CRS URI string into reference system struct components
+static Value ParseCRSUri(const std::string &name) {
 	child_list_t<Value> children;
-	// Parse the CRS name to extract components
-	// Format: "https://www.opengis.net/def/crs/EPSG/0/7415"
 	std::string base_url = "";
 	std::string authority = "";
 	std::string version = "";
 	std::string code = "";
 
-	const auto &name = crs->name;
-	// Try to parse OGC-style URL
+	// Try to parse OGC-style URL: "https://www.opengis.net/def/crs/EPSG/0/7415"
 	if (name.find("opengis.net/def/crs/") != std::string::npos) {
 		size_t pos = name.find("/def/crs/");
 		if (pos != std::string::npos) {
 			base_url = name.substr(0, pos + 9);
 			std::string rest = name.substr(pos + 9);
-			// Parse authority/version/code
 			size_t slash1 = rest.find('/');
 			if (slash1 != std::string::npos) {
 				authority = rest.substr(0, slash1);
@@ -132,11 +124,6 @@ static Value CreateReferenceSystemValue(const std::optional<CRS> &crs) {
 				}
 			}
 		}
-	} else if (crs->authority.has_value()) {
-		authority = crs->authority.value();
-		if (crs->code.has_value()) {
-			code = crs->code.value();
-		}
 	}
 
 	children.push_back({"base_url", base_url.empty() ? Value() : Value(base_url)});
@@ -144,6 +131,40 @@ static Value CreateReferenceSystemValue(const std::optional<CRS> &crs) {
 	children.push_back({"version", version.empty() ? Value() : Value(version)});
 	children.push_back({"code", code.empty() ? Value() : Value(code)});
 	return Value::STRUCT(std::move(children));
+}
+
+// Helper to create a reference system struct value
+// Uses top-level CRS if available, falls back to metadata.referenceSystem URI
+static Value CreateReferenceSystemValue(const std::optional<CRS> &crs, const std::optional<Metadata> &metadata) {
+	// First try top-level CRS
+	if (crs.has_value()) {
+		const auto &name = crs->name;
+		if (name.find("opengis.net/def/crs/") != std::string::npos) {
+			return ParseCRSUri(name);
+		}
+
+		// CRS with authority/code fields
+		if (crs->authority.has_value()) {
+			child_list_t<Value> children;
+			children.push_back({"base_url", Value()});
+			children.push_back({"authority", Value(crs->authority.value())});
+			children.push_back({"version", Value()});
+			children.push_back({"code", crs->code.has_value() ? Value(crs->code.value()) : Value()});
+			return Value::STRUCT(std::move(children));
+		}
+
+		// Plain CRS name string — try to parse as URI
+		if (!name.empty()) {
+			return ParseCRSUri(name);
+		}
+	}
+
+	// Fall back to metadata.referenceSystem (CityJSON 2.0 style URI string)
+	if (metadata.has_value() && metadata->reference_system.has_value()) {
+		return ParseCRSUri(metadata->reference_system.value());
+	}
+
+	return Value(MetadataTableUtils::GetReferenceSystemStructType());
 }
 
 // Helper to create an address struct value
@@ -237,11 +258,23 @@ unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &ci
 	// transform_translate
 	chunk->data[6].SetValue(0, CreateTransformValue(cityjson.transform, false));
 
-	// geographical_extent (null for now, could be computed from CityObjects)
-	chunk->data[7].SetValue(0, Value(GetGeographicalExtentStructType()));
+	// geographical_extent — from metadata if available
+	if (cityjson.metadata.has_value() && cityjson.metadata->geographic_extent.has_value()) {
+		const auto &ext = cityjson.metadata->geographic_extent.value();
+		child_list_t<Value> extent_children;
+		extent_children.push_back({"min_x", Value::DOUBLE(ext.min_x)});
+		extent_children.push_back({"min_y", Value::DOUBLE(ext.min_y)});
+		extent_children.push_back({"min_z", Value::DOUBLE(ext.min_z)});
+		extent_children.push_back({"max_x", Value::DOUBLE(ext.max_x)});
+		extent_children.push_back({"max_y", Value::DOUBLE(ext.max_y)});
+		extent_children.push_back({"max_z", Value::DOUBLE(ext.max_z)});
+		chunk->data[7].SetValue(0, Value::STRUCT(std::move(extent_children)));
+	} else {
+		chunk->data[7].SetValue(0, Value(GetGeographicalExtentStructType()));
+	}
 
-	// reference_system
-	chunk->data[8].SetValue(0, CreateReferenceSystemValue(cityjson.crs));
+	// reference_system — uses top-level CRS with fallback to metadata.referenceSystem
+	chunk->data[8].SetValue(0, CreateReferenceSystemValue(cityjson.crs, cityjson.metadata));
 
 	// point_of_contact
 	if (cityjson.metadata.has_value()) {

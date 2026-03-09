@@ -25,8 +25,9 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 
 	for (chunk_idx = 0; chunk_idx < bind_data.chunks.ChunkCount(); chunk_idx++) {
 		auto chunk = bind_data.chunks.GetChunk(chunk_idx);
-		if (!chunk)
+		if (!chunk) {
 			break;
+		}
 
 		// Iterate through features to find exact position
 		for (feature_idx = 0; feature_idx < chunk->size(); feature_idx++) {
@@ -41,8 +42,9 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 			current_position += feature_obj_count;
 		}
 
-		if (found)
+		if (found) {
 			break;
+		}
 	}
 
 	// Check if exhausted
@@ -64,8 +66,9 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 	// Iterate across chunks if necessary
 	while (remaining > 0 && chunk_idx < bind_data.chunks.ChunkCount()) {
 		auto chunk = bind_data.chunks.GetChunk(chunk_idx);
-		if (!chunk)
+		if (!chunk) {
 			break;
+		}
 
 		// Iterate through features in chunk
 		for (; feature_idx < chunk->size() && remaining > 0; feature_idx++) {

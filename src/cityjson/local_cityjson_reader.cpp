@@ -6,14 +6,18 @@
 namespace duckdb {
 namespace cityjson {
 
-using namespace json_utils;
+using namespace json_utils; // NOLINT(google-build-using-namespace)
 
 // ============================================================
-// Constructor
+// Constructors
 // ============================================================
 
 LocalCityJSONReader::LocalCityJSONReader(const std::string &file_path, size_t sample_lines)
     : file_path_(file_path), sample_lines_(sample_lines) {
+}
+
+LocalCityJSONReader::LocalCityJSONReader(const std::string &name, std::string content, size_t sample_lines)
+    : file_path_(name), sample_lines_(sample_lines), content_(std::move(content)) {
 }
 
 // ============================================================
@@ -22,6 +26,17 @@ LocalCityJSONReader::LocalCityJSONReader(const std::string &file_path, size_t sa
 
 std::string LocalCityJSONReader::Name() const {
 	return file_path_;
+}
+
+// ============================================================
+// LoadJson (internal helper)
+// ============================================================
+
+json LocalCityJSONReader::LoadJson() const {
+	if (content_.has_value()) {
+		return ParseJson(content_.value());
+	}
+	return ParseJsonFile(file_path_);
 }
 
 // ============================================================
@@ -34,10 +49,7 @@ CityJSON LocalCityJSONReader::ReadMetadata() const {
 		return cached_metadata_.value();
 	}
 
-	// Parse the JSON file
-	json obj = ParseJsonFile(file_path_);
-
-	// Extract metadata (without CityObjects)
+	json obj = LoadJson();
 	CityJSON metadata = CityJSON::FromJson(obj);
 
 	// Cache the result
@@ -51,8 +63,7 @@ CityJSON LocalCityJSONReader::ReadMetadata() const {
 // ============================================================
 
 std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const {
-	// Parse the JSON file
-	json obj = ParseJsonFile(file_path_);
+	json obj = LoadJson();
 
 	// Validate structure
 	if (!obj.contains("CityObjects") || !obj["CityObjects"].is_object()) {
@@ -84,8 +95,7 @@ std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const 
 // ============================================================
 
 CityJSONFeatureChunk LocalCityJSONReader::ReadAllChunks() const {
-	// Parse the JSON file
-	json obj = ParseJsonFile(file_path_);
+	json obj = LoadJson();
 
 	// Validate structure
 	if (!obj.contains("CityObjects") || !obj["CityObjects"].is_object()) {

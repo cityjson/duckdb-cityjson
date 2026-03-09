@@ -1,0 +1,331 @@
+# name: test/sql/cityjson_copy.test
+# description: Test COPY TO round-trip for CityJSON and CityJSONSeq formats
+# group: [sql]
+
+require cityjson
+
+# ============================================================
+# CityJSON round-trip: read -> COPY TO -> read back
+# ============================================================
+
+# Read original CityJSON file
+statement ok
+CREATE TABLE orig_json AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+# Write to CityJSON
+statement ok
+COPY (SELECT * FROM orig_json) TO '__TEST_DIR__/rt.city.json' (FORMAT cityjson);
+
+# Read back the written file
+statement ok
+CREATE TABLE rt_json AS SELECT * FROM read_cityjson('__TEST_DIR__/rt.city.json');
+
+# Row count preserved
+query II
+SELECT (SELECT COUNT(*) FROM orig_json) AS orig, (SELECT COUNT(*) FROM rt_json) AS rt;
+----
+1	1
+
+# id preserved
+query T
+SELECT r.id FROM rt_json r;
+----
+building1
+
+# object_type preserved
+query T
+SELECT r.object_type FROM rt_json r;
+----
+Building
+
+# Attribute: function preserved
+query T
+SELECT r."function" FROM rt_json r;
+----
+residential
+
+# Attribute: measuredHeight preserved
+query R
+SELECT r.measuredHeight FROM rt_json r;
+----
+15.500000
+
+# Attribute: yearOfConstruction preserved
+query I
+SELECT r.yearOfConstruction FROM rt_json r;
+----
+2020
+
+# Join-based comparison: all key columns match
+query III
+SELECT
+    o.id = r.id AS id_ok,
+    o.object_type = r.object_type AS type_ok,
+    o."function" = r."function" AS function_ok
+FROM orig_json o JOIN rt_json r ON o.id = r.id;
+----
+true	true	true
+
+statement ok
+DROP TABLE orig_json;
+
+statement ok
+DROP TABLE rt_json;
+
+# ============================================================
+# CityJSON metadata: default COPY writes valid metadata
+# ============================================================
+
+# Write with no options — should still produce valid CityJSON with version
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/meta_default.city.json' (FORMAT cityjson);
+
+# Metadata must be readable
+query I
+SELECT COUNT(*) FROM cityjson_metadata('__TEST_DIR__/meta_default.city.json');
+----
+1
+
+# Default version is 2.0
+query T
+SELECT version FROM cityjson_metadata('__TEST_DIR__/meta_default.city.json');
+----
+2.0
+
+# city_objects_count reflects the written objects
+query I
+SELECT city_objects_count FROM cityjson_metadata('__TEST_DIR__/meta_default.city.json');
+----
+1
+
+# ============================================================
+# CityJSON metadata: COPY with explicit options
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/meta_opts.city.json' (
+    FORMAT cityjson,
+    version '2.0',
+    transform_scale '0.001,0.001,0.001',
+    transform_translate '84982.0,446857.0,0.0'
+);
+
+# Version preserved
+query T
+SELECT version FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.json');
+----
+2.0
+
+# Transform scale preserved
+query RRR
+SELECT transform_scale.x, transform_scale.y, transform_scale.z
+FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.json');
+----
+0.001000	0.001000	0.001000
+
+# Transform translate preserved
+query RRR
+SELECT transform_translate.x, transform_translate.y, transform_translate.z
+FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.json');
+----
+84982.000000	446857.000000	0.000000
+
+# city_objects_count
+query I
+SELECT city_objects_count FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.json');
+----
+1
+
+# ============================================================
+# CityJSON metadata: COPY with CRS option
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/meta_crs.city.json' (
+    FORMAT cityjson,
+    version '2.0',
+    crs 'https://www.opengis.net/def/crs/EPSG/0/7415'
+);
+
+# Version and object count
+query TI
+SELECT version, city_objects_count
+FROM cityjson_metadata('__TEST_DIR__/meta_crs.city.json');
+----
+2.0	1
+
+# ============================================================
+# Note: metadata_query option is not tested here because it opens a separate
+# database connection internally, which conflicts with the single-threaded
+# test runner. It works correctly in interactive sessions:
+#   COPY (...) TO 'out.city.json' (FORMAT cityjson,
+#       metadata_query 'SELECT version FROM cityjson_metadata(''input.city.json'')');
+# ============================================================
+
+# ============================================================
+# CityJSONSeq round-trip: read -> COPY TO -> read back
+# ============================================================
+
+# Read original CityJSONSeq file
+statement ok
+CREATE TABLE orig_seq AS SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl');
+
+# Write to CityJSONSeq
+statement ok
+COPY (SELECT * FROM orig_seq) TO '__TEST_DIR__/rt.city.jsonl' (FORMAT cityjsonseq);
+
+# Read back the written file
+statement ok
+CREATE TABLE rt_seq AS SELECT * FROM read_cityjsonseq('__TEST_DIR__/rt.city.jsonl');
+
+# Row count preserved
+query II
+SELECT (SELECT COUNT(*) FROM orig_seq) AS orig, (SELECT COUNT(*) FROM rt_seq) AS rt;
+----
+2	2
+
+# object_type preserved for all rows
+query I
+SELECT COUNT(*) FROM rt_seq WHERE object_type = 'Building';
+----
+2
+
+# yearOfConstruction values preserved
+query I
+SELECT yearOfConstruction FROM rt_seq ORDER BY yearOfConstruction;
+----
+2020
+2021
+
+# Join-based comparison
+query II
+SELECT
+    o.id = r.id AS id_ok,
+    o.object_type = r.object_type AS type_ok
+FROM orig_seq o JOIN rt_seq r ON o.id = r.id;
+----
+true	true
+true	true
+
+statement ok
+DROP TABLE orig_seq;
+
+statement ok
+DROP TABLE rt_seq;
+
+# ============================================================
+# CityJSONSeq metadata: default COPY writes valid header
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
+TO '__TEST_DIR__/meta_default.city.jsonl' (FORMAT cityjsonseq);
+
+# Header metadata must be readable
+query I
+SELECT COUNT(*) FROM cityjsonseq_metadata('__TEST_DIR__/meta_default.city.jsonl');
+----
+1
+
+# Default version
+query T
+SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/meta_default.city.jsonl');
+----
+2.0
+
+# city_objects_count
+query I
+SELECT city_objects_count FROM cityjsonseq_metadata('__TEST_DIR__/meta_default.city.jsonl');
+----
+2
+
+# ============================================================
+# CityJSONSeq metadata: COPY with explicit options
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
+TO '__TEST_DIR__/meta_opts.city.jsonl' (
+    FORMAT cityjsonseq,
+    version '2.0',
+    crs 'https://www.opengis.net/def/crs/EPSG/0/7415',
+    transform_scale '0.001,0.001,0.001',
+    transform_translate '84982.0,446857.0,0.0'
+);
+
+# Version preserved in header
+query T
+SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city.jsonl');
+----
+2.0
+
+# Transform scale in header
+query RRR
+SELECT transform_scale.x, transform_scale.y, transform_scale.z
+FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city.jsonl');
+----
+0.001000	0.001000	0.001000
+
+# Transform translate in header
+query RRR
+SELECT transform_translate.x, transform_translate.y, transform_translate.z
+FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city.jsonl');
+----
+84982.000000	446857.000000	0.000000
+
+# city_objects_count
+query I
+SELECT city_objects_count FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city.jsonl');
+----
+2
+
+# ============================================================
+# Cross-format round-trip: CityJSON -> CityJSONSeq -> CityJSON
+# ============================================================
+
+# Read CityJSON, write as CityJSONSeq
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/cross.city.jsonl' (FORMAT cityjsonseq);
+
+# Read back CityJSONSeq
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cross.city.jsonl');
+----
+1
+
+query T
+SELECT object_type FROM read_cityjsonseq('__TEST_DIR__/cross.city.jsonl');
+----
+Building
+
+# CityJSONSeq metadata is valid
+query TI
+SELECT version, city_objects_count FROM cityjsonseq_metadata('__TEST_DIR__/cross.city.jsonl');
+----
+2.0	1
+
+# Write CityJSONSeq back as CityJSON
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/cross.city.jsonl'))
+TO '__TEST_DIR__/cross_back.city.json' (FORMAT cityjson);
+
+# Verify final result
+query I
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/cross_back.city.json');
+----
+1
+
+query T
+SELECT object_type FROM read_cityjson('__TEST_DIR__/cross_back.city.json');
+----
+Building
+
+# CityJSON metadata is valid after cross-format round-trip
+query TI
+SELECT version, city_objects_count FROM cityjson_metadata('__TEST_DIR__/cross_back.city.json');
+----
+2.0	1

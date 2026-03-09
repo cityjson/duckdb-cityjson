@@ -32,7 +32,10 @@
       "mcp__plugin_serena_serena__activate_project",
       "mcp__plugin_serena_serena__read_file",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "mcp__plugin_serena_serena__list_memories"
+      "mcp__plugin_serena_serena__list_memories",
+      "Bash(tail:*)",
+      "Bash(find:*)",
+      "Bash(echo EXIT: $?:*)"
     ]
   }
 }

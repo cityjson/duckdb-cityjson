@@ -43,7 +43,7 @@ struct CRS {
 	std::optional<std::string> code;      // CRS code (e.g., "4326")
 
 	CRS() = default;
-	CRS(std::string name);
+	explicit CRS(std::string name);
 	CRS(std::string name, std::string authority, std::string code);
 
 	/**
@@ -82,30 +82,6 @@ struct PointOfContact {
 };
 
 /**
- * CityJSON metadata fields
- */
-struct Metadata {
-	std::optional<std::string> title;
-	std::optional<std::string> identifier;
-	std::optional<PointOfContact> point_of_contact; // Changed from string to PointOfContact object
-	std::optional<std::string> reference_date;
-	std::optional<std::string> reference_system;
-	std::optional<std::string> geographic_location;
-	std::optional<std::string> geographic_extent;
-	std::optional<std::string> dataset_topic_category;
-	std::optional<std::string> feature_type;
-	std::optional<std::string> metadata_standard;
-	std::optional<std::string> metadata_language;
-	std::optional<std::string> metadata_character_set;
-	std::optional<std::string> metadata_date;
-
-	/**
-	 * Parse metadata from JSON object
-	 */
-	static Metadata FromJson(const json &obj);
-};
-
-/**
  * Geographical extent (3D bounding box)
  */
 struct GeographicalExtent {
@@ -128,6 +104,30 @@ struct GeographicalExtent {
 	 * Convert to JSON array
 	 */
 	json ToJson() const;
+};
+
+/**
+ * CityJSON metadata fields
+ */
+struct Metadata {
+	std::optional<std::string> title;
+	std::optional<std::string> identifier;
+	std::optional<PointOfContact> point_of_contact; // Changed from string to PointOfContact object
+	std::optional<std::string> reference_date;
+	std::optional<std::string> reference_system;
+	std::optional<std::string> geographic_location;
+	std::optional<GeographicalExtent> geographic_extent;
+	std::optional<std::string> dataset_topic_category;
+	std::optional<std::string> feature_type;
+	std::optional<std::string> metadata_standard;
+	std::optional<std::string> metadata_language;
+	std::optional<std::string> metadata_character_set;
+	std::optional<std::string> metadata_date;
+
+	/**
+	 * Parse metadata from JSON object
+	 */
+	static Metadata FromJson(const json &obj);
 };
 
 /**
@@ -217,7 +217,7 @@ struct CityJSONFeature {
 
 	CityJSONFeature() : type("CityJSONFeature") {
 	}
-	CityJSONFeature(std::string id) : id(std::move(id)), type("CityJSONFeature") {
+	explicit CityJSONFeature(std::string id) : id(std::move(id)), type("CityJSONFeature") {
 	}
 
 	/**

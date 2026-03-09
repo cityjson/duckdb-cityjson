@@ -1,5 +1,6 @@
 #include "cityjson/table_function.hpp"
 #include "cityjson/reader.hpp"
+#include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
 #include "duckdb/common/exception.hpp"
@@ -28,7 +29,7 @@ unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindI
 	// Open reader
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		reader = OpenAnyCityJSONFile(result->file_name);
+		reader = OpenAnyCityJSONFile(context, result->file_name);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSON file: " + std::string(e.what()));
 	}
@@ -112,10 +113,11 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
 		}
 	}
 
-	// Always use LocalCityJSONSeqReader — no auto-detection
+	// Read file content via DuckDB FileSystem, then create CityJSONSeq reader
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name);
+		std::string content = json_utils::ReadFileContent(context, result->file_name);
+		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name, std::move(content), 100);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}

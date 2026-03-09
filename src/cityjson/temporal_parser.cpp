@@ -105,7 +105,7 @@ int64_t ParseTimestampString(const std::string &timestamp_str) {
 
 		// Convert to DuckDB timestamp (microseconds since epoch)
 		date_t date = Date::FromDate(year, month, day);
-		dtime_t time = Time::FromTime(hour, minute, second, microseconds);
+		dtime_t time = Time::FromTime(hour, minute, second, static_cast<int32_t>(microseconds));
 
 		// Combine date and time
 		timestamp_t timestamp = Timestamp::FromDatetime(date, time);
@@ -114,7 +114,7 @@ int64_t ParseTimestampString(const std::string &timestamp_str) {
 		if (match[8].matched && match[9].matched) {
 			int tz_hour = std::stoi(match[8].str());
 			int tz_minute = std::stoi(match[9].str());
-			int64_t tz_offset_micros = (tz_hour * 60 + tz_minute) * 60 * 1000000LL;
+			int64_t tz_offset_micros = static_cast<int64_t>(tz_hour * 60 + tz_minute) * 60LL * 1000000LL;
 			timestamp.value -= tz_offset_micros;
 		}
 
@@ -168,7 +168,7 @@ int64_t ParseTimeString(const std::string &time_str) {
 		}
 
 		// Convert to DuckDB time (microseconds since midnight)
-		dtime_t time = Time::FromTime(hour, minute, second, microseconds);
+		dtime_t time = Time::FromTime(hour, minute, second, static_cast<int32_t>(microseconds));
 		return time.micros;
 
 	} catch (const std::exception &e) {

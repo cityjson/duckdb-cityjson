@@ -1,6 +1,6 @@
 # name: test/sql/cityjson_wkb.test
 # description: Test WKB geometry encoding for CityJSON
-# group: [cityjson]
+# group: [sql]
 
 # This test file validates the WKB encoding infrastructure and the
 # LOD parameter for read_cityjson() that enables per-LOD table schema.

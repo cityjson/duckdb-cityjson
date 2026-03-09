@@ -1,6 +1,6 @@
 # name: test/sql/cityjsonseq.test
 # description: Test read_cityjsonseq and cityjsonseq_metadata table functions
-# group: [cityjson]
+# group: [sql]
 
 require cityjson
 

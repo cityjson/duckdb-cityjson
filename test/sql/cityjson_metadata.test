@@ -1,6 +1,6 @@
 # name: test/sql/cityjson_metadata.test
 # description: Test cityjson_metadata table function
-# group: [cityjson]
+# group: [sql]
 
 require cityjson
 
@@ -64,4 +64,4 @@ DROP TABLE objects_test;
 statement error
 SELECT * FROM cityjson_metadata('test/data/nonexistent.city.json');
 ----
-Failed to open CityJSON file
+Cannot open file
