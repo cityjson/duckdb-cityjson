@@ -83,6 +83,13 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
                                          vector<LogicalType> &return_types, vector<string> &names);
 
 /**
+ * Bind callback for read_citygml - schema inference and data loading
+ * Always uses LocalCityGMLReader for CityGML XML files
+ */
+unique_ptr<FunctionData> CityGMLBind(ClientContext &context, TableFunctionBindInput &input,
+                                     vector<LogicalType> &return_types, vector<string> &names);
+
+/**
  * Init global state callback
  */
 unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(ClientContext &context, TableFunctionInitInput &input);
@@ -139,6 +146,16 @@ TableFunction CreateReadCityJSONSeqTableFunction();
  * Register read_cityjsonseq function with database
  */
 void RegisterCityJSONSeqTableFunction(ExtensionLoader &loader);
+
+/**
+ * Create read_citygml table function
+ */
+TableFunction CreateReadCityGMLTableFunction();
+
+/**
+ * Register read_citygml function with database
+ */
+void RegisterCityGMLTableFunction(ExtensionLoader &loader);
 
 } // namespace cityjson
 } // namespace duckdb

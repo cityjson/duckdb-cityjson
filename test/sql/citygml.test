@@ -1,0 +1,118 @@
+# name: test/sql/citygml.test
+# description: Test read_citygml and citygml_metadata table functions
+# group: [sql]
+
+require cityjson
+
+# ================================================================
+# CityGML 2.0 - Basic reading
+# ================================================================
+
+statement ok
+CREATE TABLE gml_buildings AS SELECT * FROM read_citygml('test/data/building_lod2.gml');
+
+# Verify we got 1 building
+query I
+SELECT COUNT(*) FROM gml_buildings;
+----
+1
+
+# Check object type
+query T
+SELECT object_type FROM gml_buildings;
+----
+Building
+
+# Check attributes
+query I
+SELECT yearOfConstruction FROM gml_buildings;
+----
+1985
+
+query R
+SELECT measuredHeight FROM gml_buildings;
+----
+10.0
+
+query I
+SELECT storeysAboveGround FROM gml_buildings;
+----
+2
+
+# Clean up
+statement ok
+DROP TABLE gml_buildings;
+
+# ================================================================
+# CityGML 3.0 - Basic reading
+# ================================================================
+
+statement ok
+CREATE TABLE gml_v3 AS SELECT * FROM read_citygml('test/data/building_lod2_v3.gml');
+
+query I
+SELECT COUNT(*) FROM gml_v3;
+----
+1
+
+query T
+SELECT object_type FROM gml_v3;
+----
+Building
+
+query I
+SELECT yearOfConstruction FROM gml_v3;
+----
+2020
+
+query R
+SELECT measuredHeight FROM gml_v3;
+----
+12.5
+
+statement ok
+DROP TABLE gml_v3;
+
+# ================================================================
+# CityGML Metadata
+# ================================================================
+
+query T
+SELECT version FROM citygml_metadata('test/data/building_lod2.gml');
+----
+2.0
+
+query I
+SELECT city_objects_count FROM citygml_metadata('test/data/building_lod2.gml');
+----
+1
+
+# CityGML 3.0 metadata
+query T
+SELECT version FROM citygml_metadata('test/data/building_lod2_v3.gml');
+----
+2.0
+
+query I
+SELECT city_objects_count FROM citygml_metadata('test/data/building_lod2_v3.gml');
+----
+1
+
+# ================================================================
+# CityGML with LOD/WKB mode
+# ================================================================
+
+query T
+SELECT typeof(geometry) FROM read_citygml('test/data/building_lod2.gml', lod => '2');
+----
+BLOB
+
+query T
+SELECT typeof(geometry_properties) FROM read_citygml('test/data/building_lod2.gml', lod => '2');
+----
+VARCHAR
+
+query T
+SELECT object_type FROM read_citygml('test/data/building_lod2.gml', lod => '2');
+----
+Building

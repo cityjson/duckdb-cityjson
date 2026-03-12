@@ -373,18 +373,23 @@ bool IsPredefinedColumn(const std::string &name) {
 }
 
 bool IsGeometryColumn(const std::string &name) {
-	// Pattern: geom_lod{X}_{Y}
-	std::regex geom_pattern(R"(geom_lod\d+_\d+)");
+	// Pattern: geom_lod{X} or geom_lod{X}_{Y}
+	std::regex geom_pattern(R"(geom_lod\d+(_\d+)?)");
 	return std::regex_match(name, geom_pattern);
 }
 
 std::string ParseLODFromColumnName(const std::string &column_name) {
-	// Parse "geom_lod2_1" -> "2.1"
-	std::regex lod_pattern(R"(geom_lod(\d+)_(\d+))");
+	// Parse "geom_lod2_1" -> "2.1" or "geom_lod2" -> "2"
+	std::regex lod_pattern_decimal(R"(geom_lod(\d+)_(\d+))");
+	std::regex lod_pattern_int(R"(geom_lod(\d+))");
 	std::smatch match;
 
-	if (std::regex_match(column_name, match, lod_pattern)) {
+	if (std::regex_match(column_name, match, lod_pattern_decimal)) {
 		return match[1].str() + "." + match[2].str();
+	}
+
+	if (std::regex_match(column_name, match, lod_pattern_int)) {
+		return match[1].str();
 	}
 
 	throw CityJSONError::InvalidSchema("Invalid geometry column name: " + column_name);

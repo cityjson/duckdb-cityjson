@@ -7,6 +7,8 @@ set(TARGET_NAME cityjson)
 # used in cmake with find_package. Feel free to remove or replace with other dependencies.
 # Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
 find_package(nlohmann_json REQUIRED)
+find_package(pugixml REQUIRED)
+find_package(OpenSSL QUIET)
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
@@ -55,6 +57,9 @@ set(EXTENSION_SOURCES
     # FlatCityBuf (compiled always but guarded by #ifdef CITYJSON_HAS_FCB)
     src/cityjson/flatcitybuf_reader.cpp
     src/cityjson/flatcitybuf_table_function.cpp
+    # CityGML reader
+    src/cityjson/citygml_parser.cpp
+    src/cityjson/local_citygml_reader.cpp
     # COPY TO
     src/cityjson/copy_function.cpp
     src/cityjson/cityjson_writer.cpp
@@ -282,19 +287,24 @@ else()
   endif()
 endif()
 
-# Find OpenSSL after DuckDB targets are set up
-find_package(OpenSSL REQUIRED)
+# Find OpenSSL (already found early in the file to make IMPORTED targets
+# available before DuckDB generates its extension targets)
+if(NOT TARGET OpenSSL::SSL)
+  find_package(OpenSSL REQUIRED)
+endif()
 
 # Link OpenSSL and nlohmann_json in both the static library and the loadable extension
 # Use imported targets if available, fall back to raw variables otherwise
 if(TARGET OpenSSL::SSL)
-  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
-  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
+  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json pugixml::pugixml)
+  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY INTERFACE_LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json pugixml::pugixml)
+  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json pugixml::pugixml)
 else()
   target_include_directories(${EXTENSION_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
   target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
-  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json)
-  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json)
+  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json pugixml::pugixml)
+  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY INTERFACE_LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json pugixml::pugixml)
+  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json pugixml::pugixml)
 endif()
 
 install(

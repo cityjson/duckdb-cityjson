@@ -1,4 +1,5 @@
 #include "cityjson/reader.hpp"
+#include "cityjson/citygml_parser.hpp"
 #include "cityjson/json_utils.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_reader.hpp"
@@ -82,6 +83,11 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name
 	}
 	test_file.close();
 
+	// CityGML format (.gml, .citygml, .xml with CityModel content)
+	if (EndsWith(file_name, ".gml") || EndsWith(file_name, ".citygml")) {
+		return std::make_unique<LocalCityGMLReader>(file_name, DEFAULT_SAMPLE_LINES);
+	}
+
 	// Try to detect format from extension first
 	if (EndsWith(file_name, ".city.jsonl") || EndsWith(file_name, ".jsonl")) {
 		// CityJSONSeq format
@@ -117,6 +123,11 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &conte
 	}
 #endif
 
+	// CityGML format (.gml, .citygml)
+	if (EndsWith(file_name, ".gml") || EndsWith(file_name, ".citygml")) {
+		return std::make_unique<LocalCityGMLReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
+	}
+
 	// Try to detect format from extension first
 	if (EndsWith(file_name, ".city.jsonl") || EndsWith(file_name, ".jsonl")) {
 		return std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
@@ -131,7 +142,9 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &conte
 	}
 
 	// Unknown extension - detect from content
-	if (IsLikelyCityJSONSeqFromContent(content)) {
+	if (CityGMLParser::IsCityGML(content)) {
+		return std::make_unique<LocalCityGMLReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
+	} else if (IsLikelyCityJSONSeqFromContent(content)) {
 		return std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);
 	} else {
 		return std::make_unique<LocalCityJSONReader>(file_name, std::move(content), DEFAULT_SAMPLE_LINES);

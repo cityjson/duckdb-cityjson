@@ -168,6 +168,52 @@ private:
 };
 
 /**
+ * Reader for CityGML format (.gml)
+ * Parses CityGML 2.0 and 3.0 XML into internal types
+ */
+class LocalCityGMLReader : public CityJSONReader {
+public:
+	/**
+	 * Construct reader for local CityGML file
+	 *
+	 * @param file_path Path to .gml file
+	 * @param sample_lines Number of features to sample for schema inference
+	 */
+	explicit LocalCityGMLReader(const std::string &file_path, size_t sample_lines = 100);
+
+	/**
+	 * Construct reader from pre-loaded content
+	 *
+	 * @param name Display name (e.g. file path or URL)
+	 * @param content File content as string
+	 * @param sample_lines Number of features to sample for schema inference
+	 */
+	LocalCityGMLReader(const std::string &name, std::string content, size_t sample_lines);
+
+	std::string Name() const override;
+	CityJSON ReadMetadata() const override;
+	CityJSONFeatureChunk ReadNthChunk(size_t n) const override;
+	CityJSONFeatureChunk ReadAllChunks() const override;
+	std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
+	std::vector<Column> Columns() const override;
+
+private:
+	std::string file_path_;
+	size_t sample_lines_;
+	std::optional<std::string> content_;
+
+	// Cached parse result (populated lazily on first access)
+	struct CachedParse {
+		CityJSON metadata;
+		std::vector<CityJSONFeature> features;
+	};
+	mutable std::optional<CachedParse> cached_parse_;
+	mutable std::optional<std::vector<Column>> cached_columns_;
+
+	const CachedParse &EnsureParsed() const;
+};
+
+/**
  * Factory function to open any CityJSON file format
  * Automatically detects format from file extension:
  * - .city.json or .json → LocalCityJSONReader
