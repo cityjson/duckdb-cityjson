@@ -15,6 +15,7 @@ A DuckDB extension for reading, querying, and writing [CityJSON](https://www.cit
 ## Quick Start
 
 ```sql
+INSTALL cityjson FROM community;
 LOAD cityjson;
 
 -- Read a local CityJSON file
