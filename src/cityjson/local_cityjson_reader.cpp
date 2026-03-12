@@ -2,11 +2,87 @@
 #include "cityjson/city_object_utils.hpp"
 #include <fstream>
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+#include <queue>
 
 namespace duckdb {
 namespace cityjson {
 
 using namespace json_utils; // NOLINT(google-build-using-namespace)
+
+// ============================================================
+// GroupCityObjectsIntoFeatures
+// ============================================================
+// Groups CityObjects into CityJSONFeatures based on parent/child
+// relationships, following the CityJSONFeature specification.
+// Root objects (those with no parents) become feature roots.
+// Each feature contains the root and all its descendants.
+
+static std::vector<CityJSONFeature>
+GroupCityObjectsIntoFeatures(const std::map<std::string, CityObject> &city_objects) {
+	// Step 1: Find root objects (objects with no parents)
+	std::vector<std::string> root_ids;
+	for (const auto &[obj_id, obj] : city_objects) {
+		if (obj.parents.empty()) {
+			root_ids.push_back(obj_id);
+		}
+	}
+
+	// Step 2: For each root, collect all descendants via BFS on children
+	std::vector<CityJSONFeature> features;
+	std::unordered_set<std::string> assigned; // track which objects are already assigned
+
+	for (const auto &root_id : root_ids) {
+		CityJSONFeature feature;
+		feature.id = root_id;
+		feature.type = "CityJSONFeature";
+
+		// BFS to collect root + all descendants
+		std::queue<std::string> queue;
+		queue.push(root_id);
+
+		while (!queue.empty()) {
+			std::string current = queue.front();
+			queue.pop();
+
+			if (assigned.count(current)) {
+				continue;
+			}
+
+			auto it = city_objects.find(current);
+			if (it == city_objects.end()) {
+				continue;
+			}
+
+			assigned.insert(current);
+			feature.city_objects[current] = it->second;
+
+			// Enqueue children
+			for (const auto &child_id : it->second.children) {
+				if (!assigned.count(child_id)) {
+					queue.push(child_id);
+				}
+			}
+		}
+
+		features.push_back(std::move(feature));
+	}
+
+	// Step 3: Handle orphan objects (parents reference non-existent objects)
+	// These become their own single-object features
+	for (const auto &[obj_id, obj] : city_objects) {
+		if (!assigned.count(obj_id)) {
+			CityJSONFeature feature;
+			feature.id = obj_id;
+			feature.type = "CityJSONFeature";
+			feature.city_objects[obj_id] = obj;
+			features.push_back(std::move(feature));
+		}
+	}
+
+	return features;
+}
 
 // ============================================================
 // Constructors
@@ -70,24 +146,22 @@ std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const 
 		throw CityJSONError::InvalidSchema("CityJSON file missing 'CityObjects' field");
 	}
 
-	// For CityJSON format, all CityObjects are in one implicit feature
-	// We'll create a single feature containing up to N CityObjects
-	CityJSONFeature feature;
-	feature.id = file_path_; // Use file path as feature ID
-	feature.type = "CityJSONFeature";
-
+	// Parse all CityObjects first
+	std::map<std::string, CityObject> all_objects;
 	const auto &city_objects = obj["CityObjects"];
-	size_t count = 0;
-
 	for (auto &[obj_id, obj_data] : city_objects.items()) {
-		if (count >= n) {
-			break;
-		}
-		feature.city_objects[obj_id] = CityObject::FromJson(obj_data);
-		count++;
+		all_objects[obj_id] = CityObject::FromJson(obj_data);
 	}
 
-	return {feature};
+	// Group into features based on parent/child relationships
+	auto features = GroupCityObjectsIntoFeatures(all_objects);
+
+	// Return up to n features
+	if (features.size() > n) {
+		features.resize(n);
+	}
+
+	return features;
 }
 
 // ============================================================
@@ -102,18 +176,17 @@ CityJSONFeatureChunk LocalCityJSONReader::ReadAllChunks() const {
 		throw CityJSONError::InvalidSchema("CityJSON file missing 'CityObjects' field");
 	}
 
-	// Convert all CityObjects to a single feature
-	CityJSONFeature feature;
-	feature.id = file_path_;
-	feature.type = "CityJSONFeature";
-
+	// Parse all CityObjects
+	std::map<std::string, CityObject> all_objects;
 	const auto &city_objects = obj["CityObjects"];
 	for (auto &[obj_id, obj_data] : city_objects.items()) {
-		feature.city_objects[obj_id] = CityObject::FromJson(obj_data);
+		all_objects[obj_id] = CityObject::FromJson(obj_data);
 	}
 
+	// Group into features based on parent/child relationships
+	auto features = GroupCityObjectsIntoFeatures(all_objects);
+
 	// Create chunks
-	std::vector<CityJSONFeature> features = {feature};
 	return CityJSONFeatureChunk::CreateChunks(std::move(features), STANDARD_VECTOR_SIZE);
 }
 

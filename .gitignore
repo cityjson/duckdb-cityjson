@@ -7,6 +7,7 @@ testext
 test/python/__pycache__/
 .Rhistory
 data/
+!test/data/
 *.parquet
 .claude/*local*
 .superset/

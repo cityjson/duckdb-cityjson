@@ -20,11 +20,17 @@ SELECT COUNT(*) FROM (SELECT * FROM buildings LIMIT 0);
 ----
 0
 
-# Test feature_id column
+# Test feature_id column - for CityJSON, feature_id is the root object ID
 query I
 SELECT COUNT(*) FROM buildings WHERE feature_id IS NOT NULL;
 ----
 1
+
+# Test feature_id is the CityObject ID (not the file path)
+query T
+SELECT feature_id FROM buildings;
+----
+building1
 
 # Test object_type column
 query T
@@ -54,9 +60,34 @@ SELECT COUNT(*) FROM buildings_seq WHERE object_type = 'Building';
 ----
 2
 
+# Test CityJSON with parent/child grouping (CityJSONFeature spec)
+statement ok
+CREATE TABLE buildings_parts AS SELECT * FROM read_cityjson('test/data/building_with_parts.city.json');
+
+# building1 has 2 children (building1-part1, building1-part2), building2 is standalone = 4 objects total
+query I
+SELECT COUNT(*) FROM buildings_parts;
+----
+4
+
+# building1 and its parts should have feature_id = 'building1'
+query I
+SELECT COUNT(*) FROM buildings_parts WHERE feature_id = 'building1';
+----
+3
+
+# building2 is standalone, feature_id = 'building2'
+query I
+SELECT COUNT(*) FROM buildings_parts WHERE feature_id = 'building2';
+----
+1
+
 # Clean up
 statement ok
 DROP TABLE buildings;
 
 statement ok
 DROP TABLE buildings_seq;
+
+statement ok
+DROP TABLE buildings_parts;

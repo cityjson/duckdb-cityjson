@@ -1,0 +1,87 @@
+{
+  "type": "CityJSON",
+  "version": "2.0",
+  "transform": {
+    "scale": [1.0, 1.0, 1.0],
+    "translate": [0.0, 0.0, 0.0]
+  },
+  "CityObjects": {
+    "building1": {
+      "type": "Building",
+      "attributes": {
+        "yearOfConstruction": 2020,
+        "function": "residential"
+      },
+      "children": ["building1-part1", "building1-part2"],
+      "geometry": []
+    },
+    "building1-part1": {
+      "type": "BuildingPart",
+      "attributes": {
+        "measuredHeight": 10.0
+      },
+      "parents": ["building1"],
+      "geometry": [
+        {
+          "type": "Solid",
+          "lod": "2.2",
+          "boundaries": [
+            [
+              [[0, 1, 2, 3]]
+            ]
+          ]
+        }
+      ]
+    },
+    "building1-part2": {
+      "type": "BuildingPart",
+      "attributes": {
+        "measuredHeight": 15.0
+      },
+      "parents": ["building1"],
+      "geometry": [
+        {
+          "type": "Solid",
+          "lod": "2.2",
+          "boundaries": [
+            [
+              [[4, 5, 6, 7]]
+            ]
+          ]
+        }
+      ]
+    },
+    "building2": {
+      "type": "Building",
+      "attributes": {
+        "yearOfConstruction": 2021,
+        "function": "commercial"
+      },
+      "geometry": [
+        {
+          "type": "Solid",
+          "lod": "2.2",
+          "boundaries": [
+            [
+              [[8, 9, 10, 11]]
+            ]
+          ]
+        }
+      ]
+    }
+  },
+  "vertices": [
+    [0.0, 0.0, 0.0],
+    [10.0, 0.0, 0.0],
+    [10.0, 10.0, 0.0],
+    [0.0, 10.0, 0.0],
+    [20.0, 0.0, 0.0],
+    [30.0, 0.0, 0.0],
+    [30.0, 10.0, 0.0],
+    [20.0, 10.0, 0.0],
+    [40.0, 0.0, 0.0],
+    [50.0, 0.0, 0.0],
+    [50.0, 10.0, 0.0],
+    [40.0, 10.0, 0.0]
+  ]
+}
