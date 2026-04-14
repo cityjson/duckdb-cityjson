@@ -53,5 +53,29 @@ void RegisterCityJSONSeqTableFunction(ExtensionLoader &loader) {
 	loader.RegisterFunction(func);
 }
 
+TableFunction CreateReadCityGMLTableFunction() {
+	TableFunction func("read_citygml", {LogicalType::VARCHAR}, CityJSONScan, CityJSONBind);
+
+	// Named parameters (same as read_cityjson)
+	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
+	func.named_parameters["lod"] = LogicalType::VARCHAR;
+
+	// Set callbacks (reuse same stateless callbacks)
+	func.init_global = CityJSONInitGlobal;
+	func.init_local = CityJSONInitLocal;
+	func.cardinality = CityJSONCardinality;
+	func.statistics = CityJSONStatistics;
+
+	// Enable projection pushdown
+	func.projection_pushdown = true;
+
+	return func;
+}
+
+void RegisterCityGMLTableFunction(ExtensionLoader &loader) {
+	auto func = CreateReadCityGMLTableFunction();
+	loader.RegisterFunction(func);
+}
+
 } // namespace cityjson
 } // namespace duckdb

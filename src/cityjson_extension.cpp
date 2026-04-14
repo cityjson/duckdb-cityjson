@@ -25,6 +25,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register the cityjsonseq_metadata table function (dedicated CityJSONSeq metadata reader)
 	cityjson::RegisterCityJSONSeqMetadataTableFunction(loader);
 
+	// Register the read_citygml table function
+	cityjson::RegisterCityGMLTableFunction(loader);
+
+	// Register the citygml_metadata table function
+	cityjson::RegisterCityGMLMetadataTableFunction(loader);
+
 	// Register COPY TO functions (cityjson and cityjsonseq formats)
 	cityjson::RegisterCityJSONCopyFunction(loader);
 	cityjson::RegisterCityJSONSeqCopyFunction(loader);

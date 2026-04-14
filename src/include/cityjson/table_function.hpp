@@ -140,5 +140,16 @@ TableFunction CreateReadCityJSONSeqTableFunction();
  */
 void RegisterCityJSONSeqTableFunction(ExtensionLoader &loader);
 
+/**
+ * Create read_citygml table function
+ * Reads CityGML 2.0/3.0 files and maps to CityJSON data model
+ */
+TableFunction CreateReadCityGMLTableFunction();
+
+/**
+ * Register read_citygml function with database
+ */
+void RegisterCityGMLTableFunction(ExtensionLoader &loader);
+
 } // namespace cityjson
 } // namespace duckdb

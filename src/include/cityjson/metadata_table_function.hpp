@@ -27,5 +27,16 @@ TableFunction CreateCityJSONSeqMetadataTableFunction();
  */
 void RegisterCityJSONSeqMetadataTableFunction(ExtensionLoader &loader);
 
+/**
+ * Create the citygml_metadata table function
+ * Always reads metadata from a CityGML (.gml) file
+ */
+TableFunction CreateCityGMLMetadataTableFunction();
+
+/**
+ * Register the citygml_metadata table function
+ */
+void RegisterCityGMLMetadataTableFunction(ExtensionLoader &loader);
+
 } // namespace cityjson
 } // namespace duckdb
