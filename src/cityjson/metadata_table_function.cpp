@@ -1,6 +1,7 @@
 #include "cityjson/metadata_table_function.hpp"
 #include "cityjson/metadata_table.hpp"
 #include "cityjson/reader.hpp"
+#include "cityjson/citygml_reader.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
@@ -177,6 +178,59 @@ TableFunction CreateCityJSONSeqMetadataTableFunction() {
 
 void RegisterCityJSONSeqMetadataTableFunction(ExtensionLoader &loader) {
 	auto func = CreateCityJSONSeqMetadataTableFunction();
+	loader.RegisterFunction(func);
+}
+
+// Bind function for citygml_metadata — always uses LocalCityGMLReader
+static unique_ptr<FunctionData> CityGMLMetadataBind(ClientContext &context, TableFunctionBindInput &input,
+                                                    vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<MetadataBindData>();
+
+	result->file_name = StringValue::Get(input.inputs[0]);
+
+	std::unique_ptr<CityJSONReader> reader;
+	try {
+		std::string content = json_utils::ReadFileContent(context, result->file_name);
+		reader = std::make_unique<LocalCityGMLReader>(result->file_name, std::move(content), 100);
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to open CityGML file: " + std::string(e.what()));
+	}
+
+	try {
+		result->metadata = reader->ReadMetadata();
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to read CityGML metadata: " + std::string(e.what()));
+	}
+
+	result->city_objects_count = 0;
+	try {
+		auto chunks = reader->ReadAllChunks();
+		for (size_t i = 0; i < chunks.ChunkCount(); i++) {
+			auto chunk = chunks.GetChunk(i);
+			if (chunk) {
+				for (const auto &feature : *chunk) {
+					result->city_objects_count += feature.city_objects.size();
+				}
+			}
+		}
+	} catch (const CityJSONError &e) {
+		result->city_objects_count = 0;
+	}
+
+	return_types = MetadataTableUtils::GetMetadataTableTypes();
+	names = MetadataTableUtils::GetMetadataTableNames();
+
+	return std::move(result);
+}
+
+TableFunction CreateCityGMLMetadataTableFunction() {
+	TableFunction func("citygml_metadata", {LogicalType::VARCHAR}, MetadataScan, CityGMLMetadataBind);
+	func.init_global = MetadataInitGlobal;
+	return func;
+}
+
+void RegisterCityGMLMetadataTableFunction(ExtensionLoader &loader) {
+	auto func = CreateCityGMLMetadataTableFunction();
 	loader.RegisterFunction(func);
 }
 

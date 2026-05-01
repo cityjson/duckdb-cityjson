@@ -1,0 +1,88 @@
+# name: test/sql/citygml.test
+# description: Test read_citygml and citygml_metadata table functions
+# group: [sql]
+
+require cityjson
+
+# Test basic CityGML reading
+statement ok
+CREATE TABLE gml_buildings AS SELECT * FROM read_citygml('test/data/minimal.gml');
+
+# Verify row count (2 buildings)
+query I
+SELECT COUNT(*) FROM gml_buildings;
+----
+2
+
+# Test object_type column
+query I
+SELECT COUNT(*) FROM gml_buildings WHERE object_type = 'Building';
+----
+2
+
+# Test attribute columns
+query I
+SELECT yearOfConstruction FROM gml_buildings WHERE id = 'building1';
+----
+2020
+
+query R
+SELECT measuredHeight FROM gml_buildings WHERE id = 'building1';
+----
+15.5
+
+query T
+SELECT function FROM gml_buildings WHERE id = 'building2';
+----
+commercial
+
+# Test feature_id column
+query I
+SELECT COUNT(*) FROM gml_buildings WHERE feature_id IS NOT NULL;
+----
+2
+
+# Test auto-detection via read_cityjson
+statement ok
+CREATE TABLE gml_auto AS SELECT * FROM read_cityjson('test/data/minimal.gml');
+
+query I
+SELECT COUNT(*) FROM gml_auto;
+----
+2
+
+query T
+SELECT object_type FROM gml_auto WHERE id = 'building1';
+----
+Building
+
+# Test LOD mode (WKB encoding)
+statement ok
+CREATE TABLE gml_lod AS SELECT * FROM read_citygml('test/data/minimal.gml', lod='2');
+
+query I
+SELECT COUNT(*) FROM gml_lod;
+----
+2
+
+# Verify geometry blob is not null
+query I
+SELECT COUNT(*) FROM gml_lod WHERE geometry IS NOT NULL;
+----
+2
+
+# Test citygml_metadata
+query I
+SELECT city_objects_count FROM citygml_metadata('test/data/minimal.gml');
+----
+2
+
+# Clean up
+statement ok
+DROP TABLE gml_buildings;
+
+statement ok
+DROP TABLE gml_auto;
+
+statement ok
+DROP TABLE gml_lod;
