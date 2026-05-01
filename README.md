@@ -408,4 +408,4 @@ SQL tests live in `test/sql/`.
 - [CityJSON specification (v2.0.1)](https://www.cityjson.org/specs/2.0.1/)
 - [CityJSONSeq specification](https://www.cityjson.org/cityjsonseq/)
 - [DuckDB documentation](https://duckdb.org/docs/)
-- [DuckDB extension development](https://duckdb.org/docs/stable/dev/extensions)
+- [DuckDB extension development](https://duckdb.org/community_extensions/development)
