@@ -195,7 +195,7 @@ std::optional<json> GetOptionalObject(const json &obj, const std::string &key) {
 		throw CityJSONError::InvalidJson("Key '" + key + "' is not an object");
 	}
 
-	return value;
+	return std::make_optional(value);
 }
 
 json GetArray(const json &obj, const std::string &key) {
@@ -229,7 +229,7 @@ std::optional<json> GetOptionalArray(const json &obj, const std::string &key) {
 		throw CityJSONError::InvalidJson("Key '" + key + "' is not an array");
 	}
 
-	return value;
+	return std::make_optional(value);
 }
 
 bool HasKey(const json &obj, const std::string &key) {

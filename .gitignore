@@ -11,3 +11,4 @@ data/
 .claude/*local*
 .superset/
 Note.md
+.cache/
