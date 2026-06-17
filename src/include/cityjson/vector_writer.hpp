@@ -27,21 +27,21 @@ public:
 	/**
 	 * Get as flat vector (for primitives and strings)
 	 * @return Pointer to Vector
-	 * @throws CityJSONError::DuckDBError if vector type is not Flat
+	 * @throws CityJSONError if vector type is not Flat
 	 */
 	Vector *AsFlatMut();
 
 	/**
 	 * Get as list vector (for LIST types)
 	 * @return Pointer to Vector
-	 * @throws CityJSONError::DuckDBError if vector type is not List
+	 * @throws CityJSONError if vector type is not List
 	 */
 	Vector *AsListMut();
 
 	/**
 	 * Get as struct vector (for STRUCT types)
 	 * @return Pointer to Vector
-	 * @throws CityJSONError::DuckDBError if vector type is not Struct
+	 * @throws CityJSONError if vector type is not Struct
 	 */
 	Vector *AsStructMut();
 
@@ -51,6 +51,13 @@ public:
 	 */
 	VectorType GetType() const {
 		return type_;
+	}
+
+	/**
+	 * Set the row to NULL without enforcing the stored vector type
+	 */
+	void SetNull(size_t row) {
+		FlatVector::SetNull(*vector_, row, true);
 	}
 
 private:
