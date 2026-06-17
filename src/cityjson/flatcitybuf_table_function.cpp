@@ -27,15 +27,12 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 	}
 	result->file_name = StringValue::Get(input.inputs[0]);
 
-	for (auto &kv : input.named_parameters) {
-		if (kv.first == "lod") {
-			result->target_lod = StringValue::Get(kv.second);
-			result->use_wkb_encoding = true;
-		}
-	}
+	auto options = ParseCityJSONReadOptions(input, "read_flatcitybuf");
+	result->target_lod = options.target_lod;
+	result->use_wkb_encoding = options.use_wkb_encoding;
 
 	// FCB API reads directly from a local file path
-	auto reader = std::make_unique<FlatCityBufReader>(result->file_name, result->file_name);
+	auto reader = std::make_unique<FlatCityBufReader>(result->file_name, result->file_name, options.sample_lines);
 
 	try {
 		result->metadata = reader->ReadMetadata();
@@ -84,7 +81,7 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
 	}
 
-	return std::move(result);
+	return result;
 }
 
 // ============================================================
@@ -120,7 +117,7 @@ struct FcbMetadataBindData : public TableFunctionData {
 		result->file_name = file_name;
 		result->metadata = metadata;
 		result->city_objects_count = city_objects_count;
-		return std::move(result);
+		return result;
 	}
 
 	bool Equals(const FunctionData &other) const override {
@@ -157,7 +154,7 @@ static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFun
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
 	names = MetadataTableUtils::GetMetadataTableNames();
 
-	return std::move(result);
+	return result;
 }
 
 static unique_ptr<GlobalTableFunctionState> FcbMetadataInitGlobal(ClientContext &context,

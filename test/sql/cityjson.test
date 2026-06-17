@@ -54,6 +54,28 @@ SELECT COUNT(*) FROM buildings_seq WHERE object_type = 'Building';
 ----
 2
 
+# ============================================================
+# sample_lines parameter for regular CityJSON
+# ============================================================
+
+# With sample_lines=1 the late attribute is not discovered
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/cityjson_late_attribute.city.json', sample_lines => 1)) WHERE column_name = 'lateAttribute';
+----
+0
+
+# With default sampling the late attribute is present
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/cityjson_late_attribute.city.json')) WHERE column_name = 'lateAttribute';
+----
+1
+
+# Negative sample_lines is rejected
+statement error
+SELECT * FROM read_cityjson('test/data/cityjson_late_attribute.city.json', sample_lines => -1);
+----
+sample_lines must be non-negative
+
 # Clean up
 statement ok
 DROP TABLE buildings;

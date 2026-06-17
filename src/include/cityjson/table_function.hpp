@@ -35,6 +35,20 @@ struct CityJSONBindData : public TableFunctionData {
 	bool Equals(const FunctionData &other) const override;
 };
 
+/**
+ * Read options parsed from named parameters
+ */
+struct CityJSONReadOptions {
+	std::optional<std::string> target_lod;
+	bool use_wkb_encoding = false;
+	size_t sample_lines = 100;
+};
+
+/**
+ * Parse named parameters shared by read_cityjson, read_cityjsonseq, and read_flatcitybuf
+ */
+CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input, const std::string &function_name);
+
 // ============================================================
 // Global State
 // ============================================================

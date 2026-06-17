@@ -8,6 +8,25 @@
 namespace duckdb {
 namespace cityjson {
 
+CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input, const std::string &function_name) {
+	CityJSONReadOptions options;
+
+	for (auto &kv : input.named_parameters) {
+		if (kv.first == "lod") {
+			options.target_lod = StringValue::Get(kv.second);
+			options.use_wkb_encoding = true; // Enable WKB encoding when LOD is specified
+		} else if (kv.first == "sample_lines") {
+			auto sample_lines = BigIntValue::Get(kv.second);
+			if (sample_lines < 0) {
+				throw BinderException(function_name + ": sample_lines must be non-negative");
+			}
+			options.sample_lines = static_cast<size_t>(sample_lines);
+		}
+	}
+
+	return options;
+}
+
 unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindInput &input,
                                       vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<CityJSONBindData>();
@@ -19,17 +38,14 @@ unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindI
 	result->file_name = StringValue::Get(input.inputs[0]);
 
 	// Parse named parameters
-	for (auto &kv : input.named_parameters) {
-		if (kv.first == "lod") {
-			result->target_lod = StringValue::Get(kv.second);
-			result->use_wkb_encoding = true; // Enable WKB encoding when LOD is specified
-		}
-	}
+	auto options = ParseCityJSONReadOptions(input, "read_cityjson");
+	result->target_lod = options.target_lod;
+	result->use_wkb_encoding = options.use_wkb_encoding;
 
 	// Open reader
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		reader = OpenAnyCityJSONFile(context, result->file_name);
+		reader = OpenAnyCityJSONFile(context, result->file_name, options.sample_lines);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSON file: " + std::string(e.what()));
 	}
@@ -92,7 +108,7 @@ unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindI
 		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
 	}
 
-	return std::move(result);
+	return result;
 }
 
 unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBindInput &input,
@@ -106,18 +122,15 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
 	result->file_name = StringValue::Get(input.inputs[0]);
 
 	// Parse named parameters
-	for (auto &kv : input.named_parameters) {
-		if (kv.first == "lod") {
-			result->target_lod = StringValue::Get(kv.second);
-			result->use_wkb_encoding = true;
-		}
-	}
+	auto options = ParseCityJSONReadOptions(input, "read_cityjsonseq");
+	result->target_lod = options.target_lod;
+	result->use_wkb_encoding = options.use_wkb_encoding;
 
 	// Read file content via DuckDB FileSystem, then create CityJSONSeq reader
 	std::unique_ptr<CityJSONReader> reader;
 	try {
 		std::string content = json_utils::ReadFileContent(context, result->file_name);
-		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name, std::move(content), 100);
+		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name, std::move(content), options.sample_lines);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}
@@ -176,7 +189,7 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
 		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
 	}
 
-	return std::move(result);
+	return result;
 }
 
 } // namespace cityjson

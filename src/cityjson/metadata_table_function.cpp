@@ -18,7 +18,7 @@ struct MetadataBindData : public TableFunctionData {
 		result->file_name = file_name;
 		result->metadata = metadata;
 		result->city_objects_count = city_objects_count;
-		return std::move(result);
+		return result;
 	}
 
 	bool Equals(const FunctionData &other) const override {
@@ -80,7 +80,7 @@ static unique_ptr<FunctionData> MetadataBind(ClientContext &context, TableFuncti
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
 	names = MetadataTableUtils::GetMetadataTableNames();
 
-	return std::move(result);
+	return result;
 }
 
 // Init global state
@@ -166,7 +166,7 @@ static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFun
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
 	names = MetadataTableUtils::GetMetadataTableNames();
 
-	return std::move(result);
+	return result;
 }
 
 TableFunction CreateCityJSONSeqMetadataTableFunction() {

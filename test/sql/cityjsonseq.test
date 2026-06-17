@@ -75,6 +75,34 @@ SELECT transform_translate.x, transform_translate.y, transform_translate.z FROM 
 0.0	0.0	0.0
 
 # ============================================================
+# sample_lines parameter
+# ============================================================
+
+# With sample_lines=1 the late attribute is not discovered
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl', sample_lines => 1)) WHERE column_name = 'lateAttribute';
+----
+0
+
+# With default sampling the late attribute is present
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl')) WHERE column_name = 'lateAttribute';
+----
+1
+
+# With sample_lines=0 no dynamic attributes are inferred
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl', sample_lines => 0)) WHERE column_name IN ('yearOfConstruction', 'lateAttribute');
+----
+0
+
+# Negative sample_lines is rejected
+statement error
+SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl', sample_lines => -1);
+----
+sample_lines must be non-negative
+
+# ============================================================
 # Error handling
 # ============================================================
 

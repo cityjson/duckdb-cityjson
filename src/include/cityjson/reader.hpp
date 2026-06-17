@@ -177,7 +177,7 @@ private:
  * @return Unique pointer to appropriate reader implementation
  * @throws CityJSONError if format cannot be determined or file doesn't exist
  */
-std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name);
+std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name, size_t sample_lines = 100);
 
 /**
  * Factory function using DuckDB FileSystem API for remote/local files
@@ -185,9 +185,11 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name
  *
  * @param context DuckDB client context
  * @param file_name Path or URL to CityJSON file
+ * @param sample_lines Number of features to sample for schema inference
  * @return Unique pointer to appropriate reader implementation
  */
-std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &context, const std::string &file_name);
+std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &context, const std::string &file_name,
+                                                    size_t sample_lines = 100);
 
 } // namespace cityjson
 } // namespace duckdb
