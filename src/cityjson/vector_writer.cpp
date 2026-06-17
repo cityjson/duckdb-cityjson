@@ -132,21 +132,7 @@ void WriteVarcharArray(Vector *list_vec, const json &value, size_t row) {
 // WriteGeometry
 // ============================================================
 
-void WriteGeometry(Vector *struct_vec, const json &value, size_t row) {
-	if (!value.is_object()) {
-		FlatVector::SetNull(*struct_vec, row, true);
-		return;
-	}
-
-	// Parse geometry
-	Geometry geom;
-	try {
-		geom = Geometry::FromJson(value);
-	} catch (const CityJSONError &) {
-		FlatVector::SetNull(*struct_vec, row, true);
-		return;
-	}
-
+void WriteGeometry(Vector *struct_vec, const Geometry &geom, size_t row) {
 	// Get child vectors
 	// STRUCT(lod VARCHAR, type VARCHAR, boundaries VARCHAR,
 	//        semantics VARCHAR, material VARCHAR, texture VARCHAR)
@@ -181,6 +167,24 @@ void WriteGeometry(Vector *struct_vec, const json &value, size_t row) {
 	} else {
 		FlatVector::SetNull(*children[5], row, true);
 	}
+}
+
+void WriteGeometry(Vector *struct_vec, const json &value, size_t row) {
+	if (!value.is_object()) {
+		FlatVector::SetNull(*struct_vec, row, true);
+		return;
+	}
+
+	// Parse geometry
+	Geometry geom;
+	try {
+		geom = Geometry::FromJson(value);
+	} catch (const CityJSONError &) {
+		FlatVector::SetNull(*struct_vec, row, true);
+		return;
+	}
+
+	WriteGeometry(struct_vec, geom, row);
 }
 
 // ============================================================

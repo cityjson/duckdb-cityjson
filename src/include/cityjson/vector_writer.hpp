@@ -144,7 +144,7 @@ void WritePrimitive(Vector *vec, size_t row, T value);
 void WriteVarcharArray(Vector *list_vec, const json &value, size_t row);
 
 /**
- * Write geometry to struct vector
+ * Write geometry to struct vector from a JSON value
  * Handles Geometry STRUCT type with fields:
  * - lod: VARCHAR
  * - type: VARCHAR
@@ -159,6 +159,16 @@ void WriteVarcharArray(Vector *list_vec, const json &value, size_t row);
  * @throws CityJSONError if value is not a valid geometry object
  */
 void WriteGeometry(Vector *struct_vec, const json &value, size_t row);
+
+/**
+ * Write geometry to struct vector directly from a Geometry object
+ * Avoids the JSON serialize/parse round-trip used by WriteGeometry(json).
+ *
+ * @param struct_vec Pointer to struct vector
+ * @param geom Geometry object to write
+ * @param row Row index in struct vector
+ */
+void WriteGeometry(Vector *struct_vec, const Geometry &geom, size_t row);
 
 /**
  * Write geographical extent to struct vector

@@ -126,7 +126,15 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 					} else if (col.name == "feature_id") {
 						value = json(feature.id);
 					} else if (IsGeometryColumn(col.name)) {
-						value = CityObjectUtils::GetGeometryValue(city_obj, col);
+						// Write geometry struct directly without JSON round-trip
+						std::string lod = ParseLODFromColumnName(col.name);
+						auto geom_opt = city_obj.GetGeometryAtLOD(lod);
+						if (geom_opt.has_value()) {
+							WriteGeometry(wrappers[col_idx].AsStructMut(), geom_opt.value(), output_row);
+						} else {
+							wrappers[col_idx].SetNull(output_row);
+						}
+						continue;
 					} else {
 						value = CityObjectUtils::GetAttributeValue(city_obj, col);
 					}
