@@ -1,4 +1,5 @@
 #include "cityjson/cityjson_types.hpp"
+#include "cityjson/lod_table.hpp"
 #include <algorithm>
 
 namespace duckdb {
@@ -221,9 +222,9 @@ Geometry Geometry::FromJson(const json &obj) {
 	// LOD can be string or number (optional — default to empty string if missing)
 	if (obj.contains("lod")) {
 		if (obj["lod"].is_string()) {
-			result.lod = obj["lod"].get<std::string>();
+			result.lod = LODTableUtils::NormalizeLOD(obj["lod"].get<std::string>());
 		} else if (obj["lod"].is_number()) {
-			result.lod = std::to_string(obj["lod"].get<double>());
+			result.lod = LODTableUtils::NormalizeLOD(obj["lod"].get<double>());
 		} else {
 			throw CityJSONError::InvalidGeometry("LOD must be a string or number");
 		}

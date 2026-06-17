@@ -3,6 +3,8 @@
 #include "cityjson/column_types.hpp"
 #include <algorithm>
 #include <regex>
+#include <sstream>
+#include <iomanip>
 
 namespace duckdb {
 namespace cityjson {
@@ -30,6 +32,36 @@ std::string LODTableUtils::FormatLODAsColumnSuffix(const std::string &lod) {
 	}
 
 	return result;
+}
+
+static std::string TrimTrailingZeros(const std::string &s) {
+	size_t end = s.find_last_not_of('0');
+	if (end == std::string::npos) {
+		return s;
+	}
+	if (s[end] == '.') {
+		end--;
+	}
+	return s.substr(0, end + 1);
+}
+
+std::string LODTableUtils::NormalizeLOD(double lod) {
+	std::ostringstream oss;
+	oss << std::fixed << std::setprecision(12) << lod;
+	return TrimTrailingZeros(oss.str());
+}
+
+std::string LODTableUtils::NormalizeLOD(const std::string &lod) {
+	try {
+		size_t idx = 0;
+		double value = std::stod(lod, &idx);
+		if (idx == lod.size()) {
+			return NormalizeLOD(value);
+		}
+	} catch (...) {
+		// Not a numeric LOD - return as-is
+	}
+	return lod;
 }
 
 std::string LODTableUtils::ParseLODFromSuffix(const std::string &column_suffix) {

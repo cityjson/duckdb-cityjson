@@ -93,3 +93,29 @@ FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json', lod =>
 ----
 1	0
 0	1
+
+# ============================================================
+# LOD normalization
+# ============================================================
+
+# Numeric LOD in file (2.0) is normalized so '2' and '2.0' both match
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/numeric_lod.city.json', lod => '2');
+----
+1
+
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/numeric_lod.city.json', lod => '2.0');
+----
+1
+
+# Non-LOD schema uses normalized column name (geom_lod2 for numeric 2.0)
+query T
+SELECT typeof(geom_lod2) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geom_lod2 IS NOT NULL;
+----
+STRUCT(lod VARCHAR, "type" VARCHAR, boundaries VARCHAR, semantics VARCHAR, material VARCHAR, texture VARCHAR)
+
+query T
+SELECT geom_lod2.lod FROM read_cityjson('test/data/numeric_lod.city.json');
+----
+2

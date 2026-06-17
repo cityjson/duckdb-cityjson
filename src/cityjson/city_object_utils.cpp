@@ -1,5 +1,6 @@
 #include "cityjson/city_object_utils.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/lod_table.hpp"
 #include "cityjson/wkb_encoder.hpp"
 #include "cityjson/geometry_properties.hpp"
 #include <map>
@@ -171,17 +172,7 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	std::vector<Column> result;
 	for (const auto &lod : lods) {
 		// Convert LOD "2.1" to column name "geom_lod2_1"
-		std::string col_name = "geom_lod";
-
-		// Replace '.' with '_'
-		for (char c : lod) {
-			if (c == '.') {
-				col_name += '_';
-			} else {
-				col_name += c;
-			}
-		}
-
+		std::string col_name = "geom_" + LODTableUtils::FormatLODAsColumnSuffix(lod);
 		result.emplace_back(col_name, ColumnType::Geometry);
 	}
 

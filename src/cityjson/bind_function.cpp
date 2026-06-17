@@ -13,7 +13,7 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
 
 	for (auto &kv : input.named_parameters) {
 		if (kv.first == "lod") {
-			options.target_lod = StringValue::Get(kv.second);
+			options.target_lod = LODTableUtils::NormalizeLOD(StringValue::Get(kv.second));
 			options.use_wkb_encoding = true; // Enable WKB encoding when LOD is specified
 		} else if (kv.first == "sample_lines") {
 			auto sample_lines = BigIntValue::Get(kv.second);
