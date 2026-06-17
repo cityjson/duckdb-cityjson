@@ -198,5 +198,51 @@ json CityObjectUtils::GetGeometryPropertiesJson(const Geometry &geometry, const 
 	return GeometryPropertiesSerializer::Serialize(geometry);
 }
 
+static void CollectExtentRecursive(const json &boundaries, const std::vector<std::array<double, 3>> &vertices,
+                                   const std::optional<Transform> &transform, GeographicalExtent &extent,
+                                   bool &found) {
+	if (boundaries.is_number_integer()) {
+		auto idx = boundaries.get<int64_t>();
+		if (idx < 0 || static_cast<size_t>(idx) >= vertices.size()) {
+			return; // skip invalid index
+		}
+		std::array<double, 3> v = vertices[static_cast<size_t>(idx)];
+		if (transform.has_value()) {
+			v = transform->Apply(v);
+		}
+		if (!found) {
+			extent.min_x = extent.max_x = v[0];
+			extent.min_y = extent.max_y = v[1];
+			extent.min_z = extent.max_z = v[2];
+			found = true;
+		} else {
+			extent.min_x = std::min(extent.min_x, v[0]);
+			extent.min_y = std::min(extent.min_y, v[1]);
+			extent.min_z = std::min(extent.min_z, v[2]);
+			extent.max_x = std::max(extent.max_x, v[0]);
+			extent.max_y = std::max(extent.max_y, v[1]);
+			extent.max_z = std::max(extent.max_z, v[2]);
+		}
+		return;
+	}
+	if (boundaries.is_array()) {
+		for (const auto &child : boundaries) {
+			CollectExtentRecursive(child, vertices, transform, extent, found);
+		}
+	}
+}
+
+std::optional<GeographicalExtent>
+CityObjectUtils::GetGeometryExtent(const Geometry &geometry, const std::vector<std::array<double, 3>> &vertices,
+                                   const std::optional<Transform> &transform) {
+	GeographicalExtent extent;
+	bool found = false;
+	CollectExtentRecursive(geometry.boundaries, vertices, transform, extent, found);
+	if (!found) {
+		return std::nullopt;
+	}
+	return extent;
+}
+
 } // namespace cityjson
 } // namespace duckdb

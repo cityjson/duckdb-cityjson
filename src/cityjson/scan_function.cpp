@@ -71,6 +71,14 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				wrappers[col_idx].SetNull(output_row);
 			}
 			continue;
+		} else if (col.name == "bbox") {
+			if (target_geom.has_value() && vertex_pool != nullptr) {
+				auto extent = CityObjectUtils::GetGeometryExtent(target_geom.value(), *vertex_pool,
+				                                                 bind_data.metadata.transform);
+				value = extent.has_value() ? extent->ToJson() : json(nullptr);
+			} else {
+				value = json(nullptr);
+			}
 		} else {
 			value = CityObjectUtils::GetAttributeValue(city_obj, col);
 		}
