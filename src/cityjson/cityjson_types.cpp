@@ -166,7 +166,7 @@ Metadata Metadata::FromJson(const json &obj) {
 
 	// geographicalExtent is an array of 6 numbers [minx, miny, minz, maxx, maxy, maxz]
 	if (obj.contains("geographicalExtent") && obj["geographicalExtent"].is_array()) {
-		result.geographic_extent = GeographicalExtent::FromJson(obj["geographicalExtent"]);
+		result.geographical_extent = GeographicalExtent::FromJson(obj["geographicalExtent"]);
 	}
 	result.dataset_topic_category = GetOptionalString(obj, "datasetTopicCategory");
 	result.feature_type = GetOptionalString(obj, "featureType");
@@ -547,8 +547,8 @@ json CityJSON::ToJson() const {
 		if (m.geographic_location) {
 			meta["geographicLocation"] = *m.geographic_location;
 		}
-		if (m.geographic_extent) {
-			meta["geographicalExtent"] = m.geographic_extent->ToJson();
+		if (m.geographical_extent) {
+			meta["geographicalExtent"] = m.geographical_extent->ToJson();
 		}
 		if (m.dataset_topic_category) {
 			meta["datasetTopicCategory"] = *m.dataset_topic_category;

@@ -259,8 +259,8 @@ unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &ci
 	chunk->data[6].SetValue(0, CreateTransformValue(cityjson.transform, false));
 
 	// geographical_extent — from metadata if available
-	if (cityjson.metadata.has_value() && cityjson.metadata->geographic_extent.has_value()) {
-		const auto &ext = cityjson.metadata->geographic_extent.value();
+	if (cityjson.metadata.has_value() && cityjson.metadata->geographical_extent.has_value()) {
+		const auto &ext = cityjson.metadata->geographical_extent.value();
 		child_list_t<Value> extent_children;
 		extent_children.push_back({"min_x", Value::DOUBLE(ext.min_x)});
 		extent_children.push_back({"min_y", Value::DOUBLE(ext.min_y)});

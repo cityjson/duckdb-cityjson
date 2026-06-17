@@ -116,7 +116,7 @@ struct Metadata {
 	std::optional<std::string> reference_date;
 	std::optional<std::string> reference_system;
 	std::optional<std::string> geographic_location;
-	std::optional<GeographicalExtent> geographic_extent;
+	std::optional<GeographicalExtent> geographical_extent;
 	std::optional<std::string> dataset_topic_category;
 	std::optional<std::string> feature_type;
 	std::optional<std::string> metadata_standard;
