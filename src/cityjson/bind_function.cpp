@@ -4,6 +4,10 @@
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 
 namespace duckdb {
 namespace cityjson {
@@ -141,6 +145,59 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
 
 	return BindCityJSONRead(context, input, return_types, names, "read_cityjsonseq", std::move(reader), true);
 }
+
+void CityJSONPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
+                                   vector<unique_ptr<Expression>> &filters) {
+	auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
+
+	static const std::unordered_set<std::string> pushable_columns = {"id", "feature_id", "object_type"};
+
+	for (auto it = filters.begin(); it != filters.end();) {
+		auto &expr = *it;
+		bool consumed = false;
+
+		if (expr->type == ExpressionType::COMPARE_EQUAL) {
+			auto &comp = expr->Cast<BoundComparisonExpression>();
+
+			BoundColumnRefExpression *col_ref = nullptr;
+			BoundConstantExpression *constant = nullptr;
+
+			if (comp.left->type == ExpressionType::BOUND_COLUMN_REF &&
+			    comp.right->type == ExpressionType::VALUE_CONSTANT) {
+				col_ref = &comp.left->Cast<BoundColumnRefExpression>();
+				constant = &comp.right->Cast<BoundConstantExpression>();
+			} else if (comp.right->type == ExpressionType::BOUND_COLUMN_REF &&
+			           comp.left->type == ExpressionType::VALUE_CONSTANT) {
+				col_ref = &comp.right->Cast<BoundColumnRefExpression>();
+				constant = &comp.left->Cast<BoundConstantExpression>();
+			}
+
+			if (col_ref && constant && constant->value.type() == LogicalType::VARCHAR) {
+				// The column binding refers to an entry in get.GetColumnIds(),
+				// not directly to get.names.
+				if (col_ref->binding.table_index == get.table_index &&
+				    col_ref->binding.column_index < get.GetColumnIds().size()) {
+					idx_t schema_idx = get.GetColumnIds()[col_ref->binding.column_index].GetPrimaryIndex();
+					if (schema_idx < bind_data.columns.size()) {
+						const auto &column_name = bind_data.columns[schema_idx].name;
+						if (pushable_columns.count(column_name) > 0) {
+							bind_data.equality_filters.emplace_back(column_name,
+							                                        constant->value.GetValue<std::string>());
+							consumed = true;
+						}
+					}
+				}
+			}
+		}
+
+		if (consumed) {
+			it = filters.erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
 
 } // namespace cityjson
 } // namespace duckdb

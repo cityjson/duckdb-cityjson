@@ -18,8 +18,13 @@ TableFunction CreateReadCityJSONTableFunction() {
 	func.cardinality = CityJSONCardinality;
 	func.statistics = CityJSONStatistics;
 
-	// Enable projection pushdown
+	// Enable projection pushdown and complex-filter pushdown.
+	// filter_pushdown is intentionally disabled; our scan callback does not
+	// implement TableFilterSet handling, and enabling it would cause DuckDB to
+	// drop filters it believes the scan will apply.
 	func.projection_pushdown = true;
+	func.filter_pushdown = false;
+	func.pushdown_complex_filter = CityJSONPushdownComplexFilter;
 
 	return func;
 }
@@ -42,8 +47,10 @@ TableFunction CreateReadCityJSONSeqTableFunction() {
 	func.cardinality = CityJSONCardinality;
 	func.statistics = CityJSONStatistics;
 
-	// Enable projection pushdown
+	// Enable projection pushdown and complex-filter pushdown.
 	func.projection_pushdown = true;
+	func.filter_pushdown = false;
+	func.pushdown_complex_filter = CityJSONPushdownComplexFilter;
 
 	return func;
 }

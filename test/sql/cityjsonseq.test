@@ -103,6 +103,47 @@ SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl', sam
 sample_lines must be non-negative
 
 # ============================================================
+# Filter pushdown
+# ============================================================
+
+# object_type equality filter is pushed down
+query II
+SELECT id, feature_id FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE object_type = 'Building' ORDER BY id;
+----
+building1	feature1
+building2	feature2
+
+# feature_id equality filter is pushed down
+query II
+SELECT id, feature_id FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE feature_id = 'feature2';
+----
+building2	feature2
+
+# id equality filter is pushed down
+query I
+SELECT feature_id FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE id = 'building1';
+----
+feature1
+
+# combination of pushed-down filters
+query I
+SELECT id FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE object_type = 'Building' AND feature_id = 'feature1';
+----
+building1
+
+# non-existent pushed-down filter returns no rows
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE id = 'no-such-building';
+----
+0
+
+# non-pushable filter still works
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE object_type = 'Building' AND yearOfConstruction > 2020;
+----
+1
+
+# ============================================================
 # Error handling
 # ============================================================
 

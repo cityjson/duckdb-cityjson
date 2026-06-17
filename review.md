@@ -427,7 +427,7 @@ Improvement tips:
 
 Work is being done on branch `develop`. Each item below was fixed/addressed in a
 separate commit and the full SQL test suite was run after every commit.
-Current state: **all tests pass** (213 assertions in 7 test cases).
+Current state: **all tests pass** (454 assertions in 14 test cases).
 
 ### Done
 
@@ -499,18 +499,28 @@ Current state: **all tests pass** (213 assertions in 7 test cases).
     `Geometry` objects instead of serializing to JSON and parsing back.
   - Commit: `8146cad`
 
+- [x] **Make CityJSONSeq streaming real**
+  - `LocalCityJSONSeqReader` now reads incrementally via DuckDB `FileHandle`.
+  - `read_cityjsonseq` scan loops iterate one feature at a time instead of
+    materializing the whole file.
+  - Commit: `2c28911`
+
+- [x] **Filter pushdown opportunities**
+  - Registered `pushdown_complex_filter` callback for `read_cityjson` and
+    `read_cityjsonseq`.
+  - Consumes equality filters on `id`, `feature_id`, and `object_type`.
+  - Filtered scans skip non-matching rows in both materialized and streaming
+    paths; multi-threading is disabled while filters are active.
+  - Non-pushable filters (e.g. range predicates) are left for DuckDB to apply.
+  - Added SQL tests covering single filters, combined filters, no-match filters,
+    and mixed pushable/non-pushable filters.
+
 ### Partially done / next up
 
-- [ ] **Make CityJSONSeq streaming real**
-  - Metadata-only queries are now cheap, and bind no longer materializes
-    CityJSONSeq data. True per-batch scan-time streaming still needs a reader
-    iterator and scan-loop rewrite.
-
 - [ ] **Remote and DuckDB FileSystem reads load the entire file into memory**
-  - `CountCityObjects()` streams from the pre-loaded string for CityJSONSeq
-    metadata, but `OpenAnyCityJSONFile(ClientContext&, ...)` still uses
-    `ReadFileContent()` for format detection. A streaming `FileHandle`-based
-    path is still needed.
+  - CityJSONSeq metadata and scan now stream via `FileHandle`, but regular
+    CityJSON files are still fully loaded for format detection/parsing. A
+    streaming parser path for `.city.json` is still open.
 
 - [ ] **Reader classes do too much**
   - `BindCityJSONRead` reduces duplication, but the `CityJSONReader` classes
@@ -522,20 +532,10 @@ Current state: **all tests pass** (213 assertions in 7 test cases).
     fully materialized and WKB/geometry-properties are computed regardless of
     projection. Needs a scan-time column plan.
 
-- [ ] **Filter pushdown opportunities**
-  - Not implemented. Recommended first step: equality filters on `id`,
-    `feature_id`, and `object_type` via `pushdown_complex_filter`, storing
-    accepted filters in bind/global state and skipping rows in the scan loop.
-
 ### Recommended restart point
 
-The next chunk of work is **filter pushdown** (step 6 of the suggested refactor
-order). It requires:
-1. Setting `func.filter_pushdown = true` and registering a
-   `pushdown_complex_filter` callback.
-2. Consuming simple equality expressions on `id`/`feature_id`/`object_type`.
-3. Rewriting the scan loop to skip non-matching rows across batch boundaries.
-
-Alternatively, if IO/streaming is higher priority, continue with a
-`FileHandle`-based streaming CityJSONSeq reader before tackling filters.
+The remaining larger items are **reader-class refactoring** and deeper
+**projection / IO streaming** for regular CityJSON files. Either can be picked
+up next depending on whether API cleanliness or memory efficiency is the higher
+priority.
 

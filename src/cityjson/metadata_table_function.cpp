@@ -119,11 +119,10 @@ static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFun
 	// Get file path from argument
 	result->file_name = StringValue::Get(input.inputs[0]);
 
-	// Read file via DuckDB FileSystem, then create CityJSONSeq reader
+	// Open CityJSONSeq reader using DuckDB FileSystem (incremental reads)
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		std::string content = json_utils::ReadFileContent(context, result->file_name);
-		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name, std::move(content), 100);
+		reader = std::make_unique<LocalCityJSONSeqReader>(context, result->file_name, 100);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}

@@ -34,6 +34,9 @@ struct CityJSONBindData : public TableFunctionData {
 	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
 	bool streaming = false;                // True when data is loaded during scan init instead of bind
 
+	// Pushed-down equality filters on scalar columns (column_name -> expected_value)
+	std::vector<std::pair<std::string, std::string>> equality_filters;
+
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other) const override;
 };
@@ -84,6 +87,12 @@ struct CityJSONGlobalState : public GlobalTableFunctionState {
 	std::unique_ptr<CityJSONReader> streaming_reader; // Incremental reader (streaming only)
 	std::optional<CityJSONFeature> streaming_feature; // Current feature being processed (streaming only)
 	std::map<std::string, CityObject>::const_iterator streaming_obj_it; // Position in current feature
+
+	// Sequential source position used when filter pushdown is active
+	size_t filter_chunk_idx = 0;
+	size_t filter_feature_idx = 0;
+	size_t filter_obj_offset = 0;
+	bool has_filters = false;
 
 	CityJSONGlobalState();
 
@@ -178,6 +187,13 @@ TableFunction CreateReadCityJSONSeqTableFunction();
  * Register read_cityjsonseq function with database
  */
 void RegisterCityJSONSeqTableFunction(ExtensionLoader &loader);
+
+/**
+ * Pushdown complex filter callback for CityJSON table functions.
+ * Consumes simple equality filters on id/feature_id/object_type.
+ */
+void CityJSONPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
+                                   vector<unique_ptr<Expression>> &filters);
 
 } // namespace cityjson
 } // namespace duckdb

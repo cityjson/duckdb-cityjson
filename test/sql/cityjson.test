@@ -76,6 +76,34 @@ SELECT * FROM read_cityjson('test/data/cityjson_late_attribute.city.json', sampl
 ----
 sample_lines must be non-negative
 
+# ============================================================
+# Filter pushdown
+# ============================================================
+
+# object_type equality filter is pushed down
+query I
+SELECT id FROM read_cityjson('test/data/minimal.city.json') WHERE object_type = 'Building';
+----
+building1
+
+# id equality filter is pushed down
+query I
+SELECT object_type FROM read_cityjson('test/data/minimal.city.json') WHERE id = 'building1';
+----
+Building
+
+# non-existent pushed-down filter returns no rows
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/minimal.city.json') WHERE id = 'no-such-building';
+----
+0
+
+# non-pushable filter still works
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/minimal.city.json') WHERE object_type = 'Building' AND yearOfConstruction > 2010;
+----
+1
+
 # Clean up
 statement ok
 DROP TABLE buildings;

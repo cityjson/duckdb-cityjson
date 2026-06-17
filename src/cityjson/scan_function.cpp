@@ -84,74 +84,140 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 	}
 }
 
+static bool MatchesFilters(const CityJSONBindData &bind_data, const CityJSONFeature &feature,
+                           const std::string &city_obj_id, const CityObject &city_obj) {
+	for (const auto &[column, expected] : bind_data.equality_filters) {
+		if (column == "id" && city_obj_id != expected) {
+			return false;
+		}
+		if (column == "feature_id" && feature.id != expected) {
+			return false;
+		}
+		if (column == "object_type" && city_obj.type != expected) {
+			return false;
+		}
+	}
+	return true;
+}
+
 static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalState &global_state,
                              CityJSONLocalState &local_state, DataChunk &output) {
 	const auto &active_chunks = bind_data.chunks;
 	const auto &active_plan = bind_data.scan_plan;
 
-	size_t batch_index = global_state.batch_index.fetch_add(1);
-
-	if (batch_index >= active_plan.BatchCount()) {
-		output.SetCardinality(0);
-		return;
-	}
-
-	const auto &start_pos = active_plan.batch_starts[batch_index];
-	size_t start_row = start_pos.start_row;
-	size_t end_row = (batch_index + 1 < active_plan.BatchCount()) ? active_plan.batch_starts[batch_index + 1].start_row
-	                                                             : active_plan.total_rows;
-	size_t rows_to_write = end_row - start_row;
-
-	if (rows_to_write == 0) {
-		output.SetCardinality(0);
-		return;
-	}
-
 	const auto &projected_cols =
 	    local_state.projection_ids.empty() ? local_state.column_ids : local_state.projection_ids;
 	auto wrappers = CreateVectors(output, bind_data.columns, projected_cols);
 
-	size_t output_row = 0;
-	size_t remaining = rows_to_write;
+	if (bind_data.equality_filters.empty()) {
+		// No filters: use the precomputed batch-based scan plan.
+		size_t batch_index = global_state.batch_index.fetch_add(1);
 
-	size_t chunk_idx = start_pos.chunk_idx;
-	size_t feature_idx = start_pos.feature_idx;
-	size_t city_object_offset = start_pos.city_object_offset;
-
-	while (remaining > 0 && chunk_idx < active_chunks.ChunkCount()) {
-		auto chunk = active_chunks.GetChunk(chunk_idx);
-		if (!chunk) {
-			break;
+		if (batch_index >= active_plan.BatchCount()) {
+			output.SetCardinality(0);
+			return;
 		}
 
-		for (; feature_idx < chunk->size() && remaining > 0; feature_idx++) {
-			const auto &feature = (*chunk)[feature_idx];
+		const auto &start_pos = active_plan.batch_starts[batch_index];
+		size_t start_row = start_pos.start_row;
+		size_t end_row = (batch_index + 1 < active_plan.BatchCount())
+		                     ? active_plan.batch_starts[batch_index + 1].start_row
+		                     : active_plan.total_rows;
+		size_t rows_to_write = end_row - start_row;
+
+		if (rows_to_write == 0) {
+			output.SetCardinality(0);
+			return;
+		}
+
+		size_t output_row = 0;
+		size_t remaining = rows_to_write;
+
+		size_t chunk_idx = start_pos.chunk_idx;
+		size_t feature_idx = start_pos.feature_idx;
+		size_t city_object_offset = start_pos.city_object_offset;
+
+		while (remaining > 0 && chunk_idx < active_chunks.ChunkCount()) {
+			auto chunk = active_chunks.GetChunk(chunk_idx);
+			if (!chunk) {
+				break;
+			}
+
+			for (; feature_idx < chunk->size() && remaining > 0; feature_idx++) {
+				const auto &feature = (*chunk)[feature_idx];
+
+				size_t obj_idx = 0;
+				for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
+					if (obj_idx < city_object_offset) {
+						obj_idx++;
+						continue;
+					}
+
+					if (remaining == 0)
+						break;
+
+					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+
+					output_row++;
+					remaining--;
+					obj_idx++;
+				}
+
+				city_object_offset = 0;
+			}
+
+			chunk_idx++;
+			feature_idx = 0;
+		}
+
+		output.SetCardinality(output_row);
+	} else {
+		// Filters are active: scan sequentially from the shared source position and
+		// emit only matching rows until the output chunk is full.
+		size_t output_row = 0;
+
+		while (output_row < STANDARD_VECTOR_SIZE && global_state.filter_chunk_idx < active_chunks.ChunkCount()) {
+			auto chunk = active_chunks.GetChunk(global_state.filter_chunk_idx);
+			if (!chunk) {
+				break;
+			}
+
+			if (global_state.filter_feature_idx >= chunk->size()) {
+				global_state.filter_chunk_idx++;
+				global_state.filter_feature_idx = 0;
+				global_state.filter_obj_offset = 0;
+				continue;
+			}
+
+			const auto &feature = (*chunk)[global_state.filter_feature_idx];
 
 			size_t obj_idx = 0;
 			for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
-				if (obj_idx < city_object_offset) {
+				if (obj_idx < global_state.filter_obj_offset) {
 					obj_idx++;
 					continue;
 				}
 
-				if (remaining == 0)
+				global_state.filter_obj_offset = obj_idx + 1;
+
+				if (MatchesFilters(bind_data, feature, city_obj_id, city_obj)) {
+					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+					output_row++;
 					break;
+				}
 
-				WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
-
-				output_row++;
-				remaining--;
 				obj_idx++;
 			}
 
-			city_object_offset = 0;
+			if (global_state.filter_obj_offset >= feature.city_objects.size()) {
+				global_state.filter_feature_idx++;
+				global_state.filter_obj_offset = 0;
+			}
 		}
 
-		chunk_idx++;
-		feature_idx = 0;
+		output.SetCardinality(output_row);
 	}
 
-	output.SetCardinality(output_row);
 	output.Verify();
 }
 
@@ -183,10 +249,15 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 		const auto &feature = global_state.streaming_feature.value();
 		const auto &[city_obj_id, city_obj] = *global_state.streaming_obj_it;
 
-		WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
-
-		output_row++;
+		// Advance iterator before potentially writing, so we continue correctly
+		// regardless of whether this row passes the filter.
 		++global_state.streaming_obj_it;
+
+		if (bind_data.equality_filters.empty() ||
+		    MatchesFilters(bind_data, feature, city_obj_id, city_obj)) {
+			WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+			output_row++;
+		}
 	}
 
 	output.SetCardinality(output_row);

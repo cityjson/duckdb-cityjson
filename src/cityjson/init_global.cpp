@@ -7,6 +7,7 @@ namespace cityjson {
 unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<CityJSONGlobalState>();
 	auto &bind_data = input.bind_data->Cast<CityJSONBindData>();
+	result->has_filters = !bind_data.equality_filters.empty();
 
 	if (bind_data.streaming) {
 		try {

@@ -7,8 +7,8 @@ CityJSONGlobalState::CityJSONGlobalState() : batch_index(0) {
 }
 
 idx_t CityJSONGlobalState::MaxThreads() const {
-	// Streaming reads from a single sequential source; restrict to one thread.
-	if (streaming_reader != nullptr) {
+	// Streaming and filtered reads use a single sequential source.
+	if (streaming_reader != nullptr || has_filters) {
 		return 1;
 	}
 	// Allow multi-threading for materialized data
