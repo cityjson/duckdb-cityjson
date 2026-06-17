@@ -3,6 +3,7 @@
 #include "cityjson/types.hpp"
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/reader.hpp"
 #include "duckdb.hpp"
 #include <string>
 #include <vector>
@@ -48,6 +49,22 @@ struct CityJSONReadOptions {
  * Parse named parameters shared by read_cityjson, read_cityjsonseq, and read_flatcitybuf
  */
 CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input, const std::string &function_name);
+
+/**
+ * Shared bind implementation for CityJSON readers
+ *
+ * @param context DuckDB client context
+ * @param input Table function bind input
+ * @param return_types Output column types
+ * @param names Output column names
+ * @param function_name Function name for error messages
+ * @param reader Opened reader (ownership transferred)
+ * @return Populated CityJSONBindData
+ */
+unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
+                                          vector<LogicalType> &return_types, vector<string> &names,
+                                          const std::string &function_name,
+                                          std::unique_ptr<CityJSONReader> reader);
 
 // ============================================================
 // Global State

@@ -27,82 +27,73 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
 	return options;
 }
 
-unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindInput &input,
-                                      vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<CityJSONBindData>();
-
-	// Get file_name from first positional parameter
-	if (input.inputs.empty()) {
-		throw BinderException("read_cityjson requires a file path");
-	}
-	result->file_name = StringValue::Get(input.inputs[0]);
-
-	// Parse named parameters
-	auto options = ParseCityJSONReadOptions(input, "read_cityjson");
-	result->target_lod = options.target_lod;
-	result->use_wkb_encoding = options.use_wkb_encoding;
-
-	// Open reader
-	std::unique_ptr<CityJSONReader> reader;
-	try {
-		reader = OpenAnyCityJSONFile(context, result->file_name, options.sample_lines);
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to open CityJSON file: " + std::string(e.what()));
-	}
-
-	// Read metadata
-	try {
-		result->metadata = reader->ReadMetadata();
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to read CityJSON metadata: " + std::string(e.what()));
-	}
-
-	// Load all data first (needed for schema inference)
-	try {
-		result->chunks = reader->ReadAllChunks();
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to read CityJSON data: " + std::string(e.what()));
-	}
-
-	// Infer schema - use LOD table schema if LOD is specified
-	if (result->target_lod.has_value()) {
-		// Get all features from chunks
-		std::vector<CityJSONFeature> all_features;
-		for (size_t i = 0; i < result->chunks.ChunkCount(); i++) {
-			auto chunk = result->chunks.GetChunk(i);
-			if (chunk) {
-				all_features.insert(all_features.end(), chunk->begin(), chunk->end());
-			}
+static std::vector<CityJSONFeature> FlattenChunks(const CityJSONFeatureChunk &chunks) {
+	std::vector<CityJSONFeature> all_features;
+	for (size_t i = 0; i < chunks.ChunkCount(); i++) {
+		auto chunk = chunks.GetChunk(i);
+		if (chunk) {
+			all_features.insert(all_features.end(), chunk->begin(), chunk->end());
 		}
+	}
+	return all_features;
+}
 
-		// Use LODTableUtils to get the per-LOD schema
+static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader) {
+	if (bind_data.target_lod.has_value()) {
+		auto all_features = FlattenChunks(bind_data.chunks);
 		auto lod_tables = LODTableUtils::InferLODTables(all_features);
 
-		// Find the table for the requested LOD
 		bool found = false;
 		for (const auto &table : lod_tables) {
-			if (table.lod_value == result->target_lod.value()) {
-				result->columns = table.columns;
+			if (table.lod_value == bind_data.target_lod.value()) {
+				bind_data.columns = table.columns;
 				found = true;
 				break;
 			}
 		}
 
 		if (!found) {
-			throw BinderException("LOD '" + result->target_lod.value() +
-			                      "' not found in CityJSON file. Available LODs: " +
+			throw BinderException("LOD '" + bind_data.target_lod.value() + "' not found in file. Available LODs: " +
 			                      (lod_tables.empty() ? "none" : lod_tables[0].lod_value));
 		}
 	} else {
-		// Use traditional column inference (no WKB encoding)
 		try {
-			result->columns = reader->Columns();
+			bind_data.columns = reader.Columns();
 		} catch (const CityJSONError &e) {
 			throw BinderException("Failed to infer schema: " + std::string(e.what()));
 		}
 	}
+}
 
-	// Populate return types and names
+unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
+                                          vector<LogicalType> &return_types, vector<string> &names,
+                                          const std::string &function_name,
+                                          std::unique_ptr<CityJSONReader> reader) {
+	auto result = make_uniq<CityJSONBindData>();
+
+	if (input.inputs.empty()) {
+		throw BinderException(function_name + " requires a file path");
+	}
+	result->file_name = StringValue::Get(input.inputs[0]);
+
+	auto options = ParseCityJSONReadOptions(input, function_name);
+	result->target_lod = options.target_lod;
+	result->use_wkb_encoding = options.use_wkb_encoding;
+
+	try {
+		result->metadata = reader->ReadMetadata();
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to read metadata: " + std::string(e.what()));
+	}
+
+	try {
+		result->chunks = reader->ReadAllChunks();
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to read data: " + std::string(e.what()));
+	}
+
+	InferSchema(*result, *reader);
+
 	for (const auto &col : result->columns) {
 		names.push_back(col.name);
 		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
@@ -111,85 +102,41 @@ unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindI
 	return result;
 }
 
+unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindInput &input,
+                                      vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.empty()) {
+		throw BinderException("read_cityjson requires a file path");
+	}
+	std::string file_name = StringValue::Get(input.inputs[0]);
+	auto options = ParseCityJSONReadOptions(input, "read_cityjson");
+
+	std::unique_ptr<CityJSONReader> reader;
+	try {
+		reader = OpenAnyCityJSONFile(context, file_name, options.sample_lines);
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to open CityJSON file: " + std::string(e.what()));
+	}
+
+	return BindCityJSONRead(context, input, return_types, names, "read_cityjson", std::move(reader));
+}
+
 unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBindInput &input,
                                          vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<CityJSONBindData>();
-
-	// Get file_name from first positional parameter
 	if (input.inputs.empty()) {
 		throw BinderException("read_cityjsonseq requires a file path");
 	}
-	result->file_name = StringValue::Get(input.inputs[0]);
-
-	// Parse named parameters
+	std::string file_name = StringValue::Get(input.inputs[0]);
 	auto options = ParseCityJSONReadOptions(input, "read_cityjsonseq");
-	result->target_lod = options.target_lod;
-	result->use_wkb_encoding = options.use_wkb_encoding;
 
-	// Read file content via DuckDB FileSystem, then create CityJSONSeq reader
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		std::string content = json_utils::ReadFileContent(context, result->file_name);
-		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name, std::move(content), options.sample_lines);
+		std::string content = json_utils::ReadFileContent(context, file_name);
+		reader = std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), options.sample_lines);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}
 
-	// Read metadata (first line of .jsonl file)
-	try {
-		result->metadata = reader->ReadMetadata();
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to read CityJSONSeq metadata: " + std::string(e.what()));
-	}
-
-	// Load all data (reads from second line onward)
-	try {
-		result->chunks = reader->ReadAllChunks();
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to read CityJSONSeq data: " + std::string(e.what()));
-	}
-
-	// Infer schema
-	if (result->target_lod.has_value()) {
-		std::vector<CityJSONFeature> all_features;
-		for (size_t i = 0; i < result->chunks.ChunkCount(); i++) {
-			auto chunk = result->chunks.GetChunk(i);
-			if (chunk) {
-				all_features.insert(all_features.end(), chunk->begin(), chunk->end());
-			}
-		}
-
-		auto lod_tables = LODTableUtils::InferLODTables(all_features);
-
-		bool found = false;
-		for (const auto &table : lod_tables) {
-			if (table.lod_value == result->target_lod.value()) {
-				result->columns = table.columns;
-				found = true;
-				break;
-			}
-		}
-
-		if (!found) {
-			throw BinderException("LOD '" + result->target_lod.value() +
-			                      "' not found in CityJSONSeq file. Available LODs: " +
-			                      (lod_tables.empty() ? "none" : lod_tables[0].lod_value));
-		}
-	} else {
-		try {
-			result->columns = reader->Columns();
-		} catch (const CityJSONError &e) {
-			throw BinderException("Failed to infer schema: " + std::string(e.what()));
-		}
-	}
-
-	// Populate return types and names
-	for (const auto &col : result->columns) {
-		names.push_back(col.name);
-		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
-	}
-
-	return result;
+	return BindCityJSONRead(context, input, return_types, names, "read_cityjsonseq", std::move(reader));
 }
 
 } // namespace cityjson
