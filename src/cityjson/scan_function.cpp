@@ -13,55 +13,37 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 	// Get next batch index atomically
 	size_t batch_index = global_state.batch_index.fetch_add(1);
 
-	// Calculate starting position in flattened CityObject sequence
-	size_t start_position = batch_index * STANDARD_VECTOR_SIZE;
-
-	// Find which chunk and feature contains this position
-	size_t current_position = 0;
-	size_t chunk_idx = 0;
-	size_t feature_idx = 0;
-	size_t city_object_offset = 0; // Offset within the current feature's CityObjects
-	bool found = false;
-
-	for (chunk_idx = 0; chunk_idx < bind_data.chunks.ChunkCount(); chunk_idx++) {
-		auto chunk = bind_data.chunks.GetChunk(chunk_idx);
-		if (!chunk) {
-			break;
-		}
-
-		// Iterate through features to find exact position
-		for (feature_idx = 0; feature_idx < chunk->size(); feature_idx++) {
-			size_t feature_obj_count = (*chunk)[feature_idx].city_objects.size();
-
-			if (current_position + feature_obj_count > start_position) {
-				// Found the feature containing start_position
-				city_object_offset = start_position - current_position;
-				found = true;
-				break;
-			}
-			current_position += feature_obj_count;
-		}
-
-		if (found) {
-			break;
-		}
+	// Check if exhausted using the precomputed scan plan
+	if (batch_index >= bind_data.scan_plan.BatchCount()) {
+		output.SetCardinality(0);
+		return;
 	}
 
-	// Check if exhausted
-	if (!found || chunk_idx >= bind_data.chunks.ChunkCount()) {
+	const auto &start_pos = bind_data.scan_plan.batch_starts[batch_index];
+	size_t start_row = start_pos.start_row;
+	size_t end_row = (batch_index + 1 < bind_data.scan_plan.BatchCount())
+	                     ? bind_data.scan_plan.batch_starts[batch_index + 1].start_row
+	                     : bind_data.scan_plan.total_rows;
+	size_t rows_to_write = end_row - start_row;
+
+	if (rows_to_write == 0) {
 		output.SetCardinality(0);
 		return;
 	}
 
 	// Create vector wrappers for projected columns
-	// Use projection_ids if available (projection pushdown), otherwise use all column_ids
 	const auto &projected_cols =
 	    local_state.projection_ids.empty() ? local_state.column_ids : local_state.projection_ids;
 	auto wrappers = CreateVectors(output, bind_data.columns, projected_cols);
 
 	// Track output row
 	size_t output_row = 0;
-	size_t remaining = STANDARD_VECTOR_SIZE;
+	size_t remaining = rows_to_write;
+
+	// Initialize source position from the scan plan
+	size_t chunk_idx = start_pos.chunk_idx;
+	size_t feature_idx = start_pos.feature_idx;
+	size_t city_object_offset = start_pos.city_object_offset;
 
 	// Iterate across chunks if necessary
 	while (remaining > 0 && chunk_idx < bind_data.chunks.ChunkCount()) {

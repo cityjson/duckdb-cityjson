@@ -681,5 +681,55 @@ CityJSONFeatureChunk CityJSONFeatureChunk::CreateChunks(std::vector<CityJSONFeat
 	return result;
 }
 
+CityJSONScanPlan CityJSONFeatureChunk::BuildScanPlan(size_t batch_size) const {
+	CityJSONScanPlan plan;
+	plan.total_rows = TotalCityObjectCount();
+
+	if (plan.total_rows == 0 || batch_size == 0) {
+		return plan;
+	}
+
+	const size_t batch_count = (plan.total_rows + batch_size - 1) / batch_size;
+	plan.batch_starts.reserve(batch_count);
+
+	size_t global_row = 0;
+	size_t chunk_idx = 0;
+	size_t feature_idx = 0;
+	size_t city_object_offset = 0;
+
+	for (size_t batch = 0; batch < batch_count; batch++) {
+		plan.batch_starts.push_back({chunk_idx, feature_idx, city_object_offset, global_row});
+		global_row += batch_size;
+		if (global_row > plan.total_rows) {
+			global_row = plan.total_rows;
+		}
+
+		// Advance source position by batch_size CityObjects
+		size_t remaining = batch_size;
+		while (remaining > 0 && chunk_idx < chunks.size()) {
+			auto chunk = GetChunk(chunk_idx);
+			if (!chunk || feature_idx >= chunk->size()) {
+				chunk_idx++;
+				feature_idx = 0;
+				city_object_offset = 0;
+				continue;
+			}
+
+			const auto &feature = (*chunk)[feature_idx];
+			size_t available = feature.CityObjectCount() - city_object_offset;
+			if (remaining >= available) {
+				remaining -= available;
+				feature_idx++;
+				city_object_offset = 0;
+			} else {
+				city_object_offset += remaining;
+				remaining = 0;
+			}
+		}
+	}
+
+	return plan;
+}
+
 } // namespace cityjson
 } // namespace duckdb

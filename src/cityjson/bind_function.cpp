@@ -92,6 +92,8 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
 		throw BinderException("Failed to read data: " + std::string(e.what()));
 	}
 
+	result->scan_plan = result->chunks.BuildScanPlan();
+
 	InferSchema(*result, *reader);
 
 	for (const auto &col : result->columns) {

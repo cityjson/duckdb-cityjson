@@ -28,6 +28,7 @@ struct CityJSONBindData : public TableFunctionData {
 	std::string file_name;                 // Path to CityJSON file
 	CityJSON metadata;                     // CityJSON metadata
 	CityJSONFeatureChunk chunks;           // All data divided into chunks
+	CityJSONScanPlan scan_plan;            // Precomputed batch -> source position mapping
 	std::vector<Column> columns;           // Complete column schema
 	std::optional<std::string> target_lod; // Optional: filter to specific LOD
 	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
