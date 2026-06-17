@@ -12,13 +12,14 @@ unique_ptr<FunctionData> CityJSONBindData::Copy() const {
 	result->columns = columns;
 	result->target_lod = target_lod;
 	result->use_wkb_encoding = use_wkb_encoding;
+	result->streaming = streaming;
 	return result;
 }
 
 bool CityJSONBindData::Equals(const FunctionData &other_p) const {
 	auto &other = other_p.Cast<CityJSONBindData>();
 	return file_name == other.file_name && target_lod == other.target_lod &&
-	       use_wkb_encoding == other.use_wkb_encoding;
+	       use_wkb_encoding == other.use_wkb_encoding && streaming == other.streaming;
 }
 
 } // namespace cityjson

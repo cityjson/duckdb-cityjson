@@ -10,20 +10,25 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 	auto &local_state = data.local_state->Cast<CityJSONLocalState>();
 	auto &global_state = data.global_state->Cast<CityJSONGlobalState>();
 
+	// Resolve the active chunks and scan plan: streaming readers materialize
+	// data in global state, otherwise bind data owns the full dataset.
+	const auto &active_chunks = bind_data.streaming ? global_state.chunks : bind_data.chunks;
+	const auto &active_plan = bind_data.streaming ? global_state.scan_plan : bind_data.scan_plan;
+
 	// Get next batch index atomically
 	size_t batch_index = global_state.batch_index.fetch_add(1);
 
 	// Check if exhausted using the precomputed scan plan
-	if (batch_index >= bind_data.scan_plan.BatchCount()) {
+	if (batch_index >= active_plan.BatchCount()) {
 		output.SetCardinality(0);
 		return;
 	}
 
-	const auto &start_pos = bind_data.scan_plan.batch_starts[batch_index];
+	const auto &start_pos = active_plan.batch_starts[batch_index];
 	size_t start_row = start_pos.start_row;
-	size_t end_row = (batch_index + 1 < bind_data.scan_plan.BatchCount())
-	                     ? bind_data.scan_plan.batch_starts[batch_index + 1].start_row
-	                     : bind_data.scan_plan.total_rows;
+	size_t end_row = (batch_index + 1 < active_plan.BatchCount())
+	                     ? active_plan.batch_starts[batch_index + 1].start_row
+	                     : active_plan.total_rows;
 	size_t rows_to_write = end_row - start_row;
 
 	if (rows_to_write == 0) {
@@ -46,8 +51,8 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 	size_t city_object_offset = start_pos.city_object_offset;
 
 	// Iterate across chunks if necessary
-	while (remaining > 0 && chunk_idx < bind_data.chunks.ChunkCount()) {
-		auto chunk = bind_data.chunks.GetChunk(chunk_idx);
+	while (remaining > 0 && chunk_idx < active_chunks.ChunkCount()) {
+		auto chunk = active_chunks.GetChunk(chunk_idx);
 		if (!chunk) {
 			break;
 		}

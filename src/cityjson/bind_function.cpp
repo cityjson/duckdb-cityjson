@@ -68,13 +68,14 @@ static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader) {
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names,
                                           const std::string &function_name,
-                                          std::unique_ptr<CityJSONReader> reader) {
+                                          std::unique_ptr<CityJSONReader> reader, bool streaming) {
 	auto result = make_uniq<CityJSONBindData>();
 
 	if (input.inputs.empty()) {
 		throw BinderException(function_name + " requires a file path");
 	}
 	result->file_name = StringValue::Get(input.inputs[0]);
+	result->streaming = streaming;
 
 	auto options = ParseCityJSONReadOptions(input, function_name);
 	result->target_lod = options.target_lod;
@@ -86,13 +87,14 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
 		throw BinderException("Failed to read metadata: " + std::string(e.what()));
 	}
 
-	try {
-		result->chunks = reader->ReadAllChunks();
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to read data: " + std::string(e.what()));
+	if (!streaming) {
+		try {
+			result->chunks = reader->ReadAllChunks();
+		} catch (const CityJSONError &e) {
+			throw BinderException("Failed to read data: " + std::string(e.what()));
+		}
+		result->scan_plan = result->chunks.BuildScanPlan();
 	}
-
-	result->scan_plan = result->chunks.BuildScanPlan();
 
 	InferSchema(*result, *reader);
 
@@ -138,7 +140,7 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}
 
-	return BindCityJSONRead(context, input, return_types, names, "read_cityjsonseq", std::move(reader));
+	return BindCityJSONRead(context, input, return_types, names, "read_cityjsonseq", std::move(reader), true);
 }
 
 } // namespace cityjson

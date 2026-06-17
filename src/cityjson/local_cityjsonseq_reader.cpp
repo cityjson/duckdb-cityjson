@@ -185,6 +185,42 @@ CityJSONFeatureChunk LocalCityJSONSeqReader::ReadNthChunk(size_t n) const {
 }
 
 // ============================================================
+// CountCityObjects
+// ============================================================
+
+size_t LocalCityJSONSeqReader::CountCityObjects() const {
+	auto stream = OpenStream();
+
+	std::string line;
+	// Skip first line (metadata)
+	if (!std::getline(*stream, line)) {
+		return 0;
+	}
+
+	size_t count = 0;
+	size_t line_number = 1;
+	while (std::getline(*stream, line)) {
+		line_number++;
+		if (line.empty()) {
+			continue;
+		}
+
+		try {
+			json feature_obj = ParseJson(line);
+			if (feature_obj.contains("CityObjects") && feature_obj["CityObjects"].is_object()) {
+				count += feature_obj["CityObjects"].size();
+			}
+		} catch (const CityJSONError &e) {
+			throw CityJSONError::Sequence("Failed to parse feature at line " + std::to_string(line_number) + ": " +
+			                                  std::string(e.what()),
+			                              file_path_);
+		}
+	}
+
+	return count;
+}
+
+// ============================================================
 // Columns
 // ============================================================
 

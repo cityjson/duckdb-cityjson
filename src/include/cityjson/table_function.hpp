@@ -32,6 +32,7 @@ struct CityJSONBindData : public TableFunctionData {
 	std::vector<Column> columns;           // Complete column schema
 	std::optional<std::string> target_lod; // Optional: filter to specific LOD
 	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
+	bool streaming = false;                // True when data is loaded during scan init instead of bind
 
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other) const override;
@@ -60,12 +61,13 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
  * @param names Output column names
  * @param function_name Function name for error messages
  * @param reader Opened reader (ownership transferred)
+ * @param streaming When true, data is loaded during scan init instead of bind
  * @return Populated CityJSONBindData
  */
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names,
                                           const std::string &function_name,
-                                          std::unique_ptr<CityJSONReader> reader);
+                                          std::unique_ptr<CityJSONReader> reader, bool streaming = false);
 
 // ============================================================
 // Global State
@@ -77,6 +79,8 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
  */
 struct CityJSONGlobalState : public GlobalTableFunctionState {
 	std::atomic<size_t> batch_index; // Current batch index for parallel scanning
+	CityJSONFeatureChunk chunks;     // Materialized chunks (used when streaming)
+	CityJSONScanPlan scan_plan;      // Scan plan for materialized chunks
 
 	CityJSONGlobalState();
 

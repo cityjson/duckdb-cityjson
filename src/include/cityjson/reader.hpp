@@ -79,6 +79,15 @@ public:
 	 * @throws CityJSONError on schema inference failure
 	 */
 	virtual std::vector<Column> Columns() const = 0;
+
+	/**
+	 * Count total city objects without retaining all features
+	 * Default implementation reads all chunks; streaming readers should override
+	 *
+	 * @return Total number of city objects
+	 * @throws CityJSONError on read or parse failure
+	 */
+	virtual size_t CountCityObjects() const;
 };
 
 /**
@@ -153,6 +162,7 @@ public:
 	CityJSONFeatureChunk ReadAllChunks() const override;
 	std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
 	std::vector<Column> Columns() const override;
+	size_t CountCityObjects() const override;
 
 private:
 	std::string file_path_;              // Path to CityJSONSeq file
