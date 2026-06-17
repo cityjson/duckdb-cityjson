@@ -75,7 +75,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->children_roles_col = children_roles_col;
 	result->geometry_col = geometry_col;
 	result->geometry_properties_col = geometry_properties_col;
-	return std::move(result);
+	return result;
 }
 
 bool CityJSONCopyBindData::Equals(const FunctionData &other) const {
