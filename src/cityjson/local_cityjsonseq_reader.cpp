@@ -1,8 +1,8 @@
 #include "cityjson/reader.hpp"
 #include "cityjson/city_object_utils.hpp"
-#include <fstream>
-#include <sstream>
-#include <algorithm>
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/common/file_system.hpp"
+#include "duckdb/main/extension_helper.hpp"
 
 namespace duckdb {
 namespace cityjson {
@@ -10,15 +10,23 @@ namespace cityjson {
 using namespace json_utils; // NOLINT(google-build-using-namespace)
 
 // ============================================================
+// Helpers
+// ============================================================
+
+static bool IsRemoteFile(const std::string &path) {
+	return path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 || path.rfind("s3://", 0) == 0 ||
+	       path.rfind("s3a://", 0) == 0 || path.rfind("s3n://", 0) == 0 || path.rfind("gcs://", 0) == 0 ||
+	       path.rfind("gs://", 0) == 0 || path.rfind("r2://", 0) == 0 || path.rfind("hf://", 0) == 0;
+}
+
+// ============================================================
 // Constructors
 // ============================================================
 
-LocalCityJSONSeqReader::LocalCityJSONSeqReader(const std::string &file_path, size_t sample_lines)
-    : file_path_(file_path), sample_lines_(sample_lines) {
-}
-
-LocalCityJSONSeqReader::LocalCityJSONSeqReader(const std::string &name, std::string content, size_t sample_lines)
-    : file_path_(name), sample_lines_(sample_lines), content_(std::move(content)) {
+LocalCityJSONSeqReader::LocalCityJSONSeqReader(duckdb::ClientContext &context, const std::string &file_path,
+                                               size_t sample_lines)
+    : file_path_(file_path), sample_lines_(sample_lines), context_(context) {
+	OpenHandle();
 }
 
 // ============================================================
@@ -30,18 +38,19 @@ std::string LocalCityJSONSeqReader::Name() const {
 }
 
 // ============================================================
-// OpenStream (internal helper)
+// FileHandle management
 // ============================================================
 
-std::unique_ptr<std::istream> LocalCityJSONSeqReader::OpenStream() const {
-	if (content_.has_value()) {
-		return std::make_unique<std::istringstream>(content_.value());
+void LocalCityJSONSeqReader::OpenHandle() const {
+	if (IsRemoteFile(file_path_)) {
+		duckdb::ExtensionHelper::AutoLoadExtension(context_, "httpfs");
 	}
-	auto file = std::make_unique<std::ifstream>(file_path_);
-	if (!file->is_open()) {
+	auto &fs = duckdb::FileSystem::GetFileSystem(context_);
+	handle_ = fs.OpenFile(file_path_, duckdb::FileOpenFlags::FILE_FLAGS_READ);
+	if (!handle_) {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path_);
 	}
-	return file;
+	metadata_read_ = false;
 }
 
 // ============================================================
@@ -49,33 +58,69 @@ std::unique_ptr<std::istream> LocalCityJSONSeqReader::OpenStream() const {
 // ============================================================
 
 CityJSON LocalCityJSONSeqReader::ReadMetadata() const {
-	// Check cache
 	if (cached_metadata_.has_value()) {
 		return cached_metadata_.value();
 	}
 
-	auto stream = OpenStream();
+	if (!handle_) {
+		OpenHandle();
+	}
 
 	// Read first line (metadata record)
-	std::string line;
-	if (!std::getline(*stream, line)) {
+	std::string line = handle_->ReadLine();
+	if (line.empty()) {
 		throw CityJSONError::Sequence("CityJSONSeq file is empty");
 	}
 
-	// Parse metadata
 	json obj = ParseJson(line);
-
-	// Validate it's a CityJSON metadata record
 	if (!obj.contains("type") || obj["type"] != "CityJSON") {
 		throw CityJSONError::Sequence("First line must be CityJSON metadata");
 	}
 
 	CityJSON metadata = CityJSON::FromJson(obj);
-
-	// Cache the result
 	cached_metadata_ = metadata;
-
+	metadata_read_ = true;
 	return metadata;
+}
+
+// ============================================================
+// ReadNextFeature
+// ============================================================
+
+std::optional<CityJSONFeature> LocalCityJSONSeqReader::ReadNextFeature() const {
+	if (!handle_) {
+		OpenHandle();
+	}
+
+	// Metadata must be consumed before feature lines
+	if (!metadata_read_) {
+		ReadMetadata();
+	}
+
+	std::string line;
+	while (true) {
+		try {
+			line = handle_->ReadLine();
+		} catch (const duckdb::IOException &) {
+			// End of file
+			return std::nullopt;
+		}
+		if (line.empty()) {
+			// Skip empty lines, but also detect EOF when ReadLine returns empty
+			if (handle_->GetFileSize() == handle_->SeekPosition()) {
+				return std::nullopt;
+			}
+			continue;
+		}
+		break;
+	}
+
+	try {
+		json feature_obj = ParseJson(line);
+		return CityJSONFeature::FromJson(feature_obj);
+	} catch (const CityJSONError &e) {
+		throw CityJSONError::Sequence("Failed to parse feature: " + std::string(e.what()), file_path_);
+	}
 }
 
 // ============================================================
@@ -83,33 +128,15 @@ CityJSON LocalCityJSONSeqReader::ReadMetadata() const {
 // ============================================================
 
 std::vector<CityJSONFeature> LocalCityJSONSeqReader::ReadNFeatures(size_t n) const {
-	auto stream = OpenStream();
-
 	std::vector<CityJSONFeature> features;
-	std::string line;
+	features.reserve(n);
 
-	// Skip first line (metadata)
-	if (!std::getline(*stream, line)) {
-		throw CityJSONError::Sequence("CityJSONSeq file is empty");
-	}
-
-	// Read next N feature lines
-	size_t count = 0;
-	while (count < n && std::getline(*stream, line)) {
-		if (line.empty()) {
-			continue; // Skip empty lines
+	for (size_t i = 0; i < n; i++) {
+		auto feature = ReadNextFeature();
+		if (!feature.has_value()) {
+			break;
 		}
-
-		try {
-			json feature_obj = ParseJson(line);
-			CityJSONFeature feature = CityJSONFeature::FromJson(feature_obj);
-			features.push_back(std::move(feature));
-			count++;
-		} catch (const CityJSONError &e) {
-			throw CityJSONError::Sequence("Failed to parse feature at line " + std::to_string(count + 2) + ": " +
-			                                  std::string(e.what()),
-			                              file_path_);
-		}
+		features.push_back(std::move(feature.value()));
 	}
 
 	return features;
@@ -120,38 +147,16 @@ std::vector<CityJSONFeature> LocalCityJSONSeqReader::ReadNFeatures(size_t n) con
 // ============================================================
 
 CityJSONFeatureChunk LocalCityJSONSeqReader::ReadAllChunks() const {
-	auto stream = OpenStream();
-
 	std::vector<CityJSONFeature> features;
-	std::string line;
-	size_t line_number = 0;
 
-	// Skip first line (metadata)
-	if (!std::getline(*stream, line)) {
-		throw CityJSONError::Sequence("CityJSONSeq file is empty");
-	}
-	line_number++;
-
-	// Read all remaining lines
-	while (std::getline(*stream, line)) {
-		line_number++;
-
-		if (line.empty()) {
-			continue; // Skip empty lines
+	while (true) {
+		auto feature = ReadNextFeature();
+		if (!feature.has_value()) {
+			break;
 		}
-
-		try {
-			json feature_obj = ParseJson(line);
-			CityJSONFeature feature = CityJSONFeature::FromJson(feature_obj);
-			features.push_back(std::move(feature));
-		} catch (const CityJSONError &e) {
-			throw CityJSONError::Sequence("Failed to parse feature at line " + std::to_string(line_number) + ": " +
-			                                  std::string(e.what()),
-			                              file_path_);
-		}
+		features.push_back(std::move(feature.value()));
 	}
 
-	// Create chunks
 	return CityJSONFeatureChunk::CreateChunks(std::move(features), STANDARD_VECTOR_SIZE);
 }
 
@@ -160,27 +165,20 @@ CityJSONFeatureChunk LocalCityJSONSeqReader::ReadAllChunks() const {
 // ============================================================
 
 CityJSONFeatureChunk LocalCityJSONSeqReader::ReadNthChunk(size_t n) const {
-	// For line-delimited format, we need to read all features to determine chunk boundaries
-	// This is because chunks are based on CityObject count, not feature count
-	// A more optimized implementation could cache line positions, but for now we read all
 	CityJSONFeatureChunk all_chunks = ReadAllChunks();
 
 	if (n >= all_chunks.ChunkCount()) {
-		// Return empty chunk
 		return CityJSONFeatureChunk();
 	}
 
-	// Extract the Nth chunk
 	auto chunk_opt = all_chunks.GetChunk(n);
 	if (!chunk_opt.has_value()) {
 		return CityJSONFeatureChunk();
 	}
 
-	// Create a new chunk containing only the requested chunk
 	CityJSONFeatureChunk result;
 	result.records = std::vector<CityJSONFeature>(chunk_opt->begin(), chunk_opt->end());
 	result.chunks = {Range(0, result.records.size())};
-
 	return result;
 }
 
@@ -189,19 +187,27 @@ CityJSONFeatureChunk LocalCityJSONSeqReader::ReadNthChunk(size_t n) const {
 // ============================================================
 
 size_t LocalCityJSONSeqReader::CountCityObjects() const {
-	auto stream = OpenStream();
+	if (!handle_) {
+		OpenHandle();
+	}
 
-	std::string line;
-	// Skip first line (metadata)
-	if (!std::getline(*stream, line)) {
-		return 0;
+	// Consume metadata line if we haven't already
+	if (!metadata_read_) {
+		ReadMetadata();
 	}
 
 	size_t count = 0;
-	size_t line_number = 1;
-	while (std::getline(*stream, line)) {
-		line_number++;
+	while (true) {
+		std::string line;
+		try {
+			line = handle_->ReadLine();
+		} catch (const duckdb::IOException &) {
+			break;
+		}
 		if (line.empty()) {
+			if (handle_->GetFileSize() == handle_->SeekPosition()) {
+				break;
+			}
 			continue;
 		}
 
@@ -211,9 +217,7 @@ size_t LocalCityJSONSeqReader::CountCityObjects() const {
 				count += feature_obj["CityObjects"].size();
 			}
 		} catch (const CityJSONError &e) {
-			throw CityJSONError::Sequence("Failed to parse feature at line " + std::to_string(line_number) + ": " +
-			                                  std::string(e.what()),
-			                              file_path_);
+			throw CityJSONError::Sequence("Failed to parse feature: " + std::string(e.what()), file_path_);
 		}
 	}
 
@@ -225,30 +229,19 @@ size_t LocalCityJSONSeqReader::CountCityObjects() const {
 // ============================================================
 
 std::vector<Column> LocalCityJSONSeqReader::Columns() const {
-	// Check cache
 	if (cached_columns_.has_value()) {
 		return cached_columns_.value();
 	}
 
-	// Start with predefined columns
 	std::vector<Column> columns = GetDefinedColumns();
-
-	// Sample features for schema inference
 	std::vector<CityJSONFeature> sample_features = ReadNFeatures(sample_lines_);
-
-	// Infer attribute columns
 	std::vector<Column> attr_columns = CityObjectUtils::InferAttributeColumns(sample_features, sample_lines_);
-
-	// Infer geometry columns
 	std::vector<Column> geom_columns = CityObjectUtils::InferGeometryColumns(sample_features, sample_lines_);
 
-	// Merge all columns: predefined + attributes + geometries
 	columns.insert(columns.end(), attr_columns.begin(), attr_columns.end());
 	columns.insert(columns.end(), geom_columns.begin(), geom_columns.end());
 
-	// Cache the result
 	cached_columns_ = columns;
-
 	return columns;
 }
 

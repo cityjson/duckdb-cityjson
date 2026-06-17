@@ -10,11 +10,11 @@ unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(ClientContext &context, 
 
 	if (bind_data.streaming) {
 		try {
-			auto reader = OpenAnyCityJSONFile(context, bind_data.file_name);
-			result->chunks = reader->ReadAllChunks();
-			result->scan_plan = result->chunks.BuildScanPlan();
+			result->streaming_reader = OpenAnyCityJSONFile(context, bind_data.file_name);
+			// Consume metadata so the scan starts at the first feature line.
+			result->streaming_reader->ReadMetadata();
 		} catch (const CityJSONError &e) {
-			throw InternalException("Failed to read streaming CityJSON data: " + std::string(e.what()));
+			throw InternalException("Failed to open streaming CityJSON reader: " + std::string(e.what()));
 		}
 	}
 

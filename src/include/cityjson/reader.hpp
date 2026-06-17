@@ -88,6 +88,14 @@ public:
 	 * @throws CityJSONError on read or parse failure
 	 */
 	virtual size_t CountCityObjects() const;
+
+	/**
+	 * Read the next feature incrementally.
+	 * Default implementation returns nullopt (not supported by this reader).
+	 */
+	virtual std::optional<CityJSONFeature> ReadNextFeature() const {
+		return std::nullopt;
+	}
 };
 
 /**
@@ -136,25 +144,20 @@ private:
 /**
  * Reader for CityJSONSeq format (.city.jsonl)
  * Newline-delimited JSON format with streaming support
+ *
+ * Uses DuckDB's FileHandle so local files, HTTP, S3, GCS, etc. are read
+ * incrementally rather than loaded entirely into memory.
  */
 class LocalCityJSONSeqReader : public CityJSONReader {
 public:
 	/**
-	 * Construct reader for local CityJSONSeq file
+	 * Construct reader using DuckDB FileSystem
 	 *
-	 * @param file_path Path to .city.jsonl file
+	 * @param context DuckDB client context (provides FileSystem access)
+	 * @param file_path Path or URL to .city.jsonl file
 	 * @param sample_lines Number of features to sample for schema inference
 	 */
-	explicit LocalCityJSONSeqReader(const std::string &file_path, size_t sample_lines = 100);
-
-	/**
-	 * Construct reader from pre-loaded content
-	 *
-	 * @param name Display name (e.g. file path or URL)
-	 * @param content File content as string
-	 * @param sample_lines Number of features to sample for schema inference
-	 */
-	LocalCityJSONSeqReader(const std::string &name, std::string content, size_t sample_lines);
+	LocalCityJSONSeqReader(duckdb::ClientContext &context, const std::string &file_path, size_t sample_lines = 100);
 
 	std::string Name() const override;
 	CityJSON ReadMetadata() const override;
@@ -164,17 +167,25 @@ public:
 	std::vector<Column> Columns() const override;
 	size_t CountCityObjects() const override;
 
+	/**
+	 * Read the next feature line from the stream.
+	 * Returns nullopt when the stream is exhausted.
+	 */
+	std::optional<CityJSONFeature> ReadNextFeature() const;
+
 private:
 	std::string file_path_;              // Path to CityJSONSeq file
 	size_t sample_lines_;                // Number of features to sample for schema inference
-	std::optional<std::string> content_; // Pre-loaded file content (for remote files)
+	duckdb::ClientContext &context_;     // DuckDB client context for FileSystem access
 
 	// Caching fields (mutable for lazy initialization in const methods)
 	mutable std::optional<CityJSON> cached_metadata_;
 	mutable std::optional<std::vector<Column>> cached_columns_;
+	mutable std::unique_ptr<duckdb::FileHandle> handle_; // FileHandle for incremental reads
+	mutable bool metadata_read_ = false;                 // Whether the metadata line has been consumed
 
-	// Internal helper: get an input stream (from content_ or file)
-	std::unique_ptr<std::istream> OpenStream() const;
+	// Internal helper: open or reopen the file handle positioned at the start
+	void OpenHandle() const;
 };
 
 /**
@@ -187,11 +198,10 @@ private:
  * @return Unique pointer to appropriate reader implementation
  * @throws CityJSONError if format cannot be determined or file doesn't exist
  */
-std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name, size_t sample_lines = 100);
-
 /**
- * Factory function using DuckDB FileSystem API for remote/local files
- * Reads file content via FileSystem, then creates the appropriate reader
+ * Factory function using DuckDB FileSystem API for remote/local files.
+ * CityJSONSeq files are opened incrementally via FileHandle rather than
+ * loaded entirely into memory.
  *
  * @param context DuckDB client context
  * @param file_name Path or URL to CityJSON file

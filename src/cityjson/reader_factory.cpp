@@ -59,58 +59,8 @@ static bool IsLikelyCityJSONSeq(const std::string &file_name) {
 	return has_cityjson_type && !has_city_objects;
 }
 
-/**
- * Detect format from content string (first line heuristic)
- */
-static bool IsLikelyCityJSONSeqFromContent(const std::string &content) {
-	// Find the first newline
-	auto pos = content.find('\n');
-	std::string first_line = (pos != std::string::npos) ? content.substr(0, pos) : content;
-
-	bool has_cityjson_type =
-	    first_line.find("\"type\"") != std::string::npos && first_line.find("\"CityJSON\"") != std::string::npos;
-	bool has_city_objects = first_line.find("\"CityObjects\"") != std::string::npos;
-
-	return has_cityjson_type && !has_city_objects;
-}
-
-std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(const std::string &file_name, size_t sample_lines) {
-	// Check if file exists
-	std::ifstream test_file(file_name);
-	if (!test_file.is_open()) {
-		throw CityJSONError::FileRead("File not found: " + file_name);
-	}
-	test_file.close();
-
-	// Try to detect format from extension first
-	if (EndsWith(file_name, ".city.jsonl") || EndsWith(file_name, ".jsonl")) {
-		// CityJSONSeq format
-		return std::make_unique<LocalCityJSONSeqReader>(file_name, sample_lines);
-	}
-
-	if (EndsWith(file_name, ".city.json") || EndsWith(file_name, ".json")) {
-		// Could be either format - check content to be sure
-		if (IsLikelyCityJSONSeq(file_name)) {
-			return std::make_unique<LocalCityJSONSeqReader>(file_name, sample_lines);
-		} else {
-			return std::make_unique<LocalCityJSONReader>(file_name, sample_lines);
-		}
-	}
-
-	// Unknown extension - try to auto-detect from content
-	if (IsLikelyCityJSONSeq(file_name)) {
-		return std::make_unique<LocalCityJSONSeqReader>(file_name, sample_lines);
-	} else {
-		// Default to CityJSON format
-		return std::make_unique<LocalCityJSONReader>(file_name, sample_lines);
-	}
-}
-
 std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &context, const std::string &file_name,
                                                     size_t sample_lines) {
-	// Read file content using DuckDB FileSystem (supports HTTP, S3, GCS, etc.)
-	std::string content = json_utils::ReadFileContent(context, file_name);
-
 #ifdef CITYJSON_HAS_FCB
 	// FlatCityBuf format — FCB API reads directly from file path
 	if (EndsWith(file_name, ".fcb")) {
@@ -120,22 +70,24 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &conte
 
 	// Try to detect format from extension first
 	if (EndsWith(file_name, ".city.jsonl") || EndsWith(file_name, ".jsonl")) {
-		return std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), sample_lines);
+		return std::make_unique<LocalCityJSONSeqReader>(context, file_name, sample_lines);
 	}
 
 	if (EndsWith(file_name, ".city.json") || EndsWith(file_name, ".json")) {
-		if (IsLikelyCityJSONSeqFromContent(content)) {
-			return std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), sample_lines);
+		// Could be either format - check content to be sure
+		if (IsLikelyCityJSONSeq(file_name)) {
+			return std::make_unique<LocalCityJSONSeqReader>(context, file_name, sample_lines);
 		} else {
-			return std::make_unique<LocalCityJSONReader>(file_name, std::move(content), sample_lines);
+			return std::make_unique<LocalCityJSONReader>(file_name, sample_lines);
 		}
 	}
 
-	// Unknown extension - detect from content
-	if (IsLikelyCityJSONSeqFromContent(content)) {
-		return std::make_unique<LocalCityJSONSeqReader>(file_name, std::move(content), sample_lines);
+	// Unknown extension - try to auto-detect from content
+	if (IsLikelyCityJSONSeq(file_name)) {
+		return std::make_unique<LocalCityJSONSeqReader>(context, file_name, sample_lines);
 	} else {
-		return std::make_unique<LocalCityJSONReader>(file_name, std::move(content), sample_lines);
+		// Default to CityJSON format
+		return std::make_unique<LocalCityJSONReader>(file_name, sample_lines);
 	}
 }
 

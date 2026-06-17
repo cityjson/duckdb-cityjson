@@ -64,4 +64,4 @@ DROP TABLE objects_test;
 statement error
 SELECT * FROM cityjson_metadata('test/data/nonexistent.city.json');
 ----
-Cannot open file
+Failed to open file

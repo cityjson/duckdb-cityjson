@@ -78,9 +78,12 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
  * Shared across all threads
  */
 struct CityJSONGlobalState : public GlobalTableFunctionState {
-	std::atomic<size_t> batch_index; // Current batch index for parallel scanning
-	CityJSONFeatureChunk chunks;     // Materialized chunks (used when streaming)
-	CityJSONScanPlan scan_plan;      // Scan plan for materialized chunks
+	std::atomic<size_t> batch_index;                 // Current batch index for parallel scanning
+	CityJSONFeatureChunk chunks;                     // Materialized chunks (non-streaming)
+	CityJSONScanPlan scan_plan;                      // Scan plan for materialized chunks
+	std::unique_ptr<CityJSONReader> streaming_reader; // Incremental reader (streaming only)
+	std::optional<CityJSONFeature> streaming_feature; // Current feature being processed (streaming only)
+	std::map<std::string, CityObject>::const_iterator streaming_obj_it; // Position in current feature
 
 	CityJSONGlobalState();
 
