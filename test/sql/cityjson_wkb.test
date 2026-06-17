@@ -80,3 +80,16 @@ statement error
 SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '9.9');
 ----
 LOD '9.9' not found
+
+# Same file with and without LOD must produce different schemas
+query II
+SELECT COUNT(*) FILTER (WHERE column_name = 'geom_lod2_2'),
+       COUNT(*) FILTER (WHERE column_name = 'geometry')
+FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+UNION ALL
+SELECT COUNT(*) FILTER (WHERE column_name = 'geom_lod2_2'),
+       COUNT(*) FILTER (WHERE column_name = 'geometry')
+FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '2.2'));
+----
+1	0
+0	1
