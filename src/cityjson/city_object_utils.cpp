@@ -181,6 +181,12 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 		result.emplace_back("geometry_properties_" + suffix, ColumnType::GeometryPropertiesJson);
 	}
 
+	// A single per-row bbox (computed from the highest-LOD geometry) completes the
+	// CityParquet wide layout. Only emitted when at least one LOD geometry exists.
+	if (!lods.empty()) {
+		result.emplace_back("bbox", ColumnType::GeographicalExtent);
+	}
+
 	return result;
 }
 

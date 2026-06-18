@@ -22,12 +22,29 @@ SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FR
 statement ok
 DROP TABLE b;
 
-# Default (non-LOD) mode does NOT expose bbox
+# Default (non-LOD) mode also exposes a single bbox column (CityParquet wide layout)
 query I
 SELECT COUNT(*) FILTER (WHERE column_name = 'bbox')
 FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json'));
 ----
-0
+1
+
+# Default-mode bbox is a 3D extent STRUCT computed from the highest-LOD geometry
+statement ok
+CREATE TABLE bdef AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+query T
+SELECT typeof(bbox) FROM bdef;
+----
+STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+
+query RRRRRR
+SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FROM bdef;
+----
+0.0	0.0	0.0	10.0	10.0	0.0
+
+statement ok
+DROP TABLE bdef;
 
 # CityJSONSeq per-LOD mode also exposes geometry + bbox (streaming bind)
 statement ok

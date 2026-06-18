@@ -80,9 +80,13 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			}
 			continue;
 		} else if (col.name == "bbox") {
-			if (target_geom.has_value() && vertex_pool != nullptr) {
+			// Per-LOD mode uses target_geom; default (wide) mode has no target LOD, so the
+			// bbox is computed from the city object's highest-LOD geometry.
+			std::optional<Geometry> bbox_geom =
+			    bind_data.target_lod.has_value() ? target_geom : city_obj.GetHighestLODGeometry();
+			if (bbox_geom.has_value() && vertex_pool != nullptr) {
 				auto extent =
-				    CityObjectUtils::GetGeometryExtent(target_geom.value(), *vertex_pool, bind_data.metadata.transform);
+				    CityObjectUtils::GetGeometryExtent(bbox_geom.value(), *vertex_pool, bind_data.metadata.transform);
 				value = extent.has_value() ? extent->ToJson() : json(nullptr);
 			} else {
 				value = json(nullptr);
