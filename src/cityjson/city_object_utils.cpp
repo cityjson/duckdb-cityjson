@@ -163,21 +163,23 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 		for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
 			// Collect LODs from all geometries
 			for (const auto &geom : city_obj.geometry) {
-				lods.insert(geom.lod);
+				if (!geom.lod.empty()) {
+					lods.insert(LODTableUtils::NormalizeLOD(geom.lod));
+				}
 			}
 		}
 	}
 
-	// Create geometry columns for each LOD
+	// Create per-LOD WKB geometry columns (CityParquet-style wide layout):
+	// for each LOD, a "geometry_lodX_Y" (WKB BLOB) and "geometry_properties_lodX_Y" (JSON).
+	// `lods` is a std::set, so iteration is already sorted; emit the pair per LOD so the
+	// geometry and its properties stay adjacent.
 	std::vector<Column> result;
 	for (const auto &lod : lods) {
-		// Convert LOD "2.1" to column name "geom_lod2_1"
-		std::string col_name = "geom_" + LODTableUtils::FormatLODAsColumnSuffix(lod);
-		result.emplace_back(col_name, ColumnType::Geometry);
+		std::string suffix = LODTableUtils::FormatLODAsColumnSuffix(lod);
+		result.emplace_back("geometry_" + suffix, ColumnType::GeometryWKB);
+		result.emplace_back("geometry_properties_" + suffix, ColumnType::GeometryPropertiesJson);
 	}
-
-	// Sort by LOD for consistent ordering
-	std::sort(result.begin(), result.end(), [](const Column &a, const Column &b) { return a.name < b.name; });
 
 	return result;
 }
@@ -199,8 +201,7 @@ json CityObjectUtils::GetGeometryPropertiesJson(const Geometry &geometry, const 
 }
 
 static void CollectExtentRecursive(const json &boundaries, const std::vector<std::array<double, 3>> &vertices,
-                                   const std::optional<Transform> &transform, GeographicalExtent &extent,
-                                   bool &found) {
+                                   const std::optional<Transform> &transform, GeographicalExtent &extent, bool &found) {
 	if (boundaries.is_number_integer()) {
 		auto idx = boundaries.get<int64_t>();
 		if (idx < 0 || static_cast<size_t>(idx) >= vertices.size()) {
@@ -232,9 +233,9 @@ static void CollectExtentRecursive(const json &boundaries, const std::vector<std
 	}
 }
 
-std::optional<GeographicalExtent>
-CityObjectUtils::GetGeometryExtent(const Geometry &geometry, const std::vector<std::array<double, 3>> &vertices,
-                                   const std::optional<Transform> &transform) {
+std::optional<GeographicalExtent> CityObjectUtils::GetGeometryExtent(const Geometry &geometry,
+                                                                     const std::vector<std::array<double, 3>> &vertices,
+                                                                     const std::optional<Transform> &transform) {
 	GeographicalExtent extent;
 	bool found = false;
 	CollectExtentRecursive(geometry.boundaries, vertices, transform, extent, found);

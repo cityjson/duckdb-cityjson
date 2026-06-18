@@ -395,5 +395,22 @@ std::string ParseLODFromColumnName(const std::string &column_name) {
 	throw CityJSONError::InvalidSchema("Invalid geometry column name: " + column_name);
 }
 
+std::string ParseLODFromGeometryColumn(const std::string &column_name) {
+	// Matches the LOD component of "geometry_lod2_2" / "geometry_properties_lod2_2"
+	// and single-component "geometry_lod0".
+	static const std::regex lod_pattern(R"(lod(\d+)_?(\d*))");
+	std::smatch match;
+
+	if (std::regex_search(column_name, match, lod_pattern)) {
+		std::string lod = match[1].str();
+		if (match[2].length() > 0) {
+			lod += "." + match[2].str();
+		}
+		return LODTableUtils::NormalizeLOD(lod);
+	}
+
+	throw CityJSONError::InvalidSchema("Invalid geometry column name: " + column_name);
+}
+
 } // namespace cityjson
 } // namespace duckdb

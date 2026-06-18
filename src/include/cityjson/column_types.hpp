@@ -170,5 +170,16 @@ bool IsGeometryColumn(const std::string &name);
  */
 std::string ParseLODFromColumnName(const std::string &column_name);
 
+/**
+ * Parse LOD from a default-mode WKB geometry column name.
+ * Handles both "geometry_lod2_2" and "geometry_properties_lod2_2" → "2.2",
+ * and single-component LODs such as "geometry_lod0" → "0".
+ *
+ * @param column_name WKB geometry or geometry-properties column name
+ * @return Normalised LOD string (e.g., "2.2")
+ * @throws CityJSONError if no LOD component is found
+ */
+std::string ParseLODFromGeometryColumn(const std::string &column_name);
+
 } // namespace cityjson
 } // namespace duckdb

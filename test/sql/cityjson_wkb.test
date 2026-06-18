@@ -17,23 +17,22 @@ SELECT COUNT(*) FROM buildings;
 ----
 1
 
-# Verify geometry column exists (current format: STRUCT with boundaries as JSON string)
+# Default mode now emits per-LOD WKB geometry + properties columns (CityParquet layout)
 query T
-SELECT typeof(geom_lod2_2) FROM buildings WHERE geom_lod2_2 IS NOT NULL;
+SELECT typeof(geometry_lod2_2) FROM buildings WHERE geometry_lod2_2 IS NOT NULL;
 ----
-STRUCT(lod VARCHAR, "type" VARCHAR, boundaries VARCHAR, semantics VARCHAR, material VARCHAR, texture VARCHAR)
+BLOB
 
-# Verify geometry type is correctly parsed
 query T
-SELECT geom_lod2_2.type FROM buildings;
+SELECT typeof(geometry_properties_lod2_2) FROM buildings;
 ----
-Solid
+VARCHAR
 
-# Verify LOD is correctly parsed
+# Geometry type and LOD are recorded in the properties JSON
 query T
-SELECT geom_lod2_2.lod FROM buildings;
+SELECT geometry_properties_lod2_2 FROM buildings;
 ----
-2.2
+{"cityjsonType":"Solid","lod":"2.2","shellCount":1,"type":9}
 
 # Clean up
 statement ok
@@ -83,11 +82,11 @@ LOD '9.9' not found
 
 # Same file with and without LOD must produce different schemas
 query II
-SELECT COUNT(*) FILTER (WHERE column_name = 'geom_lod2_2'),
+SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2'),
        COUNT(*) FILTER (WHERE column_name = 'geometry')
 FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json'))
 UNION ALL
-SELECT COUNT(*) FILTER (WHERE column_name = 'geom_lod2_2'),
+SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2'),
        COUNT(*) FILTER (WHERE column_name = 'geometry')
 FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '2.2'));
 ----
@@ -109,13 +108,13 @@ SELECT COUNT(*) FROM read_cityjson('test/data/numeric_lod.city.json', lod => '2.
 ----
 1
 
-# Non-LOD schema uses normalized column name (geom_lod2 for numeric 2.0)
+# Default schema uses the normalized column name (geometry_lod2 for numeric 2.0)
 query T
-SELECT typeof(geom_lod2) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geom_lod2 IS NOT NULL;
+SELECT typeof(geometry_lod2) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geometry_lod2 IS NOT NULL;
 ----
-STRUCT(lod VARCHAR, "type" VARCHAR, boundaries VARCHAR, semantics VARCHAR, material VARCHAR, texture VARCHAR)
+BLOB
 
 query T
-SELECT geom_lod2.lod FROM read_cityjson('test/data/numeric_lod.city.json');
+SELECT typeof(geometry_properties_lod2) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geometry_properties_lod2 IS NOT NULL;
 ----
-2
+VARCHAR
