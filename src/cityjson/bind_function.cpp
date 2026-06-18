@@ -42,10 +42,16 @@ static std::vector<CityJSONFeature> FlattenChunks(const CityJSONFeatureChunk &ch
 	return all_features;
 }
 
-static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader) {
+static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines) {
 	if (bind_data.target_lod.has_value()) {
-		auto all_features = FlattenChunks(bind_data.chunks);
-		auto lod_tables = LODTableUtils::InferLODTables(all_features);
+		std::vector<CityJSONFeature> features;
+		try {
+			features = bind_data.streaming ? reader.ReadNFeatures(sample_lines) : FlattenChunks(bind_data.chunks);
+		} catch (const CityJSONError &e) {
+			throw BinderException("Failed to infer LOD schema: " + std::string(e.what()));
+		}
+
+		auto lod_tables = LODTableUtils::InferLODTables(features, sample_lines);
 
 		bool found = false;
 		for (const auto &table : lod_tables) {
@@ -100,7 +106,7 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
 		result->scan_plan = result->chunks.BuildScanPlan();
 	}
 
-	InferSchema(*result, *reader);
+	InferSchema(*result, *reader, options.sample_lines);
 
 	for (const auto &col : result->columns) {
 		names.push_back(col.name);

@@ -40,6 +40,22 @@ SELECT yearOfConstruction FROM read_cityjsonseq('test/data/sample.city.jsonl') O
 2020
 2021
 
+# CityJSONSeq LOD mode infers schema from sampled feature lines while keeping scan streaming
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '2.2');
+----
+2
+
+query T
+SELECT typeof(geometry) FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '2.2') LIMIT 1;
+----
+BLOB
+
+statement error
+SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '9.9');
+----
+LOD '9.9' not found
+
 # ============================================================
 # cityjsonseq_metadata basic tests
 # ============================================================
