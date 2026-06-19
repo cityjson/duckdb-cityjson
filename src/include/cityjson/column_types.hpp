@@ -153,6 +153,21 @@ std::vector<Column> GetDefinedColumns();
 bool IsPredefinedColumn(const std::string &name);
 
 /**
+ * Check if a name collides (case-insensitively) with any reserved output column.
+ *
+ * Reserved columns are the predefined structural columns plus the wide-layout
+ * geometry columns (`geometry`, `geometry_lod*`, `geometry_properties_lod*`) and
+ * `bbox`. Reserved columns take precedence over dynamic attributes: a source
+ * attribute whose name collides with a reserved column must not be emitted as its
+ * own column (it is preserved in the `other` JSON instead), otherwise DuckDB would
+ * see duplicate column names (it is case-insensitive) and refuse to bind.
+ *
+ * @param name Column/attribute name to check
+ * @return true if the name case-insensitively matches a reserved column
+ */
+bool IsReservedColumnName(const std::string &name);
+
+/**
  * Check if column name is a geometry column (pattern: geom_lod{X}_{Y})
  *
  * @param name Column name to check

@@ -373,6 +373,25 @@ bool IsPredefinedColumn(const std::string &name) {
 	return std::find(predefined.begin(), predefined.end(), name) != predefined.end();
 }
 
+static std::string ToLowerAscii(const std::string &name) {
+	std::string lowered = name;
+	std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+	               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return lowered;
+}
+
+bool IsReservedColumnName(const std::string &name) {
+	static const std::vector<std::string> reserved = {"id",       "feature_id", "object_type", "children",
+	                                                  "children_roles", "parents", "other",       "bbox",
+	                                                  "geometry"};
+	const std::string lowered = ToLowerAscii(name);
+	if (std::find(reserved.begin(), reserved.end(), lowered) != reserved.end()) {
+		return true;
+	}
+	// Wide-layout per-LOD geometry columns: geometry_lod* and geometry_properties_lod*.
+	return lowered.rfind("geometry_lod", 0) == 0 || lowered.rfind("geometry_properties", 0) == 0;
+}
+
 bool IsGeometryColumn(const std::string &name) {
 	// Pattern: geom_lod{X} or geom_lod{X}_{Y}
 	std::regex geom_pattern(R"(geom_lod\d+(_\d+)?)");

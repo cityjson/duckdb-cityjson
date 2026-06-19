@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <algorithm>
+#include <cctype>
 
 namespace duckdb {
 namespace cityjson {
@@ -118,8 +119,10 @@ std::vector<Column> CityObjectUtils::InferAttributeColumns(const std::vector<Cit
 		for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
 			// Collect all attributes
 			for (const auto &[attr_key, attr_value] : city_obj.attributes) {
-				// Skip predefined columns
-				if (IsPredefinedColumn(attr_key)) {
+				// Reserved columns take precedence over dynamic attributes: an attribute
+				// whose name collides (case-insensitively) with a reserved column does not
+				// get its own column. Its value is still preserved in the `other` JSON.
+				if (IsReservedColumnName(attr_key)) {
 					continue;
 				}
 
@@ -130,9 +133,18 @@ std::vector<Column> CityObjectUtils::InferAttributeColumns(const std::vector<Cit
 		}
 	}
 
-	// Resolve final type for each attribute
+	// Resolve final type for each attribute. Attribute names that differ only by case
+	// would also produce duplicate DuckDB columns, so keep only the first (the map is
+	// ordered, so this is deterministic).
 	std::vector<Column> result;
+	std::set<std::string> seen_lower;
 	for (const auto &[attr_name, types] : attribute_types) {
+		std::string lowered = attr_name;
+		std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+		               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		if (!seen_lower.insert(lowered).second) {
+			continue;
+		}
 		ColumnType resolved_type = ColumnTypeUtils::ResolveFromSamples(types);
 		result.emplace_back(attr_name, resolved_type);
 	}

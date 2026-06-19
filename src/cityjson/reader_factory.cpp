@@ -4,7 +4,6 @@
 #include "cityjson/flatcitybuf_reader.hpp"
 #endif
 #include <algorithm>
-#include <fstream>
 
 namespace duckdb {
 namespace cityjson {
@@ -35,17 +34,18 @@ static bool EndsWith(const std::string &str, const std::string &suffix) {
 }
 
 /**
- * Try to detect format by reading first line of file
+ * Try to detect format from the first line of file content.
  * Returns true if file appears to be CityJSONSeq format
  */
-static bool IsLikelyCityJSONSeq(const std::string &file_name) {
-	std::ifstream file(file_name);
-	if (!file.is_open()) {
-		return false;
-	}
-
+static bool IsLikelyCityJSONSeqContent(const std::string &content) {
 	std::string first_line;
-	if (!std::getline(file, first_line)) {
+	auto newline = content.find('\n');
+	if (newline == std::string::npos) {
+		first_line = content;
+	} else {
+		first_line = content.substr(0, newline);
+	}
+	if (first_line.empty()) {
 		return false;
 	}
 
@@ -75,19 +75,21 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &conte
 
 	if (EndsWith(file_name, ".city.json") || EndsWith(file_name, ".json")) {
 		// Could be either format - check content to be sure
-		if (IsLikelyCityJSONSeq(file_name)) {
+		auto content = json_utils::ReadFileContent(context, file_name);
+		if (IsLikelyCityJSONSeqContent(content)) {
 			return std::make_unique<LocalCityJSONSeqReader>(context, file_name, sample_lines);
 		} else {
-			return std::make_unique<LocalCityJSONReader>(file_name, sample_lines);
+			return std::make_unique<LocalCityJSONReader>(file_name, std::move(content), sample_lines);
 		}
 	}
 
 	// Unknown extension - try to auto-detect from content
-	if (IsLikelyCityJSONSeq(file_name)) {
+	auto content = json_utils::ReadFileContent(context, file_name);
+	if (IsLikelyCityJSONSeqContent(content)) {
 		return std::make_unique<LocalCityJSONSeqReader>(context, file_name, sample_lines);
 	} else {
 		// Default to CityJSON format
-		return std::make_unique<LocalCityJSONReader>(file_name, sample_lines);
+		return std::make_unique<LocalCityJSONReader>(file_name, std::move(content), sample_lines);
 	}
 }
 
