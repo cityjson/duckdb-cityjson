@@ -35,11 +35,18 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 	if (name == "children_roles") {
 		return CopyColumnRole::ChildrenRoles;
 	}
-	if (name == "geometry" || name.substr(0, 8) == "geom_lod") {
+	// Check properties before geometry so the shared "geometry_" prefix on the wide
+	// CityParquet columns does not misclassify "geometry_properties_lod*" as geometry.
+	if (name == "geometry_properties" || name.rfind("geometry_properties", 0) == 0) {
+		return CopyColumnRole::GeometryProperties;
+	}
+	// "geometry" (non-LOD), wide "geometry_lod*" and legacy "geom_lod*" are all WKB geometry.
+	if (name == "geometry" || name.rfind("geometry_lod", 0) == 0 || name.rfind("geom_lod", 0) == 0) {
 		return CopyColumnRole::GeometryWKB;
 	}
-	if (name == "geometry_properties") {
-		return CopyColumnRole::GeometryProperties;
+	// bbox is derived from the geometry and recomputed on read; never round-tripped as data.
+	if (name == "bbox") {
+		return CopyColumnRole::Bbox;
 	}
 	if (name == "other") {
 		return CopyColumnRole::Other;
@@ -75,6 +82,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->children_roles_col = children_roles_col;
 	result->geometry_col = geometry_col;
 	result->geometry_properties_col = geometry_properties_col;
+	result->geometry_properties_by_name = geometry_properties_by_name;
 	return result;
 }
 
@@ -317,7 +325,12 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 			bind_data->geometry_col = i;
 			break;
 		case CopyColumnRole::GeometryProperties:
-			bind_data->geometry_properties_col = i;
+			// Record every per-LOD properties column by name; keep the first as the legacy
+			// single-column fallback for geometries that have no per-LOD counterpart.
+			bind_data->geometry_properties_by_name[names[i]] = i;
+			if (bind_data->geometry_properties_col == DConstants::INVALID_INDEX) {
+				bind_data->geometry_properties_col = i;
+			}
 			break;
 		default:
 			break;
@@ -456,7 +469,64 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 			}
 		}
 
-		// Geometry columns (geom_lod* or geometry)
+		// Geometry columns: "geometry", wide "geometry_lod*", or legacy "geom_lod*".
+		// Each geometry column is paired with its own properties column so per-LOD
+		// semantics/material/texture survive the wide CityParquet layout. The properties
+		// column name mirrors the geometry column name:
+		//   geometry          -> geometry_properties
+		//   geometry_lod2_2   -> geometry_properties_lod2_2
+		// Legacy geom_lod* columns have no per-LOD counterpart, so they fall back to the
+		// single geometry_properties column (if any).
+		auto find_properties_col = [&](const std::string &geom_name) -> idx_t {
+			std::string props_name;
+			static const std::string kGeometryPrefix = "geometry";
+			if (geom_name == kGeometryPrefix) {
+				props_name = "geometry_properties";
+			} else if (geom_name.rfind(kGeometryPrefix, 0) == 0) {
+				props_name = "geometry_properties" + geom_name.substr(kGeometryPrefix.size());
+			}
+			if (!props_name.empty()) {
+				auto it = bind_data.geometry_properties_by_name.find(props_name);
+				if (it != bind_data.geometry_properties_by_name.end()) {
+					return it->second;
+				}
+			}
+			return bind_data.geometry_properties_col;
+		};
+
+		// Apply a geometry_properties JSON payload onto a single geometry object.
+		auto apply_properties = [&](json &geom, idx_t props_col) {
+			if (props_col == DConstants::INVALID_INDEX) {
+				return;
+			}
+			auto pval = input.data[props_col].GetValue(row);
+			if (pval.IsNull()) {
+				return;
+			}
+			try {
+				auto props = json_utils::ParseJson(pval.ToString());
+				// Extract LOD if not already set from the column name or struct field.
+				if (!geom.contains("lod") && props.contains("lod")) {
+					geom["lod"] = props["lod"].get<std::string>();
+				}
+				// Prefer the precise CityJSON geometry type over the WKB-inferred one.
+				if (props.contains("cityjsonType")) {
+					geom["type"] = props["cityjsonType"].get<std::string>();
+				}
+				if (props.contains("semantics")) {
+					geom["semantics"] = props["semantics"];
+				}
+				if (props.contains("material")) {
+					geom["material"] = props["material"];
+				}
+				if (props.contains("texture")) {
+					geom["texture"] = props["texture"];
+				}
+			} catch (...) {
+				// Ignore parse errors in geometry properties.
+			}
+		};
+
 		json geometries = json::array();
 		for (idx_t col = 0; col < bind_data.column_roles.size(); col++) {
 			if (bind_data.column_roles[col] != CopyColumnRole::GeometryWKB) {
@@ -470,12 +540,14 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 			auto &col_type = bind_data.column_types[col];
 			auto &col_name = bind_data.column_names[col];
 
+			json geom;
+			bool produced = false;
+
 			if (col_type.id() == LogicalTypeId::STRUCT) {
 				// Non-LOD STRUCT geometry: {lod, type, boundaries, semantics, material, texture}
 				auto &children = StructValue::GetChildren(val);
 				auto &struct_type = StructType::GetChildTypes(col_type);
 
-				json geom;
 				for (idx_t c = 0; c < struct_type.size(); c++) {
 					auto &field_name = struct_type[c].first;
 					auto &child_val = children[c];
@@ -516,7 +588,7 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 				if (!geom.contains("boundaries")) {
 					geom["boundaries"] = json::array();
 				}
-				geometries.push_back(geom);
+				produced = true;
 
 			} else if (col_type.id() == LogicalTypeId::BLOB) {
 				// WKB BLOB geometry: decode back to CityJSON boundaries
@@ -524,48 +596,27 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 				auto decoded =
 				    WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob_str.GetData()), blob_str.GetSize());
 
-				json geom;
 				geom["type"] = decoded.cityjson_type;
 				geom["boundaries"] = decoded.boundaries;
 
-				// Extract LOD from column name (geom_lod2_2 → "2.2")
-				if (col_name.size() > 8 && col_name.substr(0, 8) == "geom_lod") {
+				// Derive LOD from the column name for both layouts:
+				//   legacy "geom_lod2_2" and wide "geometry_lod2_2" → "2.2".
+				if (col_name.rfind("geom_lod", 0) == 0 && col_name.size() > 8) {
 					std::string lod = col_name.substr(8);
-					// Replace underscores with dots for LOD (e.g., "2_2" → "2.2")
+					std::replace(lod.begin(), lod.end(), '_', '.');
+					geom["lod"] = lod;
+				} else if (col_name.rfind("geometry_lod", 0) == 0 && col_name.size() > 12) {
+					std::string lod = col_name.substr(12);
 					std::replace(lod.begin(), lod.end(), '_', '.');
 					geom["lod"] = lod;
 				}
 
-				geometries.push_back(geom);
+				produced = true;
 			}
-		}
 
-		// Geometry properties (may contain LOD, semantics, material, texture, cityjsonType)
-		if (bind_data.geometry_properties_col != DConstants::INVALID_INDEX) {
-			auto val = input.data[bind_data.geometry_properties_col].GetValue(row);
-			if (!val.IsNull() && !geometries.empty()) {
-				try {
-					auto props = json_utils::ParseJson(val.ToString());
-					// Extract LOD if not already set from column name
-					if (!geometries[0].contains("lod") && props.contains("lod")) {
-						geometries[0]["lod"] = props["lod"].get<std::string>();
-					}
-					// Use cityjsonType if available (more precise than WKB-inferred type)
-					if (props.contains("cityjsonType")) {
-						geometries[0]["type"] = props["cityjsonType"].get<std::string>();
-					}
-					if (props.contains("semantics")) {
-						geometries[0]["semantics"] = props["semantics"];
-					}
-					if (props.contains("material")) {
-						geometries[0]["material"] = props["material"];
-					}
-					if (props.contains("texture")) {
-						geometries[0]["texture"] = props["texture"];
-					}
-				} catch (...) {
-					// Ignore parse errors in geometry properties
-				}
+			if (produced) {
+				apply_properties(geom, find_properties_col(col_name));
+				geometries.push_back(std::move(geom));
 			}
 		}
 

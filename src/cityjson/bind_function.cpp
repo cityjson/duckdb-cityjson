@@ -144,7 +144,9 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
 
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		reader = OpenAnyCityJSONFile(context, file_name, options.sample_lines);
+		// Sequence-only factory: never auto-detect to a full-CityJSON reader, otherwise
+		// regular .city.json input would produce a silent empty result instead of an error.
+		reader = OpenCityJSONSeqFile(context, file_name, options.sample_lines);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}

@@ -1,541 +1,453 @@
-# Code Review Notes
+# Review Fix Guide
 
-This review focuses on the current CityJSON extension code under `src/cityjson`
-and `src/include/cityjson`, especially module responsibility, IO performance,
-pushdown opportunities, and naming/API consistency.
+This note turns the architectural and performance review into concrete work
+items for `duckdb-cityjson`. It focuses on the current `feat/bbox-column` branch
+against `origin/main`.
 
-## Highest Priority Issues
+## Summary
 
-### Bind data equality ignores schema-changing parameters
+Fix these before merging:
 
-`CityJSONBindData::Equals` currently compares only `file_name`.
+1. ✅ **Fixed.** Default-mode `COPY TO cityjson` drops geometry.
+2. ✅ **Fixed.** Streaming `read_cityjsonseq` advertises `~0 rows` to DuckDB.
+3. ✅ **Fixed.** `read_cityjsonseq` silently returns zero rows for regular CityJSON input.
 
-Relevant file:
+Then address the follow-up performance items:
 
-- `src/cityjson/bind_data.cpp`
+1. ⬜ Avoid repeated per-row geometry work for WKB, properties, and bbox.
+2. ⬜ Keep pushed-down filters parallel where possible.
+3. ⬜ Tighten reader responsibilities and format-specific contracts.
 
-Why it matters:
+> **Status (correctness fixes 1–3 complete).** The three merge blockers above are
+> implemented and covered by tests; the full SQL suite passes (272 assertions, 9
+> files). Each fixed section below opens with an implementation note. The follow-up
+> performance items (4–6) remain open.
 
-- `lod` and `use_wkb_encoding` change both the output schema and the row values.
-- DuckDB may use bind data equality in planning/caching paths, so treating
-  `read_cityjson(path)` and `read_cityjson(path, lod => '2.2')` as equal is risky.
+## 1. Default COPY drops geometry
 
-Improvement tips:
+Priority: high. ✅ **Fixed** in `copy_function.cpp` / `copy_function.hpp`.
 
-- Include all bind-time options that affect schema or results in `Equals`.
-- At minimum compare `file_name`, `target_lod`, and `use_wkb_encoding`.
-- Add a SQL test that queries the same file with and without `lod` in one script
-  and verifies different schemas.
+Resolution: `DetectColumnRole` now recognises the wide CityParquet columns
+(`geometry_lod*`, `geometry_properties_lod*`) alongside the legacy `geometry` /
+`geom_lod*` layout, and routes `bbox` to a dedicated `Bbox` role so it is no longer
+written back as a stringified attribute. The sink pairs each geometry column with its
+own per-LOD properties column (`geometry_lod2_2` → `geometry_properties_lod2_2`) via a
+name-keyed map, falling back to the single legacy properties column for `geom_lod*`,
+and applies the properties to the matching geometry rather than always `geometries[0]`.
+Covered by the geometry round-trip assertions in `test/sql/cityjson_copy.test`.
 
-### `sample_lines` is registered but not used
+Current behaviour:
 
-`sample_lines` is documented and registered as a named parameter, but bind only
-parses `lod`. Some reader construction paths hard-code `100`.
+- Default reads now emit CityParquet-style columns named `geometry_lod2_2`,
+  `geometry_properties_lod2_2`, and `bbox`.
+- `COPY TO cityjson` still recognises only `geometry` and the old `geom_lod*`
+  pattern.
+- A default read -> copy -> read round trip silently writes objects with empty
+  geometry.
 
-Relevant files:
+Confirmed with:
 
-- `src/cityjson/table_function_registration.cpp`
+```sh
+build/release/duckdb -unsigned -c "LOAD 'build/release/extension/cityjson/cityjson.duckdb_extension'; COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json')) TO '/tmp/cityjson-review-rt.city.json' (FORMAT cityjson); SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2') FROM (DESCRIBE SELECT * FROM read_cityjson('/tmp/cityjson-review-rt.city.json'));"
+```
+
+Expected result after the fix: `1`.
+
+Current result: `0`.
+
+Where to fix:
+
+- `src/cityjson/copy_function.cpp`
+- `src/include/cityjson/copy_function.hpp` if the role model needs to support
+  multiple geometry-property columns.
+- `test/sql/cityjson_copy.test`
+
+Implementation plan:
+
+1. Update `DetectColumnRole` so it recognises:
+   - `geometry`
+   - `geometry_lod*`
+   - old `geom_lod*`, if backward compatibility is still useful
+   - `geometry_properties`
+   - `geometry_properties_lod*`
+2. Stop storing only one `geometry_properties_col`. The default wide layout can
+   have one properties column per LOD.
+3. Pair geometry columns and properties columns by LOD:
+   - `geometry` pairs with `geometry_properties`
+   - `geometry_lod2_2` pairs with `geometry_properties_lod2_2`
+   - `geometry_lod2` pairs with `geometry_properties_lod2`
+4. When decoding each WKB BLOB, derive the LOD from the geometry column name.
+5. Apply the matching properties JSON to the same geometry, not always to
+   `geometries[0]`.
+6. Add a round-trip assertion that checks geometry survives, not only row count
+   and attributes.
+
+Suggested helper shape:
+
+```cpp
+static bool IsWideGeometryColumn(const std::string &name);
+static bool IsWideGeometryPropertiesColumn(const std::string &name);
+static std::optional<std::string> ExtractLODFromWideColumn(const std::string &name);
+```
+
+Suggested bind data change:
+
+```cpp
+std::vector<idx_t> geometry_cols;
+std::unordered_map<std::string, idx_t> geometry_properties_by_lod;
+idx_t geometry_properties_col = DConstants::INVALID_INDEX; // keep for per-LOD mode
+```
+
+Suggested test:
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/rt_geom.city.json' (FORMAT cityjson);
+
+SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2')
+FROM (DESCRIBE SELECT * FROM read_cityjson('__TEST_DIR__/rt_geom.city.json'));
+----
+1
+
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_geom.city.json')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+1
+```
+
+## 2. Streaming cardinality is wrong
+
+Priority: medium-high. ✅ **Fixed** in `optional_callbacks.cpp`.
+
+Resolution: `CityJSONCardinality` returns `nullptr` (unknown) for streaming scans
+instead of deriving zero from the empty `chunks`, and `CityJSONProgress` returns
+`-1.0` (unknown) for streaming rather than reporting an immediate 100%. The streaming
+`EXPLAIN` now shows DuckDB's default `~1 row` estimate instead of the misleading
+`~0 rows`.
+
+Current behaviour:
+
+- `read_cityjsonseq` now binds in streaming mode.
+- Streaming bind data intentionally leaves `bind_data.chunks` empty.
+- `CityJSONCardinality` still estimates from `bind_data.chunks`.
+- DuckDB sees the scan as approximately zero rows.
+
+Confirmed with:
+
+```sh
+build/release/duckdb -unsigned -c "LOAD 'build/release/extension/cityjson/cityjson.duckdb_extension'; EXPLAIN SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl');"
+```
+
+Current plan includes:
+
+```text
+~0 rows
+```
+
+Where to fix:
+
+- `src/cityjson/optional_callbacks.cpp`
+- `src/include/cityjson/table_function.hpp`
 - `src/cityjson/bind_function.cpp`
-- `src/cityjson/flatcitybuf_table_function.cpp`
-- `README.md`
+- `src/cityjson/metadata_table_function.cpp` may provide useful count logic to
+  reuse.
 
-Why it matters:
+Recommended fix:
 
-- The public API promises user-controlled schema sampling.
-- Users cannot trade schema quality against bind-time cost.
-- Tests will not catch regressions in schema inference depth.
+Do not report an exact max cardinality of zero for streaming scans.
 
-Improvement tips:
+Prefer this conservative first step:
 
-- Add a small bind options struct, for example `CityJSONReadOptions`.
-- Parse `sample_lines` once in shared bind helper code.
-- Pass it into reader factories instead of relying on `DEFAULT_SAMPLE_LINES`.
-- Validate it: reject negative values and define behavior for `0`.
-- Add a SQL test with an attribute that appears only after the first sample row.
+```cpp
+unique_ptr<NodeStatistics> CityJSONCardinality(ClientContext &context,
+                                               const FunctionData *bind_data_p) {
+    auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
 
-## Module Responsibility
+    if (bind_data.streaming) {
+        return nullptr; // unknown cardinality
+    }
 
-### Reader classes do too much
+    const size_t total = bind_data.chunks.TotalCityObjectCount();
+    auto stats = make_uniq<NodeStatistics>();
+    stats->has_estimated_cardinality = true;
+    stats->estimated_cardinality = total;
+    stats->has_max_cardinality = true;
+    stats->max_cardinality = total;
+    return stats;
+}
+```
 
-The `CityJSONReader` implementations currently cover:
+If exact estimates matter later, add an optional streaming count cache:
+
+- `std::optional<size_t> estimated_cardinality;`
+- populate it only when a cheap metadata/count path is available.
+- avoid a full second pass over remote CityJSONSeq files during bind.
+
+Suggested test:
+
+```sql
+EXPLAIN SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl');
+```
+
+Assert manually for now that the plan no longer advertises `~0 rows`. If the
+SQL test framework cannot match explain output robustly, add a small C++ or
+scripted regression test.
+
+Also update progress:
+
+- `CityJSONProgress` currently uses `bind_data.chunks.TotalCityObjectCount()`.
+- For streaming scans, return an unknown or coarse progress value rather than
+  deriving from empty chunks.
+
+## 3. `read_cityjsonseq` accepts regular CityJSON and returns zero rows
+
+Priority: medium-high. ✅ **Fixed** in `reader_factory.cpp`, `reader.hpp`,
+`bind_function.cpp`, `local_cityjsonseq_reader.cpp`.
+
+Resolution: added a sequence-only factory `OpenCityJSONSeqFile` that always constructs
+a `LocalCityJSONSeqReader`, and `CityJSONSeqBind` now uses it instead of the
+auto-detecting `OpenAnyCityJSONFile`. `LocalCityJSONSeqReader::ReadMetadata` now rejects
+non-sequence first lines two ways: an unparsable bare `{` (pretty-printed CityJSON) and
+a parsed CityJSON object carrying a non-empty `CityObjects` (minified CityJSON). Both
+surface a clear format error instead of an empty scan. Covered by two `statement error`
+cases in `test/sql/cityjsonseq.test` (multi-line and minified fixtures).
+
+Current behaviour:
+
+- `CityJSONSeqBind` calls `OpenAnyCityJSONFile`.
+- That factory can return `LocalCityJSONReader` for a `.city.json` file.
+- The scan path is marked `streaming=true`.
+- `StreamingScan` calls `ReadNextFeature()`, whose base implementation returns
+  `nullopt`.
+- The query succeeds with zero rows instead of reporting a format error.
+
+Confirmed with:
+
+```sh
+build/release/duckdb -unsigned -c "LOAD 'build/release/extension/cityjson/cityjson.duckdb_extension'; SELECT COUNT(*) FROM read_cityjsonseq('test/data/minimal.city.json');"
+```
+
+Current result: `0`.
+
+Where to fix:
+
+- `src/cityjson/bind_function.cpp`
+- `src/cityjson/reader_factory.cpp`
+- `src/include/cityjson/reader.hpp`
+
+Recommended fix:
+
+Make the public functions enforce their contracts:
+
+- `read_cityjson`: may auto-detect CityJSON or CityJSONSeq.
+- `read_cityjsonseq`: must construct `LocalCityJSONSeqReader` directly or call a
+  dedicated factory that only accepts sequence input.
+- `cityjsonseq_metadata`: already does this correctly; copy that approach.
+- `LocalCityJSONSeqReader::ReadMetadata()` should reject a first-line CityJSON
+  object that contains non-empty `CityObjects`; an empty `CityObjects` object is
+  acceptable because this writer emits one in CityJSONSeq headers.
+- During bind, detect the regular-CityJSON single-line case. If schema sampling
+  reads no `CityJSONFeature` lines and the header had non-empty `CityObjects`,
+  raise a format error instead of exposing an empty scan.
+
+Suggested implementation:
+
+```cpp
+std::unique_ptr<CityJSONReader> OpenCityJSONSeqFile(ClientContext &context,
+                                                    const std::string &file_name,
+                                                    size_t sample_lines) {
+    return std::make_unique<LocalCityJSONSeqReader>(context, file_name, sample_lines);
+}
+```
+
+Then in `CityJSONSeqBind`:
+
+```cpp
+reader = OpenCityJSONSeqFile(context, file_name, options.sample_lines);
+```
+
+The sequence reader should reject non-sequence content before scan starts. Do
+not rely on `ReadNextFeature()` returning `nullopt`; that is what currently
+turns regular CityJSON input into a successful empty result.
+
+Suggested test:
+
+```sql
+statement error
+SELECT * FROM read_cityjsonseq('test/data/minimal.city.json');
+----
+First line must be CityJSON metadata
+```
+
+Use the exact error text produced by the final implementation.
+
+## 4. Reduce repeated geometry work
+
+Priority: medium.
+
+Current behaviour:
+
+- `WriteCityObjectRow` resolves geometries per projected geometry/properties
+  column.
+- WKB encoding allocates a fresh `std::vector<uint8_t>` for every row and LOD.
+- `bbox` walks geometry boundaries separately.
+- `geometry_properties` serialises JSON separately.
+
+Where to improve:
+
+- `src/cityjson/scan_function.cpp`
+- `src/cityjson/city_object_utils.cpp`
+- `src/cityjson/vector_writer.cpp`
+
+Recommended approach:
+
+Create a small row-local cache inside `WriteCityObjectRow`:
+
+```cpp
+struct RowGeometryCache {
+    std::unordered_map<std::string, Geometry> geometry_by_lod;
+    std::unordered_map<std::string, std::vector<uint8_t>> wkb_by_lod;
+    std::unordered_map<std::string, json> properties_by_lod;
+    std::optional<GeographicalExtent> bbox;
+};
+```
+
+Keep it local to one output row so there is no lifetime or concurrency problem.
+
+Do not compute anything unless the column is projected. Projection pushdown is
+already available in `projected_cols`; use it as the source of truth.
+
+Suggested checks:
+
+- `SELECT id FROM read_cityjson(...);` should not encode WKB or compute bbox.
+- `SELECT geometry_lod2_2 FROM read_cityjson(...);` should not compute
+  geometry properties or bbox.
+- `SELECT *` should still produce all geometry columns and bbox.
+
+This may need instrumentation or a benchmark rather than a SQL assertion.
+
+## 5. Keep scalar filter pushdown parallel where possible
+
+Priority: medium.
+
+Current behaviour:
+
+- Equality filters on `id`, `feature_id`, and `object_type` are consumed.
+- When any pushed filter exists, `MaxThreads()` returns `1`.
+- For already materialised CityJSON reads, this can turn a broad filter such as
+  `object_type = 'Building'` into a single-threaded scan even though chunks are
+  already available.
+
+Where to improve:
+
+- `src/cityjson/global_state.cpp`
+- `src/cityjson/scan_function.cpp`
+- `src/cityjson/bind_function.cpp`
+
+Recommended approach:
+
+- Keep streaming scans single-threaded for now.
+- Keep materialised scans parallel even with equality filters.
+- Let each batch scan its assigned range and emit only matching rows.
+- It is acceptable for filtered batches to return fewer than
+  `STANDARD_VECTOR_SIZE` rows.
+
+Be careful:
+
+- DuckDB table functions may be called repeatedly until exhaustion. Returning a
+  short chunk is fine, but returning an empty chunk usually signals completion.
+- If a batch contains no matches, the scan should continue to later batches
+  before returning an empty output.
+
+Suggested shape:
+
+```cpp
+while (output_row == 0) {
+    size_t batch_index = global_state.batch_index.fetch_add(1);
+    if (batch_index >= active_plan.BatchCount()) {
+        output.SetCardinality(0);
+        return;
+    }
+    // scan this batch, applying MatchesFilters
+}
+```
+
+Suggested tests:
+
+- Existing filter tests should still pass.
+- Add a multi-batch fixture if possible, with early batches containing no
+  matches and later batches containing matches.
+
+## 6. Clean up reader contracts
+
+Priority: medium.
+
+The current reader abstraction still mixes too many responsibilities:
 
 - file opening
-- remote/local content loading
-- format-specific parsing
-- metadata extraction
-- schema inference
-- chunk creation
-- full data materialization
-- partial read helpers such as `ReadNFeatures`
+- remote/local IO
+- metadata parsing
+- schema sampling
+- full materialisation
+- streaming feature reads
+- counting
 
-Relevant files:
+Where to improve:
 
 - `src/include/cityjson/reader.hpp`
 - `src/cityjson/local_cityjson_reader.cpp`
 - `src/cityjson/local_cityjsonseq_reader.cpp`
-- `src/cityjson/flatcitybuf_reader.cpp`
-
-Why it matters:
-
-- The design makes streaming and pushdown difficult.
-- Schema inference and scan execution are coupled to full materialization.
-- Format-specific IO behavior leaks into bind functions.
-
-Improvement tips:
-
-- Split the reader layer into smaller roles:
-  - `CityJSONSource`: opens local/remote file handles or byte streams.
-  - `CityJSONRecordCursor`: yields metadata and feature records incrementally.
-  - `CityJSONParser`: converts JSON records into `CityJSON`/`CityJSONFeature`.
-  - `CityJSONSchemaInferer`: samples records and returns columns.
-  - `CityJSONScanPlanner`: owns chunk offsets and scan scheduling.
-- Keep the current `CityJSONReader` interface as an adapter temporarily if that
-  helps avoid a large refactor.
-
-### Bind logic is duplicated across formats
-
-`read_cityjson`, `read_cityjsonseq`, and `read_flatcitybuf` repeat the same
-logic for option parsing, metadata loading, full data loading, LOD schema
-inference, and output type population.
-
-Relevant files:
-
-- `src/cityjson/bind_function.cpp`
-- `src/cityjson/flatcitybuf_table_function.cpp`
-
-Why it matters:
-
-- Parameter bugs are easy to fix in one path and miss in another.
-- New options such as filter pushdown or `sample_lines` have to be threaded
-  through multiple nearly identical implementations.
-
-Improvement tips:
-
-- Extract a shared helper such as `BindCityJSONRead`.
-- Let the caller provide:
-  - function name for error messages
-  - reader factory
-  - format-specific constraints
-- Return a fully populated `CityJSONBindData`.
-
-### Vector writing mixes extraction, conversion, and serialization
-
-`CityJSONScan` creates JSON values for projected columns, then `vector_writer`
-serializes or parses those JSON values again.
-
-Relevant files:
-
-- `src/cityjson/scan_function.cpp`
-- `src/cityjson/vector_writer.cpp`
-- `src/cityjson/city_object_utils.cpp`
-
-Why it matters:
-
-- Geometry values are converted to JSON and then parsed back into `Geometry`.
-- The writer becomes responsible for data interpretation, not just DuckDB vector
-  writes.
-- This adds avoidable CPU and allocation overhead on geometry-heavy data.
-
-Improvement tips:
-
-- Add direct writer helpers for common source types:
-  - `WriteCityObjectField`
-  - `WriteGeometryStruct`
-  - `WriteGeometryWKB`
-  - `WriteAttributeValue`
-- Keep JSON serialization only for actual JSON/VARCHAR output columns.
-- Make `vector_writer` responsible for DuckDB vector mechanics, not object
-  extraction policy.
-
-## IO And Performance
-
-### Full data is read during bind
-
-Bind currently calls `ReadAllChunks()` for normal scans. This means the complete
-file is read and parsed before DuckDB begins execution.
-
-Relevant files:
-
-- `src/cityjson/bind_function.cpp`
-- `src/cityjson/flatcitybuf_table_function.cpp`
-
-Why it matters:
-
-- Projection pushdown cannot reduce IO because the expensive read already
-  happened.
-- Parallel scanning is mostly scheduling over already materialized data.
-- Large CityJSONSeq and remote files will pay high memory and latency costs.
-
-Improvement tips:
-
-- Store scan metadata and reader configuration in bind data, not all records.
-- Move feature reading to scan-time local/global state.
-- For CityJSONSeq, stream records line by line during execution.
-- For regular CityJSON, full parse may still be necessary, but avoid parsing it
-  multiple times and consider a lazy iterator over `CityObjects`.
-- Keep full materialization as a fallback path if needed.
-
-### Remote and DuckDB FileSystem reads load the entire file into memory
-
-`OpenAnyCityJSONFile(ClientContext&, ...)` calls `ReadFileContent()` before it
-even knows whether the file is CityJSON or CityJSONSeq.
-
-Relevant files:
-
 - `src/cityjson/reader_factory.cpp`
-- `src/cityjson/json_utils.cpp`
 
-Why it matters:
+Recommended split:
 
-- CityJSONSeq loses its natural streaming advantage.
-- Metadata-only and sampling queries still download/read the full object.
-- Very large remote files can become memory-bound.
+- `CityJSONSource`: opens local or remote file handles.
+- `CityJSONRecordCursor`: yields metadata and feature records.
+- `CityJSONParser`: converts JSON records to typed structs.
+- `CityJSONSchemaInferer`: samples records and returns columns.
+- `CityJSONScanPlanner`: maps output batches to source positions.
 
-Improvement tips:
+Do not do this as a large rewrite before the three correctness fixes. The
+short-term goal is to make the existing contracts explicit:
 
-- Prefer DuckDB `FileHandle` or stream-style APIs over whole-file strings.
-- Detect format from extension first where reliable.
-- For `.jsonl`, read only the first line for metadata and then stream features.
-- For remote files, avoid requiring `GetFileSize()` plus one full read whenever
-  possible.
+- generic factory for `read_cityjson`
+- sequence-only factory for `read_cityjsonseq`
+- unknown cardinality for streaming unless explicitly counted
 
-### Chunk scheduling repeatedly scans from the beginning
+## Verification checklist
 
-For every output batch, `CityJSONScan` starts at the first chunk and walks
-feature counts until it finds the batch start position.
+Before merging, run:
 
-Relevant file:
+```sh
+make test
+```
 
-- `src/cityjson/scan_function.cpp`
+Also run these targeted checks:
 
-Why it matters:
+```sh
+build/release/duckdb -unsigned -c "LOAD 'build/release/extension/cityjson/cityjson.duckdb_extension'; COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json')) TO '/tmp/cityjson-review-rt.city.json' (FORMAT cityjson); SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2') FROM (DESCRIBE SELECT * FROM read_cityjson('/tmp/cityjson-review-rt.city.json'));"
+```
 
-- Later batches pay repeated prefix-scan cost.
-- The cost grows with number of chunks/features.
-- Parallel execution can amplify the repeated work.
+```sh
+build/release/duckdb -unsigned -c "LOAD 'build/release/extension/cityjson/cityjson.duckdb_extension'; EXPLAIN SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl');"
+```
 
-Improvement tips:
+```sh
+build/release/duckdb -unsigned -c "LOAD 'build/release/extension/cityjson/cityjson.duckdb_extension'; SELECT COUNT(*) FROM read_cityjsonseq('test/data/minimal.city.json');"
+```
 
-- During bind or global init, build an index of row ranges:
-  - chunk index
-  - feature index
-  - starting city object row
-  - ending city object row
-- Let `batch_index` map directly to a precomputed scan range.
-- Alternatively, make `CityJSONFeatureChunk::chunks` represent exact output-row
-  ranges instead of feature ranges.
+Expected outcomes after fixes:
 
-### Metadata table reads all data to count objects
+- The geometry round-trip query returns `1`.
+- The `EXPLAIN` output no longer says `~0 rows` for `read_cityjsonseq`.
+- The regular CityJSON input to `read_cityjsonseq` raises a clear binder or
+  format error.
 
-`cityjson_metadata` and `cityjsonseq_metadata` read all chunks just to populate
-`city_objects_count`, and silently return `0` if counting fails.
+## Suggested commit order
 
-Relevant file:
-
-- `src/cityjson/metadata_table_function.cpp`
-
-Why it matters:
-
-- Metadata queries are expected to be cheap.
-- Returning `0` on error makes count failures indistinguishable from empty data.
-- This path repeats expensive scan parsing outside the main scan.
-
-Improvement tips:
-
-- Return `NULL` or expose an error if the count cannot be computed.
-- Add a named parameter such as `count_objects => true/false` if exact counts are
-  expensive.
-- For CityJSONSeq, count objects with a lightweight streaming pass without
-  retaining all features.
-- For FlatCityBuf, continue using metadata count where available.
-
-### Projection pushdown is only partially effective
-
-The table functions enable `projection_pushdown`, and scan respects projected
-columns when writing output. But all source records and all schema information
-are already materialized before scan.
-
-Relevant files:
-
-- `src/cityjson/table_function_registration.cpp`
-- `src/cityjson/scan_function.cpp`
-- `src/cityjson/bind_function.cpp`
-
-Improvement tips:
-
-- Use projection information earlier in global/local init.
-- In `lod` mode, only encode WKB if `geometry` is projected.
-- Avoid computing `geometry_properties` unless projected.
-- Consider a scan-time column plan that marks required source fields:
-  - ids only
-  - attributes only
-  - hierarchy columns
-  - geometry metadata
-  - full geometry/WKB
-
-### Filter pushdown opportunities
-
-Filter pushdown is not implemented. Some filters are good candidates.
-
-Good first targets:
-
-- `id = ...`
-- `feature_id = ...`
-- `object_type = ...`
-- `geometry IS NOT NULL` in `lod` mode
-- bbox filters for FlatCityBuf, where the format has spatial index/extent data
-
-Improvement tips:
-
-- Start with simple equality filters on predefined scalar columns.
-- Store accepted filters in bind or global state.
-- Keep non-pushable filters in DuckDB by not consuming them.
-- For FlatCityBuf, map bbox predicates to native selection APIs if available.
-
-## Naming, Syntax, And API Consistency
-
-### LOD formatting is inconsistent
-
-Numeric LOD values are converted with `std::to_string(double)`, which can
-produce strings like `2.000000`. Geometry column parsing expects a stricter
-`geom_lodX_Y` pattern.
-
-Relevant files:
-
-- `src/cityjson/cityjson_types.cpp`
-- `src/cityjson/column_types.cpp`
-- `src/cityjson/lod_table.cpp`
-
-Improvement tips:
-
-- Create one canonical LOD utility module.
-- Normalize all LODs at parse time.
-- Support common CityJSON LOD spellings consistently:
-  - `"2"`
-  - `"2.0"`
-  - `2`
-  - `2.0`
-- Use the same formatter for column names, LOD table names, and user parameter
-  matching.
-
-### `geographic` and `geographical` are mixed
-
-The code has both `geographic_extent` and `geographical_extent` naming.
-
-Relevant files:
-
-- `src/include/cityjson/cityjson_types.hpp`
-- `src/cityjson/metadata_table.cpp`
-- `src/cityjson/column_types.cpp`
-
-Improvement tips:
-
-- Use CityJSON spec names at JSON boundaries.
-- Use one internal C++ naming convention everywhere else.
-- If SQL output column names are already public API, keep them stable and only
-  normalize internal names.
-
-### `VectorWrapper` advertises type safety but does not enforce it
-
-`VectorWrapper` stores a `VectorType`, but `AsFlatMut`, `AsListMut`, and
-`AsStructMut` all return the same raw pointer without checking the stored type.
-
-Relevant file:
-
-- `src/cityjson/vector_writer.cpp`
-
-Improvement tips:
-
-- Either remove `VectorWrapper` and pass `Vector&` directly, or enforce checks.
-- If kept, make incorrect accessor usage throw an internal error.
-- Update comments to match actual behavior.
-
-### Comments include implementation-task labels
-
-Several comments use labels such as `Task 22`, `Task 23`, and so on.
-
-Relevant file:
-
-- `src/cityjson/vector_writer.cpp`
-
-Improvement tips:
-
-- Replace task labels with domain-oriented section comments.
-- Keep comments focused on why a block exists or what invariant it maintains.
-
-### `return std::move(result)` for `unique_ptr`
-
-Several functions return local `unique_ptr` values with `std::move`.
-
-Relevant files:
-
-- `src/cityjson/bind_data.cpp`
-- `src/cityjson/bind_function.cpp`
-- `src/cityjson/metadata_table_function.cpp`
-- `src/cityjson/flatcitybuf_table_function.cpp`
-
-Improvement tips:
-
-- Prefer `return result;` for local return values.
-- This is mostly style, but removing unnecessary moves improves consistency with
-  modern C++ expectations.
-
-## Suggested Refactor Order
-
-1. Fix correctness/API issues first:
-   - bind-data equality
-   - `sample_lines` parsing and tests
-   - LOD normalization
-
-2. Extract shared bind options and bind helper:
-   - one parser for named parameters
-   - one path for LOD schema selection
-   - one path for output names/types
-
-3. Introduce a scan planning layer:
-   - precompute row/chunk offsets
-   - remove repeated prefix scans
-   - make projected column requirements explicit
-
-4. Make CityJSONSeq streaming real:
-   - avoid whole-file `std::string` reads
-   - read metadata and samples independently
-   - scan records during execution
-
-5. Simplify vector writing:
-   - direct writers from typed CityJSON objects
-   - JSON serialization only when the output column is JSON/VARCHAR
-
-6. Add filter pushdown incrementally:
-   - start with simple scalar filters
-   - then `geometry IS NOT NULL`
-   - then FlatCityBuf bbox/spatial pushdown
-
-## Useful Tests To Add
-
-- `sample_lines` affects schema inference.
-- Same file queried with and without `lod` produces different schema and values.
-- Numeric and string LOD values normalize to the same result.
-- Projection of only `id` and `object_type` does not compute WKB in `lod` mode.
-- Metadata count failure is not silently reported as zero.
-- CityJSONSeq remote/local paths do not require full materialization for
-  metadata-only access once streaming is introduced.
-
----
-
-## Progress Update
-
-Work is being done on branch `develop`. Each item below was fixed/addressed in a
-separate commit and the full SQL test suite was run after every commit.
-Current state: **all tests pass** (454 assertions in 14 test cases).
-
-### Done
-
-- [x] **Bind data equality ignores schema-changing parameters**
-  - `CityJSONBindData::Equals` now compares `file_name`, `target_lod`, and
-    `use_wkb_encoding`.
-  - Added SQL test verifying different schemas with/without `lod`.
-  - Commit: `225692c`
-
-- [x] **`sample_lines` is registered but not used**
-  - Added `CityJSONReadOptions` and `ParseCityJSONReadOptions`.
-  - `sample_lines` is parsed once, validated (non-negative), and propagated to
-    all reader factories.
-  - Added SQL tests for late-attributes and rejection of negative values.
-  - Commit: `d92ff22`
-
-- [x] **LOD formatting is inconsistent**
-  - Added canonical `LODTableUtils::NormalizeLOD` for strings and doubles.
-  - Geometry LODs are normalized at parse time; column matching supports
-    `geom_lod2` as well as `geom_lod2_2`.
-  - Added SQL tests for numeric LODs.
-  - Commit: `1b5cd00`
-
-- [x] **`geographic` and `geographical` are mixed**
-  - Renamed `Metadata::geographic_extent` → `geographical_extent` everywhere.
-  - Commit: `3ca6350`
-
-- [x] **Bind logic is duplicated across formats**
-  - Extracted shared `BindCityJSONRead` helper used by CityJSON, CityJSONSeq,
-    and FlatCityBuf binds.
-  - Commit: `ba3ee07`
-
-- [x] **Chunk scheduling repeatedly scans from the beginning**
-  - Added `CityJSONScanPlan` / `CityJSONScanPosition` and
-    `CityJSONFeatureChunk::BuildScanPlan`.
-  - Scan now maps `batch_index` directly to a precomputed source position.
-  - Commit: `75c67ee`
-
-- [x] **Metadata table reads all data to count objects**
-  - Added `CityJSONReader::CountCityObjects()` with a streaming override for
-    `LocalCityJSONSeqReader`.
-  - Metadata functions now use `CountCityObjects()` and propagate errors
-    instead of silently returning `0`.
-  - Commit: `e591b60`
-
-- [x] **Full data is read during bind (CityJSONSeq)**
-  - `read_cityjsonseq` now sets `streaming=true`; full materialization is
-    deferred to `CityJSONInitGlobal`.
-  - Commit: `e591b60`
-
-- [x] **`VectorWrapper` advertises type safety but does not enforce it**
-  - `AsFlatMut`, `AsListMut`, and `AsStructMut` now check the stored type and
-    throw on mismatch.
-  - Added a type-agnostic `SetNull` method for NULL handling.
-  - Commit: `49f4907`
-
-- [x] **Comments include implementation-task labels**
-  - Replaced `Task 22/23/...` labels with domain-oriented section comments.
-  - Commit: `49f4907`
-
-- [x] **`return std::move(result)` for `unique_ptr`**
-  - Removed unnecessary `std::move` returns across bind, init, and copy
-    functions.
-  - Commit: `9ef08f8`
-
-- [x] **Vector writing mixes extraction, conversion, and serialization (partial)**
-  - Added direct `WriteGeometry(Vector*, const Geometry&, size_t)` overload.
-  - `CityJSONScan` now writes geometry struct columns directly from
-    `Geometry` objects instead of serializing to JSON and parsing back.
-  - Commit: `8146cad`
-
-- [x] **Make CityJSONSeq streaming real**
-  - `LocalCityJSONSeqReader` now reads incrementally via DuckDB `FileHandle`.
-  - `read_cityjsonseq` scan loops iterate one feature at a time instead of
-    materializing the whole file.
-  - Commit: `2c28911`
-
-- [x] **Filter pushdown opportunities**
-  - Registered `pushdown_complex_filter` callback for `read_cityjson` and
-    `read_cityjsonseq`.
-  - Consumes equality filters on `id`, `feature_id`, and `object_type`.
-  - Filtered scans skip non-matching rows in both materialized and streaming
-    paths; multi-threading is disabled while filters are active.
-  - Non-pushable filters (e.g. range predicates) are left for DuckDB to apply.
-  - Added SQL tests covering single filters, combined filters, no-match filters,
-    and mixed pushable/non-pushable filters.
-
-### Partially done / next up
-
-- [ ] **Remote and DuckDB FileSystem reads load the entire file into memory**
-  - CityJSONSeq metadata and scan now stream via `FileHandle`, but regular
-    CityJSON files are still fully loaded for format detection/parsing. A
-    streaming parser path for `.city.json` is still open.
-
-- [ ] **Reader classes do too much**
-  - `BindCityJSONRead` reduces duplication, but the `CityJSONReader` classes
-    still mix IO, parsing, schema inference, and materialization. Splitting
-    into `CityJSONSource` / `CityJSONRecordCursor` / etc. is still open.
-
-- [ ] **Projection pushdown is only partially effective**
-  - Projected columns are respected when writing output, but source records are
-    fully materialized and WKB/geometry-properties are computed regardless of
-    projection. Needs a scan-time column plan.
-
-### Recommended restart point
-
-The remaining larger items are **reader-class refactoring** and deeper
-**projection / IO streaming** for regular CityJSON files. Either can be picked
-up next depending on whether API cleanliness or memory efficiency is the higher
-priority.
-
+1. Fix default COPY geometry role detection and add round-trip geometry tests.
+2. Fix streaming cardinality/progress and add an explain/statistics regression.
+3. Enforce `read_cityjsonseq` sequence-only reader construction.
+4. Optimise row-local geometry computation.
+5. Revisit parallel filtered materialised scans.
+6. Refactor reader contracts once behaviour is stable.

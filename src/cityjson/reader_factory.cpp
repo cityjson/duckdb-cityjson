@@ -59,6 +59,16 @@ static bool IsLikelyCityJSONSeqContent(const std::string &content) {
 	return has_cityjson_type && !has_city_objects;
 }
 
+std::unique_ptr<CityJSONReader> OpenCityJSONSeqFile(duckdb::ClientContext &context, const std::string &file_name,
+                                                    size_t sample_lines) {
+	// read_cityjsonseq must only ever construct a sequence reader. Auto-detecting the
+	// format here (as OpenAnyCityJSONFile does) would let a regular CityJSON document
+	// fall through to LocalCityJSONReader, whose streaming ReadNextFeature() yields no
+	// rows — silently turning malformed input into an empty result. The sequence reader
+	// rejects non-sequence content during ReadMetadata() instead.
+	return std::make_unique<LocalCityJSONSeqReader>(context, file_name, sample_lines);
+}
+
 std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &context, const std::string &file_name,
                                                     size_t sample_lines) {
 #ifdef CITYJSON_HAS_FCB

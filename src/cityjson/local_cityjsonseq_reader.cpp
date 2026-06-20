@@ -72,9 +72,26 @@ CityJSON LocalCityJSONSeqReader::ReadMetadata() const {
 		throw CityJSONError::Sequence("CityJSONSeq file is empty");
 	}
 
-	json obj = ParseJson(line);
+	json obj;
+	try {
+		obj = ParseJson(line);
+	} catch (const std::exception &) {
+		// A pretty-printed regular CityJSON document has a bare "{" first line that does
+		// not parse on its own. Reject it as non-sequence input rather than letting the
+		// scan return zero rows.
+		throw CityJSONError::Sequence("First line must be CityJSON metadata: the file does not look like "
+		                              "CityJSONSeq. Use read_cityjson for regular .city.json files.");
+	}
 	if (!obj.contains("type") || obj["type"] != "CityJSON") {
 		throw CityJSONError::Sequence("First line must be CityJSON metadata");
+	}
+	// A CityJSONSeq header carries an empty (or absent) CityObjects map; the features live
+	// on the following lines. A full CityJSON document instead carries its objects inline on
+	// this same line. Reject the latter so a minified .city.json fed to read_cityjsonseq
+	// surfaces as a format error instead of a silent empty result.
+	if (obj.contains("CityObjects") && obj["CityObjects"].is_object() && !obj["CityObjects"].empty()) {
+		throw CityJSONError::Sequence("First line must be CityJSONSeq metadata, not a full CityJSON document "
+		                              "(found a non-empty CityObjects). Use read_cityjson for .city.json files.");
 	}
 
 	CityJSON metadata = CityJSON::FromJson(obj);
