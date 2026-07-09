@@ -294,6 +294,17 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 		}
 	}
 
+	// Default quantisation: when neither an explicit transform_scale/translate nor a
+	// metadata_query supplied a transform, quantise vertices at 1 mm rather than the
+	// identity transform. Identity rounds every vertex to the nearest integer, which
+	// silently destroys sub-metre precision on real projected coordinates (e.g. RD New
+	// eastings ~85 000 m). A 0.001 scale with zero translate is the CityJSON default and
+	// keeps round-trips lossless. Users can still request coarser/finer quantisation, or
+	// carry the source transform, via the transform_* options / metadata_query.
+	if (!bind_data->transform.has_value()) {
+		bind_data->transform = Transform({0.001, 0.001, 0.001}, {0.0, 0.0, 0.0});
+	}
+
 	// Map columns to roles
 	bind_data->column_names = names;
 	bind_data->column_types.assign(sql_types.begin(), sql_types.end());

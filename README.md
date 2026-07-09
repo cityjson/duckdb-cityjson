@@ -9,7 +9,10 @@ A DuckDB extension for reading, querying, and writing [CityJSON](https://www.cit
 - **Remote file support** — read from HTTP, HTTPS, S3, GCS URLs (requires `httpfs` extension)
 - **Metadata functions** — inspect dataset version, CRS, transform, object counts
 - **Automatic schema inference** — CityJSON attributes are mapped to DuckDB columns
+- **CityParquet wide layout** — default mode emits one WKB geometry column per LOD plus a `bbox` extent column, ready for `COPY ... TO (FORMAT PARQUET)`
 - **Per-LOD geometry** with WKB encoding for GIS/spatial compatibility
+- **Filter pushdown** — equality filters on `id`, `feature_id`, and `object_type` are pushed into the scan
+- **Streaming CityJSONSeq** — `.city.jsonl` files are read incrementally without loading the whole file into memory
 - **FlatCityBuf** (`.fcb`) support (optional, compile-time flag)
 
 ## Quick Start
@@ -140,11 +143,20 @@ In default mode (no `lod` parameter), the schema includes:
 
 **Dynamic attribute columns** — inferred from the data. CityJSON attributes like `measuredHeight`, `yearOfConstruction`, etc. become their own columns with inferred types (BIGINT, DOUBLE, VARCHAR, BOOLEAN, TIMESTAMP, DATE, TIME, or JSON).
 
-**Geometry columns** — one per LOD found in the data, named `geom_lodX_Y` (e.g., `geom_lod2_2`). Each is a STRUCT:
+**`bbox` column** — a 3D extent STRUCT computed from the object's highest-LOD geometry, in world coordinates:
 
 ```
-STRUCT(lod VARCHAR, type VARCHAR, boundaries VARCHAR, semantics VARCHAR, material VARCHAR, texture VARCHAR)
+STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
 ```
+
+**Geometry columns (CityParquet wide layout)** — one pair of columns per LOD found in the data, named after the normalized LOD (e.g. `geometry_lod2_2`, `geometry_properties_lod2_2`; a whole-number LOD like `2.0` normalizes to `geometry_lod2`):
+
+| Column                          | Type           | Description                                             |
+| ------------------------------- | -------------- | ------------------------------------------------------- |
+| `geometry_lodX_Y`               | BLOB           | WKB-encoded geometry for that LOD (NULL if absent)      |
+| `geometry_properties_lodX_Y`    | JSON (VARCHAR) | Geometry metadata (`cityjsonType`, `lod`, `type`, ...)  |
+
+This is the layout the CityParquet encoding formalises: each LOD becomes its own WKB column, and `COPY ... TO (FORMAT PARQUET)` yields a Parquet-encoded city model directly.
 
 ### Per-LOD Mode (`lod => '...'`)
 
@@ -157,6 +169,7 @@ When `lod` is specified, the schema switches to:
 | `object_type`         | VARCHAR       | CityJSON type                                   |
 | `geometry`            | BLOB          | WKB-encoded geometry for the requested LOD      |
 | `geometry_properties` | JSON (VARCHAR)| Geometry metadata (type, semantics, material, texture) |
+| `bbox`                | STRUCT        | 3D extent of the geometry (`min_x..max_z DOUBLE`) |
 | *(attributes)*        | *(inferred)*  | Dynamic attribute columns                       |
 
 Use with DuckDB Spatial:
@@ -222,9 +235,11 @@ TO 'output.fcb' (FORMAT flatcitybuf);
 | ------------------- | ------- | ---------------------------------------------------- |
 | `version`           | VARCHAR | CityJSON version to write (default: `"2.0"`)        |
 | `crs`               | VARCHAR | CRS identifier (e.g., `'https://www.opengis.net/def/crs/EPSG/0/7415'`) |
-| `transform_scale`   | VARCHAR | Vertex quantisation scale as `'x,y,z'` (e.g., `'0.001,0.001,0.001'`) |
-| `transform_translate` | VARCHAR | Vertex quantisation offset as `'x,y,z'` (e.g., `'0.0,0.0,0.0'`) |
+| `transform_scale`   | VARCHAR | Vertex quantisation scale as `'x,y,z'` (default: `'0.001,0.001,0.001'`, i.e. 1 mm) |
+| `transform_translate` | VARCHAR | Vertex quantisation offset as `'x,y,z'` (default: `'0.0,0.0,0.0'`) |
 | `metadata_query`    | VARCHAR | SQL query that returns metadata columns (`version`, `crs`, `transform_scale`, `transform_translate`) |
+
+Vertices are quantised to integers against the transform before writing, so `transform_scale` sets the output precision. The default of `0.001` (1 mm) keeps round-trips lossless even for large projected coordinates; pass a smaller scale for finer precision, or carry the source transform via `metadata_query`.
 
 ```sql
 -- Write with explicit metadata
@@ -298,6 +313,20 @@ INSTALL httpfs;
 ```
 
 Supported URL schemes: `http://`, `https://`, `s3://`, `s3a://`, `s3n://`, `gcs://`, `gs://`, `r2://`, `hf://`.
+
+## Filter Pushdown
+
+Equality filters on the predefined scalar columns `id`, `feature_id`, and `object_type` are pushed down into the scan, so non-matching CityObjects are skipped before they are materialised:
+
+```sql
+-- Pushed down: only 'Building' objects are decoded
+SELECT id FROM read_cityjson('buildings.city.json') WHERE object_type = 'Building';
+
+-- Pushed down: locate a single object by id
+SELECT * FROM read_cityjson('buildings.city.json') WHERE id = 'building1';
+```
+
+Other predicates (ranges, filters on attribute columns, `IN`, etc.) still work — they are simply applied by DuckDB after the scan rather than pushed into the reader.
 
 ## Common Patterns
 

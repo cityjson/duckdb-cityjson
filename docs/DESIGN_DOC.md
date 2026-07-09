@@ -200,8 +200,14 @@ void RegisterCityJSONFunction(ExtensionLoader &loader) {
 struct CityJSONBindData : public FunctionData {
     string file_name;                    // File path or URL
     CityJSON metadata;                   // CityJSON metadata (version, CRS, transform, etc.)
-    CityJSONFeatureChunk chunks;         // All features chunked for processing
+    CityJSONFeatureChunk chunks;         // All features chunked for processing (non-streaming)
     vector<Column> columns;              // Inferred column schema
+    optional<string> target_lod;         // Set when lod => 'X.Y' is passed (per-LOD WKB mode)
+    bool use_wkb_encoding = false;       // WKB geometry mode (implied by target_lod)
+    bool streaming = false;              // True: load data during scan init, not bind (CityJSONSeq)
+
+    // Equality filters pushed down on id/feature_id/object_type (column -> value)
+    vector<pair<string, string>> equality_filters;
 
     // Required: FunctionData copy method for serialization
     unique_ptr<FunctionData> Copy() const override {
@@ -281,6 +287,10 @@ enum class ColumnType {
                          //        semantics VARCHAR, material VARCHAR, texture VARCHAR)
     GeographicalExtent,   // STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE,
                          //        max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+
+    // CityParquet wide-layout geometry types (default and per-LOD WKB modes)
+    GeometryWKB,             // BLOB - WKB-encoded geometry for one LOD
+    GeometryPropertiesJson,  // JSON (stored as VARCHAR) - per-LOD geometry metadata
 };
 
 /**
@@ -374,9 +384,17 @@ public:
  * - parents: LIST(VARCHAR) - Parent CityObject IDs
  * - other: JSON - Custom/extension fields
  *
- * Optional (currently commented out in implementation):
- * - geographical_extent: STRUCT - 3D bounding box
- * - geom_lod{X}_{Y}: STRUCT - Geometry at LOD X.Y (e.g., geom_lod2_2)
+ * Dynamically appended after the predefined columns (CityParquet wide layout):
+ * - bbox: STRUCT - 3D extent computed from the object's highest-LOD geometry
+ * - geometry_lod{X}_{Y}: BLOB - WKB geometry for each LOD present in the data
+ * - geometry_properties_lod{X}_{Y}: JSON - per-LOD geometry metadata
+ *
+ * In per-LOD mode (lod => 'X.Y') the wide geometry columns collapse to a single
+ * `geometry` BLOB + `geometry_properties` JSON pair plus the `bbox` STRUCT.
+ *
+ * Reserved column names (may not be shadowed by attribute columns): id, feature_id,
+ * object_type, children, children_roles, parents, other, bbox, geometry, and any
+ * geometry_lod* / geometry_properties* column.
  *
  * @return Vector of predefined Column definitions
  */
@@ -972,8 +990,11 @@ void ConfigurePushdown(TableFunction &func) {
     // Projection pushdown: Only read columns that are actually used
     func.projection_pushdown = true;
 
-    // Filter pushdown: Push WHERE clauses into the scan
-    func.filter_pushdown = false;  // Not yet implemented
+    // Filter pushdown: equality filters on id/feature_id/object_type are consumed
+    // via the pushdown_complex_filter callback (see 7.5), not the simple
+    // filter_pushdown flag, which stays false.
+    func.filter_pushdown = false;
+    func.pushdown_complex_filter = CityJSONPushdownComplexFilter;
 
     // Filter prune: Remove filter columns from output if not used elsewhere
     func.filter_prune = false;
@@ -1089,7 +1110,13 @@ unique_ptr<FunctionData> CityJSONDeserialize(
 ```cpp
 /**
  * table_function_pushdown_complex_filter_t: Push complex filters into scan
- * Allows pushing arbitrary expressions like: WHERE ST_Intersects(geom, bbox)
+ *
+ * Implemented behaviour: extract simple equality predicates on the predefined
+ * scalar columns `id`, `feature_id`, and `object_type` (e.g. WHERE id = 'x').
+ * Matched predicates are stored on the bind data as (column, value) pairs and
+ * removed from the filter list so the scan can skip non-matching CityObjects.
+ * Predicates on any other column, and non-equality operators, are left in place
+ * for DuckDB to evaluate after the scan.
  */
 void CityJSONPushdownComplexFilter(
     ClientContext &context,
@@ -1099,16 +1126,14 @@ void CityJSONPushdownComplexFilter(
 
     auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
 
-    // Iterate through filters and extract pushable ones
+    // Iterate through filters and extract pushable equality predicates
     for (auto it = filters.begin(); it != filters.end();) {
-        auto &filter = *it;
+        string column, value;
 
-        // Example: Push bounding box filters
-        if (IsBoundingBoxFilter(filter.get())) {
-            // Store filter in bind_data for use in scan
-            bind_data.spatial_filter = ExtractBoundingBox(filter.get());
-            // Remove from filters list (we'll handle it)
-            it = filters.erase(it);
+        // Match `<pushable_column> = <constant>` on id/feature_id/object_type
+        if (ExtractEqualityFilter(it->get(), column, value)) {
+            bind_data.equality_filters.emplace_back(column, value);
+            it = filters.erase(it);  // We'll enforce it during the scan
         } else {
             ++it;
         }
@@ -1501,13 +1526,18 @@ using Result = std::expected<T, CityJSONError>;  // C++23
   - See `test/sql/*.test` files in repository
   - Test various SQL queries and projections
 
-### 10.5 Future Enhancements
+### 10.5 Implemented Since Initial Draft
 
-- **True Streaming**: Implement lazy chunk loading for large files
-- **Projection Pushdown**: Implement `SupportsPushdown()` to avoid reading unused columns
-- **Filter Pushdown**: Support WHERE clause pushdown to reader
+- **Streaming CityJSONSeq**: `.city.jsonl` is read incrementally via a DuckDB `FileHandle` during scan init, not materialised at bind (see `CityJSONBindData::streaming`)
+- **Filter Pushdown**: equality filters on `id` / `feature_id` / `object_type` are consumed by `CityJSONPushdownComplexFilter`
+- **CityParquet wide layout**: default mode emits per-LOD WKB `geometry_lod*` + `geometry_properties_lod*` columns plus a `bbox` extent
+
+### 10.6 Future Enhancements
+
+- **Streaming CityJSON**: extend incremental loading to full `.city.json` documents
 - **Parallel Reading**: Multiple threads reading different chunks
-- **CityParquet Support**: Add reader for Parquet-encoded CityJSON
+- **Column Statistics**: min/max statistics for further pruning (esp. `bbox` for spatial filters)
+- **CityParquet Reader**: read back Parquet-encoded CityJSON produced by `COPY ... TO (FORMAT PARQUET)`
 
 ---
 

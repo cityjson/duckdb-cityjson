@@ -1,0 +1,320 @@
+# name: test/sql/cityjson_delft_e2e.test
+# description: End-to-end + round-trip tests on real-world 3DBAG Delft data
+# group: [sql]
+#
+# Fixture: test/data/delft_subset.city.jsonl — the first 10 features (20 CityObjects)
+# of the 3DBAG Delft CityJSONSeq export. Unlike the tiny synthetic fixtures, this
+# carries the full messiness of production data: a quantised transform (scale 0.001)
+# in projected CRS EPSG:7415, four LODs (0, 1.2, 1.3, 2.2), semantic surfaces,
+# Building/BuildingPart parent-child hierarchy, and dozens of real b3_* attributes
+# (doubles, booleans, nulls, strings).
+
+require cityjson
+
+# ============================================================
+# 1. Metadata fidelity (real 3DBAG header)
+# ============================================================
+
+query TI
+SELECT version, city_objects_count FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl');
+----
+2.0	20
+
+# CRS is EPSG:7415 (Amersfoort / RD New + NAP height)
+query TI
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl');
+----
+EPSG	7415
+
+# Quantisation transform preserved from the header
+query RRR
+SELECT transform_scale.x, transform_scale.y, transform_scale.z
+FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl');
+----
+0.001000	0.001000	0.001000
+
+query T
+SELECT title FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl');
+----
+3DBAG
+
+query T
+SELECT point_of_contact.contact_name FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl');
+----
+3DBAG Team
+
+# Geographical extent is populated
+query TT
+SELECT geographical_extent.min_x IS NOT NULL, geographical_extent.max_z IS NOT NULL
+FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl');
+----
+true	true
+
+# ============================================================
+# 2. Streaming read: counts and object types
+# ============================================================
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+----
+20
+
+# 3DBAG models each Pand as a Building shell with one BuildingPart child
+query TI
+SELECT object_type, COUNT(*) AS n
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+GROUP BY object_type ORDER BY object_type;
+----
+Building	10
+BuildingPart	10
+
+# ============================================================
+# 3. CityParquet wide layout: one WKB column per LOD present in the data
+# ============================================================
+
+query T
+SELECT column_name
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+WHERE column_name LIKE 'geometry%' OR column_name = 'bbox'
+ORDER BY column_name;
+----
+bbox
+geometry_lod0
+geometry_lod1_2
+geometry_lod1_3
+geometry_lod2_2
+geometry_properties_lod0
+geometry_properties_lod1_2
+geometry_properties_lod1_3
+geometry_properties_lod2_2
+
+# LODs live on the expected object types: the footprint (lod0) on the Building,
+# the solids (lod1.2/1.3/2.2) on the BuildingPart.
+query TIII
+SELECT object_type,
+       COUNT(*) FILTER (WHERE geometry_lod0 IS NOT NULL)    AS l0,
+       COUNT(*) FILTER (WHERE geometry_lod1_2 IS NOT NULL)  AS l12,
+       COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)  AS l22
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+GROUP BY object_type ORDER BY object_type;
+----
+Building	10	0	0
+BuildingPart	0	10	10
+
+# geometry_properties carries the CityJSON type, LOD, and semantic surfaces
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE geometry_properties_lod2_2 LIKE '%Solid%'
+  AND geometry_properties_lod2_2 LIKE '%2.2%'
+  AND geometry_properties_lod2_2 LIKE '%RoofSurface%';
+----
+10
+
+# ============================================================
+# 4. Building / BuildingPart hierarchy
+# ============================================================
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE object_type = 'Building' AND len(children) > 0;
+----
+10
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE object_type = 'BuildingPart' AND len(parents) > 0;
+----
+10
+
+# A part's id is the parent Building id with a '-0' suffix, and they share feature_id
+query TTT
+SELECT feature_id, id, object_type
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE feature_id = 'NL.IMBAG.Pand.0503100000000137'
+ORDER BY id;
+----
+NL.IMBAG.Pand.0503100000000137	NL.IMBAG.Pand.0503100000000137	Building
+NL.IMBAG.Pand.0503100000000137	NL.IMBAG.Pand.0503100000000137-0	BuildingPart
+
+# ============================================================
+# 5. Attribute type inference from real, heterogeneous attributes
+# ============================================================
+
+query TT
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+WHERE column_name IN ('b3_h_dak_max', 'b3_dak_type', 'b3_kas_warenhuis')
+ORDER BY column_name;
+----
+b3_dak_type	VARCHAR
+b3_h_dak_max	DOUBLE
+b3_kas_warenhuis	BOOLEAN
+
+# ============================================================
+# 6. Per-LOD WKB read (lod => '2.2')
+# ============================================================
+
+query TI
+SELECT typeof(geometry), COUNT(*) FILTER (WHERE geometry IS NOT NULL)
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+GROUP BY 1;
+----
+BLOB	10
+
+# The WKB payloads are non-empty
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+WHERE octet_length(geometry) > 0;
+----
+10
+
+# Per-LOD mode also exposes the derived bbox extent
+query T
+SELECT typeof(bbox) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') LIMIT 1;
+----
+STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+
+# ============================================================
+# 7. Filter pushdown on real ids / types
+# ============================================================
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE object_type = 'BuildingPart';
+----
+10
+
+query T
+SELECT object_type FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE id = 'NL.IMBAG.Pand.0503100000000137-0';
+----
+BuildingPart
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE feature_id = 'NL.IMBAG.Pand.0503100000005156';
+----
+2
+
+# ============================================================
+# 8. Lossless round-trip (per-LOD WKB, seq -> seq)
+#
+# Passing transform_scale that matches the source quantisation preserves geometry
+# to sub-millimetre. bbox is recomputed on read, so comparing extents before and
+# after is a strong geometry-integrity check.
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2'))
+TO '__TEST_DIR__/delft_rt_lossless.city.jsonl'
+(FORMAT cityjsonseq, transform_scale '0.001,0.001,0.001');
+
+# All 10 geometries survive and every bbox coordinate matches within 1 cm
+query I
+WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL),
+     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL)
+SELECT COUNT(*) AS n
+FROM o JOIN r USING (id)
+WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01
+  AND abs(o.bbox.min_y - r.bbox.min_y) < 0.01
+  AND abs(o.bbox.min_z - r.bbox.min_z) < 0.01
+  AND abs(o.bbox.max_x - r.bbox.max_x) < 0.01
+  AND abs(o.bbox.max_y - r.bbox.max_y) < 0.01
+  AND abs(o.bbox.max_z - r.bbox.max_z) < 0.01;
+----
+10
+
+# ============================================================
+# 9. Default-mode (wide layout) round-trip preserves every LOD column + attributes
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/delft_rt_wide.city.jsonl'
+(FORMAT cityjsonseq, transform_scale '0.001,0.001,0.001');
+
+query T
+SELECT column_name
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.jsonl'))
+WHERE column_name LIKE 'geometry_lod%'
+ORDER BY column_name;
+----
+geometry_lod0
+geometry_lod1_2
+geometry_lod1_3
+geometry_lod2_2
+
+# Both the lod0 footprints and the lod2.2 solids come back non-null
+query II
+SELECT COUNT(*) FILTER (WHERE geometry_lod0 IS NOT NULL),
+       COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)
+FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.jsonl');
+----
+10	10
+
+# Real attributes survive the round trip
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.jsonl')
+WHERE b3_dak_type IS NOT NULL;
+----
+10
+
+# ============================================================
+# 10. Cross-format round-trip: CityJSONSeq -> CityJSON -> read back
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/delft_cross.city.json'
+(FORMAT cityjson, transform_scale '0.001,0.001,0.001');
+
+query TI
+SELECT version, city_objects_count FROM cityjson_metadata('__TEST_DIR__/delft_cross.city.json');
+----
+2.0	20
+
+query TI
+SELECT object_type, COUNT(*) AS n
+FROM read_cityjson('__TEST_DIR__/delft_cross.city.json')
+GROUP BY object_type ORDER BY object_type;
+----
+Building	10
+BuildingPart	10
+
+# ============================================================
+# 11. Default COPY (no transform option) is lossless on real projected data
+#
+# The writer defaults to 1 mm quantisation (scale 0.001, translate 0) when no
+# transform_scale/translate or metadata_query is given. On projected coordinates
+# (~85 000 m here) that preserves sub-centimetre precision — unlike an identity
+# transform, which would round every vertex to the nearest metre. This guards
+# against a regression to integer-rounding defaults.
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2'))
+TO '__TEST_DIR__/delft_rt_default.city.jsonl' (FORMAT cityjsonseq);
+
+# Geometry is preserved and every bbox coordinate matches within 1 cm, with no
+# explicit transform passed.
+query I
+WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL),
+     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_default.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL)
+SELECT COUNT(*) AS n
+FROM o JOIN r USING (id)
+WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01
+  AND abs(o.bbox.min_y - r.bbox.min_y) < 0.01
+  AND abs(o.bbox.min_z - r.bbox.min_z) < 0.01
+  AND abs(o.bbox.max_x - r.bbox.max_x) < 0.01
+  AND abs(o.bbox.max_y - r.bbox.max_y) < 0.01
+  AND abs(o.bbox.max_z - r.bbox.max_z) < 0.01;
+----
+10
+
+# The written header carries the default transform so readers decode correctly
+query RRR
+SELECT transform_scale.x, transform_scale.y, transform_scale.z
+FROM cityjsonseq_metadata('__TEST_DIR__/delft_rt_default.city.jsonl');
+----
+0.001000	0.001000	0.001000
