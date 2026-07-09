@@ -98,6 +98,7 @@ std::vector<Column> LODTableUtils::GetGeometryColumns() {
 	return {
 	    Column("geometry", ColumnType::GeometryWKB),
 	    Column("geometry_properties", ColumnType::GeometryPropertiesJson),
+	    Column("bbox", ColumnType::GeographicalExtent),
 	};
 }
 

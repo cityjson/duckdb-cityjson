@@ -1,0 +1,35 @@
+# name: test/sql/cityjson_reserved_attr.test
+# description: Reserved columns take precedence over case-insensitively colliding attributes
+# group: [sql]
+
+require cityjson
+
+# The source has an attribute "ID" that collides case-insensitively with the reserved
+# "id" column. The reader must still bind (DuckDB column names are case-insensitive) by
+# NOT emitting a dedicated column for the colliding attribute.
+statement ok
+CREATE TABLE collide AS SELECT * FROM read_cityjson('test/data/reserved_attr_collision.city.json');
+
+# Exactly one reserved id column, and no separate ID attribute column.
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM collide) WHERE lower(column_name) = 'id';
+----
+1
+
+# The structural id column holds the CityObject key, not the attribute value.
+query T
+SELECT id FROM collide;
+----
+building1
+
+# The colliding attribute's value is preserved in the `other` JSON catch-all.
+query T
+SELECT (other::VARCHAR LIKE '%"ID":"attr-id-value"%') FROM collide;
+----
+true
+
+# Non-colliding attributes still get their own typed column.
+query R
+SELECT measuredHeight FROM collide;
+----
+12.0

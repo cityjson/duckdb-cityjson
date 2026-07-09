@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <mutex>
 #include <optional>
 
@@ -27,8 +28,9 @@ enum class CopyColumnRole {
 	Children,           // children array
 	Parents,            // parents array
 	ChildrenRoles,      // children_roles array
-	GeometryWKB,        // geometry (WKB blob)
-	GeometryProperties, // geometry_properties JSON
+	GeometryWKB,        // geometry / geometry_lod* / geom_lod* (WKB blob)
+	GeometryProperties, // geometry_properties / geometry_properties_lod* JSON
+	Bbox,               // derived bounding box — recomputed on read, ignored on write
 	Other,              // extension fields
 	Attribute           // everything else -> attributes map
 };
@@ -67,7 +69,13 @@ struct CityJSONCopyBindData : public FunctionData {
 	idx_t parents_col = DConstants::INVALID_INDEX;
 	idx_t children_roles_col = DConstants::INVALID_INDEX;
 	idx_t geometry_col = DConstants::INVALID_INDEX;
+	// Legacy single properties column / fallback when a geometry column has no per-LOD
+	// properties counterpart (e.g. the old geom_lod* layout).
 	idx_t geometry_properties_col = DConstants::INVALID_INDEX;
+	// Wide CityParquet layout: one properties column per LOD. Keyed by the properties
+	// column name (e.g. "geometry_properties_lod2_2") so a geometry column can find its
+	// matching properties without assuming a single shared column.
+	std::unordered_map<std::string, idx_t> geometry_properties_by_name;
 
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other) const override;

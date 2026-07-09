@@ -153,6 +153,21 @@ std::vector<Column> GetDefinedColumns();
 bool IsPredefinedColumn(const std::string &name);
 
 /**
+ * Check if a name collides (case-insensitively) with any reserved output column.
+ *
+ * Reserved columns are the predefined structural columns plus the wide-layout
+ * geometry columns (`geometry`, `geometry_lod*`, `geometry_properties_lod*`) and
+ * `bbox`. Reserved columns take precedence over dynamic attributes: a source
+ * attribute whose name collides with a reserved column must not be emitted as its
+ * own column (it is preserved in the `other` JSON instead), otherwise DuckDB would
+ * see duplicate column names (it is case-insensitive) and refuse to bind.
+ *
+ * @param name Column/attribute name to check
+ * @return true if the name case-insensitively matches a reserved column
+ */
+bool IsReservedColumnName(const std::string &name);
+
+/**
  * Check if column name is a geometry column (pattern: geom_lod{X}_{Y})
  *
  * @param name Column name to check
@@ -169,6 +184,17 @@ bool IsGeometryColumn(const std::string &name);
  * @throws CityJSONError if column name is invalid
  */
 std::string ParseLODFromColumnName(const std::string &column_name);
+
+/**
+ * Parse LOD from a default-mode WKB geometry column name.
+ * Handles both "geometry_lod2_2" and "geometry_properties_lod2_2" → "2.2",
+ * and single-component LODs such as "geometry_lod0" → "0".
+ *
+ * @param column_name WKB geometry or geometry-properties column name
+ * @return Normalised LOD string (e.g., "2.2")
+ * @throws CityJSONError if no LOD component is found
+ */
+std::string ParseLODFromGeometryColumn(const std::string &column_name);
 
 } // namespace cityjson
 } // namespace duckdb

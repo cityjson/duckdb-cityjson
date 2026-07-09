@@ -7,8 +7,8 @@ namespace cityjson {
 
 static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSONFeature &feature,
                                const std::string &city_obj_id, const CityObject &city_obj,
-                               std::vector<VectorWrapper> &wrappers,
-                               const std::vector<idx_t> &projected_cols, size_t output_row) {
+                               std::vector<VectorWrapper> &wrappers, const std::vector<idx_t> &projected_cols,
+                               size_t output_row) {
 	// For WKB encoding mode, find the geometry matching the target LOD
 	std::optional<Geometry> target_geom;
 	if (bind_data.use_wkb_encoding && bind_data.target_lod.has_value()) {
@@ -30,12 +30,16 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		size_t schema_idx = projected_cols[col_idx];
 		const Column &col = bind_data.columns[schema_idx];
 
-		// Handle WKB geometry column
+		// Handle WKB geometry column. In per-LOD mode (lod => ...) the single "geometry"
+		// column uses target_geom; in default mode each "geometry_lodX_Y" column resolves
+		// its own LOD from the column name.
 		if (col.kind == ColumnType::GeometryWKB) {
-			if (target_geom.has_value() && vertex_pool != nullptr) {
-				// Encode geometry to WKB using the resolved vertex pool
+			std::optional<Geometry> geom = bind_data.target_lod.has_value()
+			                                   ? target_geom
+			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
+			if (geom.has_value() && vertex_pool != nullptr) {
 				auto wkb_data =
-				    CityObjectUtils::GetGeometryWKB(target_geom.value(), *vertex_pool, bind_data.metadata.transform);
+				    CityObjectUtils::GetGeometryWKB(geom.value(), *vertex_pool, bind_data.metadata.transform);
 				WriteGeometryWKB(wrappers[col_idx].AsFlatMut(), wkb_data, output_row);
 			} else {
 				wrappers[col_idx].SetNull(output_row);
@@ -43,10 +47,14 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			continue;
 		}
 
-		// Handle geometry properties column
+		// Handle geometry properties column (single "geometry_properties" in per-LOD mode,
+		// or per-LOD "geometry_properties_lodX_Y" in default mode).
 		if (col.kind == ColumnType::GeometryPropertiesJson) {
-			if (target_geom.has_value()) {
-				auto props = CityObjectUtils::GetGeometryPropertiesJson(target_geom.value());
+			std::optional<Geometry> geom = bind_data.target_lod.has_value()
+			                                   ? target_geom
+			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
+			if (geom.has_value()) {
+				auto props = CityObjectUtils::GetGeometryPropertiesJson(geom.value());
 				WriteGeometryProperties(wrappers[col_idx].AsFlatMut(), props, output_row);
 			} else {
 				wrappers[col_idx].SetNull(output_row);
@@ -71,6 +79,18 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				wrappers[col_idx].SetNull(output_row);
 			}
 			continue;
+		} else if (col.name == "bbox") {
+			// Per-LOD mode uses target_geom; default (wide) mode has no target LOD, so the
+			// bbox is computed from the city object's highest-LOD geometry.
+			std::optional<Geometry> bbox_geom =
+			    bind_data.target_lod.has_value() ? target_geom : city_obj.GetHighestLODGeometry();
+			if (bbox_geom.has_value() && vertex_pool != nullptr) {
+				auto extent =
+				    CityObjectUtils::GetGeometryExtent(bbox_geom.value(), *vertex_pool, bind_data.metadata.transform);
+				value = extent.has_value() ? extent->ToJson() : json(nullptr);
+			} else {
+				value = json(nullptr);
+			}
 		} else {
 			value = CityObjectUtils::GetAttributeValue(city_obj, col);
 		}
@@ -253,8 +273,7 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 		// regardless of whether this row passes the filter.
 		++global_state.streaming_obj_it;
 
-		if (bind_data.equality_filters.empty() ||
-		    MatchesFilters(bind_data, feature, city_obj_id, city_obj)) {
+		if (bind_data.equality_filters.empty() || MatchesFilters(bind_data, feature, city_obj_id, city_obj)) {
 			WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
 			output_row++;
 		}

@@ -186,6 +186,13 @@ struct CityObject {
 	 * Get geometry at specific LOD
 	 */
 	std::optional<Geometry> GetGeometryAtLOD(const std::string &lod) const;
+
+	/**
+	 * Get the geometry with the highest LOD (by numeric value).
+	 * Used to compute the per-row bbox in default (wide) mode. Geometries with an
+	 * empty LOD are skipped; if none have a usable LOD the first geometry is returned.
+	 */
+	std::optional<Geometry> GetHighestLODGeometry() const;
 };
 
 /**
@@ -268,10 +275,10 @@ struct CityJSON {
  * Starting position for a single output batch
  */
 struct CityJSONScanPosition {
-	size_t chunk_idx = 0;         // Chunk containing the first row
-	size_t feature_idx = 0;       // Feature inside the chunk
+	size_t chunk_idx = 0;          // Chunk containing the first row
+	size_t feature_idx = 0;        // Feature inside the chunk
 	size_t city_object_offset = 0; // CityObject offset inside the feature
-	size_t start_row = 0;         // Global output row index
+	size_t start_row = 0;          // Global output row index
 };
 
 /**

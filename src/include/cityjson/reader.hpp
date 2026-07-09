@@ -211,5 +211,21 @@ private:
 std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &context, const std::string &file_name,
                                                     size_t sample_lines = 100);
 
+/**
+ * Sequence-only factory for read_cityjsonseq.
+ *
+ * Always returns a LocalCityJSONSeqReader, regardless of file extension or content.
+ * Unlike OpenAnyCityJSONFile this performs no format auto-detection, so a regular
+ * CityJSON document passed to read_cityjsonseq surfaces as a format error during
+ * ReadMetadata() rather than as a silent empty scan.
+ *
+ * @param context DuckDB client context
+ * @param file_name Path or URL to CityJSONSeq file
+ * @param sample_lines Number of features to sample for schema inference
+ * @return Unique pointer to a LocalCityJSONSeqReader
+ */
+std::unique_ptr<CityJSONReader> OpenCityJSONSeqFile(duckdb::ClientContext &context, const std::string &file_name,
+                                                    size_t sample_lines = 100);
+
 } // namespace cityjson
 } // namespace duckdb

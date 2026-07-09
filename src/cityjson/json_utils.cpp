@@ -21,7 +21,12 @@ std::string ReadFileContent(duckdb::ClientContext &context, const std::string &f
 		duckdb::ExtensionHelper::AutoLoadExtension(context, "httpfs");
 	}
 	auto &fs = duckdb::FileSystem::GetFileSystem(context);
-	auto handle = fs.OpenFile(file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
+	std::unique_ptr<duckdb::FileHandle> handle;
+	try {
+		handle = fs.OpenFile(file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
+	} catch (const std::exception &) {
+		throw CityJSONError::FileRead("Failed to open file: " + file_path);
+	}
 	if (!handle) {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path);
 	}
