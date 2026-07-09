@@ -2,6 +2,8 @@
 
 A DuckDB extension for reading, querying, and writing [CityJSON](https://www.cityjson.org/) and [CityJSONSeq](https://www.cityjson.org/cityjsonseq/) files directly in SQL.
 
+> ⚠️ **Experimental.** This library is under active development and should be considered experimental. Its API, output schema, and on-disk formats may change without notice, and bugs are expected — including ones that can affect data correctness. Do not rely on it for production workloads yet, and verify results against a trusted source before use. Please report issues you encounter.
+
 ## Features
 
 - **Read CityJSON** (`.city.json`) and **CityJSONSeq** (`.city.jsonl`) files as tables
