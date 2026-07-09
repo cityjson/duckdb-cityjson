@@ -6,6 +6,13 @@ namespace cityjson {
 unique_ptr<NodeStatistics> CityJSONCardinality(ClientContext &context, const FunctionData *bind_data_p) {
 	auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
 
+	// Streaming scans do not materialise chunks during bind, so `chunks` is empty and
+	// would otherwise advertise ~0 rows to the optimiser. Report unknown cardinality
+	// instead of a misleading zero estimate.
+	if (bind_data.streaming) {
+		return nullptr;
+	}
+
 	// Count total CityObjects
 	size_t total = bind_data.chunks.TotalCityObjectCount();
 
@@ -22,6 +29,13 @@ double CityJSONProgress(ClientContext &context, const FunctionData *bind_data_p,
                         const GlobalTableFunctionState *global_state_p) {
 	auto &bind_data = bind_data_p->Cast<CityJSONBindData>();
 	auto &global_state = global_state_p->Cast<CityJSONGlobalState>();
+
+	// Streaming scans have no materialised total to divide against; deriving progress
+	// from the empty `chunks` would report 100% immediately. Return -1 (unknown) so
+	// DuckDB does not display a bogus progress value.
+	if (bind_data.streaming) {
+		return -1.0;
+	}
 
 	size_t total = bind_data.chunks.TotalCityObjectCount();
 	if (total == 0) {

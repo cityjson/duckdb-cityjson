@@ -69,7 +69,7 @@ CityJSON FlatCityBufReader::ReadMetadata() const {
 				if (!metadata.metadata.has_value()) {
 					metadata.metadata = Metadata();
 				}
-				metadata.metadata->geographic_extent = extent;
+				metadata.metadata->geographical_extent = extent;
 			}
 
 			// Parse CRS from metadata.referenceSystem or top-level

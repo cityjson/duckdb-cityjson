@@ -40,6 +40,22 @@ SELECT yearOfConstruction FROM read_cityjsonseq('test/data/sample.city.jsonl') O
 2020
 2021
 
+# CityJSONSeq LOD mode infers schema from sampled feature lines while keeping scan streaming
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '2.2');
+----
+2
+
+query T
+SELECT typeof(geometry) FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '2.2') LIMIT 1;
+----
+BLOB
+
+statement error
+SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '9.9');
+----
+LOD '9.9' not found
+
 # ============================================================
 # cityjsonseq_metadata basic tests
 # ============================================================
@@ -75,6 +91,75 @@ SELECT transform_translate.x, transform_translate.y, transform_translate.z FROM 
 0.0	0.0	0.0
 
 # ============================================================
+# sample_lines parameter
+# ============================================================
+
+# With sample_lines=1 the late attribute is not discovered
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl', sample_lines => 1)) WHERE column_name = 'lateAttribute';
+----
+0
+
+# With default sampling the late attribute is present
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl')) WHERE column_name = 'lateAttribute';
+----
+1
+
+# With sample_lines=0 no dynamic attributes are inferred
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl', sample_lines => 0)) WHERE column_name IN ('yearOfConstruction', 'lateAttribute');
+----
+0
+
+# Negative sample_lines is rejected
+statement error
+SELECT * FROM read_cityjsonseq('test/data/sample_late_attribute.city.jsonl', sample_lines => -1);
+----
+sample_lines must be non-negative
+
+# ============================================================
+# Filter pushdown
+# ============================================================
+
+# object_type equality filter is pushed down
+query II
+SELECT id, feature_id FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE object_type = 'Building' ORDER BY id;
+----
+building1	feature1
+building2	feature2
+
+# feature_id equality filter is pushed down
+query II
+SELECT id, feature_id FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE feature_id = 'feature2';
+----
+building2	feature2
+
+# id equality filter is pushed down
+query I
+SELECT feature_id FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE id = 'building1';
+----
+feature1
+
+# combination of pushed-down filters
+query I
+SELECT id FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE object_type = 'Building' AND feature_id = 'feature1';
+----
+building1
+
+# non-existent pushed-down filter returns no rows
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE id = 'no-such-building';
+----
+0
+
+# non-pushable filter still works
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl') WHERE object_type = 'Building' AND yearOfConstruction > 2020;
+----
+1
+
+# ============================================================
 # Error handling
 # ============================================================
 
@@ -102,3 +187,22 @@ SELECT COUNT(*) FROM seq_buildings;
 
 statement ok
 DROP TABLE seq_buildings;
+
+# ============================================================
+# read_cityjsonseq must reject regular CityJSON input
+# Regression: feeding a full .city.json document to read_cityjsonseq previously
+# auto-detected a non-sequence reader and returned zero rows silently. It must now
+# raise a clear format error instead.
+# ============================================================
+
+statement error
+SELECT * FROM read_cityjsonseq('test/data/minimal.city.json');
+----
+First line must be CityJSON metadata
+
+# A minified single-line CityJSON document (parses, but carries CityObjects inline)
+# must also be rejected rather than yielding an empty scan.
+statement error
+SELECT * FROM read_cityjsonseq('test/data/minimal_oneline.city.json');
+----
+First line must be CityJSONSeq metadata

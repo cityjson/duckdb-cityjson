@@ -73,6 +73,45 @@ statement ok
 DROP TABLE rt_json;
 
 # ============================================================
+# CityJSON geometry round-trip: default COPY must preserve geometry
+# Regression: default reads emit wide CityParquet columns (geometry_lod2_2,
+# geometry_properties_lod2_2, bbox); COPY TO previously only recognised the old
+# `geometry`/`geom_lod*` columns, so geometry was silently dropped.
+# ============================================================
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/rt_geom.city.json' (FORMAT cityjson);
+
+# The wide geometry column survives the round trip
+query I
+SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2')
+FROM (DESCRIBE SELECT * FROM read_cityjson('__TEST_DIR__/rt_geom.city.json'));
+----
+1
+
+# The geometry itself is present, not an empty placeholder
+query I
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_geom.city.json')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+1
+
+# The precise CityJSON geometry type is preserved via geometry_properties
+query I
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_geom.city.json')
+WHERE geometry_properties_lod2_2 LIKE '%Solid%';
+----
+1
+
+# bbox is a derived column: recomputed on read, never written back as an attribute
+query I
+SELECT COUNT(*) FILTER (WHERE column_name = 'bbox')
+FROM (DESCRIBE SELECT * FROM read_cityjson('__TEST_DIR__/rt_geom.city.json'));
+----
+1
+
+# ============================================================
 # CityJSON metadata: default COPY writes valid metadata
 # ============================================================
 

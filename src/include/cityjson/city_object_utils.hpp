@@ -103,6 +103,17 @@ public:
 	                                           const std::optional<Transform> &transform);
 
 	/**
+	 * Compute the 3D bounding box of a geometry from its boundary vertices.
+	 *
+	 * Walks the geometry boundaries, resolves each vertex index in the pool,
+	 * applies the transform, and returns the min/max extent. Returns nullopt
+	 * if the geometry references no valid vertices.
+	 */
+	static std::optional<GeographicalExtent>
+	GetGeometryExtent(const Geometry &geometry, const std::vector<std::array<double, 3>> &vertices,
+	                  const std::optional<Transform> &transform);
+
+	/**
 	 * Serialize geometry properties to JSON
 	 *
 	 * @param geometry Geometry object to serialize

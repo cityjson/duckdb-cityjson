@@ -1,4 +1,5 @@
 #include "cityjson/cityjson_types.hpp"
+#include "cityjson/lod_table.hpp"
 #include <algorithm>
 
 namespace duckdb {
@@ -165,7 +166,7 @@ Metadata Metadata::FromJson(const json &obj) {
 
 	// geographicalExtent is an array of 6 numbers [minx, miny, minz, maxx, maxy, maxz]
 	if (obj.contains("geographicalExtent") && obj["geographicalExtent"].is_array()) {
-		result.geographic_extent = GeographicalExtent::FromJson(obj["geographicalExtent"]);
+		result.geographical_extent = GeographicalExtent::FromJson(obj["geographicalExtent"]);
 	}
 	result.dataset_topic_category = GetOptionalString(obj, "datasetTopicCategory");
 	result.feature_type = GetOptionalString(obj, "featureType");
@@ -221,9 +222,9 @@ Geometry Geometry::FromJson(const json &obj) {
 	// LOD can be string or number (optional — default to empty string if missing)
 	if (obj.contains("lod")) {
 		if (obj["lod"].is_string()) {
-			result.lod = obj["lod"].get<std::string>();
+			result.lod = LODTableUtils::NormalizeLOD(obj["lod"].get<std::string>());
 		} else if (obj["lod"].is_number()) {
-			result.lod = std::to_string(obj["lod"].get<double>());
+			result.lod = LODTableUtils::NormalizeLOD(obj["lod"].get<double>());
 		} else {
 			throw CityJSONError::InvalidGeometry("LOD must be a string or number");
 		}
@@ -367,6 +368,38 @@ std::optional<Geometry> CityObject::GetGeometryAtLOD(const std::string &lod) con
 		}
 	}
 	return std::nullopt;
+}
+
+std::optional<Geometry> CityObject::GetHighestLODGeometry() const {
+	if (geometry.empty()) {
+		return std::nullopt;
+	}
+	const Geometry *best = nullptr;
+	double best_val = 0.0;
+	for (const auto &geom : geometry) {
+		if (geom.lod.empty()) {
+			continue;
+		}
+		double val = 0.0;
+		try {
+			size_t idx = 0;
+			val = std::stod(geom.lod, &idx);
+			if (idx != geom.lod.size()) {
+				continue; // non-numeric LOD, skip for comparison
+			}
+		} catch (...) {
+			continue;
+		}
+		if (best == nullptr || val > best_val) {
+			best = &geom;
+			best_val = val;
+		}
+	}
+	if (best != nullptr) {
+		return *best;
+	}
+	// No geometry carried a usable numeric LOD; fall back to the first one.
+	return geometry.front();
 }
 
 // ============================================================
@@ -546,8 +579,8 @@ json CityJSON::ToJson() const {
 		if (m.geographic_location) {
 			meta["geographicLocation"] = *m.geographic_location;
 		}
-		if (m.geographic_extent) {
-			meta["geographicalExtent"] = m.geographic_extent->ToJson();
+		if (m.geographical_extent) {
+			meta["geographicalExtent"] = m.geographical_extent->ToJson();
 		}
 		if (m.dataset_topic_category) {
 			meta["datasetTopicCategory"] = *m.dataset_topic_category;
@@ -678,6 +711,56 @@ CityJSONFeatureChunk CityJSONFeatureChunk::CreateChunks(std::vector<CityJSONFeat
 	}
 
 	return result;
+}
+
+CityJSONScanPlan CityJSONFeatureChunk::BuildScanPlan(size_t batch_size) const {
+	CityJSONScanPlan plan;
+	plan.total_rows = TotalCityObjectCount();
+
+	if (plan.total_rows == 0 || batch_size == 0) {
+		return plan;
+	}
+
+	const size_t batch_count = (plan.total_rows + batch_size - 1) / batch_size;
+	plan.batch_starts.reserve(batch_count);
+
+	size_t global_row = 0;
+	size_t chunk_idx = 0;
+	size_t feature_idx = 0;
+	size_t city_object_offset = 0;
+
+	for (size_t batch = 0; batch < batch_count; batch++) {
+		plan.batch_starts.push_back({chunk_idx, feature_idx, city_object_offset, global_row});
+		global_row += batch_size;
+		if (global_row > plan.total_rows) {
+			global_row = plan.total_rows;
+		}
+
+		// Advance source position by batch_size CityObjects
+		size_t remaining = batch_size;
+		while (remaining > 0 && chunk_idx < chunks.size()) {
+			auto chunk = GetChunk(chunk_idx);
+			if (!chunk || feature_idx >= chunk->size()) {
+				chunk_idx++;
+				feature_idx = 0;
+				city_object_offset = 0;
+				continue;
+			}
+
+			const auto &feature = (*chunk)[feature_idx];
+			size_t available = feature.CityObjectCount() - city_object_offset;
+			if (remaining >= available) {
+				remaining -= available;
+				feature_idx++;
+				city_object_offset = 0;
+			} else {
+				city_object_offset += remaining;
+				remaining = 0;
+			}
+		}
+	}
+
+	return plan;
 }
 
 } // namespace cityjson

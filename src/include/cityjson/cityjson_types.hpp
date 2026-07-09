@@ -2,6 +2,7 @@
 
 #include "cityjson/types.hpp"
 #include "cityjson/json_utils.hpp"
+#include "duckdb.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -116,7 +117,7 @@ struct Metadata {
 	std::optional<std::string> reference_date;
 	std::optional<std::string> reference_system;
 	std::optional<std::string> geographic_location;
-	std::optional<GeographicalExtent> geographic_extent;
+	std::optional<GeographicalExtent> geographical_extent;
 	std::optional<std::string> dataset_topic_category;
 	std::optional<std::string> feature_type;
 	std::optional<std::string> metadata_standard;
@@ -185,6 +186,13 @@ struct CityObject {
 	 * Get geometry at specific LOD
 	 */
 	std::optional<Geometry> GetGeometryAtLOD(const std::string &lod) const;
+
+	/**
+	 * Get the geometry with the highest LOD (by numeric value).
+	 * Used to compute the per-row bbox in default (wide) mode. Geometries with an
+	 * empty LOD are skipped; if none have a usable LOD the first geometry is returned.
+	 */
+	std::optional<Geometry> GetHighestLODGeometry() const;
 };
 
 /**
@@ -264,6 +272,31 @@ struct CityJSON {
 };
 
 /**
+ * Starting position for a single output batch
+ */
+struct CityJSONScanPosition {
+	size_t chunk_idx = 0;          // Chunk containing the first row
+	size_t feature_idx = 0;        // Feature inside the chunk
+	size_t city_object_offset = 0; // CityObject offset inside the feature
+	size_t start_row = 0;          // Global output row index
+};
+
+/**
+ * Precomputed scan plan mapping output batches to source positions
+ */
+struct CityJSONScanPlan {
+	std::vector<CityJSONScanPosition> batch_starts; // One entry per batch
+	size_t total_rows = 0;                          // Total number of output rows
+
+	/**
+	 * Get number of batches
+	 */
+	size_t BatchCount() const {
+		return batch_starts.size();
+	}
+};
+
+/**
  * Container for CityJSON features divided into chunks
  */
 struct CityJSONFeatureChunk {
@@ -278,6 +311,11 @@ struct CityJSONFeatureChunk {
 	size_t ChunkCount() const {
 		return chunks.size();
 	}
+
+	/**
+	 * Build a scan plan that maps each output batch to its starting position
+	 */
+	CityJSONScanPlan BuildScanPlan(size_t batch_size = STANDARD_VECTOR_SIZE) const;
 
 	/**
 	 * Get number of CityObjects in a specific chunk

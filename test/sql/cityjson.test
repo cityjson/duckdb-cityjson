@@ -54,6 +54,56 @@ SELECT COUNT(*) FROM buildings_seq WHERE object_type = 'Building';
 ----
 2
 
+# ============================================================
+# sample_lines parameter for regular CityJSON
+# ============================================================
+
+# With sample_lines=1 the late attribute is not discovered
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/cityjson_late_attribute.city.json', sample_lines => 1)) WHERE column_name = 'lateAttribute';
+----
+0
+
+# With default sampling the late attribute is present
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/cityjson_late_attribute.city.json')) WHERE column_name = 'lateAttribute';
+----
+1
+
+# Negative sample_lines is rejected
+statement error
+SELECT * FROM read_cityjson('test/data/cityjson_late_attribute.city.json', sample_lines => -1);
+----
+sample_lines must be non-negative
+
+# ============================================================
+# Filter pushdown
+# ============================================================
+
+# object_type equality filter is pushed down
+query I
+SELECT id FROM read_cityjson('test/data/minimal.city.json') WHERE object_type = 'Building';
+----
+building1
+
+# id equality filter is pushed down
+query I
+SELECT object_type FROM read_cityjson('test/data/minimal.city.json') WHERE id = 'building1';
+----
+Building
+
+# non-existent pushed-down filter returns no rows
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/minimal.city.json') WHERE id = 'no-such-building';
+----
+0
+
+# non-pushable filter still works
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/minimal.city.json') WHERE object_type = 'Building' AND yearOfConstruction > 2010;
+----
+1
+
 # Clean up
 statement ok
 DROP TABLE buildings;

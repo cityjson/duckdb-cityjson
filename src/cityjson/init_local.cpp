@@ -8,7 +8,7 @@ unique_ptr<LocalTableFunctionState> CityJSONInitLocal(ExecutionContext &context,
 	auto result = make_uniq<CityJSONLocalState>();
 	result->column_ids = input.column_ids;
 	result->projection_ids = input.projection_ids;
-	return std::move(result);
+	return result;
 }
 
 } // namespace cityjson

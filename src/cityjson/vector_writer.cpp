@@ -9,30 +9,35 @@ namespace duckdb {
 namespace cityjson {
 
 // ============================================================
-// VectorWrapper - Task 22
+// VectorWrapper - type-safe DuckDB vector wrapper
 // ============================================================
 
 VectorWrapper::VectorWrapper(VectorType type, Vector *vector) : type_(type), vector_(vector) {
-	(void)type; // Type is stored but not strictly enforced
 }
 
 Vector *VectorWrapper::AsFlatMut() {
-	// DuckDB handles the actual vector type internally
+	if (type_ != VectorType::Flat) {
+		throw CityJSONError::Other("VectorWrapper: expected Flat vector, got " + std::to_string(static_cast<int>(type_)));
+	}
 	return vector_;
 }
 
 Vector *VectorWrapper::AsListMut() {
-	// DuckDB handles the actual vector type internally
+	if (type_ != VectorType::List) {
+		throw CityJSONError::Other("VectorWrapper: expected List vector, got " + std::to_string(static_cast<int>(type_)));
+	}
 	return vector_;
 }
 
 Vector *VectorWrapper::AsStructMut() {
-	// DuckDB handles the actual vector type internally
+	if (type_ != VectorType::Struct) {
+		throw CityJSONError::Other("VectorWrapper: expected Struct vector, got " + std::to_string(static_cast<int>(type_)));
+	}
 	return vector_;
 }
 
 // ============================================================
-// CreateVectors - Task 23
+// CreateVectors - wrap projected output vectors
 // ============================================================
 
 std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Column> &columns,
@@ -63,7 +68,7 @@ std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Co
 }
 
 // ============================================================
-// Primitive Writers - Task 24
+// Primitive Writers
 // ============================================================
 
 // Template for numeric types
@@ -86,7 +91,7 @@ template void WritePrimitive<int64_t>(Vector *vec, size_t row, int64_t value);
 template void WritePrimitive<double>(Vector *vec, size_t row, double value);
 
 // ============================================================
-// WriteVarcharArray - Task 26
+// WriteVarcharArray
 // ============================================================
 
 void WriteVarcharArray(Vector *list_vec, const json &value, size_t row) {
@@ -124,24 +129,10 @@ void WriteVarcharArray(Vector *list_vec, const json &value, size_t row) {
 }
 
 // ============================================================
-// WriteGeometry - Task 27
+// WriteGeometry
 // ============================================================
 
-void WriteGeometry(Vector *struct_vec, const json &value, size_t row) {
-	if (!value.is_object()) {
-		FlatVector::SetNull(*struct_vec, row, true);
-		return;
-	}
-
-	// Parse geometry
-	Geometry geom;
-	try {
-		geom = Geometry::FromJson(value);
-	} catch (const CityJSONError &) {
-		FlatVector::SetNull(*struct_vec, row, true);
-		return;
-	}
-
+void WriteGeometry(Vector *struct_vec, const Geometry &geom, size_t row) {
 	// Get child vectors
 	// STRUCT(lod VARCHAR, type VARCHAR, boundaries VARCHAR,
 	//        semantics VARCHAR, material VARCHAR, texture VARCHAR)
@@ -178,8 +169,26 @@ void WriteGeometry(Vector *struct_vec, const json &value, size_t row) {
 	}
 }
 
+void WriteGeometry(Vector *struct_vec, const json &value, size_t row) {
+	if (!value.is_object()) {
+		FlatVector::SetNull(*struct_vec, row, true);
+		return;
+	}
+
+	// Parse geometry
+	Geometry geom;
+	try {
+		geom = Geometry::FromJson(value);
+	} catch (const CityJSONError &) {
+		FlatVector::SetNull(*struct_vec, row, true);
+		return;
+	}
+
+	WriteGeometry(struct_vec, geom, row);
+}
+
 // ============================================================
-// WriteGeographicalExtent - Task 27
+// WriteGeographicalExtent
 // ============================================================
 
 void WriteGeographicalExtent(Vector *struct_vec, const json &value, size_t row) {
@@ -212,13 +221,13 @@ void WriteGeographicalExtent(Vector *struct_vec, const json &value, size_t row) 
 }
 
 // ============================================================
-// WriteToVector - Task 25
+// WriteToVector
 // ============================================================
 
 void WriteToVector(const Column &col, const json &value, VectorWrapper &wrapper, size_t row) {
 	// Handle NULL values
 	if (value.is_null()) {
-		FlatVector::SetNull(*wrapper.AsFlatMut(), row, true);
+		wrapper.SetNull(row);
 		return;
 	}
 

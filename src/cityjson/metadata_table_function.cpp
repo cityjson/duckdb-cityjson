@@ -18,7 +18,7 @@ struct MetadataBindData : public TableFunctionData {
 		result->file_name = file_name;
 		result->metadata = metadata;
 		result->city_objects_count = city_objects_count;
-		return std::move(result);
+		return result;
 	}
 
 	bool Equals(const FunctionData &other) const override {
@@ -59,28 +59,18 @@ static unique_ptr<FunctionData> MetadataBind(ClientContext &context, TableFuncti
 		throw BinderException("Failed to read CityJSON metadata: " + std::string(e.what()));
 	}
 
-	// Count city objects by reading all chunks
-	result->city_objects_count = 0;
+	// Count city objects using the reader's optimized path when available
 	try {
-		auto chunks = reader->ReadAllChunks();
-		for (size_t i = 0; i < chunks.ChunkCount(); i++) {
-			auto chunk = chunks.GetChunk(i);
-			if (chunk) {
-				for (const auto &feature : *chunk) {
-					result->city_objects_count += feature.city_objects.size();
-				}
-			}
-		}
+		result->city_objects_count = reader->CountCityObjects();
 	} catch (const CityJSONError &e) {
-		// Silently ignore if we can't count - set to 0
-		result->city_objects_count = 0;
+		throw BinderException("Failed to count city objects: " + std::string(e.what()));
 	}
 
 	// Set return types and names
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
 	names = MetadataTableUtils::GetMetadataTableNames();
 
-	return std::move(result);
+	return result;
 }
 
 // Init global state
@@ -129,11 +119,10 @@ static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFun
 	// Get file path from argument
 	result->file_name = StringValue::Get(input.inputs[0]);
 
-	// Read file via DuckDB FileSystem, then create CityJSONSeq reader
+	// Open CityJSONSeq reader using DuckDB FileSystem (incremental reads)
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		std::string content = json_utils::ReadFileContent(context, result->file_name);
-		reader = std::make_unique<LocalCityJSONSeqReader>(result->file_name, std::move(content), 100);
+		reader = std::make_unique<LocalCityJSONSeqReader>(context, result->file_name, 100);
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}
@@ -145,28 +134,18 @@ static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFun
 		throw BinderException("Failed to read CityJSONSeq metadata: " + std::string(e.what()));
 	}
 
-	// Count city objects from second line onwards
-	result->city_objects_count = 0;
+	// Count city objects from second line onwards using streaming count
 	try {
-		auto chunks = reader->ReadAllChunks();
-		for (size_t i = 0; i < chunks.ChunkCount(); i++) {
-			auto chunk = chunks.GetChunk(i);
-			if (chunk) {
-				for (const auto &feature : *chunk) {
-					result->city_objects_count += feature.city_objects.size();
-				}
-			}
-		}
+		result->city_objects_count = reader->CountCityObjects();
 	} catch (const CityJSONError &e) {
-		// Silently ignore if we can't count - set to 0
-		result->city_objects_count = 0;
+		throw BinderException("Failed to count city objects: " + std::string(e.what()));
 	}
 
 	// Set return types and names
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
 	names = MetadataTableUtils::GetMetadataTableNames();
 
-	return std::move(result);
+	return result;
 }
 
 TableFunction CreateCityJSONSeqMetadataTableFunction() {

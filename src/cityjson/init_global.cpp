@@ -1,10 +1,25 @@
 #include "cityjson/table_function.hpp"
+#include "cityjson/reader.hpp"
 
 namespace duckdb {
 namespace cityjson {
 
 unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
-	return make_uniq<CityJSONGlobalState>();
+	auto result = make_uniq<CityJSONGlobalState>();
+	auto &bind_data = input.bind_data->Cast<CityJSONBindData>();
+	result->has_filters = !bind_data.equality_filters.empty();
+
+	if (bind_data.streaming) {
+		try {
+			result->streaming_reader = OpenAnyCityJSONFile(context, bind_data.file_name);
+			// Consume metadata so the scan starts at the first feature line.
+			result->streaming_reader->ReadMetadata();
+		} catch (const CityJSONError &e) {
+			throw InternalException("Failed to open streaming CityJSON reader: " + std::string(e.what()));
+		}
+	}
+
+	return result;
 }
 
 } // namespace cityjson

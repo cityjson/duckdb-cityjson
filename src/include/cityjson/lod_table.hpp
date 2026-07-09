@@ -109,6 +109,25 @@ public:
 	 * @return Column name suffix
 	 */
 	static std::string FormatLODAsColumnSuffix(const std::string &lod);
+
+	/**
+	 * Normalize a numeric LOD string to a canonical form
+	 * Examples: "2" -> "2", "2.0" -> "2", "2.00" -> "2", "2.2" -> "2.2"
+	 * Non-numeric LODs are returned unchanged.
+	 *
+	 * @param lod LOD value string
+	 * @return Canonical LOD string
+	 */
+	static std::string NormalizeLOD(const std::string &lod);
+
+	/**
+	 * Normalize a numeric LOD double to a canonical string
+	 * Examples: 2.0 -> "2", 2.2 -> "2.2"
+	 *
+	 * @param lod LOD value as double
+	 * @return Canonical LOD string
+	 */
+	static std::string NormalizeLOD(double lod);
 };
 
 } // namespace cityjson

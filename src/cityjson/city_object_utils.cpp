@@ -1,10 +1,12 @@
 #include "cityjson/city_object_utils.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/lod_table.hpp"
 #include "cityjson/wkb_encoder.hpp"
 #include "cityjson/geometry_properties.hpp"
 #include <map>
 #include <set>
 #include <algorithm>
+#include <cctype>
 
 namespace duckdb {
 namespace cityjson {
@@ -117,8 +119,10 @@ std::vector<Column> CityObjectUtils::InferAttributeColumns(const std::vector<Cit
 		for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
 			// Collect all attributes
 			for (const auto &[attr_key, attr_value] : city_obj.attributes) {
-				// Skip predefined columns
-				if (IsPredefinedColumn(attr_key)) {
+				// Reserved columns take precedence over dynamic attributes: an attribute
+				// whose name collides (case-insensitively) with a reserved column does not
+				// get its own column. Its value is still preserved in the `other` JSON.
+				if (IsReservedColumnName(attr_key)) {
 					continue;
 				}
 
@@ -129,9 +133,18 @@ std::vector<Column> CityObjectUtils::InferAttributeColumns(const std::vector<Cit
 		}
 	}
 
-	// Resolve final type for each attribute
+	// Resolve final type for each attribute. Attribute names that differ only by case
+	// would also produce duplicate DuckDB columns, so keep only the first (the map is
+	// ordered, so this is deterministic).
 	std::vector<Column> result;
+	std::set<std::string> seen_lower;
 	for (const auto &[attr_name, types] : attribute_types) {
+		std::string lowered = attr_name;
+		std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+		               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		if (!seen_lower.insert(lowered).second) {
+			continue;
+		}
 		ColumnType resolved_type = ColumnTypeUtils::ResolveFromSamples(types);
 		result.emplace_back(attr_name, resolved_type);
 	}
@@ -162,31 +175,29 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 		for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
 			// Collect LODs from all geometries
 			for (const auto &geom : city_obj.geometry) {
-				lods.insert(geom.lod);
+				if (!geom.lod.empty()) {
+					lods.insert(LODTableUtils::NormalizeLOD(geom.lod));
+				}
 			}
 		}
 	}
 
-	// Create geometry columns for each LOD
+	// Create per-LOD WKB geometry columns (CityParquet-style wide layout):
+	// for each LOD, a "geometry_lodX_Y" (WKB BLOB) and "geometry_properties_lodX_Y" (JSON).
+	// `lods` is a std::set, so iteration is already sorted; emit the pair per LOD so the
+	// geometry and its properties stay adjacent.
 	std::vector<Column> result;
 	for (const auto &lod : lods) {
-		// Convert LOD "2.1" to column name "geom_lod2_1"
-		std::string col_name = "geom_lod";
-
-		// Replace '.' with '_'
-		for (char c : lod) {
-			if (c == '.') {
-				col_name += '_';
-			} else {
-				col_name += c;
-			}
-		}
-
-		result.emplace_back(col_name, ColumnType::Geometry);
+		std::string suffix = LODTableUtils::FormatLODAsColumnSuffix(lod);
+		result.emplace_back("geometry_" + suffix, ColumnType::GeometryWKB);
+		result.emplace_back("geometry_properties_" + suffix, ColumnType::GeometryPropertiesJson);
 	}
 
-	// Sort by LOD for consistent ordering
-	std::sort(result.begin(), result.end(), [](const Column &a, const Column &b) { return a.name < b.name; });
+	// A single per-row bbox (computed from the highest-LOD geometry) completes the
+	// CityParquet wide layout. Only emitted when at least one LOD geometry exists.
+	if (!lods.empty()) {
+		result.emplace_back("bbox", ColumnType::GeographicalExtent);
+	}
 
 	return result;
 }
@@ -205,6 +216,51 @@ json CityObjectUtils::GetGeometryPropertiesJson(const Geometry &geometry, const 
 	// Note: object_id parameter reserved for future use
 	(void)object_id; // Suppress unused parameter warning
 	return GeometryPropertiesSerializer::Serialize(geometry);
+}
+
+static void CollectExtentRecursive(const json &boundaries, const std::vector<std::array<double, 3>> &vertices,
+                                   const std::optional<Transform> &transform, GeographicalExtent &extent, bool &found) {
+	if (boundaries.is_number_integer()) {
+		auto idx = boundaries.get<int64_t>();
+		if (idx < 0 || static_cast<size_t>(idx) >= vertices.size()) {
+			return; // skip invalid index
+		}
+		std::array<double, 3> v = vertices[static_cast<size_t>(idx)];
+		if (transform.has_value()) {
+			v = transform->Apply(v);
+		}
+		if (!found) {
+			extent.min_x = extent.max_x = v[0];
+			extent.min_y = extent.max_y = v[1];
+			extent.min_z = extent.max_z = v[2];
+			found = true;
+		} else {
+			extent.min_x = std::min(extent.min_x, v[0]);
+			extent.min_y = std::min(extent.min_y, v[1]);
+			extent.min_z = std::min(extent.min_z, v[2]);
+			extent.max_x = std::max(extent.max_x, v[0]);
+			extent.max_y = std::max(extent.max_y, v[1]);
+			extent.max_z = std::max(extent.max_z, v[2]);
+		}
+		return;
+	}
+	if (boundaries.is_array()) {
+		for (const auto &child : boundaries) {
+			CollectExtentRecursive(child, vertices, transform, extent, found);
+		}
+	}
+}
+
+std::optional<GeographicalExtent> CityObjectUtils::GetGeometryExtent(const Geometry &geometry,
+                                                                     const std::vector<std::array<double, 3>> &vertices,
+                                                                     const std::optional<Transform> &transform) {
+	GeographicalExtent extent;
+	bool found = false;
+	CollectExtentRecursive(geometry.boundaries, vertices, transform, extent, found);
+	if (!found) {
+		return std::nullopt;
+	}
+	return extent;
 }
 
 } // namespace cityjson
