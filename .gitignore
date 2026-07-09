@@ -6,7 +6,9 @@ duckdb_unittest_tempdir/
 testext
 test/python/__pycache__/
 .Rhistory
-data/
+# Anchor to the repo root so this only ignores a top-level data/ dir (large/benchmark
+# data), NOT test/data/ — test fixtures live there and must be committed for CI.
+/data/
 *.parquet
 .claude/*local*
 .superset/

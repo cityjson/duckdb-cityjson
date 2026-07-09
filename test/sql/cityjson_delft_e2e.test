@@ -1,6 +1,7 @@
 # name: test/sql/cityjson_delft_e2e.test
 # description: End-to-end + round-trip tests on real-world 3DBAG Delft data
 # group: [sql]
+
 #
 # Fixture: test/data/delft_subset.city.jsonl — the first 10 features (20 CityObjects)
 # of the 3DBAG Delft CityJSONSeq export. Unlike the tiny synthetic fixtures, this
