@@ -54,7 +54,11 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			                                   ? target_geom
 			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
 			if (geom.has_value()) {
-				auto props = CityObjectUtils::GetGeometryPropertiesJson(geom.value());
+				// The LoD is carried by a suffixed column name (geometry_properties_lod*);
+				// an un-suffixed "geometry_properties" column (single-LoD mode) has no
+				// name to carry it, so the LoD is added inside the JSON instead (spec §8).
+				bool include_lod = (col.name == "geometry_properties");
+				auto props = CityObjectUtils::GetGeometryPropertiesJson(geom.value(), include_lod);
 				WriteGeometryProperties(wrappers[col_idx].AsFlatMut(), props, output_row);
 			} else {
 				wrappers[col_idx].SetNull(output_row);

@@ -120,7 +120,7 @@ public:
 	 * @param object_id Optional parent CityObject ID
 	 * @return JSON object with geometry properties (type, LOD, semantics, etc.)
 	 */
-	static json GetGeometryPropertiesJson(const Geometry &geometry,
+	static json GetGeometryPropertiesJson(const Geometry &geometry, bool include_lod = false,
 	                                      const std::optional<std::string> &object_id = std::nullopt);
 };
 

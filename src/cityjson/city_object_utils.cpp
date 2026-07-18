@@ -212,10 +212,11 @@ std::vector<uint8_t> CityObjectUtils::GetGeometryWKB(const Geometry &geometry,
 	return WKBEncoder::Encode(geometry, vertices, transform);
 }
 
-json CityObjectUtils::GetGeometryPropertiesJson(const Geometry &geometry, const std::optional<std::string> &object_id) {
+json CityObjectUtils::GetGeometryPropertiesJson(const Geometry &geometry, bool include_lod,
+                                                const std::optional<std::string> &object_id) {
 	// Note: object_id parameter reserved for future use
 	(void)object_id; // Suppress unused parameter warning
-	return GeometryPropertiesSerializer::Serialize(geometry);
+	return GeometryPropertiesSerializer::Serialize(geometry, include_lod);
 }
 
 static void CollectExtentRecursive(const json &boundaries, const std::vector<std::array<double, 3>> &vertices,

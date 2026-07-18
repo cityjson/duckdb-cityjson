@@ -74,12 +74,16 @@ struct GeometryProperties {
 class GeometryPropertiesSerializer {
 public:
 	/**
-	 * Serialize CityJSON Geometry to properties JSON
+	 * Serialize CityJSON Geometry to the spec §8 geometry_properties JSON:
+	 * {type, surfaces?, face_semantics?, shells?}.
 	 *
 	 * @param geometry The CityJSON geometry object
+	 * @param include_lod When true, add a `lod` key (a spec §8 permitted extra
+	 *   key). Set only for an un-suffixed geometry_properties column, whose LoD
+	 *   is not carried by the column name; the wide per-LoD layout omits it.
 	 * @return JSON object containing geometry properties
 	 */
-	static json Serialize(const Geometry &geometry);
+	static json Serialize(const Geometry &geometry, bool include_lod = false);
 
 	/**
 	 * Get geometry type code for CityJSON type

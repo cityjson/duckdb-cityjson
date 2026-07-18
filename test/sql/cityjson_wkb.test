@@ -28,15 +28,32 @@ SELECT typeof(geometry_properties_lod2_2) FROM buildings;
 ----
 VARCHAR
 
-# Geometry type and LOD are recorded in the properties JSON
+# geometry_properties uses the spec §8 flattened, face-aligned form:
+# {type:<string>, surfaces?, face_semantics?, shells?}. This Solid has one
+# shell of one face and no semantics, so only `type` and `shells` appear.
 query T
 SELECT geometry_properties_lod2_2 FROM buildings;
 ----
-{"cityjsonType":"Solid","lod":"2.2","shellCount":1,"type":9}
+{"shells":[1],"type":"Solid"}
 
 # Clean up
 statement ok
 DROP TABLE buildings;
+
+# ============================================================
+# Spec §8 flattened semantics (surfaces + face_semantics + shells)
+# ============================================================
+
+# A real Delft Solid with per-surface semantics. Its CityJSON semantics
+# values [[0,2,2,2,2,1]] (one shell, six faces) flatten to a per-face
+# face_semantics array aligned to the WKB face order; shells records the
+# six-face shell; surfaces is preserved verbatim in order.
+query T
+SELECT geometry_properties_lod2_2
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+{"face_semantics":[0,2,2,2,2,1],"shells":[6],"surfaces":[{"type":"GroundSurface"},{"type":"RoofSurface"},{"on_footprint_edge":true,"type":"WallSurface"},{"on_footprint_edge":false,"type":"WallSurface"}],"type":"Solid"}
 
 # ============================================================
 # Tests for LOD parameter with WKB geometry encoding

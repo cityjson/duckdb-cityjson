@@ -100,9 +100,29 @@ WHERE geometry_lod2_2 IS NOT NULL;
 # The precise CityJSON geometry type is preserved via geometry_properties
 query I
 SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_geom.city.json')
-WHERE geometry_properties_lod2_2 LIKE '%Solid%';
+WHERE geometry_properties_lod2_2 LIKE '%"type":"Solid"%';
 ----
 1
+
+# Semantic surfaces survive the full COPY round-trip: the writer rebuilds the
+# nested CityJSON semantics.values from the flattened face_semantics + shells
+# (spec §8 / G7), so a re-read yields the same surfaces and face_semantics.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2'))
+TO '__TEST_DIR__/rt_sem.city.jsonl' (FORMAT cityjsonseq, transform_scale '0.001,0.001,0.001');
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_sem.city.jsonl', lod => '2.2')
+WHERE geometry_properties LIKE '%RoofSurface%'
+  AND geometry_properties LIKE '%face_semantics%';
+----
+10
+
+query T
+SELECT geometry_properties FROM read_cityjsonseq('__TEST_DIR__/rt_sem.city.jsonl', lod => '2.2')
+WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+{"face_semantics":[0,2,2,2,2,1],"lod":"2.2","shells":[6],"surfaces":[{"type":"GroundSurface"},{"type":"RoofSurface"},{"on_footprint_edge":true,"type":"WallSurface"},{"on_footprint_edge":false,"type":"WallSurface"}],"type":"Solid"}
 
 # bbox is a derived column: recomputed on read, never written back as an attribute
 query I

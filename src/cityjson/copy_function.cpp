@@ -430,6 +430,88 @@ static json ParseJsonArrayValue(const Value &val) {
 }
 
 // ============================================================
+// Spec §8 geometry_properties reconstruction (G7)
+// ============================================================
+
+// Split a flat array `flat` into consecutive groups sized by `counts`. A count
+// larger than the remaining elements is clamped; leftover elements are ignored.
+static json PartitionFlat(const json &flat, const std::vector<size_t> &counts) {
+	json groups = json::array();
+	size_t pos = 0;
+	const size_t n = flat.is_array() ? flat.size() : 0;
+	for (size_t c : counts) {
+		json group = json::array();
+		for (size_t i = 0; i < c && pos < n; ++i, ++pos) {
+			group.push_back(flat[pos]);
+		}
+		groups.push_back(std::move(group));
+	}
+	return groups;
+}
+
+// Read per-shell face counts out of a spec §8 `shells` value for a Solid (flat
+// array) as a plain vector; returns empty for anything else.
+static std::vector<size_t> SolidShellCounts(const json &shells) {
+	std::vector<size_t> counts;
+	if (shells.is_array()) {
+		for (const auto &n : shells) {
+			counts.push_back(n.is_number_unsigned() ? n.get<size_t>() : 0);
+		}
+	}
+	return counts;
+}
+
+// Rebuild CityJSON nested `semantics.values` from the flat, face-aligned
+// `face_semantics` (spec §8), using `shells` to recover the shell/solid nesting.
+static json RenestValues(const std::string &type, const json &face_semantics, const json &shells) {
+	if (type == "Solid") {
+		return PartitionFlat(face_semantics, SolidShellCounts(shells));
+	}
+	if (type == "MultiSolid" || type == "CompositeSolid") {
+		// shells is nested: one array of per-shell counts per solid.
+		json out = json::array();
+		size_t pos = 0;
+		const size_t n = face_semantics.is_array() ? face_semantics.size() : 0;
+		if (shells.is_array()) {
+			for (const auto &solid_shells : shells) {
+				json solid_values = json::array();
+				for (const auto &cnt : (solid_shells.is_array() ? solid_shells : json::array())) {
+					size_t c = cnt.is_number_unsigned() ? cnt.get<size_t>() : 0;
+					json shell_values = json::array();
+					for (size_t i = 0; i < c && pos < n; ++i, ++pos) {
+						shell_values.push_back(face_semantics[pos]);
+					}
+					solid_values.push_back(std::move(shell_values));
+				}
+				out.push_back(std::move(solid_values));
+			}
+		}
+		return out;
+	}
+	// MultiSurface / CompositeSurface: values is the flat per-surface array.
+	return face_semantics;
+}
+
+// Re-nest a WKB-decoded Solid/MultiSolid boundary set (which the decoder returns
+// as a single flattened shell) back into its original shells, using `shells`.
+static json RenestBoundaries(const std::string &type, const json &boundaries, const json &shells) {
+	if (type == "Solid" && boundaries.is_array() && !boundaries.empty() && boundaries[0].is_array()) {
+		return PartitionFlat(boundaries[0], SolidShellCounts(shells));
+	}
+	if ((type == "MultiSolid" || type == "CompositeSolid") && boundaries.is_array() && shells.is_array()) {
+		json out = json::array();
+		for (size_t soi = 0; soi < boundaries.size(); ++soi) {
+			const json &solid = boundaries[soi];
+			const json flat = (solid.is_array() && !solid.empty() && solid[0].is_array()) ? solid[0] : json::array();
+			const json &solid_shells = (soi < shells.size()) ? shells[soi] : json::array();
+			out.push_back(PartitionFlat(flat, SolidShellCounts(solid_shells)));
+		}
+		return out;
+	}
+	return boundaries;
+}
+
+// ============================================================
 // COPY TO Sink
 // ============================================================
 
@@ -505,8 +587,11 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 			return bind_data.geometry_properties_col;
 		};
 
-		// Apply a geometry_properties JSON payload onto a single geometry object.
-		auto apply_properties = [&](json &geom, idx_t props_col) {
+		// Apply a spec §8 geometry_properties JSON payload onto a single geometry
+		// object. `from_wkb` is true when the geometry came from a flattened WKB
+		// column (so its shells must be recovered from `shells`); false for the
+		// legacy STRUCT layout, whose boundaries are already nested.
+		auto apply_properties = [&](json &geom, idx_t props_col, bool from_wkb) {
 			if (props_col == DConstants::INVALID_INDEX) {
 				return;
 			}
@@ -516,16 +601,30 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 			}
 			try {
 				auto props = json_utils::ParseJson(pval.ToString());
-				// Extract LOD if not already set from the column name or struct field.
-				if (!geom.contains("lod") && props.contains("lod")) {
+				// The precise CityJSON geometry type is authoritative (spec §8 `type`).
+				if (props.contains("type") && props["type"].is_string()) {
+					geom["type"] = props["type"].get<std::string>();
+				}
+				// LoD: normally set from the column name; an un-suffixed column carries
+				// it inside the JSON instead (spec §8 permitted extra key).
+				if (!geom.contains("lod") && props.contains("lod") && props["lod"].is_string()) {
 					geom["lod"] = props["lod"].get<std::string>();
 				}
-				// Prefer the precise CityJSON geometry type over the WKB-inferred one.
-				if (props.contains("cityjsonType")) {
-					geom["type"] = props["cityjsonType"].get<std::string>();
+				const std::string geom_type = geom.contains("type") ? geom.value("type", "") : "";
+				// Recover shell nesting for solids that the WKB flattened (spec §7.1).
+				if (from_wkb && props.contains("shells") && geom.contains("boundaries")) {
+					geom["boundaries"] = RenestBoundaries(geom_type, geom["boundaries"], props["shells"]);
 				}
-				if (props.contains("semantics")) {
-					geom["semantics"] = props["semantics"];
+				// Rebuild CityJSON nested semantics from the flattened form (G7).
+				if (props.contains("surfaces")) {
+					json semantics;
+					semantics["surfaces"] = props["surfaces"];
+					if (props.contains("face_semantics")) {
+						const json empty = json::array();
+						const json &shells = props.contains("shells") ? props["shells"] : empty;
+						semantics["values"] = RenestValues(geom_type, props["face_semantics"], shells);
+					}
+					geom["semantics"] = std::move(semantics);
 				}
 				if (props.contains("material")) {
 					geom["material"] = props["material"];
@@ -553,6 +652,7 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 
 			json geom;
 			bool produced = false;
+			bool from_wkb = false;
 
 			if (col_type.id() == LogicalTypeId::STRUCT) {
 				// Non-LOD STRUCT geometry: {lod, type, boundaries, semantics, material, texture}
@@ -623,10 +723,11 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 				}
 
 				produced = true;
+				from_wkb = true;
 			}
 
 			if (produced) {
-				apply_properties(geom, find_properties_col(col_name));
+				apply_properties(geom, find_properties_col(col_name), from_wkb);
 				geometries.push_back(std::move(geom));
 			}
 		}

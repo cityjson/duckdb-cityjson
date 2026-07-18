@@ -103,12 +103,14 @@ GROUP BY object_type ORDER BY object_type;
 Building	10	0	0
 BuildingPart	0	10	10
 
-# geometry_properties carries the CityJSON type, LOD, and semantic surfaces
+# geometry_properties carries the spec §8 form: string `type`, verbatim
+# `surfaces`, and a flat `face_semantics` array (the LoD is carried by the
+# column name, not repeated in the JSON).
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
-WHERE geometry_properties_lod2_2 LIKE '%Solid%'
-  AND geometry_properties_lod2_2 LIKE '%2.2%'
-  AND geometry_properties_lod2_2 LIKE '%RoofSurface%';
+WHERE geometry_properties_lod2_2 LIKE '%"type":"Solid"%'
+  AND geometry_properties_lod2_2 LIKE '%RoofSurface%'
+  AND geometry_properties_lod2_2 LIKE '%face_semantics%';
 ----
 10
 
