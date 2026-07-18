@@ -35,27 +35,28 @@ std::string GeoParquetTypeName(const std::string &cj_type) {
 	return ""; // GeoParquet-illegal (Solid family, or non-surface)
 }
 
+// Parse a normalised LoD string ("2", "2.2", "10") to a comparable number so the
+// highest LoD is chosen by value, not by lexical column-name order (where
+// "lod2_2" would sort after "lod10").
+double LodValue(const std::string &normalised_lod) {
+	try {
+		return std::stod(normalised_lod);
+	} catch (...) {
+		return -1.0;
+	}
+}
+
 // Build the GeoParquet `geo` JSON, or return nullopt when no column qualifies.
 // `lod_types` maps a normalised LoD string to the set of CityJSON geometry types
 // seen at that LoD. Throws when a present CRS cannot be resolved to PROJJSON.
 std::optional<std::string> BuildGeoMetadata(const std::optional<std::string> &reference_system,
                                             const std::map<std::string, std::set<std::string>> &lod_types) {
-	// Resolve the CRS once (shared by every column). A referenceSystem that we
-	// cannot resolve is a hard error, never a silent omission (§13.3).
-	std::optional<json> crs_obj;
-	if (reference_system.has_value() && !reference_system->empty()) {
-		auto projjson = ProjjsonForReferenceSystem(reference_system.value());
-		if (!projjson.has_value()) {
-			throw InvalidInputException("cityjson_geoparquet_geo: cannot resolve CRS '" + reference_system.value() +
-			                            "' to PROJJSON (unknown EPSG code)");
-		}
-		crs_obj = json_utils::ParseJson(projjson.value());
-	}
-
+	// Determine the GeoParquet-legal columns first. A column is legal only if
+	// every type seen at its LoD maps to a GeoParquet-legal WKB type.
 	json columns = json::object();
-	std::string primary_column; // std::map iterates sorted, so the last legal wins (highest LoD)
+	std::string primary_column;
+	double primary_lod = -1.0;
 	for (const auto &[lod, types] : lod_types) {
-		// A column is legal only if every type seen at its LoD is legal.
 		std::set<std::string> geometry_types;
 		bool all_legal = !types.empty();
 		for (const auto &t : types) {
@@ -73,17 +74,36 @@ std::optional<std::string> BuildGeoMetadata(const std::optional<std::string> &re
 		json col;
 		col["encoding"] = "WKB";
 		col["geometry_types"] = json(geometry_types); // sorted, deduplicated
-		if (crs_obj.has_value()) {
-			col["crs"] = crs_obj.value();
-		}
 		col["edges"] = "planar";
 		col["cityparquet:orientation"] = "right-handed";
 		columns[col_name] = std::move(col);
-		primary_column = col_name;
+		if (LodValue(lod) >= primary_lod) {
+			primary_lod = LodValue(lod);
+			primary_column = col_name;
+		}
 	}
 
 	if (columns.empty()) {
-		return std::nullopt; // solid-only (or geometry-less) dataset — no GeoParquet geo
+		// Solid-only (or geometry-less) dataset — no GeoParquet geo, and no CRS
+		// resolution attempted, so an unknown CRS here does not error.
+		return std::nullopt;
+	}
+
+	// Resolve the CRS once (shared by every column). A referenceSystem that we
+	// cannot resolve is a hard error, never a silent omission (§13.3). Absent CRS
+	// is written as an explicit `null` rather than omitted, so it does not falsely
+	// assert GeoParquet's CRS84 default on a city model of unknown CRS.
+	json crs_value = nullptr;
+	if (reference_system.has_value() && !reference_system->empty()) {
+		auto projjson = ProjjsonForReferenceSystem(reference_system.value());
+		if (!projjson.has_value()) {
+			throw InvalidInputException("cityjson_geoparquet_geo: cannot resolve CRS '" + reference_system.value() +
+			                            "' to PROJJSON (unknown EPSG code)");
+		}
+		crs_value = json_utils::ParseJson(projjson.value());
+	}
+	for (auto &entry : columns.items()) {
+		entry.value()["crs"] = crs_value;
 	}
 
 	json geo;

@@ -57,20 +57,44 @@ bool IsAllDigits(const std::string &s) {
 	return true;
 }
 
-bool IsCrs84(const std::string &lower) {
-	// OGC:CRS84 in its short, URN, and URL forms (2D lon/lat WGS84).
-	return lower == "ogc:crs84" || lower.find("crs84") != std::string::npos;
+// Drop a URL query string / fragment (`?…`, `#…`) so a `?version=2`-style suffix
+// is not mistaken for the authority code.
+std::string StripQueryFragment(const std::string &s) {
+	size_t cut = s.find_first_of("?#");
+	return cut == std::string::npos ? s : s.substr(0, cut);
+}
+
+// The final `/`- or `:`-separated component (an authority code sits at the end of
+// every accepted CRS form: EPSG:7415, urn:…:EPSG::7415, …/EPSG/0/7415, OGC:CRS84).
+std::string LastComponent(const std::string &s) {
+	size_t pos = s.find_last_of("/:");
+	return pos == std::string::npos ? s : s.substr(pos + 1);
+}
+
+// The recognised CRS84 forms map to distinct table keys: CRS84 (2D lon/lat) and
+// CRS84h (3D). Matched as the whole final component so `CRS840` / `CRS84h` are not
+// conflated and a stray `crs84` inside a query string does not trigger.
+std::optional<std::string> Crs84Key(const std::string &stripped_lower) {
+	std::string lc = LastComponent(stripped_lower);
+	if (lc == "crs84") {
+		return std::string("OGC:CRS84");
+	}
+	if (lc == "crs84h") {
+		return std::string("OGC:CRS84h");
+	}
+	return std::nullopt;
 }
 
 } // namespace
 
 std::optional<int> EpsgCodeFromReferenceSystem(const std::string &reference_system) {
-	const std::string lower = ToLower(reference_system);
+	const std::string stripped = StripQueryFragment(reference_system);
+	const std::string lower = ToLower(stripped);
 	std::string digits;
 	if (lower.find("epsg") != std::string::npos) {
-		digits = LastDigitRun(reference_system);
-	} else if (IsAllDigits(reference_system)) {
-		digits = reference_system;
+		digits = LastDigitRun(stripped);
+	} else if (IsAllDigits(stripped)) {
+		digits = stripped;
 	}
 	if (digits.empty()) {
 		return std::nullopt;
@@ -93,12 +117,12 @@ std::optional<std::string> ProjjsonForEpsg(int code) {
 }
 
 std::optional<std::string> ProjjsonForReferenceSystem(const std::string &reference_system) {
-	const std::string lower = ToLower(reference_system);
-	// CRS84 must be checked before EPSG-code extraction: some URL forms also
+	const std::string stripped_lower = ToLower(StripQueryFragment(reference_system));
+	// CRS84/CRS84h must be checked before EPSG-code extraction: some URL forms also
 	// contain digits (version segments) that must not be read as a code.
-	if (IsCrs84(lower)) {
+	if (auto key = Crs84Key(stripped_lower)) {
 		const json &table = EpsgTable();
-		auto it = table.find("OGC:CRS84");
+		auto it = table.find(key.value());
 		if (it != table.end()) {
 			return it->dump();
 		}

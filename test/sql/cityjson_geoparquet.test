@@ -32,11 +32,11 @@ SELECT geo IS NULL FROM cityjson_geoparquet_geo('test/data/minimal.city.json');
 ----
 true
 
-# A dataset with a legal column but no CRS still emits geo, with the crs omitted
-# (GeoParquet then assumes CRS84).
+# A dataset with a legal column but no CRS still emits geo, with crs written as an
+# explicit null (not omitted — that would falsely assert GeoParquet's CRS84 default).
 query I
 SELECT COUNT(*) FROM cityjson_geoparquet_geo('test/data/railway_appearance.city.jsonl')
-WHERE geo LIKE '%geometry_lod3%' AND geo LIKE '%MultiPolygon Z%' AND geo NOT LIKE '%"crs"%';
+WHERE geo LIKE '%geometry_lod3%' AND geo LIKE '%MultiPolygon Z%' AND geo LIKE '%"crs":null%';
 ----
 1
 
