@@ -131,6 +131,21 @@ FROM (DESCRIBE SELECT * FROM read_cityjson('__TEST_DIR__/rt_geom.city.json'));
 ----
 1
 
+# A WKB geometry column whose matching geometry_properties column is projected
+# away must NOT borrow a different column's shells to re-nest — that could drop
+# faces. With no exact properties match, no properties are applied and the
+# geometry survives intact.
+statement ok
+COPY (SELECT id, feature_id, object_type, geometry_lod2_2
+      FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/rt_noprops.city.json' (FORMAT cityjson);
+
+query I
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_noprops.city.json')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+1
+
 # ============================================================
 # CityJSON metadata: default COPY writes valid metadata
 # ============================================================

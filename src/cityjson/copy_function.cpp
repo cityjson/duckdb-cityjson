@@ -461,30 +461,65 @@ static std::vector<size_t> SolidShellCounts(const json &shells) {
 	return counts;
 }
 
+static size_t SumCounts(const std::vector<size_t> &counts) {
+	size_t s = 0;
+	for (size_t c : counts) {
+		s += c;
+	}
+	return s;
+}
+
 // Rebuild CityJSON nested `semantics.values` from the flat, face-aligned
 // `face_semantics` (spec §8), using `shells` to recover the shell/solid nesting.
 static json RenestValues(const std::string &type, const json &face_semantics, const json &shells) {
+	const size_t n = face_semantics.is_array() ? face_semantics.size() : 0;
 	if (type == "Solid") {
-		return PartitionFlat(face_semantics, SolidShellCounts(shells));
+		auto counts = SolidShellCounts(shells);
+		// Only trust `shells` when it accounts for exactly the faces present; a
+		// mismatch (wrong/inconsistent shells) falls back to a single shell so no
+		// face is dropped and values stays aligned with the single-shell boundaries.
+		if (!counts.empty() && SumCounts(counts) == n) {
+			return PartitionFlat(face_semantics, counts);
+		}
+		json single = json::array();
+		single.push_back(face_semantics);
+		return single;
 	}
 	if (type == "MultiSolid" || type == "CompositeSolid") {
-		// shells is nested: one array of per-shell counts per solid.
+		// shells is nested: one array of per-shell counts per solid. Trust it only
+		// when the total matches the face count; otherwise wrap the whole thing as
+		// one solid / one shell rather than dropping faces.
+		size_t total = 0;
+		bool ok = shells.is_array();
+		if (ok) {
+			for (const auto &solid_shells : shells) {
+				if (!solid_shells.is_array()) {
+					ok = false;
+					break;
+				}
+				total += SumCounts(SolidShellCounts(solid_shells));
+			}
+		}
+		if (!ok || total != n) {
+			json single_shell = json::array();
+			single_shell.push_back(face_semantics);
+			json single_solid = json::array();
+			single_solid.push_back(std::move(single_shell));
+			return single_solid;
+		}
 		json out = json::array();
 		size_t pos = 0;
-		const size_t n = face_semantics.is_array() ? face_semantics.size() : 0;
-		if (shells.is_array()) {
-			for (const auto &solid_shells : shells) {
-				json solid_values = json::array();
-				for (const auto &cnt : (solid_shells.is_array() ? solid_shells : json::array())) {
-					size_t c = cnt.is_number_unsigned() ? cnt.get<size_t>() : 0;
-					json shell_values = json::array();
-					for (size_t i = 0; i < c && pos < n; ++i, ++pos) {
-						shell_values.push_back(face_semantics[pos]);
-					}
-					solid_values.push_back(std::move(shell_values));
+		for (const auto &solid_shells : shells) {
+			json solid_values = json::array();
+			for (const auto &cnt : solid_shells) {
+				size_t c = cnt.is_number_unsigned() ? cnt.get<size_t>() : 0;
+				json shell_values = json::array();
+				for (size_t i = 0; i < c && pos < n; ++i, ++pos) {
+					shell_values.push_back(face_semantics[pos]);
 				}
-				out.push_back(std::move(solid_values));
+				solid_values.push_back(std::move(shell_values));
 			}
+			out.push_back(std::move(solid_values));
 		}
 		return out;
 	}
@@ -496,15 +531,27 @@ static json RenestValues(const std::string &type, const json &face_semantics, co
 // as a single flattened shell) back into its original shells, using `shells`.
 static json RenestBoundaries(const std::string &type, const json &boundaries, const json &shells) {
 	if (type == "Solid" && boundaries.is_array() && !boundaries.empty() && boundaries[0].is_array()) {
-		return PartitionFlat(boundaries[0], SolidShellCounts(shells));
+		const json &flat = boundaries[0];
+		auto counts = SolidShellCounts(shells);
+		// Re-nest only when `shells` accounts for exactly the decoded faces;
+		// otherwise keep the single-shell decode so no face is lost.
+		if (!counts.empty() && SumCounts(counts) == flat.size()) {
+			return PartitionFlat(flat, counts);
+		}
+		return boundaries;
 	}
-	if ((type == "MultiSolid" || type == "CompositeSolid") && boundaries.is_array() && shells.is_array()) {
+	if ((type == "MultiSolid" || type == "CompositeSolid") && boundaries.is_array() && shells.is_array() &&
+	    shells.size() == boundaries.size()) {
 		json out = json::array();
 		for (size_t soi = 0; soi < boundaries.size(); ++soi) {
 			const json &solid = boundaries[soi];
 			const json flat = (solid.is_array() && !solid.empty() && solid[0].is_array()) ? solid[0] : json::array();
-			const json &solid_shells = (soi < shells.size()) ? shells[soi] : json::array();
-			out.push_back(PartitionFlat(flat, SolidShellCounts(solid_shells)));
+			auto counts = SolidShellCounts(shells[soi]);
+			if (!counts.empty() && SumCounts(counts) == flat.size()) {
+				out.push_back(PartitionFlat(flat, counts));
+			} else {
+				out.push_back(solid); // keep this solid's single-shell decode
+			}
 		}
 		return out;
 	}
@@ -571,19 +618,22 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 		// Legacy geom_lod* columns have no per-LOD counterpart, so they fall back to the
 		// single geometry_properties column (if any).
 		auto find_properties_col = [&](const std::string &geom_name) -> idx_t {
-			std::string props_name;
 			static const std::string kGeometryPrefix = "geometry";
-			if (geom_name == kGeometryPrefix) {
-				props_name = "geometry_properties";
-			} else if (geom_name.rfind(kGeometryPrefix, 0) == 0) {
-				props_name = "geometry_properties" + geom_name.substr(kGeometryPrefix.size());
-			}
-			if (!props_name.empty()) {
+			if (geom_name == kGeometryPrefix || geom_name.rfind(kGeometryPrefix, 0) == 0) {
+				// WKB layout: require the EXACT per-column properties match. These
+				// columns re-nest solid shells from their own `shells` (spec §8), so
+				// borrowing a different column's properties would apply the wrong
+				// shell partition. If the exact match is absent, apply no properties
+				// (leaving the geometry intact) rather than a mismatched one.
+				std::string props_name = (geom_name == kGeometryPrefix)
+				                             ? "geometry_properties"
+				                             : "geometry_properties" + geom_name.substr(kGeometryPrefix.size());
 				auto it = bind_data.geometry_properties_by_name.find(props_name);
-				if (it != bind_data.geometry_properties_by_name.end()) {
-					return it->second;
-				}
+				return (it != bind_data.geometry_properties_by_name.end()) ? it->second : DConstants::INVALID_INDEX;
 			}
+			// Legacy geom_lod* STRUCT columns have no per-LOD counterpart and their
+			// boundaries are already nested (from_wkb == false, no re-nesting), so the
+			// single default properties column is safe for semantics/material/texture.
 			return bind_data.geometry_properties_col;
 		};
 
@@ -616,14 +666,16 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 					geom["boundaries"] = RenestBoundaries(geom_type, geom["boundaries"], props["shells"]);
 				}
 				// Rebuild CityJSON nested semantics from the flattened form (G7).
-				if (props.contains("surfaces")) {
+				// CityJSON semantics requires both `surfaces` and `values`, so only
+				// emit a semantics object when the flattened form carries both halves
+				// (surfaces + face_semantics); a lone `surfaces` is skipped rather than
+				// written as an invalid values-less semantics object.
+				if (props.contains("surfaces") && props.contains("face_semantics")) {
+					const json empty = json::array();
+					const json &shells = props.contains("shells") ? props["shells"] : empty;
 					json semantics;
 					semantics["surfaces"] = props["surfaces"];
-					if (props.contains("face_semantics")) {
-						const json empty = json::array();
-						const json &shells = props.contains("shells") ? props["shells"] : empty;
-						semantics["values"] = RenestValues(geom_type, props["face_semantics"], shells);
-					}
+					semantics["values"] = RenestValues(geom_type, props["face_semantics"], shells);
 					geom["semantics"] = std::move(semantics);
 				}
 				if (props.contains("material")) {
