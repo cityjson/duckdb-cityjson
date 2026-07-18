@@ -100,6 +100,39 @@ SELECT version, city_objects_count
 FROM cityjsonseq_metadata('delft.city.jsonl');
 ```
 
+### `cityjson_geoparquet_geo(path)`
+
+Returns a single `geo` VARCHAR: the [GeoParquet 1.1](https://geoparquet.org/)
+`geo` metadata JSON for the dataset, ready to write into a Parquet footer so
+GeoParquet-aware tools (GeoPandas, DuckDB `spatial`, GDAL/OGR) recognise the
+geometry columns. DuckDB core writes the object-table Parquet; this supplies the
+geospatial metadata it cannot infer from a plain `BLOB` column.
+
+It declares **only GeoParquet-legal geometry columns** (CityParquet spec §13.3):
+a `geometry_lod*` column qualifies only when every CityJSON geometry at that LoD
+is a `MultiPoint` / `MultiLineString` / `MultiSurface` / `CompositeSurface` (WKB
+types 1001–1007). A LoD containing any `Solid`-family geometry
+(`PolyhedralSurface Z`) is **excluded** — declaring it would make the whole file
+unreadable to strict GeoParquet readers. A dataset whose geometry is entirely
+solid yields `NULL` (a valid CityParquet table that is simply not GeoParquet).
+The CRS is resolved from the CityJSON `referenceSystem` to PROJJSON via an
+embedded EPSG table; an unknown code is an error, and a dataset with no CRS gets
+`"crs": null`.
+
+`KV_METADATA` cannot contain a subquery, so pass the value via a variable:
+
+```sql
+SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('delft.city.jsonl'));
+
+COPY (SELECT * FROM read_cityjsonseq('delft.city.jsonl'))
+TO 'delft.parquet'
+(FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
+```
+
+The resulting `delft.parquet` opens as a GeoParquet file: its LoD0 footprint
+column is read by GeoPandas/DuckDB `spatial` with the correct CRS, while the
+`Solid` columns remain opaque blobs those readers ignore.
+
 ### `read_flatcitybuf(path [, lod => 'X.Y'])` (optional)
 
 Reads a [FlatCityBuf](https://github.com/cityjson/flatcitybuf) (`.fcb`) file. FlatCityBuf is a cloud-optimized binary format for CityJSON data.
