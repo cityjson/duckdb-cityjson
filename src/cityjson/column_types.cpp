@@ -394,8 +394,14 @@ bool IsReservedColumnName(const std::string &name) {
 	// Wide-layout per-LOD structural columns: geometry_lod*, geometry_properties*,
 	// and the paired appearance columns material_lod* / texture_lod* (§11).
 	return lowered.rfind("geometry_lod", 0) == 0 || lowered.rfind("geometry_properties", 0) == 0 ||
-	       lowered.rfind("material_lod", 0) == 0 || lowered.rfind("texture_lod", 0) == 0 || lowered == "material" ||
-	       lowered == "texture";
+	       IsAppearanceColumnName(lowered);
+}
+
+bool IsAppearanceColumnName(const std::string &name) {
+	// Exactly `material`/`texture`, or those with the reserved LoD suffix grammar
+	// `_lod{X}` / `_lod{X}_{Y}`. Anchored so `material_lodging` does NOT match.
+	static const std::regex appearance_pattern(R"((material|texture)(_lod\d+(_\d+)?)?)");
+	return std::regex_match(ToLowerAscii(name), appearance_pattern);
 }
 
 bool IsGeometryColumn(const std::string &name) {

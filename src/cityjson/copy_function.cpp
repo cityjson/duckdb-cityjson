@@ -1,5 +1,6 @@
 #include "cityjson/copy_function.hpp"
 #include "cityjson/cityjson_writer.hpp"
+#include "cityjson/column_types.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -44,9 +45,9 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 	if (name == "geometry" || name.rfind("geometry_lod", 0) == 0 || name.rfind("geom_lod", 0) == 0) {
 		return CopyColumnRole::GeometryWKB;
 	}
-	// Per-LoD appearance columns (and their un-suffixed single-LoD-mode forms).
-	if (name.rfind("material_lod", 0) == 0 || name.rfind("texture_lod", 0) == 0 || name == "material" ||
-	    name == "texture") {
+	// Per-LoD appearance columns (and their un-suffixed single-LoD-mode forms),
+	// matched by the exact suffix grammar so `material_lodging` stays an attribute.
+	if (IsAppearanceColumnName(name)) {
 		return CopyColumnRole::Appearance;
 	}
 	// bbox is derived from the geometry and recomputed on read; never round-tripped as data.
