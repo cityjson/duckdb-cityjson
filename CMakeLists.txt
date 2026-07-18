@@ -25,6 +25,10 @@ set(EXTENSION_SOURCES
     src/cityjson/cityjson_types.cpp
     src/cityjson/column_types.cpp
     src/cityjson/temporal_parser.cpp
+    # CRS -> PROJJSON resolution (embedded EPSG table)
+    src/cityjson/crs_projjson.cpp
+    src/cityjson/epsg_projjson_data.cpp
+    src/cityjson/geoparquet_table_function.cpp
     # Utility layer
     src/cityjson/city_object_utils.cpp
     # Reader layer

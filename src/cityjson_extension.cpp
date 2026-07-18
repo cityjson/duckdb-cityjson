@@ -3,6 +3,7 @@
 #include "cityjson_extension.hpp"
 #include "cityjson/table_function.hpp"
 #include "cityjson/metadata_table_function.hpp"
+#include "cityjson/geoparquet_table_function.hpp"
 #include "cityjson/copy_function.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_table_function.hpp"
@@ -24,6 +25,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register the cityjsonseq_metadata table function (dedicated CityJSONSeq metadata reader)
 	cityjson::RegisterCityJSONSeqMetadataTableFunction(loader);
+
+	// Register cityjson_geoparquet_geo (GeoParquet `geo` metadata JSON for KV_METADATA)
+	cityjson::RegisterGeoParquetTableFunctions(loader);
 
 	// Register COPY TO functions (cityjson and cityjsonseq formats)
 	cityjson::RegisterCityJSONCopyFunction(loader);
