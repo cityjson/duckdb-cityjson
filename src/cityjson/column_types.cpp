@@ -39,6 +39,7 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 	case ColumnType::GeometryWKB:
 		return "BLOB";
 	case ColumnType::GeometryPropertiesJson:
+	case ColumnType::AppearanceJson:
 		return "JSON";
 	default:
 		return "UNKNOWN";
@@ -72,6 +73,7 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 	case ColumnType::GeometryWKB:
 		return LogicalTypeId::BLOB;
 	case ColumnType::GeometryPropertiesJson:
+	case ColumnType::AppearanceJson:
 		return LogicalTypeId::VARCHAR; // JSON stored as VARCHAR
 	default:
 		return LogicalTypeId::INVALID;
@@ -132,6 +134,7 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		return LogicalType::BLOB;
 
 	case ColumnType::GeometryPropertiesJson:
+	case ColumnType::AppearanceJson:
 		return LogicalType::VARCHAR; // JSON stored as VARCHAR
 
 	default:
@@ -347,7 +350,7 @@ bool ColumnTypeUtils::IsTemporal(ColumnType type) {
 bool ColumnTypeUtils::IsComplex(ColumnType type) {
 	return type == ColumnType::Json || type == ColumnType::VarcharArray || type == ColumnType::Geometry ||
 	       type == ColumnType::GeographicalExtent || type == ColumnType::GeometryWKB ||
-	       type == ColumnType::GeometryPropertiesJson;
+	       type == ColumnType::GeometryPropertiesJson || type == ColumnType::AppearanceJson;
 }
 
 // ============================================================
@@ -388,8 +391,11 @@ bool IsReservedColumnName(const std::string &name) {
 	if (std::find(reserved.begin(), reserved.end(), lowered) != reserved.end()) {
 		return true;
 	}
-	// Wide-layout per-LOD geometry columns: geometry_lod* and geometry_properties_lod*.
-	return lowered.rfind("geometry_lod", 0) == 0 || lowered.rfind("geometry_properties", 0) == 0;
+	// Wide-layout per-LOD structural columns: geometry_lod*, geometry_properties*,
+	// and the paired appearance columns material_lod* / texture_lod* (§11).
+	return lowered.rfind("geometry_lod", 0) == 0 || lowered.rfind("geometry_properties", 0) == 0 ||
+	       lowered.rfind("material_lod", 0) == 0 || lowered.rfind("texture_lod", 0) == 0 || lowered == "material" ||
+	       lowered == "texture";
 }
 
 bool IsGeometryColumn(const std::string &name) {

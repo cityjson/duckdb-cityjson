@@ -35,6 +35,7 @@ enum class ColumnType {
 	// New WKB-based geometry types
 	GeometryWKB,            // BLOB - WKB-encoded geometry (3D)
 	GeometryPropertiesJson, // JSON - geometry properties (type, semantics, etc.)
+	AppearanceJson,         // JSON - per-LoD material_lod*/texture_lod* appearance (§11)
 };
 
 /**

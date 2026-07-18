@@ -30,6 +30,7 @@ enum class CopyColumnRole {
 	ChildrenRoles,      // children_roles array
 	GeometryWKB,        // geometry / geometry_lod* / geom_lod* (WKB blob)
 	GeometryProperties, // geometry_properties / geometry_properties_lod* JSON
+	Appearance,         // material_lod* / texture_lod* (per-LoD appearance, §11)
 	Bbox,               // derived bounding box — recomputed on read, ignored on write
 	Other,              // extension fields
 	Attribute           // everything else -> attributes map
@@ -76,6 +77,9 @@ struct CityJSONCopyBindData : public FunctionData {
 	// column name (e.g. "geometry_properties_lod2_2") so a geometry column can find its
 	// matching properties without assuming a single shared column.
 	std::unordered_map<std::string, idx_t> geometry_properties_by_name;
+	// material_lod*/texture_lod* columns by name, for re-attaching appearance to
+	// the matching geometry on export (§11).
+	std::unordered_map<std::string, idx_t> appearance_by_name;
 
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other) const override;

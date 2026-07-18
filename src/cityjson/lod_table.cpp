@@ -98,6 +98,10 @@ std::vector<Column> LODTableUtils::GetGeometryColumns() {
 	return {
 	    Column("geometry", ColumnType::GeometryWKB),
 	    Column("geometry_properties", ColumnType::GeometryPropertiesJson),
+	    // Un-suffixed appearance columns for the single-LoD mode (§11), paired to
+	    // the single "geometry" column.
+	    Column("material", ColumnType::AppearanceJson),
+	    Column("texture", ColumnType::AppearanceJson),
 	    Column("bbox", ColumnType::GeographicalExtent),
 	};
 }

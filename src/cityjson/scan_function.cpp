@@ -66,6 +66,29 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			continue;
 		}
 
+		// Handle per-LoD appearance columns (material_lod* / texture_lod*, §11.1):
+		// emit the matching geometry's material/texture theme map verbatim, null
+		// when the geometry (or its appearance) is absent.
+		if (col.kind == ColumnType::AppearanceJson) {
+			std::optional<Geometry> geom = bind_data.target_lod.has_value()
+			                                   ? target_geom
+			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
+			const bool is_material = col.name.rfind("material", 0) == 0;
+			const json *appearance = nullptr;
+			if (geom.has_value()) {
+				const auto &opt = is_material ? geom->material : geom->texture;
+				if (opt.has_value()) {
+					appearance = &opt.value();
+				}
+			}
+			if (appearance != nullptr) {
+				WriteGeometryProperties(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
+			} else {
+				wrappers[col_idx].SetNull(output_row);
+			}
+			continue;
+		}
+
 		// Get value based on column type (standard handling)
 		json value;
 

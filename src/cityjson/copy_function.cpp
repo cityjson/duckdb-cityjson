@@ -44,6 +44,11 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 	if (name == "geometry" || name.rfind("geometry_lod", 0) == 0 || name.rfind("geom_lod", 0) == 0) {
 		return CopyColumnRole::GeometryWKB;
 	}
+	// Per-LoD appearance columns (and their un-suffixed single-LoD-mode forms).
+	if (name.rfind("material_lod", 0) == 0 || name.rfind("texture_lod", 0) == 0 || name == "material" ||
+	    name == "texture") {
+		return CopyColumnRole::Appearance;
+	}
 	// bbox is derived from the geometry and recomputed on read; never round-tripped as data.
 	if (name == "bbox") {
 		return CopyColumnRole::Bbox;
@@ -83,6 +88,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->geometry_col = geometry_col;
 	result->geometry_properties_col = geometry_properties_col;
 	result->geometry_properties_by_name = geometry_properties_by_name;
+	result->appearance_by_name = appearance_by_name;
 	return result;
 }
 
@@ -342,6 +348,9 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 			if (bind_data->geometry_properties_col == DConstants::INVALID_INDEX) {
 				bind_data->geometry_properties_col = i;
 			}
+			break;
+		case CopyColumnRole::Appearance:
+			bind_data->appearance_by_name[names[i]] = i;
 			break;
 		default:
 			break;
@@ -689,6 +698,41 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 			}
 		};
 
+		// Re-attach per-LoD appearance (§11) onto a geometry from its matching
+		// material_lod*/texture_lod* columns. The appearance column shares the
+		// geometry column's LoD suffix: geometry_lod3 -> material_lod3 / texture_lod3;
+		// the un-suffixed "geometry" -> "material" / "texture". Legacy geom_lod*
+		// STRUCT geometry carries its appearance in the struct itself, so it has no
+		// suffix match here and is left untouched.
+		auto apply_appearance = [&](json &geom, const std::string &geom_name) {
+			std::string suffix;
+			static const std::string kGeometryPrefix = "geometry";
+			if (geom_name == kGeometryPrefix) {
+				suffix = "";
+			} else if (geom_name.rfind(kGeometryPrefix, 0) == 0) {
+				suffix = geom_name.substr(kGeometryPrefix.size()); // e.g. "_lod3"
+			} else {
+				return;
+			}
+			auto attach = [&](const std::string &prefix, const char *key) {
+				auto it = bind_data.appearance_by_name.find(prefix + suffix);
+				if (it == bind_data.appearance_by_name.end()) {
+					return;
+				}
+				auto v = input.data[it->second].GetValue(row);
+				if (v.IsNull()) {
+					return;
+				}
+				try {
+					geom[key] = json_utils::ParseJson(v.ToString());
+				} catch (...) {
+					// Ignore parse errors in appearance JSON.
+				}
+			};
+			attach("material", "material");
+			attach("texture", "texture");
+		};
+
 		json geometries = json::array();
 		for (idx_t col = 0; col < bind_data.column_roles.size(); col++) {
 			if (bind_data.column_roles[col] != CopyColumnRole::GeometryWKB) {
@@ -780,6 +824,7 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 
 			if (produced) {
 				apply_properties(geom, find_properties_col(col_name), from_wkb);
+				apply_appearance(geom, col_name);
 				geometries.push_back(std::move(geom));
 			}
 		}

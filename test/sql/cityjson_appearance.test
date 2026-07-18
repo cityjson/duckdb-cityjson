@@ -1,0 +1,71 @@
+# name: test/sql/cityjson_appearance.test
+# description: Per-LoD material_lod*/texture_lod* appearance columns (spec §11, G20)
+# group: [sql]
+
+require cityjson
+
+# Fixture: two real LoD3 railway features (from the CityJSON LoD3_Railway
+# dataset), one carrying a material, one a texture — both under the "visual"
+# theme. The wide CityParquet layout emits per-LoD material_lod*/texture_lod*
+# columns paired to geometry_lod* by name (spec §11.1), carrying the CityJSON
+# theme-shaped JSON verbatim.
+
+# The appearance columns exist for the LoD present in the data (lod 3 -> lod3).
+query TT
+SELECT typeof(material_lod3), typeof(texture_lod3)
+FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl') LIMIT 1;
+----
+VARCHAR	VARCHAR
+
+# The material-bearing object carries a "visual"-theme material map.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE id = 'GMLID_855011_330784_753'
+  AND material_lod3 LIKE '%"visual"%'
+  AND material_lod3 LIKE '%values%';
+----
+1
+
+# The texture-bearing object carries a "visual"-theme texture map.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE id = 'GMLID_BUI100628_817_8083'
+  AND texture_lod3 LIKE '%"visual"%'
+  AND texture_lod3 LIKE '%values%';
+----
+1
+
+# Appearance is null where the geometry carries none (the material object has no
+# texture, and vice versa), and null where the row has no geometry at that LoD.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE id = 'GMLID_855011_330784_753' AND texture_lod3 IS NULL;
+----
+1
+
+# material_lod*/texture_lod* are reserved structural columns, not attributes, so
+# they are not duplicated as inferred attribute columns.
+query II
+SELECT COUNT(*) FILTER (WHERE column_name = 'material_lod3'),
+       COUNT(*) FILTER (WHERE column_name = 'texture_lod3')
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'));
+----
+1	1
+
+# Appearance survives a COPY round-trip: material_lod*/texture_lod* are written
+# back onto their matching geometry (§11), not dropped or misfiled as attributes.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', lod => '3'))
+TO '__TEST_DIR__/rt_appearance.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', lod => '3')
+WHERE id = 'GMLID_855011_330784_753' AND material LIKE '%"visual"%';
+----
+1
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', lod => '3')
+WHERE id = 'GMLID_BUI100628_817_8083' AND texture LIKE '%"visual"%';
+----
+1
