@@ -157,6 +157,8 @@ STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max
 | ------------------------------- | -------------- | ------------------------------------------------------- |
 | `geometry_lodX_Y`               | BLOB           | WKB-encoded geometry for that LOD (NULL if absent)      |
 | `geometry_properties_lodX_Y`    | JSON (VARCHAR) | Geometry metadata in the CityParquet spec §8 form (below) |
+| `material_lodX_Y`               | JSON (VARCHAR) | Per-surface material map for that LOD's geometry (§11.1); NULL if none |
+| `texture_lodX_Y`                | JSON (VARCHAR) | Per-surface texture map for that LOD's geometry (§11.1); NULL if none |
 
 This is the layout the CityParquet encoding formalises: each LOD becomes its own WKB column, and `COPY ... TO (FORMAT PARQUET)` yields a Parquet-encoded city model directly.
 
@@ -187,6 +189,27 @@ extension reads from `shells` to compute the volume of a solid with inner
 shells. (Note: the old form — an integer `type` code, `cityjsonType`, and
 scalar `shellCount`/`solidCount` with verbatim nested `semantics` — has been
 replaced.)
+
+**Appearance columns (`material_lodX_Y` / `texture_lodX_Y`, §11.1).** Each LoD's
+geometry gets a paired `material_lod*` and `texture_lod*` column carrying the
+CityJSON theme-shaped map verbatim, e.g.
+
+```json
+// material_lod2_2
+{ "visual": { "values": [0, 0, 1, 1, …] } }
+// texture_lod2_2
+{ "visual": { "values": [[[texId, u0, v0, u1, v1, …]], …] } }
+```
+
+The cell is NULL where the geometry (or its appearance) is absent. Indices are
+the source's own **feature-local** ids into its `appearance.materials` /
+`appearance.textures` arrays — this extension passes the theme map through as-is.
+It does **not** yet write dataset-global sidecar `materials.parquet` /
+`textures.parquet` files or inline texture UV coordinates (the CityParquet
+reference writer, `cityparquet-rs`, owns that normalisation). Consequently, on
+`COPY … TO (FORMAT cityjson)` the material/texture maps are re-attached to their
+geometry, but the appearance *definitions* are not regenerated, so exported
+indices resolve only against the source's own appearance block.
 
 ### Per-LOD Mode (`lod => '...'`)
 
