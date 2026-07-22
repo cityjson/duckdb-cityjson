@@ -139,7 +139,7 @@ if (!feature.vertices.empty()) {
 
 ## Future Features (Not Yet Implemented)
 
-- **Filter Pushdown** — push WHERE clauses down to readers for better performance
+- **Simple `TableFilterSet` pushdown** — projection pushdown and complex-filter pushdown (equality on `id` / `feature_id` / `object_type`) are **already enabled** in `table_function_registration.cpp` (`projection_pushdown = true`, `pushdown_complex_filter = CityJSONPushdownComplexFilter`); only DuckDB's simple `filter_pushdown` / `TableFilterSet` path is left disabled, because the scan callback does not implement `TableFilterSet` handling yet.
 - **Column Statistics** — implement column min/max statistics for query optimization
 - **Spatial Indexing** — integrate with DuckDB spatial extension for spatial queries
 - **Streaming** — support very large files without loading all data into memory during bind

@@ -5,7 +5,7 @@ This document provides guidance to coding agents focusing on C++ deliverables wh
 
 ## Repository Context
 
-- The loadable extension itself is implemented in Rust and exposes DuckDB SQL functions.
+- The loadable extension itself is implemented in C++17 and exposes DuckDB SQL functions. (The only Rust in the tree is the vendored `cjseq` library under `src/external/` — a dependency, not the extension.)
 - C++ work in this repository usually targets integration scenarios: embedding the extension in C++ applications, authoring DuckDB C++ tests or utilities, and validating the FFI boundary between the Rust extension and DuckDB's C++ API.
 - CityJSON data layout mirrors the CityParquet schema exposed by the extension. Inspect the column set through `DESCRIBE` statements or the SQL tests under `test/sql/` to map values in C++.
 
