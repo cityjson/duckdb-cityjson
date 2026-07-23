@@ -15,8 +15,8 @@ require parquet
 # (§13.3). CRS resolves to the Amersfoort / RD New + NAP compound CRS.
 query I
 SELECT COUNT(*) FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl')
-WHERE geo LIKE '%"primary_column":"geometry_lod0"%'
-  AND geo LIKE '%geometry_lod0%'
+WHERE geo LIKE '%"primary_column":"geometry_lod0_0"%'
+  AND geo LIKE '%geometry_lod0_0%'
   AND geo NOT LIKE '%geometry_lod2_2%'      -- the Solid column is not declared
   AND geo LIKE '%MultiPolygon Z%'
   AND geo LIKE '%"edges":"planar"%'
@@ -36,7 +36,7 @@ true
 # explicit null (not omitted — that would falsely assert GeoParquet's CRS84 default).
 query I
 SELECT COUNT(*) FROM cityjson_geoparquet_geo('test/data/railway_appearance.city.jsonl')
-WHERE geo LIKE '%geometry_lod3%' AND geo LIKE '%MultiPolygon Z%' AND geo LIKE '%"crs":null%';
+WHERE geo LIKE '%geometry_lod3_0%' AND geo LIKE '%MultiPolygon Z%' AND geo LIKE '%"crs":null%';
 ----
 1
 
@@ -52,7 +52,7 @@ statement ok
 SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl'));
 
 statement ok
-COPY (SELECT geometry_lod0 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod0 IS NOT NULL)
+COPY (SELECT geometry_lod0_0 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod0_0 IS NOT NULL)
 TO '__TEST_DIR__/delft_geo.parquet' (FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
 
 query II

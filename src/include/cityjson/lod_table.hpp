@@ -111,8 +111,10 @@ public:
 	static std::string FormatLODAsColumnSuffix(const std::string &lod);
 
 	/**
-	 * Normalize a numeric LOD string to a canonical form
-	 * Examples: "2" -> "2", "2.0" -> "2", "2.00" -> "2", "2.2" -> "2.2"
+	 * Normalize a numeric LOD string to a canonical form. The result always
+	 * carries a minor (spec §9: a column suffix always carries a minor, e.g.
+	 * LoD "1" yields geometry_lod1_0, never geometry_lod1).
+	 * Examples: "2" -> "2.0", "2.0" -> "2.0", "2.00" -> "2.0", "2.2" -> "2.2"
 	 * Non-numeric LODs are returned unchanged.
 	 *
 	 * @param lod LOD value string
@@ -121,8 +123,9 @@ public:
 	static std::string NormalizeLOD(const std::string &lod);
 
 	/**
-	 * Normalize a numeric LOD double to a canonical string
-	 * Examples: 2.0 -> "2", 2.2 -> "2.2"
+	 * Normalize a numeric LOD double to a canonical string. Always carries a
+	 * minor (see the string overload).
+	 * Examples: 2.0 -> "2.0", 2.2 -> "2.2"
 	 *
 	 * @param lod LOD value as double
 	 * @return Canonical LOD string

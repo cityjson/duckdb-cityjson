@@ -34,13 +34,17 @@ std::string LODTableUtils::FormatLODAsColumnSuffix(const std::string &lod) {
 	return result;
 }
 
+// Trims trailing zeros from a fixed-precision decimal string, but always keeps
+// exactly one digit after the decimal point: "2.000000000000" -> "2.0", never
+// "2" (spec §9 — a column suffix always carries a minor).
 static std::string TrimTrailingZeros(const std::string &s) {
 	size_t end = s.find_last_not_of('0');
 	if (end == std::string::npos) {
 		return s;
 	}
 	if (s[end] == '.') {
-		end--;
+		// Every fractional digit was zero: keep exactly one of them.
+		return s.substr(0, end + 2);
 	}
 	return s.substr(0, end + 1);
 }

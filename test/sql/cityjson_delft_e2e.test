@@ -81,20 +81,20 @@ WHERE column_name LIKE 'geometry%' OR column_name = 'bbox'
 ORDER BY column_name;
 ----
 bbox
-geometry_lod0
+geometry_lod0_0
 geometry_lod1_2
 geometry_lod1_3
 geometry_lod2_2
-geometry_properties_lod0
+geometry_properties_lod0_0
 geometry_properties_lod1_2
 geometry_properties_lod1_3
 geometry_properties_lod2_2
 
-# LODs live on the expected object types: the footprint (lod0) on the Building,
+# LODs live on the expected object types: the footprint (lod0.0) on the Building,
 # the solids (lod1.2/1.3/2.2) on the BuildingPart.
 query TIII
 SELECT object_type,
-       COUNT(*) FILTER (WHERE geometry_lod0 IS NOT NULL)    AS l0,
+       COUNT(*) FILTER (WHERE geometry_lod0_0 IS NOT NULL)  AS l0,
        COUNT(*) FILTER (WHERE geometry_lod1_2 IS NOT NULL)  AS l12,
        COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)  AS l22
 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
@@ -243,14 +243,14 @@ FROM (DESCRIBE SELECT * FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.j
 WHERE column_name LIKE 'geometry_lod%'
 ORDER BY column_name;
 ----
-geometry_lod0
+geometry_lod0_0
 geometry_lod1_2
 geometry_lod1_3
 geometry_lod2_2
 
-# Both the lod0 footprints and the lod2.2 solids come back non-null
+# Both the lod0.0 footprints and the lod2.2 solids come back non-null
 query II
-SELECT COUNT(*) FILTER (WHERE geometry_lod0 IS NOT NULL),
+SELECT COUNT(*) FILTER (WHERE geometry_lod0_0 IS NOT NULL),
        COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)
 FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.jsonl');
 ----

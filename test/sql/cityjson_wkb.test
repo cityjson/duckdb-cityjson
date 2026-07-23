@@ -125,13 +125,14 @@ SELECT COUNT(*) FROM read_cityjson('test/data/numeric_lod.city.json', lod => '2.
 ----
 1
 
-# Default schema uses the normalized column name (geometry_lod2 for numeric 2.0)
+# Default schema uses the normalized column name, always with a minor
+# (geometry_lod2_0 for numeric 2.0, never the bare geometry_lod2 — spec §9)
 query T
-SELECT typeof(geometry_lod2) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geometry_lod2 IS NOT NULL;
+SELECT typeof(geometry_lod2_0) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geometry_lod2_0 IS NOT NULL;
 ----
 BLOB
 
 query T
-SELECT typeof(geometry_properties_lod2) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geometry_properties_lod2 IS NOT NULL;
+SELECT typeof(geometry_properties_lod2_0) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geometry_properties_lod2_0 IS NOT NULL;
 ----
 VARCHAR

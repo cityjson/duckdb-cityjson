@@ -10,9 +10,10 @@ require cityjson
 # columns paired to geometry_lod* by name (spec §11.1), carrying the CityJSON
 # theme-shaped JSON verbatim.
 
-# The appearance columns exist for the LoD present in the data (lod 3 -> lod3).
+# The appearance columns exist for the LoD present in the data (lod "3" -> the
+# suffix always carries a minor, so lod3_0 — spec §9).
 query TT
-SELECT typeof(material_lod3), typeof(texture_lod3)
+SELECT typeof(material_lod3_0), typeof(texture_lod3_0)
 FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl') LIMIT 1;
 ----
 VARCHAR	VARCHAR
@@ -21,8 +22,8 @@ VARCHAR	VARCHAR
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
 WHERE id = 'GMLID_855011_330784_753'
-  AND material_lod3 LIKE '%"visual"%'
-  AND material_lod3 LIKE '%values%';
+  AND material_lod3_0 LIKE '%"visual"%'
+  AND material_lod3_0 LIKE '%values%';
 ----
 1
 
@@ -30,8 +31,8 @@ WHERE id = 'GMLID_855011_330784_753'
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
 WHERE id = 'GMLID_BUI100628_817_8083'
-  AND texture_lod3 LIKE '%"visual"%'
-  AND texture_lod3 LIKE '%values%';
+  AND texture_lod3_0 LIKE '%"visual"%'
+  AND texture_lod3_0 LIKE '%values%';
 ----
 1
 
@@ -39,7 +40,7 @@ WHERE id = 'GMLID_BUI100628_817_8083'
 # texture, and vice versa), and null where the row has no geometry at that LoD.
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
-WHERE id = 'GMLID_855011_330784_753' AND texture_lod3 IS NULL;
+WHERE id = 'GMLID_855011_330784_753' AND texture_lod3_0 IS NULL;
 ----
 1
 
@@ -55,8 +56,8 @@ FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/appearance_lookalike.ci
 # material_lod*/texture_lod* are reserved structural columns, not attributes, so
 # they are not duplicated as inferred attribute columns.
 query II
-SELECT COUNT(*) FILTER (WHERE column_name = 'material_lod3'),
-       COUNT(*) FILTER (WHERE column_name = 'texture_lod3')
+SELECT COUNT(*) FILTER (WHERE column_name = 'material_lod3_0'),
+       COUNT(*) FILTER (WHERE column_name = 'texture_lod3_0')
 FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'));
 ----
 1	1
