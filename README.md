@@ -15,7 +15,7 @@ A DuckDB extension for reading, querying, and writing [CityJSON](https://www.cit
 - **Per-LOD geometry** with WKB encoding for GIS/spatial compatibility
 - **Filter pushdown** — equality filters on `id`, `feature_id`, and `object_type` are pushed into the scan
 - **Streaming CityJSONSeq** — `.city.jsonl` files are read incrementally without loading the whole file into memory
-- **FlatCityBuf** (`.fcb`) support (optional, compile-time flag)
+- **FlatCityBuf** (`.fcb`) support — native C++ reader/writer, with real bbox and attribute-index query pushdown (optional, enabled by default)
 
 ## Quick Start
 
@@ -36,7 +36,7 @@ SELECT * FROM cityjson_metadata('buildings.city.json');
 COPY (SELECT * FROM read_cityjson('input.city.json'))
 TO 'output.city.json' (FORMAT cityjson);
 
--- Read a FlatCityBuf file (requires -DCITYJSON_ENABLE_FCB=ON)
+-- Read a FlatCityBuf file
 SELECT * FROM read_flatcitybuf('buildings.fcb');
 ```
 
@@ -133,11 +133,9 @@ The resulting `delft.parquet` opens as a GeoParquet file: its LoD0 footprint
 column is read by GeoPandas/DuckDB `spatial` with the correct CRS, while the
 `Solid` columns remain opaque blobs those readers ignore.
 
-### `read_flatcitybuf(path [, lod => 'X.Y'])` (optional)
+### `read_flatcitybuf(path [, lod => 'X.Y'] [, min_x => .., min_y => .., max_x => .., max_y => ..])` (optional)
 
-Reads a [FlatCityBuf](https://github.com/cityjson/flatcitybuf) (`.fcb`) file. FlatCityBuf is a cloud-optimized binary format for CityJSON data.
-
-Only available when compiled with `-DCITYJSON_ENABLE_FCB=ON`.
+Reads a [FlatCityBuf](https://github.com/cityjson/flatcitybuf) (`.fcb`) file via its native C++ reader. FlatCityBuf is a cloud-optimized binary format for CityJSON data, with an R-tree spatial index and per-column B+tree attribute indices.
 
 ```sql
 SELECT * FROM read_flatcitybuf('buildings.fcb');
@@ -145,9 +143,19 @@ SELECT * FROM read_flatcitybuf('buildings.fcb');
 -- With LOD selection
 SELECT id, object_type, ST_GeomFromWKB(geometry) AS geom
 FROM read_flatcitybuf('buildings.fcb', lod => '2.2');
+
+-- Bbox query — a real R-tree-level skip, not a post-filter: features outside
+-- the box are never decoded. All four bounds must be given together.
+SELECT id FROM read_flatcitybuf('buildings.fcb', min_x => 84000, min_y => 445000, max_x => 85000, max_y => 446000);
+
+-- Attribute query — simple =,!=,>,>=,<,<= comparisons in a WHERE clause against a
+-- column that was given a B+tree index at write time (see attr_index below) are
+-- pushed down and answered via the index. WHERE on any other column, or with any
+-- other operator, still returns correct results via normal (unpushed) filtering.
+SELECT id FROM read_flatcitybuf('buildings.fcb') WHERE b3_h_dak_50p > 10;
 ```
 
-**Parameters:** Same as `read_cityjson`.
+**Parameters:** Same as `read_cityjson`, plus `min_x`/`min_y`/`max_x`/`max_y` (DOUBLE).
 
 ### `flatcitybuf_metadata(path)` (optional)
 
@@ -310,9 +318,14 @@ TO 'output.city.json' (FORMAT cityjson);
 COPY (SELECT * FROM read_cityjsonseq('input.city.jsonl'))
 TO 'output.city.jsonl' (FORMAT cityjsonseq);
 
--- Write to FlatCityBuf (.fcb) — requires -DCITYJSON_ENABLE_FCB=ON
+-- Write to FlatCityBuf (.fcb)
 COPY (SELECT * FROM read_cityjson('input.city.json'))
 TO 'output.fcb' (FORMAT flatcitybuf);
+
+-- Write to FlatCityBuf with a B+tree attribute index on two columns, so later
+-- WHERE queries against read_flatcitybuf on those columns get pushed down
+COPY (SELECT * FROM read_cityjson('input.city.json'))
+TO 'output.fcb' (FORMAT flatcitybuf, attr_index 'b3_h_dak_50p,b3_dak_type', branching_factor 256);
 ```
 
 ### Options
@@ -324,8 +337,13 @@ TO 'output.fcb' (FORMAT flatcitybuf);
 | `transform_scale`   | VARCHAR | Vertex quantisation scale as `'x,y,z'` (default: `'0.001,0.001,0.001'`, i.e. 1 mm) |
 | `transform_translate` | VARCHAR | Vertex quantisation offset as `'x,y,z'` (default: `'0.0,0.0,0.0'`) |
 | `metadata_query`    | VARCHAR | SQL query that returns metadata columns (`version`, `crs`, `transform_scale`, `transform_translate`) |
+| `attr_index`        | VARCHAR | *(`flatcitybuf` only)* Comma-separated attribute column names to give a B+tree index, enabling `WHERE`-clause pushdown on `read_flatcitybuf` |
+| `branching_factor`  | BIGINT  | *(`flatcitybuf` only)* B+tree branching factor applied to every column in `attr_index` (upstream default if omitted) |
+| `index_node_size`   | BIGINT  | *(`flatcitybuf` only)* R-tree node size (upstream default if omitted) |
 
 Vertices are quantised to integers against the transform before writing, so `transform_scale` sets the output precision. The default of `0.001` (1 mm) keeps round-trips lossless even for large projected coordinates; pass a smaller scale for finer precision, or carry the source transform via `metadata_query`.
+
+Requesting `attr_index` on a column that never appears in any feature's attributes is not an error — there's simply nothing to index.
 
 ```sql
 -- Write with explicit metadata
@@ -387,11 +405,11 @@ TO 'buildings_only.city.jsonl' (FORMAT cityjsonseq);
 | `cityjsonseq` | `.city.jsonl` | Per-feature vertex pools  | One JSON object per line           |
 | `flatcitybuf` | `.fcb`        | Per-feature vertex pools  | Cloud-optimized binary format      |
 
-CityJSONSeq is preferred for large datasets — it supports streaming and lower memory usage. FlatCityBuf adds cloud-native features (spatial indexing, range requests) and requires `-DCITYJSON_ENABLE_FCB=ON` at build time.
+CityJSONSeq is preferred for large datasets — it supports streaming and lower memory usage. FlatCityBuf adds cloud-native features (spatial indexing, attribute indexing, range requests) and is enabled by default at build time.
 
 ## Remote File Support
 
-Read files from HTTP, HTTPS, S3, and GCS URLs. The `httpfs` extension is auto-loaded when a remote URL is detected.
+Read files from HTTP, HTTPS, S3, and GCS URLs. The `httpfs` extension is auto-loaded when a remote URL is detected — this applies to `read_flatcitybuf` too, which shares the same `httpfs`-backed transport (and therefore the same credentials/secrets/proxy configuration) as `read_cityjson`/`read_cityjsonseq`, rather than using a separate HTTP client.
 
 ```sql
 -- HTTPS
@@ -466,7 +484,7 @@ TO 'delft_buildings.city.jsonl' (FORMAT cityjsonseq);
 COPY (SELECT * FROM read_cityjson('input.city.json'))
 TO 'output.city.jsonl' (FORMAT cityjsonseq);
 
--- CityJSONSeq → FlatCityBuf (requires FCB support)
+-- CityJSONSeq → FlatCityBuf
 COPY (SELECT * FROM read_cityjsonseq('input.city.jsonl'))
 TO 'output.fcb' (FORMAT flatcitybuf);
 
@@ -501,20 +519,20 @@ CORE_EXTENSIONS="httpfs" GEN=ninja make
 cmake --build build/release --target cityjson_extension cityjson_loadable_extension duckdb
 ```
 
-### Optional: FlatCityBuf Support
+### FlatCityBuf Support
 
-To enable reading and writing FlatCityBuf (`.fcb`) files, build with:
+FlatCityBuf (`.fcb`) support is built on the native C++ [flatcitybuf](https://github.com/cityjson/flatcitybuf) library, vendored via a repo-owned vcpkg overlay port (`vcpkg_ports/flatcitybuf/`, plus a pinned `vcpkg_ports/flatbuffers/` — see that port's comments for why flatbuffers needs an exact version pin). It's portable C++ source, so there's no platform/architecture restriction and no separate download step: it builds like any other vcpkg dependency this extension already has (`nlohmann-json`, `openssl`).
+
+It's enabled by default. To disable it, build with:
 
 ```sh
-EXT_FLAGS="-DCITYJSON_ENABLE_FCB=ON" GEN=ninja make
+EXT_FLAGS="-DCITYJSON_ENABLE_FCB=OFF" GEN=ninja make
 ```
 
-This downloads pre-built FlatCityBuf binaries from [GitHub releases](https://github.com/cityjson/flatcitybuf/releases) at configure time. Supported platforms: macOS (aarch64, x86_64), Linux (aarch64, x86_64), Windows (x86_64).
-
-When enabled, the following additional functions are registered:
-- `read_flatcitybuf(path)` — read `.fcb` files
+The following functions are registered:
+- `read_flatcitybuf(path [, min_x, min_y, max_x, max_y])` — read `.fcb` files, with real bbox and attribute-index query pushdown
 - `flatcitybuf_metadata(path)` — read `.fcb` file metadata
-- `COPY ... TO ... (FORMAT flatcitybuf)` — write `.fcb` files
+- `COPY ... TO ... (FORMAT flatcitybuf, [attr_index, branching_factor, index_node_size])` — write `.fcb` files
 
 ### Running Tests
 
