@@ -93,54 +93,58 @@ void FlatCityBufPushdownComplexFilter(ClientContext &context, LogicalGet &get, F
 
 	fcb::AttrQuery conditions;
 
-	for (auto it = filters.begin(); it != filters.end();) {
-		auto &expr = *it;
-		bool consumed = false;
+	// Deliberately never erase from `filters`, unlike CityJSONPushdownComplexFilter's
+	// id/feature_id/object_type handling: this function's schema emits one row PER
+	// CITYOBJECT, but select_attr/the post-filter both match at FEATURE granularity
+	// ("does ANY CityObject in this feature satisfy the condition" -- see
+	// FlatCityBufReader::MatchesAttrQueryPostFilter). Erasing the expression here
+	// would skip DuckDB's own per-row check and silently emit every CityObject of a
+	// matching feature, including ones that don't themselves satisfy the condition.
+	// So this only NARROWS which features get read/decoded (a real index-assisted
+	// skip); DuckDB still evaluates every surviving filter against every row exactly
+	// as it would without this pushdown.
+	for (auto &expr : filters) {
+		if (expr->type < ExpressionType::COMPARE_EQUAL || expr->type > ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
+			continue;
+		}
+		auto &comp = expr->Cast<BoundComparisonExpression>();
 
-		if (expr->type >= ExpressionType::COMPARE_EQUAL && expr->type <= ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
-			auto &comp = expr->Cast<BoundComparisonExpression>();
+		BoundColumnRefExpression *col_ref = nullptr;
+		BoundConstantExpression *constant = nullptr;
+		bool column_on_right = false;
 
-			BoundColumnRefExpression *col_ref = nullptr;
-			BoundConstantExpression *constant = nullptr;
-			bool column_on_right = false;
-
-			if (comp.left->type == ExpressionType::BOUND_COLUMN_REF &&
-			    comp.right->type == ExpressionType::VALUE_CONSTANT) {
-				col_ref = &comp.left->Cast<BoundColumnRefExpression>();
-				constant = &comp.right->Cast<BoundConstantExpression>();
-			} else if (comp.right->type == ExpressionType::BOUND_COLUMN_REF &&
-			           comp.left->type == ExpressionType::VALUE_CONSTANT) {
-				col_ref = &comp.right->Cast<BoundColumnRefExpression>();
-				constant = &comp.left->Cast<BoundConstantExpression>();
-				column_on_right = true;
-			}
-
-			if (col_ref && constant && col_ref->binding.table_index == get.table_index &&
-			    col_ref->binding.column_index < get.GetColumnIds().size()) {
-				idx_t schema_idx = get.GetColumnIds()[col_ref->binding.column_index].GetPrimaryIndex();
-				if (schema_idx < bind_data.columns.size()) {
-					const auto &column_name = bind_data.columns[schema_idx].name;
-					bool is_indexed =
-					    std::find(indexed_columns.begin(), indexed_columns.end(), column_name) != indexed_columns.end();
-					if (is_indexed) {
-						auto op = ToFcbOperator(expr->type, column_on_right);
-						auto col_info = bind_data.reader->FindColumn(column_name);
-						if (op.has_value() && col_info.has_value()) {
-							auto key_value = BuildKeyValue(col_info.value(), constant->value);
-							if (key_value.has_value()) {
-								conditions.push_back({column_name, op.value(), key_value.value()});
-								consumed = true;
-							}
-						}
-					}
-				}
-			}
+		if (comp.left->type == ExpressionType::BOUND_COLUMN_REF && comp.right->type == ExpressionType::VALUE_CONSTANT) {
+			col_ref = &comp.left->Cast<BoundColumnRefExpression>();
+			constant = &comp.right->Cast<BoundConstantExpression>();
+		} else if (comp.right->type == ExpressionType::BOUND_COLUMN_REF &&
+		           comp.left->type == ExpressionType::VALUE_CONSTANT) {
+			col_ref = &comp.right->Cast<BoundColumnRefExpression>();
+			constant = &comp.left->Cast<BoundConstantExpression>();
+			column_on_right = true;
 		}
 
-		if (consumed) {
-			it = filters.erase(it);
-		} else {
-			++it;
+		if (!col_ref || !constant || col_ref->binding.table_index != get.table_index ||
+		    col_ref->binding.column_index >= get.GetColumnIds().size()) {
+			continue;
+		}
+		idx_t schema_idx = get.GetColumnIds()[col_ref->binding.column_index].GetPrimaryIndex();
+		if (schema_idx >= bind_data.columns.size()) {
+			continue;
+		}
+		const auto &column_name = bind_data.columns[schema_idx].name;
+		bool is_indexed =
+		    std::find(indexed_columns.begin(), indexed_columns.end(), column_name) != indexed_columns.end();
+		if (!is_indexed) {
+			continue;
+		}
+		auto op = ToFcbOperator(expr->type, column_on_right);
+		auto col_info = bind_data.reader->FindColumn(column_name);
+		if (!op.has_value() || !col_info.has_value()) {
+			continue;
+		}
+		auto key_value = BuildKeyValue(col_info.value(), constant->value);
+		if (key_value.has_value()) {
+			conditions.push_back({column_name, op.value(), key_value.value()});
 		}
 	}
 

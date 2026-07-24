@@ -39,3 +39,19 @@ query I
 SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb', min_x := 50, min_y := 50, max_x := 150, max_y := 150) WHERE height > 15 ORDER BY feature_id;
 ----
 f2
+
+# Regression: pushdown must not erase the WHERE expression from DuckDB's own filter
+# list. read_flatcitybuf emits one row per CityObject, but the index/post-filter
+# matches at FEATURE granularity ("does ANY CityObject in this feature satisfy the
+# condition") -- if the expression were erased, every CityObject of a matching
+# feature would be emitted unfiltered, including ones that don't themselves satisfy
+# it. This fixture's single feature has two CityObjects with different heights
+# specifically to catch that: only b2 (height 30) should survive, not b1 (height 10).
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_multi_object_feature.city.jsonl'))
+TO '__TEST_DIR__/multi_object.fcb' (FORMAT flatcitybuf, attr_index 'height', branching_factor 4);
+
+query I
+SELECT id FROM read_flatcitybuf('__TEST_DIR__/multi_object.fcb') WHERE height > 15 ORDER BY id;
+----
+b2
