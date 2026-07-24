@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.5)
+# 3.24, not the previous 3.5: find_package(... GLOBAL) below (flatcitybuf) requires it.
+cmake_minimum_required(VERSION 3.24)
 
 # Set extension name here
 set(TARGET_NAME cityjson)
@@ -133,8 +134,19 @@ if(CITYJSON_ENABLE_FCB)
   # is invisible to it. --whole-archive/--no-whole-archive sidesteps that entirely by
   # forcing every object file in flatcitybuf (and its own flatbuffers dependency) into
   # the final binary unconditionally, regardless of position or reference order.
-  set(DUCKDB_EXTRA_LINK_FLAGS "-Wl,--whole-archive" "flatcitybuf::flatcitybuf" "-Wl,--no-whole-archive"
-      CACHE INTERNAL "Extra link flags" FORCE)
+  # --whole-archive/--no-whole-archive is GNU ld/lld syntax -- Apple's ld64 and MSVC's
+  # linker use different flags (and, unlike GNU's, need the resolved archive file path
+  # rather than a bare target name), hence the three-way branch.
+  if(APPLE)
+    set(DUCKDB_EXTRA_LINK_FLAGS "-Wl,-force_load,$<TARGET_FILE:flatcitybuf::flatcitybuf>"
+        CACHE INTERNAL "Extra link flags" FORCE)
+  elseif(MSVC)
+    set(DUCKDB_EXTRA_LINK_FLAGS "/WHOLEARCHIVE:$<TARGET_FILE:flatcitybuf::flatcitybuf>"
+        CACHE INTERNAL "Extra link flags" FORCE)
+  else()
+    set(DUCKDB_EXTRA_LINK_FLAGS "-Wl,--whole-archive" "flatcitybuf::flatcitybuf" "-Wl,--no-whole-archive"
+        CACHE INTERNAL "Extra link flags" FORCE)
+  endif()
 
   target_compile_definitions(${EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
   target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
