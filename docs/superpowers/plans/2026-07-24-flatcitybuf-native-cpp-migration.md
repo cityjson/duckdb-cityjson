@@ -346,8 +346,7 @@ with a real vcpkg install, not just a configure-time smoke check."
 ### Task 3: Wire root CMake to the vendored library and smoke-build
 
 **Files:**
-- Modify: `CMakeLists.txt:59-61` (source list comment), `CMakeLists.txt:96-286` (whole
-  prebuilt-download block, replaced)
+- Modify: `CMakeLists.txt:96-286` (whole prebuilt-download block, replaced)
 
 **Interfaces:**
 - Produces: `CITYJSON_HAS_FCB` compile define + `flatcitybuf::flatcitybuf` linked into
@@ -372,75 +371,73 @@ option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
 
 if(CITYJSON_ENABLE_FCB)
   find_package(flatcitybuf CONFIG REQUIRED)
-  target_link_libraries(${EXTENSION_NAME} PRIVATE flatcitybuf::flatcitybuf)
-  target_link_libraries(${LOADABLE_EXTENSION_NAME} PRIVATE flatcitybuf::flatcitybuf)
+  # Plain (non-keyword) set_property, not target_link_libraries(... PRIVATE ...): both
+  # targets already receive plain-signature target_link_libraries calls elsewhere in
+  # DuckDB's own extension_build_tools.cmake, and CMake forbids mixing plain and keyword
+  # signatures for the same target (matches the existing cjseq linking a few lines above
+  # this block, which uses the same set_property(... APPEND PROPERTY LINK_LIBRARIES ...)
+  # pattern for exactly this reason).
+  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
+  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
   target_compile_definitions(${EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
   target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
   message(STATUS "FlatCityBuf support enabled (native C++, vendored)")
 endif()
 ```
 
-- [ ] **Step 3: Temporarily stub the FCB source files so the build can prove the link works**
+- [ ] **Step 3: Build and confirm the expected failure mode**
 
-Tasks 4-7 rewrite `flatcitybuf_reader.cpp`/`flatcitybuf_table_function.cpp`/
-`cityjson_writer.cpp`'s FCB section for real. For this task only, add a minimal marker
-so `cmake --build` actually exercises the new header/library: open
-`src/cityjson/flatcitybuf_reader.cpp` and, directly after the `#include "fcb.h"` line
-(the old FFI header include), change it to `#include <fcb/reader.hpp>` and add, right
-after the existing includes, a throwaway smoke check inside the existing
-`FlatCityBufReader::GetBBox()` method body's very first line:; the rest of this file's
-old FFI code becomes dead weight for the next tasks to remove — that removal happens in
-Task 5, not here. For this task, just confirm the header resolves and the library links:
-add a translation-unit-scope static assertion right after the includes at the top of
-`src/cityjson/flatcitybuf_reader.cpp`:
+The old FFI-facing source files (`flatcitybuf_reader.cpp`, `flatcitybuf_table_function.cpp`,
+`cityjson_writer.cpp`) still `#include "fcb.h"` (the removed Rust/cxx bridge header) and
+call the old `fcb::fcb_reader_open`/etc. free functions — Tasks 5-7 rewrite them. This
+task's job is only to prove the CMake wiring itself is correct, and a real build attempt
+demonstrates that better than a synthetic smoke file: build with a `CMAKE_PREFIX_PATH`
+that can resolve `flatcitybufConfig.cmake` (either a real `vcpkg install` per Task 2 Step
+4, or -- for fast local iteration without needing the whole project's vcpkg/OpenSSL
+toolchain integration to be otherwise working -- a plain `cmake --install`'d copy of
+flatbuffers v25.9.23 + flatcitybuf built directly from the same two pinned sources the
+overlay ports use, into any local prefix):
 
-```cpp
-#include "cityjson/flatcitybuf_reader.hpp"
-#include "cityjson/city_object_utils.hpp"
-#include "cityjson/json_utils.hpp"
-#include <fcb/reader.hpp>
-
-namespace {
-// Task 3 smoke check: proves fcb/reader.hpp resolves and flatcitybuf::flatcitybuf
-// actually links. Removed in Task 5 once the file is rewritten for real.
-static_assert(sizeof(fcb::BBox) == 32, "fcb::BBox layout sanity check");
-} // namespace
+```sh
+EXT_FLAGS="-DCMAKE_PREFIX_PATH=/path/to/local/prefix" GEN=ninja make release 2>&1 | tail -80
 ```
-(Leave the rest of the file's old `fcb::fcb_reader_open(...)` FFI calls in place for
-now — they'll fail to compile against the new header, which is expected and fixed in
-Task 5. This step's only goal is proving the vendored library links; step 4 checks that
-narrowly, not a full build.)
 
-- [ ] **Step 4: Compile just the preprocessor+header-resolution step, not the full file**
+Expected: configure prints `-- FlatCityBuf support enabled (native C++, vendored)` with
+no "Could not find flatcitybuf" error, and the build proceeds well into compiling
+duckdb core + the cityjson extension's OTHER (non-FCB) source files before failing --
+specifically on `fatal error: fcb.h: No such file or directory` from
+`flatcitybuf_reader.cpp`, `flatcitybuf_table_function.cpp`, and `cityjson_writer.cpp`,
+and nowhere else. That specific, isolated failure (old files referencing a header that
+no longer exists) is the expected red state this task hands off to Tasks 5-7 -- not a
+sign anything in this task is wrong.
 
-Run: `cmake -B build/release -S . -DCMAKE_BUILD_TYPE=Release -GNinja 2>&1 | tail -40`
-Expected: configure succeeds, ending with `-- FlatCityBuf support enabled (native C++,
-vendored)` and no "Could not find flatcitybuf" error. (The full file will still fail to
-*compile* past this point because of the old FFI calls further down — that's expected;
-this step only proves configure-time `find_package` resolution succeeded.)
+Note: if a full vcpkg-toolchain build (`VCPKG_TOOLCHAIN_PATH` set per Task 2 Step 4) hits
+unrelated `OpenSSL::SSL` link errors on OTHER targets (`parquet_loadable_extension`,
+`core_functions_loadable_extension`, `shell`, ...), that is a **pre-existing bug in the
+code this task deletes**, not something this task introduces: the old block's
+`FCB_PLATFORM_LIBS` on Linux included `OpenSSL::SSL OpenSSL::Crypto` and fed them into
+the global `DUCKDB_EXTRA_LINK_FLAGS` CACHE variable that `extension_build_tools.cmake`
+appends to *every* loadable extension's link line -- on a from-scratch configure, other
+extensions' subdirectories can be processed before this extension's own
+`find_package(OpenSSL REQUIRED)` (further down this same file) has created the
+`OpenSSL::SSL` imported target, so linking them fails. This task's replacement code
+never touches `DUCKDB_EXTRA_LINK_FLAGS` at all -- confirm by reproducing the failure on
+the pre-migration `CMakeLists.txt` too (e.g. via `-DCITYJSON_ENABLE_FCB=OFF`, which
+skips the whole block and lets the rest of the project build cleanly, proving the bug is
+scoped to the old block and not to anything else in this project).
 
-Run: `ninja -C build/release cityjson_extension 2>&1 | head -60`
-Expected: fails, but specifically on the OLD `fcb::fcb_reader_open` calls further down
-in the file (undeclared in the new `fcb::` namespace), not on `#include <fcb/reader.hpp>`
-or the `static_assert` — confirming the header and library resolved correctly and the
-only remaining problem is the (expected, not-yet-rewritten) old API calls.
-
-- [ ] **Step 5: Remove the smoke check**
-
-Revert the `static_assert` block added in Step 3 (Task 5 will replace the whole file's
-FCB-facing includes properly). Keep the `#include <fcb/reader.hpp>` swap-in — Task 5
-starts from there.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add CMakeLists.txt src/cityjson/flatcitybuf_reader.cpp
+git add CMakeLists.txt
 git commit -m "build(fcb): link vendored flatcitybuf, drop prebuilt-binary download
 
 Replaces the per-OS/arch/glibc prebuilt libfcb_cpp.a download with
 find_package(flatcitybuf CONFIG REQUIRED) against the vcpkg overlay port
 added in the previous commit. CITYJSON_ENABLE_FCB now defaults ON
-everywhere -- no more platform restrictions."
+everywhere -- no more platform restrictions. Also removes the old
+DUCKDB_EXTRA_LINK_FLAGS global-pollution hack the Rust static lib needed
+-- ordinary CMake target linking is sufficient for a real CMake package."
 ```
 
 ---
