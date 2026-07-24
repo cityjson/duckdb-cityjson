@@ -341,6 +341,13 @@ extension-ci-tools/, a pinned duckdb submodule we don't edit. Verified
 with a real vcpkg install, not just a configure-time smoke check."
 ```
 
+**Addendum (discovered while validating Task 7's full link, not this task):** both
+portfiles' `vcpkg_cmake_configure` OPTIONS also need
+`-DCMAKE_POSITION_INDEPENDENT_CODE=ON` -- the `x64-linux` triplet builds static libs
+without `-fPIC` by default, but these end up linked into a DuckDB *loadable* extension
+(a shared object), which fails to link without it. See Task 7's commit for the actual
+final portfile state.
+
 ---
 
 ### Task 3: Wire root CMake to the vendored library and smoke-build
@@ -439,6 +446,19 @@ everywhere -- no more platform restrictions. Also removes the old
 DUCKDB_EXTRA_LINK_FLAGS global-pollution hack the Rust static lib needed
 -- ordinary CMake target linking is sufficient for a real CMake package."
 ```
+
+**Addendum (discovered while validating Task 7's full link, not this task):** the
+`DUCKDB_EXTRA_LINK_FLAGS` removal above turned out to be premature -- it's still needed
+(that CACHE variable is DuckDB's own sanctioned mechanism for propagating extra
+libraries into the shell/duckdb/plan_serializer binaries, which link extensions as raw
+archive paths rather than through normal CMake target dependencies), just pointed at
+`flatcitybuf::flatcitybuf` instead of literal OpenSSL strings, and wrapped in
+`-Wl,--whole-archive`/`--no-whole-archive` (its insertion point ends up before
+`libcityjson_extension.a` in the link line, which a single-pass linker can't otherwise
+resolve). `find_package` also needed the `GLOBAL` keyword (CMake 3.24+) so sibling
+directories can see the imported target at all. See Task 7's commit for the actual
+final `CMakeLists.txt` state -- this task's snippet above reflects the design's
+starting point, not where it ended up after full-link validation.
 
 ---
 
