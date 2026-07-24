@@ -142,7 +142,22 @@ bool FlatCityBufReader::MatchesAttrQueryPostFilter(const CityJSONFeature &featur
 				all_match = false;
 				break;
 			}
-			int cmp = fcb::compare_keys(feature_value.value(), cond.value);
+			// fcb::compare_keys compares the ENCODED (truncated-to-50/100-byte) form for
+			// string kinds, matching what the on-disk index itself stores and orders by.
+			// That's fine for equality (two strings sharing a >50-byte prefix that also
+			// happen to be equal there are indistinguishable to the index either way), but
+			// WRONG for relational comparisons: two different strings sharing the first 50
+			// bytes would compare equal here even though their full values differ. Since
+			// KeyValue::from_string always retains the original, untruncated string (see
+			// key.hpp), compare that directly here instead -- unlike encode_key/compare_keys,
+			// this post-filter isn't bound to the on-disk index's own truncated ordering.
+			int cmp;
+			if (cond.value.kind() == fcb::KeyKind::String20 || cond.value.kind() == fcb::KeyKind::String50 ||
+			    cond.value.kind() == fcb::KeyKind::String100) {
+				cmp = feature_value.value().original_string().compare(cond.value.original_string());
+			} else {
+				cmp = fcb::compare_keys(feature_value.value(), cond.value);
+			}
 			bool ok = false;
 			switch (cond.op) {
 			case fcb::Operator::Eq:

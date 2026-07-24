@@ -15,6 +15,8 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include <fcb/generated/header_generated.h>
 #include <algorithm>
+#include <limits>
+#include <type_traits>
 
 namespace duckdb {
 namespace cityjson {
@@ -40,30 +42,59 @@ std::optional<fcb::Operator> ToFcbOperator(ExpressionType type, bool column_on_r
 	}
 }
 
+// Narrows `raw` into T, checking range first instead of a bare static_cast: a
+// signed-to-unsigned narrowing cast (e.g. int64_t -1 -> uint64_t) is well-defined
+// C++ (wraps to a huge positive value) but is NEVER the intended comparison value
+// for a predicate like `WHERE n > -1` against a column FlatCityBuf stores as ULong
+// -- it would translate into `n > UINT64_MAX`, which the index correctly reports as
+// matching nothing. Since attribute pushdown never erases the original filter
+// expression (see FlatCityBufPushdownComplexFilter's own comment on that), skipping
+// pushdown here is always safe: DuckDB still evaluates the real predicate against
+// every row, this only forgoes the index-assisted skip for this one condition.
+template <typename T, typename MakeFn>
+std::optional<fcb::KeyValue> NarrowInt(int64_t raw, MakeFn make) {
+	if constexpr (std::is_signed_v<T>) {
+		if (raw < static_cast<int64_t>(std::numeric_limits<T>::min()) ||
+		    raw > static_cast<int64_t>(std::numeric_limits<T>::max())) {
+			return std::nullopt;
+		}
+	} else {
+		if (raw < 0) {
+			return std::nullopt;
+		}
+		if (sizeof(T) < sizeof(int64_t) &&
+		    static_cast<uint64_t>(raw) > static_cast<uint64_t>(std::numeric_limits<T>::max())) {
+			return std::nullopt;
+		}
+	}
+	return make(static_cast<T>(raw));
+}
+
 // Types a DuckDB constant against the column's ON-DISK type, mirroring
 // upstream's query_attributes.cpp make_value(). Getting this wrong doesn't
 // throw -- the bytes are reinterpreted -- so every branch pulls the constant
-// via the DuckDB getter that matches the on-disk type's own category.
+// via the DuckDB getter that matches the on-disk type's own category, and every
+// integer branch range-checks before narrowing (see NarrowInt).
 std::optional<fcb::KeyValue> BuildKeyValue(const fcb::ColumnInfo &col, const Value &constant) {
 	switch (static_cast<::ColumnType>(col.type)) {
 	case ::ColumnType::Byte:
-		return fcb::KeyValue::from_i8(static_cast<int8_t>(constant.GetValue<int64_t>()));
+		return NarrowInt<int8_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_i8);
 	case ::ColumnType::UByte:
-		return fcb::KeyValue::from_u8(static_cast<uint8_t>(constant.GetValue<int64_t>()));
+		return NarrowInt<uint8_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_u8);
 	case ::ColumnType::Bool:
 		return fcb::KeyValue::from_bool(constant.GetValue<bool>());
 	case ::ColumnType::Short:
-		return fcb::KeyValue::from_i16(static_cast<int16_t>(constant.GetValue<int64_t>()));
+		return NarrowInt<int16_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_i16);
 	case ::ColumnType::UShort:
-		return fcb::KeyValue::from_u16(static_cast<uint16_t>(constant.GetValue<int64_t>()));
+		return NarrowInt<uint16_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_u16);
 	case ::ColumnType::Int:
-		return fcb::KeyValue::from_i32(static_cast<int32_t>(constant.GetValue<int64_t>()));
+		return NarrowInt<int32_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_i32);
 	case ::ColumnType::UInt:
-		return fcb::KeyValue::from_u32(static_cast<uint32_t>(constant.GetValue<int64_t>()));
+		return NarrowInt<uint32_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_u32);
 	case ::ColumnType::Long:
-		return fcb::KeyValue::from_i64(constant.GetValue<int64_t>());
+		return NarrowInt<int64_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_i64);
 	case ::ColumnType::ULong:
-		return fcb::KeyValue::from_u64(static_cast<uint64_t>(constant.GetValue<int64_t>()));
+		return NarrowInt<uint64_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_u64);
 	case ::ColumnType::Float:
 		return fcb::KeyValue::from_f32(static_cast<float>(constant.GetValue<double>()));
 	case ::ColumnType::Double:

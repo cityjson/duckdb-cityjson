@@ -55,3 +55,36 @@ query I
 SELECT id FROM read_flatcitybuf('__TEST_DIR__/multi_object.fcb') WHERE height > 15 ORDER BY id;
 ----
 b2
+
+# Regression: BuildKeyValue must range-check a constant before narrowing it into the
+# column's on-disk (possibly unsigned) integer type, rather than let a signed-to-unsigned
+# static_cast silently wrap. FlatCityBuf stores this all-non-negative "n" column as an
+# unsigned type; naively casting the constant -1 in `n > -1` would produce UINT64_MAX,
+# making the index (wrongly) report that nothing matches. Every row should match, since
+# -1 is less than every non-negative n.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_unsigned_range.city.jsonl'))
+TO '__TEST_DIR__/unsigned_range.fcb' (FORMAT flatcitybuf, attr_index 'n', branching_factor 4);
+
+query I
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/unsigned_range.fcb') WHERE n > -1 ORDER BY feature_id;
+----
+f1
+f2
+
+# Regression: the combined bbox+attribute post-filter (MatchesAttrQueryPostFilter) must
+# compare the FULL, untruncated string value for relational (non-equality) operators,
+# not fcb::compare_keys' encoded/truncated form (String50 truncates at 50 bytes). f1 and
+# f2's category values share the first 50 characters and differ only in the 51st; with
+# both features in the query bbox, only f2 ("...c") should satisfy > "...b" -- if the
+# comparison used the truncated encoding, both would appear equal and neither would match.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_string_truncation.city.jsonl'))
+TO '__TEST_DIR__/string_truncation.fcb' (FORMAT flatcitybuf, attr_index 'category', branching_factor 4);
+
+query I
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/string_truncation.fcb', min_x := 0, min_y := 0, max_x := 30, max_y := 30)
+WHERE category > 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAb'
+ORDER BY feature_id;
+----
+f2

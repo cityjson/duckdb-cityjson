@@ -8,6 +8,7 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/geometry.hpp"
+#include <limits>
 
 namespace duckdb {
 namespace cityjson {
@@ -257,6 +258,21 @@ static std::optional<std::array<double, 3>> ParseDoubleTriple(const std::string 
 	return std::nullopt;
 }
 
+#ifdef CITYJSON_HAS_FCB
+// branching_factor/index_node_size are BIGINT options narrowed into a uint16_t for
+// fcb::FcbWriterOptions -- validate the range first rather than let a plain
+// static_cast<uint16_t> silently wrap (e.g. 65536 -> 0, disabling the tree entirely;
+// a negative value -> some large, unintended positive size). A node/branching factor
+// below 2 isn't a valid tree shape either.
+static uint16_t ParseTreeTuningOption(const Value &val, const std::string &option_name) {
+	auto raw = val.GetValue<int64_t>();
+	if (raw < 2 || raw > std::numeric_limits<uint16_t>::max()) {
+		throw BinderException(option_name + " must be between 2 and 65535, got " + std::to_string(raw));
+	}
+	return static_cast<uint16_t>(raw);
+}
+#endif
+
 // ============================================================
 // COPY TO Bind (shared between cityjson and cityjsonseq)
 // ============================================================
@@ -319,9 +335,9 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 			}
 			bind_data->fcb_attr_index_columns = columns;
 		} else if (loption == "branching_factor") {
-			bind_data->fcb_branching_factor = static_cast<uint16_t>(val.GetValue<int64_t>());
+			bind_data->fcb_branching_factor = ParseTreeTuningOption(val, "branching_factor");
 		} else if (loption == "index_node_size") {
-			bind_data->fcb_index_node_size = static_cast<uint16_t>(val.GetValue<int64_t>());
+			bind_data->fcb_index_node_size = ParseTreeTuningOption(val, "index_node_size");
 		}
 	}
 

@@ -29,3 +29,18 @@ query I
 SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/write_options_missing_col.fcb');
 ----
 3
+
+# Regression: branching_factor/index_node_size are BIGINT options narrowed into a
+# uint16_t -- an out-of-range value must be rejected, not silently wrapped (e.g.
+# 70000 -> 4464, or a negative value -> some large unintended positive size).
+statement error
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
+TO '__TEST_DIR__/write_options_bad_bf.fcb' (FORMAT flatcitybuf, attr_index 'height', branching_factor 70000);
+----
+branching_factor must be between 2 and 65535
+
+statement error
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
+TO '__TEST_DIR__/write_options_bad_ns.fcb' (FORMAT flatcitybuf, index_node_size -5);
+----
+index_node_size must be between 2 and 65535

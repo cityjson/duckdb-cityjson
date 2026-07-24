@@ -1,0 +1,3 @@
+{"type":"CityJSON","version":"2.0","transform":{"scale":[1.0,1.0,1.0],"translate":[0.0,0.0,0.0]}}
+{"type":"CityJSONFeature","id":"f1","CityObjects":{"b1":{"type":"Building","attributes":{"category":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAb"},"geometry":[{"type":"Solid","lod":"2.2","boundaries":[[[[0,1,2,3]]]]}]}},"vertices":[[0.0,0.0,0.0],[10.0,0.0,0.0],[10.0,10.0,0.0],[0.0,10.0,0.0]]}
+{"type":"CityJSONFeature","id":"f2","CityObjects":{"b2":{"type":"Building","attributes":{"category":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAc"},"geometry":[{"type":"Solid","lod":"2.2","boundaries":[[[[0,1,2,3]]]]}]}},"vertices":[[20.0,20.0,0.0],[30.0,20.0,0.0],[30.0,30.0,0.0],[20.0,30.0,0.0]]}
