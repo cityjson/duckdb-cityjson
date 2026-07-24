@@ -1,0 +1,104 @@
+# name: test/sql/cityjson_copy_struct_properties.test
+# description: COPY TO cityjson reconstructs semantics from a CityParquet STRUCT geometry_properties (not only VARCHAR JSON)
+# group: [sql]
+
+require cityjson
+
+# A CityParquet package stores geometry_properties_lod* as a native STRUCT
+# (spec §8: STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[],
+# shells INTEGER[][])), whereas read_cityjson emits the same payload as VARCHAR
+# JSON. COPY TO cityjson must reconstruct CityJSON semantics from either form.
+# Regression: when the payload was a STRUCT the writer silently dropped ALL
+# semantics (ParseJson choked on DuckDB's struct-repr string).
+
+# Build a wide CityParquet row: geometry_lod2_2 (WKB) + a STRUCT
+# geometry_properties_lod2_2, borrowing a real 6-face solid from the fixture.
+statement ok
+CREATE TABLE cp AS
+SELECT id, feature_id, object_type,
+       geometry AS geometry_lod2_2,
+       {
+         'type': 'Solid',
+         'surfaces': '[{"type":"GroundSurface"},{"type":"RoofSurface"},{"type":"WallSurface"},{"type":"WallSurface"}]',
+         'face_semantics': [0, 1, 2, 2, 2, 3]::INTEGER[],
+         'shells': [[6]]::INTEGER[][]
+       } AS geometry_properties_lod2_2
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL AND geometry_properties LIKE '%surfaces%'
+LIMIT 1;
+
+statement ok
+COPY (SELECT * FROM cp) TO '__TEST_DIR__/cp_struct.city.jsonl' (FORMAT cityjsonseq);
+
+# The exported geometry keeps its LoD (2.2, from the column-name suffix) …
+query I
+SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL;
+----
+1
+
+# … and the semantic surfaces reconstructed from the STRUCT survive the round trip.
+query I
+SELECT geometry_properties LIKE '%RoofSurface%'
+FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL;
+----
+true
+
+# Exact face_semantics values survive (not corrupted, re-typed, or NULL-mangled).
+query I
+SELECT geometry_properties LIKE '%"face_semantics":[0,1,2,2,2,3]%'
+FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL;
+----
+true
+
+# Multi-shell solids: cityparquet-rs nests shells one array per solid ([[3,3]] for a
+# single 2-shell Solid). This must re-nest into a genuine 2-shell solid — re-emitted
+# shells [3,3] — not collapse to the single-shell fallback [6]. Guards both the
+# signed-integer and the over-nesting bugs, which a single-shell case cannot detect.
+statement ok
+CREATE TABLE cp2 AS
+SELECT id, feature_id, object_type,
+       geometry AS geometry_lod2_2,
+       {
+         'type': 'Solid',
+         'surfaces': '[{"type":"GroundSurface"},{"type":"RoofSurface"}]',
+         'face_semantics': [0, 0, 0, 1, 1, 1]::INTEGER[],
+         'shells': [[3, 3]]::INTEGER[][]
+       } AS geometry_properties_lod2_2
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL AND geometry_properties LIKE '%surfaces%'
+LIMIT 1;
+
+statement ok
+COPY (SELECT * FROM cp2) TO '__TEST_DIR__/cp2.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT geometry_properties LIKE '%"shells":[3,3]%'
+   AND geometry_properties LIKE '%"face_semantics":[0,0,0,1,1,1]%'
+FROM read_cityjsonseq('__TEST_DIR__/cp2.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL;
+----
+true
+
+# The VARCHAR-JSON payload path (what read_cityjson emits) must keep working — the
+# fixture's own JSON-text properties round-trip their semantics unchanged.
+statement ok
+CREATE TABLE cp_json AS
+SELECT id, feature_id, object_type,
+       geometry AS geometry_lod2_2,
+       geometry_properties AS geometry_properties_lod2_2
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL AND geometry_properties LIKE '%surfaces%'
+LIMIT 1;
+
+statement ok
+COPY (SELECT * FROM cp_json) TO '__TEST_DIR__/cp_json.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT geometry_properties LIKE '%RoofSurface%'
+FROM read_cityjsonseq('__TEST_DIR__/cp_json.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL;
+----
+true

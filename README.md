@@ -358,9 +358,13 @@ The `COPY TO` statement requires these columns in the input query:
 | `children`    | No       | Child object IDs                   |
 | `parents`     | No       | Parent object IDs                  |
 | `geometry`    | No       | WKB geometry or geometry struct    |
-| `geometry_properties` | No | Geometry metadata JSON       |
+| `geometry_properties` | No | Geometry metadata — JSON text **or** a CityParquet spec §8 STRUCT (`STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])`); either form reconstructs semantics/shells |
 
-All other columns are written as CityJSON attributes.
+All other columns are written as CityJSON attributes. The wide CityParquet layout
+(`geometry_lodX_Y` + `geometry_properties_lodX_Y` per LoD, as written by
+`cityparquet-rs`) round-trips directly: `COPY (SELECT * FROM read_parquet('pkg.parquet'))
+TO 'out.city.jsonl' (FORMAT cityjsonseq)` emits one multi-LoD CityObject per feature with
+its semantics intact.
 
 ### Round-Trip Example
 
