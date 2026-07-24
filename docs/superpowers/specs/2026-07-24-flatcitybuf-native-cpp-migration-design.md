@@ -177,7 +177,10 @@ public:
   void SetBBoxFilter(std::array<double, 4> bbox);              // min_x,min_y,max_x,max_y
   void SetAttrQueryFilter(fcb::AttrQuery query, bool exact_index_only = false);
   std::vector<std::string> IndexedAttributeColumns() const;    // for pushdown eligibility checks
-  const fcb::HeaderView &Header() const;                       // for KeyValue typing during pushdown
+  fcb::HeaderView Header() const;                              // by value: HeaderView owns its own
+                                                                // backing buffer (shared_ptr), and this
+                                                                // reader reopens a fresh fcb::FcbReader
+                                                                // per call rather than keeping one alive
 
   // CityJSONReader overrides unchanged in signature: ReadMetadata/ReadNthChunk/
   // ReadAllChunks/ReadNFeatures/Columns — internally now open a fresh fcb::FcbReader

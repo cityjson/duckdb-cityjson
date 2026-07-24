@@ -1,0 +1,18 @@
+{
+  "name": "flatbuffers",
+  "version": "25.9.23",
+  "port-version": 0,
+  "description": "Memory Efficient Serialization Library (pinned to the exact version flatcitybuf's pre-generated headers require -- their static_assert checks major/minor/revision exactly)",
+  "homepage": "https://github.com/google/flatbuffers",
+  "license": "Apache-2.0",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

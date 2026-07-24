@@ -26,6 +26,9 @@ rationale.
 
 - Pin flatcitybuf to commit `72e5b68d469aa00a75ccba23780e2063751e3cff` (unreleased, no
   `v0.8.0` tag exists yet — see spec §2, §9).
+- Pin flatbuffers to exactly `v25.9.23` via its own overlay port (Task 2) — flatcitybuf's
+  pre-generated headers hard-`static_assert` on that exact major/minor/revision, and
+  vcpkg's registry version is newer, so a plain `"flatbuffers"` dependency does not work.
 - Do not edit anything under `extension-ci-tools/` — it is a git submodule pinned to
   `duckdb/extension-ci-tools@v1.5.4`. The new overlay port goes in a repo-owned
   `vcpkg_ports/` directory instead (spec §5.1).
@@ -121,9 +124,12 @@ Expected: both commands succeed with no output (COPY statements are silent on su
 Run:
 ```sh
 ./build/release/duckdb -c "SELECT COUNT(*) FROM read_flatcitybuf('test/data/sample.fcb');"
-./build/release/duckdb -c "SELECT id FROM read_flatcitybuf('test/data/fcb_bbox_attr.fcb') ORDER BY id;"
+./build/release/duckdb -c "SELECT feature_id FROM read_flatcitybuf('test/data/fcb_bbox_attr.fcb') ORDER BY feature_id;"
 ```
-Expected: `2` for the first; `f1`, `f2`, `f3` for the second.
+Expected: `2` for the first; `f1`, `f2`, `f3` for the second. (Note: `read_flatcitybuf`'s `id`
+column is the CityObject id -- `b1`/`b2`/`b3` here -- while `feature_id` is the
+CityJSONFeature id this fixture's ground truth is written in terms of; every test in this
+plan that asserts against `f1`/`f2`/`f3` queries `feature_id`, not `id`.)
 
 - [ ] **Step 5: Commit**
 
@@ -140,16 +146,81 @@ writer landing first."
 
 ### Task 2: Add the flatcitybuf vcpkg overlay port
 
+**Discovered during execution, folded into this task (not in the original design):**
+flatcitybuf's pre-generated `include/fcb/generated/*.h` headers carry a hard
+`static_assert(FLATBUFFERS_VERSION_MAJOR == 25 && FLATBUFFERS_VERSION_MINOR == 9 &&
+FLATBUFFERS_VERSION_REVISION == 23, ...)` — an EXACT version match, not just a minimum.
+vcpkg's registry `flatbuffers` port currently tracks a much newer release (25.12.19 at
+the time of writing), so a plain `"flatbuffers"` dependency resolves to a version that
+fails this assertion. This task therefore vendors flatbuffers too, via its own overlay
+port pinned to the exact required tag (`v25.9.23`), plus a version `override` and
+`builtin-baseline` in the root manifest to make vcpkg accept it. Verified end-to-end
+locally by bootstrapping vcpkg fresh and running a real `vcpkg install`.
+
 **Files:**
-- Create: `vcpkg_ports/flatcitybuf/vcpkg.json`
-- Create: `vcpkg_ports/flatcitybuf/portfile.cmake`
+- Create: `vcpkg_ports/flatbuffers/vcpkg.json`, `vcpkg_ports/flatbuffers/portfile.cmake`
+- Create: `vcpkg_ports/flatcitybuf/vcpkg.json`, `vcpkg_ports/flatcitybuf/portfile.cmake`
 - Modify: `vcpkg.json` (root)
 
 **Interfaces:**
-- Produces: `find_package(flatcitybuf CONFIG REQUIRED)` resolvable once this port is
-  registered as an overlay (Task 3 wires the CMake side that calls it).
+- Produces: `find_package(flatcitybuf CONFIG REQUIRED)` and `find_package(flatbuffers
+  CONFIG REQUIRED)` both resolvable through vcpkg once `VCPKG_TOOLCHAIN_PATH` is set
+  (Task 3 wires the CMake side that calls them).
 
-- [ ] **Step 1: Write the port manifest**
+- [ ] **Step 1: Write the flatbuffers port, pinned to the exact version flatcitybuf needs**
+
+Create `vcpkg_ports/flatbuffers/vcpkg.json`:
+
+```json
+{
+  "name": "flatbuffers",
+  "version": "25.9.23",
+  "port-version": 0,
+  "description": "Memory Efficient Serialization Library (pinned to the exact version flatcitybuf's pre-generated headers require -- their static_assert checks major/minor/revision exactly)",
+  "homepage": "https://github.com/google/flatbuffers",
+  "license": "Apache-2.0",
+  "dependencies": [
+    { "name": "vcpkg-cmake", "host": true },
+    { "name": "vcpkg-cmake-config", "host": true }
+  ]
+}
+```
+
+Create `vcpkg_ports/flatbuffers/portfile.cmake`:
+
+```cmake
+vcpkg_from_github(
+    OUT_SOURCE_PATH SOURCE_PATH
+    REPO google/flatbuffers
+    REF v25.9.23
+    SHA512 259ae6c0b024c19c882d87c93d6ba156c15f14a61b11846170ac1b9e9c051cd3e80ae93cfe20ccb1aa30f2085cdbd4127ffa229b42cabbfed6b035ca4851c127
+)
+
+vcpkg_cmake_configure(
+    SOURCE_PATH "${SOURCE_PATH}"
+    OPTIONS
+        -DFLATBUFFERS_BUILD_TESTS=OFF
+        -DFLATBUFFERS_BUILD_FLATC=OFF
+        -DFLATBUFFERS_BUILD_FLATHASH=OFF
+        -DFLATBUFFERS_BUILD_FLATLIB=ON
+        -DFLATBUFFERS_BUILD_SHAREDLIB=OFF
+)
+
+vcpkg_cmake_install()
+vcpkg_cmake_config_fixup(PACKAGE_NAME flatbuffers CONFIG_PATH lib/cmake/flatbuffers)
+vcpkg_copy_pdbs()
+
+file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
+
+file(INSTALL "${SOURCE_PATH}/LICENSE" DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}" RENAME copyright)
+```
+
+(The SHA512 above is the real, verified hash for the `v25.9.23` GitHub archive — resolved
+by running `vcpkg install` against a `SHA512 0` placeholder and pasting in the hash it
+reported, the standard vcpkg workflow. `LICENSE`, not `LICENSE.txt`, is the actual
+filename at this tag — verified by inspecting the extracted source tree.)
+
+- [ ] **Step 2: Write the flatcitybuf port**
 
 Create `vcpkg_ports/flatcitybuf/vcpkg.json`:
 
@@ -164,19 +235,11 @@ Create `vcpkg_ports/flatcitybuf/vcpkg.json`:
   "dependencies": [
     "flatbuffers",
     "nlohmann-json",
-    {
-      "name": "vcpkg-cmake",
-      "host": true
-    },
-    {
-      "name": "vcpkg-cmake-config",
-      "host": true
-    }
+    { "name": "vcpkg-cmake", "host": true },
+    { "name": "vcpkg-cmake-config", "host": true }
   ]
 }
 ```
-
-- [ ] **Step 2: Write the portfile**
 
 Create `vcpkg_ports/flatcitybuf/portfile.cmake`:
 
@@ -185,7 +248,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cityjson/flatcitybuf
     REF 72e5b68d469aa00a75ccba23780e2063751e3cff
-    SHA512 0
+    SHA512 779f0be2840d7b7869a165ae855821537c4ee069ef76c1f904c4ae0f8d548a0d3ac372009324864c4d4e8f02f23fa1528e04d921fb3758f683e081024e2ab131
 )
 
 vcpkg_cmake_configure(
@@ -206,21 +269,21 @@ file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
 file(INSTALL "${SOURCE_PATH}/LICENSE" DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}" RENAME copyright)
 ```
 
-`SHA512 0` is a deliberate vcpkg placeholder — the first configure attempt fails and
-prints the real hash, which Step 4 pastes in.
+- [ ] **Step 3: Register both overlay ports, the override, and the baseline in the root manifest**
 
-- [ ] **Step 3: Register the overlay port and the new dependency in the root manifest**
-
-Read `vcpkg.json` first (Read tool), then edit its `dependencies` array to add
-`"flatbuffers"` and its `vcpkg-configuration.overlay-ports` array to add
-`"./vcpkg_ports"` as a second entry, so the result is:
+Edit `vcpkg.json` (root) to:
 
 ```json
 {
+        "builtin-baseline": "40f3c709db80acf154ac4b17a1f83c564ebd022e",
         "dependencies": [
                 "openssl",
                 "nlohmann-json",
-                "flatbuffers"
+                "flatbuffers",
+                "flatcitybuf"
+        ],
+        "overrides": [
+                { "name": "flatbuffers", "version": "25.9.23" }
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [
@@ -234,27 +297,48 @@ Read `vcpkg.json` first (Read tool), then edit its `dependencies` array to add
 }
 ```
 
-- [ ] **Step 4: Resolve the real SHA512**
+`builtin-baseline` is required by vcpkg whenever a manifest uses `"overrides"` — it pins
+which snapshot of the vcpkg ports registry (a commit in `microsoft/vcpkg`) governs
+version resolution. The value above is that repo's HEAD as of this migration; it does
+not need to match whatever `VCPKG_ROOT` a given CI runner happens to check out --
+`builtin-baseline` only needs to be a commit that exists in the vcpkg repo's history,
+which HEAD always is. `flatcitybuf` must be listed explicitly in `dependencies` --
+registering an overlay port only makes its definition available, it does not by itself
+mark it as a project dependency to actually install.
 
-Run (from repo root, with `VCPKG_ROOT` set to wherever this project's vcpkg checkout
-lives — check `build/release/CMakeCache.txt` for `VCPKG_ROOT` or `Z_VCPKG_ROOT_DIR` if
-unsure):
+- [ ] **Step 4: Verify with a real vcpkg install**
+
+This repo's own build (`GEN=ninja make`) only routes through vcpkg when
+`VCPKG_TOOLCHAIN_PATH` is set (see `extension-ci-tools/makefiles/duckdb_extension.Makefile`
+line ~79 and `extension-ci-tools/makefiles/vcpkg.Makefile`) -- otherwise it silently
+falls back to system-installed packages (confirmed: this repo's pre-existing
+`build/release` was configured that way, with `nlohmann_json` resolved from
+`/usr/lib/cmake/nlohmann_json`, not vcpkg at all). To prove the manifest above actually
+resolves, bootstrap a throwaway vcpkg and run it directly against this repo's manifest,
+independent of the extension's own build:
+
 ```sh
-"$VCPKG_ROOT/vcpkg" install flatcitybuf --overlay-ports=./vcpkg_ports --overlay-ports=./extension-ci-tools/vcpkg_ports 2>&1 | tail -30
+git clone --depth 1 https://github.com/microsoft/vcpkg.git /tmp/vcpkg-bootstrap
+/tmp/vcpkg-bootstrap/bootstrap-vcpkg.sh -disableMetrics
+/tmp/vcpkg-bootstrap/vcpkg install --overlay-ports=./vcpkg_ports --triplet x64-linux
 ```
-Expected: fails with an "Actual hash" line. Copy that hash into `portfile.cmake`'s
-`SHA512` field, replacing the `0` placeholder, then rerun the same command.
-Expected: succeeds this time, ending with `flatcitybuf is installed`.
+Expected: `flatbuffers:x64-linux@25.9.23`, `flatcitybuf:x64-linux@0.8.0`,
+`nlohmann-json`, and `openssl` all build and install successfully, ending in
+`All requested installations completed successfully`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add vcpkg_ports vcpkg.json
-git commit -m "build(fcb): add repo-owned vcpkg overlay port for native flatcitybuf
+git commit -m "build(fcb): add repo-owned vcpkg overlay ports for native flatcitybuf + a pinned flatbuffers
 
-Pinned to upstream commit 72e5b68d (unreleased — no v0.8.0 tag exists yet).
-Lives outside extension-ci-tools/, which is a pinned duckdb submodule we
-don't edit."
+flatcitybuf's pre-generated headers require flatbuffers EXACTLY v25.9.23
+(a hard static_assert on major/minor/revision) -- vcpkg's registry
+tracks a newer release, so flatbuffers is vendored via its own overlay
+port too, at the exact required tag. Both ports pinned to unreleased/
+fixed commits (flatcitybuf has no v0.8.0 tag yet); both live outside
+extension-ci-tools/, a pinned duckdb submodule we don't edit. Verified
+with a real vcpkg install, not just a configure-time smoke check."
 ```
 
 ---
@@ -566,7 +650,7 @@ SELECT COUNT(*) FROM read_flatcitybuf('test/data/sample.fcb');
 2
 
 query I
-SELECT id FROM read_flatcitybuf('test/data/fcb_bbox_attr.fcb') ORDER BY id;
+SELECT feature_id FROM read_flatcitybuf('test/data/fcb_bbox_attr.fcb') ORDER BY feature_id;
 ----
 f1
 f2
@@ -1113,7 +1197,7 @@ SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/native_write.fcb');
 2
 
 query I
-SELECT id FROM read_flatcitybuf('__TEST_DIR__/native_write.fcb') ORDER BY id;
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/native_write.fcb') ORDER BY feature_id;
 ----
 feature1
 feature2
@@ -1375,9 +1459,9 @@ statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
 TO '__TEST_DIR__/bbox_query.fcb' (FORMAT flatcitybuf);
 
-# bbox covering only f2
+# bbox covering only f2 (id is the CityObject id -- b1/b2/b3 here -- feature_id is f1/f2/f3)
 query I
-SELECT id FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 50, min_y := 50, max_x := 150, max_y := 150) ORDER BY id;
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 50, min_y := 50, max_x := 150, max_y := 150) ORDER BY feature_id;
 ----
 f2
 
@@ -1882,16 +1966,17 @@ statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
 TO '__TEST_DIR__/attr_query.fcb' (FORMAT flatcitybuf, attr_index 'height,category', branching_factor 4);
 
-# indexed numeric column, pushed down
+# indexed numeric column, pushed down (id is the CityObject id -- b1/b2/b3 here --
+# feature_id is f1/f2/f3, which is what this fixture's ground truth is written against)
 query I
-SELECT id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb') WHERE height > 15 ORDER BY id;
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb') WHERE height > 15 ORDER BY feature_id;
 ----
 f2
 f3
 
 # indexed string column, pushed down
 query I
-SELECT id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb') WHERE category = 'A' ORDER BY id;
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb') WHERE category = 'A' ORDER BY feature_id;
 ----
 f1
 f3
@@ -1902,14 +1987,14 @@ COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
 TO '__TEST_DIR__/attr_query_noindex.fcb' (FORMAT flatcitybuf);
 
 query I
-SELECT id FROM read_flatcitybuf('__TEST_DIR__/attr_query_noindex.fcb') WHERE height > 15 ORDER BY id;
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/attr_query_noindex.fcb') WHERE height > 15 ORDER BY feature_id;
 ----
 f2
 f3
 
 # combined bbox + attribute WHERE: only f2 is in both the bbox and height > 15
 query I
-SELECT id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb', min_x := 50, min_y := 50, max_x := 150, max_y := 150) WHERE height > 15 ORDER BY id;
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb', min_x := 50, min_y := 50, max_x := 150, max_y := 150) WHERE height > 15 ORDER BY feature_id;
 ----
 f2
 ```

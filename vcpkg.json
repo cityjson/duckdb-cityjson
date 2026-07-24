@@ -1,11 +1,18 @@
 {
+        "builtin-baseline": "84bab45d415d22042bd0b9081aea57f362da3f35",
         "dependencies": [
                 "openssl",
-                "nlohmann-json"
+                "nlohmann-json",
+                "flatbuffers",
+                "flatcitybuf"
+        ],
+        "overrides": [
+                { "name": "flatbuffers", "version": "25.9.23" }
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [
-                        "./extension-ci-tools/vcpkg_ports"
+                        "./extension-ci-tools/vcpkg_ports",
+                        "./vcpkg_ports"
                 ],
                 "overlay-triplets": [
                         "./extension-ci-tools/toolchains"
