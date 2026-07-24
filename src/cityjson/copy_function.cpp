@@ -420,6 +420,74 @@ static json ValueToJson(const Value &val) {
 	}
 }
 
+// Convert a DuckDB LIST value (possibly nested, possibly with NULL elements) to
+// json, mapping SQL NULL elements to json null so a face_semantics entry with no
+// surface round-trips as `null` rather than `0`. Integer leaves cast to int64.
+static json ListValueToJson(const Value &v) {
+	if (v.IsNull()) {
+		return json(nullptr);
+	}
+	if (v.type().id() == LogicalTypeId::LIST) {
+		json arr = json::array();
+		for (auto &e : ListValue::GetChildren(v)) {
+			arr.push_back(ListValueToJson(e));
+		}
+		return arr;
+	}
+	// Emit non-negative counts/indices as unsigned so downstream unsigned checks
+	// (e.g. SolidShellCounts' is_number_unsigned) accept them, matching the JSON path.
+	int64_t n = v.GetValue<int64_t>();
+	return n >= 0 ? json(static_cast<uint64_t>(n)) : json(n);
+}
+
+// Build a spec §8 geometry_properties json object from a CityParquet
+// geometry_properties_lod* STRUCT value:
+//   STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+// so the shared reconstruction (shell re-nesting + semantics.values) works whether
+// the payload arrived as a STRUCT (CityParquet) or as VARCHAR JSON (read_cityjson).
+// Fields are dispatched by name; unknown fields are ignored.
+static json StructPropsToJson(const Value &sval) {
+	json props = json::object();
+	auto &fields = StructType::GetChildTypes(sval.type());
+	auto &children = StructValue::GetChildren(sval);
+	for (idx_t i = 0; i < fields.size(); i++) {
+		auto &name = fields[i].first;
+		auto &child = children[i];
+		if (child.IsNull()) {
+			continue; // absent key -> the reconstruction's own gates degrade cleanly
+		}
+		if (name == "type" || name == "lod") {
+			props[name] = child.ToString();
+		} else if (name == "surfaces") {
+			// `surfaces` is a VARCHAR holding a JSON array (extended +attributes and all).
+			auto s = child.ToString();
+			if (s.empty()) {
+				continue;
+			}
+			try {
+				auto arr = json_utils::ParseJson(s);
+				if (arr.is_array()) {
+					props["surfaces"] = std::move(arr);
+				}
+			} catch (...) {
+				// leave `surfaces` unset -> no semantics emitted (better than garbage)
+			}
+		} else if (name == "face_semantics" || name == "shells") {
+			props[name] = ListValueToJson(child);
+		}
+	}
+	// cityparquet-rs nests `shells` one array per solid even for a single Solid
+	// ([[6]] not [6]); the Solid reconstruction expects the flat per-shell form, so
+	// unwrap the lone solid. MultiSolid/CompositeSolid keep the nested form.
+	if (props.value("type", std::string()) == "Solid" && props.contains("shells")) {
+		auto &sh = props["shells"];
+		if (sh.is_array() && sh.size() == 1 && sh[0].is_array()) {
+			props["shells"] = sh[0];
+		}
+	}
+	return props;
+}
+
 // Helper: parse JSON string array from a DuckDB list/varchar value
 static json ParseJsonArrayValue(const Value &val) {
 	if (val.IsNull()) {
@@ -659,8 +727,20 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 			if (pval.IsNull()) {
 				return;
 			}
+			// CityParquet stores geometry_properties as a STRUCT; read_cityjson emits
+			// the same payload as VARCHAR JSON. Obtain a json object from whichever we
+			// got, then run the shared reconstruction below unchanged.
+			json props;
+			if (bind_data.column_types[props_col].id() == LogicalTypeId::STRUCT) {
+				props = StructPropsToJson(pval);
+			} else {
+				try {
+					props = json_utils::ParseJson(pval.ToString());
+				} catch (...) {
+					return; // invalid JSON text -> apply no properties
+				}
+			}
 			try {
-				auto props = json_utils::ParseJson(pval.ToString());
 				// The precise CityJSON geometry type is authoritative (spec §8 `type`).
 				if (props.contains("type") && props["type"].is_string()) {
 					geom["type"] = props["type"].get<std::string>();
