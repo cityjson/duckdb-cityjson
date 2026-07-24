@@ -1,6 +1,7 @@
 #include "cityjson/cityjson_writer.hpp"
 #ifdef CITYJSON_HAS_FCB
-#include "fcb.h"
+#include <fcb/writer/attribute.hpp>
+#include <fcb/writer/fcb_writer.hpp>
 #endif
 #include <fstream>
 #include <cmath>
@@ -322,11 +323,27 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 #ifdef CITYJSON_HAS_FCB
 
+namespace {
+
+// Mirrors upstream's write_cityjson.cpp example: everything on a semantic surface
+// besides type/parent/children is an indexable "other" attribute.
+nlohmann::ordered_json SemanticSurfaceOtherMembers(const nlohmann::ordered_json &surface) {
+	nlohmann::ordered_json other = nlohmann::ordered_json::object();
+	for (const auto &[key, val] : surface.items()) {
+		if (key != "type" && key != "parent" && key != "children") {
+			other[key] = val;
+		}
+	}
+	return other;
+}
+
+} // namespace
+
 void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
                                       std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
                                       const std::vector<std::string> &feature_order) {
 
-	// Build the metadata header JSON (same structure as CityJSONSeq line 1)
+	// Build the metadata header (same shape as CityJSONSeq's line 1).
 	json header;
 	header["type"] = "CityJSON";
 	header["version"] = metadata.version;
@@ -338,7 +355,7 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 		header["metadata"] = meta_json;
 	}
 
-	// FCB requires a transform field — use identity if none provided
+	// FcbWriter needs a transform to quantize/dequantize vertices -- identity if none given.
 	{
 		auto &t = metadata.transform;
 		header["transform"] = json::object();
@@ -349,21 +366,27 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 		                 t.has_value() ? t->translate[2] : 0.0});
 	}
 
-	// Create FCB writer with metadata JSON
-	std::string header_str = header.dump();
-	auto writer = fcb::fcb_writer_new(header_str);
+	// Build each feature's per-feature vertex pool exactly like WriteCityJSONSeq does,
+	// and convert both header and features to nlohmann::ordered_json -- the concrete
+	// type fcb::add_attributes/FcbWriter require. Since feature_objects' values are
+	// plain (map-ordered, i.e. alphabetical) nlohmann::json, converting via dump()+
+	// parse() yields alphabetical column-index assignment -- deterministic and
+	// correctly self-consistent for round-tripping through our own reader/writer,
+	// just not guaranteed byte-identical to what the upstream Rust CLI would produce
+	// for the same input (which uses true document/insertion order). That's fine: we
+	// don't need CLI byte-compatibility, only correct round-tripping.
+	nlohmann::ordered_json ordered_header = nlohmann::ordered_json::parse(header.dump());
 
-	// Add each feature (same per-feature JSON as CityJSONSeq lines 2+)
+	std::vector<nlohmann::ordered_json> ordered_features;
+	ordered_features.reserve(feature_order.size());
 	for (const auto &fid : feature_order) {
 		auto it = feature_objects.find(fid);
-		if (it == feature_objects.end())
+		if (it == feature_objects.end()) {
 			continue;
-
-		// Build per-feature vertex pool (modifies objects in-place)
+		}
 		auto &feature_objs = it->second;
 		auto vertex_pool = BuildVertexPool(feature_objs, metadata.transform);
 
-		// Build CityJSONFeature JSON
 		json feature;
 		feature["type"] = "CityJSONFeature";
 		feature["id"] = fid;
@@ -371,18 +394,63 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 		for (const auto &[obj_id, obj_json] : feature_objs) {
 			feature["CityObjects"][obj_id] = obj_json;
 		}
-
 		feature["vertices"] = json::array();
 		for (const auto &v : vertex_pool) {
 			feature["vertices"].push_back(json::array({v[0], v[1], v[2]}));
 		}
 
-		std::string feature_str = feature.dump();
-		fcb::fcb_writer_add_feature(*writer, feature_str);
+		ordered_features.push_back(nlohmann::ordered_json::parse(feature.dump()));
 	}
 
-	// Write the FCB file to disk
-	fcb::fcb_writer_write(std::move(writer), file_path);
+	// Pass 1: two-pass attribute schema scan, required before FcbWriter construction
+	// because column numbering is assigned as names are first encountered.
+	fcb::AttributeSchema attr_schema;
+	fcb::AttributeSchema semantic_attr_schema;
+	for (const auto &feature : ordered_features) {
+		for (const auto &[obj_id, obj] : feature.at("CityObjects").items()) {
+			if (auto attr_it = obj.find("attributes"); attr_it != obj.end()) {
+				fcb::add_attributes(attr_schema, *attr_it);
+			}
+			auto geom_it = obj.find("geometry");
+			if (geom_it == obj.end() || !geom_it->is_array()) {
+				continue;
+			}
+			for (const auto &geometry : *geom_it) {
+				auto sem_it = geometry.find("semantics");
+				if (sem_it == geometry.end() || !sem_it->contains("surfaces")) {
+					continue;
+				}
+				for (const auto &surface : sem_it->at("surfaces")) {
+					auto other = SemanticSurfaceOtherMembers(surface);
+					if (!other.empty()) {
+						fcb::add_attributes(semantic_attr_schema, other);
+					}
+				}
+			}
+		}
+	}
+	const bool has_semantic_attrs = !semantic_attr_schema.empty();
+
+	fcb::FcbWriterOptions options;
+	// attr_index/branching_factor/index_node_size options land in a later commit;
+	// options.attribute_indices stays empty here, matching the old FFI writer's
+	// behavior (no indices by default).
+
+	fcb::FcbWriter writer(ordered_header, options, attr_schema,
+	                      has_semantic_attrs ? std::optional(semantic_attr_schema) : std::nullopt);
+	for (const auto &feature : ordered_features) {
+		writer.add_feature(feature);
+	}
+
+	std::ofstream out(file_path, std::ios::binary);
+	if (!out.is_open()) {
+		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
+	}
+	writer.write(out); // streaming overload -- bounded memory, unlike write()'s vector return
+	out.close();
+	if (!out) {
+		throw CityJSONError::FileWrite("Failed writing output file: " + file_path);
+	}
 }
 
 #endif // CITYJSON_HAS_FCB

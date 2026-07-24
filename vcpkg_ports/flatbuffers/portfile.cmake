@@ -13,6 +13,11 @@ vcpkg_cmake_configure(
         -DFLATBUFFERS_BUILD_FLATHASH=OFF
         -DFLATBUFFERS_BUILD_FLATLIB=ON
         -DFLATBUFFERS_BUILD_SHAREDLIB=OFF
+        # The x64-linux triplet builds static libs without -fPIC by default (see
+        # vcpkg's own triplets/x64-linux.cmake), but this static lib ends up linked
+        # into a DuckDB *loadable* extension (.duckdb_extension, a shared object) --
+        # needs PIC explicitly.
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 )
 
 vcpkg_cmake_install()

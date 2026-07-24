@@ -12,6 +12,10 @@ vcpkg_cmake_configure(
         -DFCB_WITH_CURL=OFF
         -DFCB_BUILD_TESTS=OFF
         -DFCB_BUILD_EXAMPLES=OFF
+        # Same reasoning as the flatbuffers port: this ends up linked into a DuckDB
+        # loadable extension (a shared object), so its static lib needs PIC even
+        # though the x64-linux triplet doesn't set it by default.
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 )
 
 vcpkg_cmake_install()

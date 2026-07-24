@@ -99,13 +99,43 @@ endif()
 option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
 
 if(CITYJSON_ENABLE_FCB)
-  find_package(flatcitybuf CONFIG REQUIRED)
+  # GLOBAL (CMake 3.24+): promotes the imported flatcitybuf::flatcitybuf target (and
+  # its own transitive flatbuffers::flatbuffers dependency) to global visibility.
+  # Without it, this find_package call's imported targets are only visible within
+  # this subdirectory's own scope -- invisible to sibling directories (tools/,
+  # tools/shell/, test/extension/, other extensions/) that DUCKDB_EXTRA_LINK_FLAGS
+  # below needs to reach.
+  find_package(flatcitybuf CONFIG REQUIRED GLOBAL)
   # Plain (non-keyword) set_property, not target_link_libraries(... PRIVATE ...): both
   # targets already receive plain-signature target_link_libraries calls elsewhere in
   # DuckDB's own extension_build_tools.cmake, and CMake forbids mixing plain and keyword
   # signatures for the same target (matches the existing cjseq linking above).
   set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
   set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
+
+  # The static extension (.a) gets linked into the shell/duckdb/unittest/plan_serializer
+  # binaries as a raw archive file path (see tools/CMakeLists.txt, tools/shell/
+  # CMakeLists.txt), not via target_link_libraries(<exe> cityjson_extension) -- so
+  # CMake's normal transitive INTERFACE_LINK_LIBRARIES propagation from an imported
+  # target never reaches them, and flatcitybuf's own symbols stay unresolved at that
+  # final link step. DUCKDB_EXTRA_LINK_FLAGS is DuckDB's own sanctioned mechanism for
+  # exactly this case (see its uses in extension_build_tools.cmake and tools/
+  # CMakeLists.txt): unlike the old code's use of it (which stuffed literal
+  # "OpenSSL::SSL"/"OpenSSL::Crypto" strings in here, referencing a target that this
+  # file's own find_package(OpenSSL REQUIRED) below hadn't created yet on a fresh
+  # configure -- see git history), this references flatcitybuf::flatcitybuf directly,
+  # a target that already exists by this point, so there's no such ordering hazard.
+  #
+  # DUCKDB_EXTRA_LINK_FLAGS gets inserted BEFORE extension/cityjson/libcityjson_extension.a
+  # in these binaries' link lines (its insertion point is controlled by tools/CMakeLists.txt
+  # and extension_build_tools.cmake, not by us) -- but GNU ld resolves static-archive
+  # symbols in a single left-to-right pass, so a dependency listed before its dependent
+  # is invisible to it. --whole-archive/--no-whole-archive sidesteps that entirely by
+  # forcing every object file in flatcitybuf (and its own flatbuffers dependency) into
+  # the final binary unconditionally, regardless of position or reference order.
+  set(DUCKDB_EXTRA_LINK_FLAGS "-Wl,--whole-archive" "flatcitybuf::flatcitybuf" "-Wl,--no-whole-archive"
+      CACHE INTERNAL "Extra link flags" FORCE)
+
   target_compile_definitions(${EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
   target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
   message(STATUS "FlatCityBuf support enabled (native C++, vendored)")
