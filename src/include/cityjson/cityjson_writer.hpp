@@ -68,10 +68,16 @@ public:
 	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
+	 * @param attr_index_columns Attribute column names to give a B+tree index
+	 * @param branching_factor B+tree branching factor applied to every indexed column
+	 * @param index_node_size R-tree node size
 	 */
 	static void WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                             std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
-	                             const std::vector<std::string> &feature_order);
+	                             const std::vector<std::string> &feature_order,
+	                             const std::vector<std::string> &attr_index_columns = {},
+	                             std::optional<uint16_t> branching_factor = std::nullopt,
+	                             std::optional<uint16_t> index_node_size = std::nullopt);
 #endif
 
 private:

@@ -341,7 +341,10 @@ nlohmann::ordered_json SemanticSurfaceOtherMembers(const nlohmann::ordered_json 
 
 void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
                                       std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
-                                      const std::vector<std::string> &feature_order) {
+                                      const std::vector<std::string> &feature_order,
+                                      const std::vector<std::string> &attr_index_columns,
+                                      std::optional<uint16_t> branching_factor,
+                                      std::optional<uint16_t> index_node_size) {
 
 	// Build the metadata header (same shape as CityJSONSeq's line 1).
 	json header;
@@ -432,9 +435,17 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 	const bool has_semantic_attrs = !semantic_attr_schema.empty();
 
 	fcb::FcbWriterOptions options;
-	// attr_index/branching_factor/index_node_size options land in a later commit;
-	// options.attribute_indices stays empty here, matching the old FFI writer's
-	// behavior (no indices by default).
+	if (index_node_size.has_value()) {
+		options.index_node_size = index_node_size.value();
+	}
+	for (const auto &col_name : attr_index_columns) {
+		if (attr_schema.count(col_name) == 0) {
+			// Requested column never appeared in any feature's attributes -- nothing
+			// to index, not an error.
+			continue;
+		}
+		options.attribute_indices.emplace_back(col_name, branching_factor);
+	}
 
 	fcb::FcbWriter writer(ordered_header, options, attr_schema,
 	                      has_semantic_attrs ? std::optional(semantic_attr_schema) : std::nullopt);

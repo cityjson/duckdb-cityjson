@@ -299,6 +299,29 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 				}
 				bind_data->transform->translate = parsed.value();
 			}
+		} else if (loption == "attr_index") {
+			auto columns_str = val.ToString();
+			std::vector<std::string> columns;
+			size_t start = 0;
+			while (start <= columns_str.size()) {
+				auto comma = columns_str.find(',', start);
+				auto piece = columns_str.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+				// Trim surrounding whitespace so "a, b" and "a,b" behave the same.
+				size_t first = piece.find_first_not_of(" \t");
+				size_t last = piece.find_last_not_of(" \t");
+				if (first != std::string::npos) {
+					columns.push_back(piece.substr(first, last - first + 1));
+				}
+				if (comma == std::string::npos) {
+					break;
+				}
+				start = comma + 1;
+			}
+			bind_data->fcb_attr_index_columns = columns;
+		} else if (loption == "branching_factor") {
+			bind_data->fcb_branching_factor = static_cast<uint16_t>(val.GetValue<int64_t>());
+		} else if (loption == "index_node_size") {
+			bind_data->fcb_index_node_size = static_cast<uint16_t>(val.GetValue<int64_t>());
 		}
 	}
 
@@ -1015,7 +1038,9 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 		CityJSONWriter::WriteCityJSONSeq(output_path, write_meta, gstate.feature_objects, gstate.feature_order);
 #ifdef CITYJSON_HAS_FCB
 	} else if (bind_data.is_fcb) {
-		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order);
+		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
+		                                 bind_data.fcb_attr_index_columns, bind_data.fcb_branching_factor,
+		                                 bind_data.fcb_index_node_size);
 #endif
 	} else {
 		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order);

@@ -1,0 +1,31 @@
+# name: test/sql/cityjson_fcb_write_options.test
+# description: COPY TO flatcitybuf attr_index/branching_factor/index_node_size options
+# group: [sql]
+
+# NOTE: this file only proves attr_index/branching_factor/index_node_size are accepted
+# and round-trip correctly. Proving the index is actually queryable is
+# cityjson_fcb_attr_query.test's job (next commit), since that's the first place a
+# WHERE-clause pushdown can observe whether the B+tree index really exists.
+
+require cityjson
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
+TO '__TEST_DIR__/write_options.fcb' (FORMAT flatcitybuf, attr_index 'height,category', branching_factor 4, index_node_size 8);
+
+# round-trips correctly
+query I
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/write_options.fcb');
+----
+3
+
+# a requested column that never appears in any feature's attributes is silently
+# not indexed rather than an error
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
+TO '__TEST_DIR__/write_options_missing_col.fcb' (FORMAT flatcitybuf, attr_index 'height,does_not_exist');
+
+query I
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/write_options_missing_col.fcb');
+----
+3

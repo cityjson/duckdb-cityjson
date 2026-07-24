@@ -47,6 +47,11 @@ struct CityJSONCopyBindData : public FunctionData {
 	bool is_seq = false; // true for cityjsonseq format
 	bool is_fcb = false; // true for flatcitybuf format
 
+	// FlatCityBuf write-only options (COPY TO ... FORMAT flatcitybuf).
+	std::vector<std::string> fcb_attr_index_columns; // parsed from attr_index, empty = none
+	std::optional<uint16_t> fcb_branching_factor;
+	std::optional<uint16_t> fcb_index_node_size;
+
 	// Metadata (from options or metadata_query)
 	std::string version = "2.0";
 	std::optional<std::string> crs;
