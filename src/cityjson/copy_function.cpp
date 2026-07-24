@@ -7,6 +7,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/common/types/geometry.hpp"
 
 namespace duckdb {
 namespace cityjson {
@@ -645,6 +646,31 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &lstate = lstate_p.Cast<CityJSONCopyLocalState>();
 
+	// Per-chunk WKB views for core GEOMETRY geometry columns (a GeoParquet LoD0
+	// footprint arrives as LogicalTypeId::GEOMETRY, not BLOB). Geometry::ToBinary is
+	// a zero-copy reinterpret of the already-WKB internal form in v1.5.x; these
+	// views are lazily materialised on first use and valid for this input chunk.
+	vector<unique_ptr<Vector>> wkb_views(input.ColumnCount());
+
+	// Shared WKB → CityJSON boundaries + LoD-from-column-name, used by both the BLOB
+	// and GEOMETRY geometry branches so the decode stays single-sourced.
+	auto decode_wkb = [](json &geom, const string_t &wkb, const std::string &col_name) {
+		auto decoded = WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+		geom["type"] = decoded.cityjson_type;
+		geom["boundaries"] = decoded.boundaries;
+		// Derive LOD from the column name: legacy "geom_lod2_2" and wide
+		// "geometry_lod2_2" → "2.2".
+		if (col_name.rfind("geom_lod", 0) == 0 && col_name.size() > 8) {
+			std::string lod = col_name.substr(8);
+			std::replace(lod.begin(), lod.end(), '_', '.');
+			geom["lod"] = lod;
+		} else if (col_name.rfind("geometry_lod", 0) == 0 && col_name.size() > 12) {
+			std::string lod = col_name.substr(12);
+			std::replace(lod.begin(), lod.end(), '_', '.');
+			geom["lod"] = lod;
+		}
+	};
+
 	for (idx_t row = 0; row < input.size(); row++) {
 		// Extract key columns
 		auto id_val = input.data[bind_data.id_col].GetValue(row);
@@ -879,28 +905,27 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 				produced = true;
 
 			} else if (col_type.id() == LogicalTypeId::BLOB) {
-				// WKB BLOB geometry: decode back to CityJSON boundaries
-				auto blob_str = val.GetValueUnsafe<string_t>();
-				auto decoded =
-				    WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob_str.GetData()), blob_str.GetSize());
-
-				geom["type"] = decoded.cityjson_type;
-				geom["boundaries"] = decoded.boundaries;
-
-				// Derive LOD from the column name for both layouts:
-				//   legacy "geom_lod2_2" and wide "geometry_lod2_2" → "2.2".
-				if (col_name.rfind("geom_lod", 0) == 0 && col_name.size() > 8) {
-					std::string lod = col_name.substr(8);
-					std::replace(lod.begin(), lod.end(), '_', '.');
-					geom["lod"] = lod;
-				} else if (col_name.rfind("geometry_lod", 0) == 0 && col_name.size() > 12) {
-					std::string lod = col_name.substr(12);
-					std::replace(lod.begin(), lod.end(), '_', '.');
-					geom["lod"] = lod;
-				}
-
+				// WKB BLOB geometry.
+				decode_wkb(geom, val.GetValueUnsafe<string_t>(), col_name);
 				produced = true;
 				from_wkb = true;
+			} else if (col_type.id() == LogicalTypeId::GEOMETRY) {
+				// DuckDB-core GEOMETRY (e.g. a GeoParquet LoD0 footprint). Serialise to
+				// WKB via the core serialiser — a zero-copy view of the already-WKB
+				// internal form — then decode via the same CityParquet-scoped WKBDecoder
+				// as the BLOB path (footprints are MultiPolygon Z; the decoder targets
+				// the CityParquet WKB subset, not arbitrary geometry).
+				if (!wkb_views[col]) {
+					wkb_views[col] = make_uniq<Vector>(LogicalType::BLOB);
+					// Fully qualified: cityjson has its own `Geometry` type.
+					::duckdb::Geometry::ToBinary(input.data[col], *wkb_views[col], input.size());
+				}
+				auto wkb_val = wkb_views[col]->GetValue(row);
+				if (!wkb_val.IsNull()) {
+					decode_wkb(geom, wkb_val.GetValueUnsafe<string_t>(), col_name);
+					produced = true;
+					from_wkb = true;
+				}
 			}
 
 			if (produced) {

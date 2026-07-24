@@ -364,7 +364,9 @@ All other columns are written as CityJSON attributes. The wide CityParquet layou
 (`geometry_lodX_Y` + `geometry_properties_lodX_Y` per LoD, as written by
 `cityparquet-rs`) round-trips directly: `COPY (SELECT * FROM read_parquet('pkg.parquet'))
 TO 'out.city.jsonl' (FORMAT cityjsonseq)` emits one multi-LoD CityObject per feature with
-its semantics intact.
+its semantics intact. A geometry column is accepted as WKB `BLOB` **or** DuckDB's
+first-class `GEOMETRY` type (how a GeoParquet LoD0 footprint reads back), decoded through
+the same CityParquet WKB subset (footprints, surfaces, solids).
 
 ### Round-Trip Example
 
