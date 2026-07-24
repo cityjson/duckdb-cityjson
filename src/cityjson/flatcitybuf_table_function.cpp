@@ -14,6 +14,33 @@ namespace duckdb {
 namespace cityjson {
 
 // ============================================================
+// FlatCityBufBindData
+// ============================================================
+
+unique_ptr<FunctionData> FlatCityBufBindData::Copy() const {
+	auto result = make_uniq<FlatCityBufBindData>();
+	result->file_name = file_name;
+	result->metadata = metadata;
+	result->chunks = chunks;
+	result->scan_plan = scan_plan;
+	result->columns = columns;
+	result->target_lod = target_lod;
+	result->use_wkb_encoding = use_wkb_encoding;
+	result->streaming = streaming;
+	result->equality_filters = equality_filters;
+	result->bbox = bbox;
+	result->reader = reader;
+	return result;
+}
+
+bool FlatCityBufBindData::Equals(const FunctionData &other_p) const {
+	auto &other = other_p.Cast<FlatCityBufBindData>();
+	return file_name == other.file_name && target_lod == other.target_lod &&
+	       use_wkb_encoding == other.use_wkb_encoding && streaming == other.streaming &&
+	       equality_filters == other.equality_filters && bbox == other.bbox;
+}
+
+// ============================================================
 // read_flatcitybuf Bind
 // ============================================================
 
@@ -25,9 +52,42 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 	std::string file_name = StringValue::Get(input.inputs[0]);
 	auto options = ParseCityJSONReadOptions(input, "read_flatcitybuf");
 
-	auto reader = std::make_unique<FlatCityBufReader>(context, file_name, file_name, options.sample_lines);
+	auto reader = std::make_shared<FlatCityBufReader>(context, file_name, file_name, options.sample_lines);
 
-	return BindCityJSONRead(context, input, return_types, names, "read_flatcitybuf", std::move(reader));
+	bool has_min_x = input.named_parameters.count("min_x") > 0;
+	bool has_min_y = input.named_parameters.count("min_y") > 0;
+	bool has_max_x = input.named_parameters.count("max_x") > 0;
+	bool has_max_y = input.named_parameters.count("max_y") > 0;
+	std::optional<std::array<double, 4>> bbox;
+	if (has_min_x || has_min_y || has_max_x || has_max_y) {
+		if (!(has_min_x && has_min_y && has_max_x && has_max_y)) {
+			throw BinderException("read_flatcitybuf: min_x, min_y, max_x, and max_y must all be given together");
+		}
+		bbox = std::array<double, 4> {DoubleValue::Get(input.named_parameters.at("min_x")),
+		                              DoubleValue::Get(input.named_parameters.at("min_y")),
+		                              DoubleValue::Get(input.named_parameters.at("max_x")),
+		                              DoubleValue::Get(input.named_parameters.at("max_y"))};
+		reader->SetBBoxFilter(bbox.value());
+	}
+
+	auto generic = BindCityJSONReadRaw(context, input, return_types, names, "read_flatcitybuf", *reader, false);
+
+	// Field-by-field, matching CityJSONBindData::Copy()'s own pattern (bind_data.cpp) --
+	// deliberately not a whole-object copy-assignment through a CityJSONBindData&
+	// reference, to sidestep any question about FunctionData's (deprecated-but-legal)
+	// implicitly-generated copy assignment operator.
+	auto result = make_uniq<FlatCityBufBindData>();
+	result->file_name = generic.file_name;
+	result->metadata = generic.metadata;
+	result->chunks = generic.chunks;
+	result->scan_plan = generic.scan_plan;
+	result->columns = generic.columns;
+	result->target_lod = generic.target_lod;
+	result->use_wkb_encoding = generic.use_wkb_encoding;
+	result->streaming = false;
+	result->bbox = bbox;
+	result->reader = reader;
+	return result;
 }
 
 // ============================================================
@@ -39,6 +99,10 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 
 	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
 	func.named_parameters["lod"] = LogicalType::VARCHAR;
+	func.named_parameters["min_x"] = LogicalType::DOUBLE;
+	func.named_parameters["min_y"] = LogicalType::DOUBLE;
+	func.named_parameters["max_x"] = LogicalType::DOUBLE;
+	func.named_parameters["max_y"] = LogicalType::DOUBLE;
 
 	func.init_global = CityJSONInitGlobal;
 	func.init_local = CityJSONInitLocal;

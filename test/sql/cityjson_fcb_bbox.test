@@ -1,0 +1,41 @@
+# name: test/sql/cityjson_fcb_bbox.test
+# description: bbox query pushdown on read_flatcitybuf via min_x/min_y/max_x/max_y
+# group: [sql]
+
+require cityjson
+
+# Ground truth from test/data/fcb_bbox_attr.city.jsonl (Task 1): f1 at x/y 0-10,
+# f2 at 100-110, f3 at 200-210.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
+TO '__TEST_DIR__/bbox_query.fcb' (FORMAT flatcitybuf);
+
+# bbox covering only f2 (id is the CityObject id -- b1/b2/b3 here -- feature_id is f1/f2/f3)
+query I
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 50, min_y := 50, max_x := 150, max_y := 150) ORDER BY feature_id;
+----
+f2
+
+# bbox covering nothing
+query I
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 500, min_y := 500, max_x := 600, max_y := 600);
+----
+0
+
+# bbox covering everything
+query I
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 0, min_y := 0, max_x := 300, max_y := 300);
+----
+3
+
+# no bbox at all still works (full scan)
+query I
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb');
+----
+3
+
+# a partial bbox (missing max_y) is a binder error, not a silent no-op
+statement error
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 0, min_y := 0, max_x := 300);
+----
+read_flatcitybuf: min_x, min_y, max_x, and max_y must all be given together

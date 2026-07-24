@@ -72,6 +72,16 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
                                           const std::string &function_name,
                                           std::unique_ptr<CityJSONReader> reader, bool streaming = false);
 
+/**
+ * Same as BindCityJSONRead, but takes the reader by reference instead of by
+ * unique_ptr, for callers (read_flatcitybuf) that need to keep their own
+ * ownership handle to the reader after bind completes.
+ */
+CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
+                                     vector<LogicalType> &return_types, vector<string> &names,
+                                     const std::string &function_name, CityJSONReader &reader,
+                                     bool streaming = false);
+
 // ============================================================
 // Global State
 // ============================================================

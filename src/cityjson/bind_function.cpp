@@ -75,44 +75,52 @@ static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader, siz
 	}
 }
 
-unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names,
-                                          const std::string &function_name,
-                                          std::unique_ptr<CityJSONReader> reader, bool streaming) {
-	auto result = make_uniq<CityJSONBindData>();
+CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
+                                     vector<LogicalType> &return_types, vector<string> &names,
+                                     const std::string &function_name, CityJSONReader &reader, bool streaming) {
+	CityJSONBindData result;
 
 	if (input.inputs.empty()) {
 		throw BinderException(function_name + " requires a file path");
 	}
-	result->file_name = StringValue::Get(input.inputs[0]);
-	result->streaming = streaming;
+	result.file_name = StringValue::Get(input.inputs[0]);
+	result.streaming = streaming;
 
 	auto options = ParseCityJSONReadOptions(input, function_name);
-	result->target_lod = options.target_lod;
-	result->use_wkb_encoding = options.use_wkb_encoding;
+	result.target_lod = options.target_lod;
+	result.use_wkb_encoding = options.use_wkb_encoding;
 
 	try {
-		result->metadata = reader->ReadMetadata();
+		result.metadata = reader.ReadMetadata();
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to read metadata: " + std::string(e.what()));
 	}
 
 	if (!streaming) {
 		try {
-			result->chunks = reader->ReadAllChunks();
+			result.chunks = reader.ReadAllChunks();
 		} catch (const CityJSONError &e) {
 			throw BinderException("Failed to read data: " + std::string(e.what()));
 		}
-		result->scan_plan = result->chunks.BuildScanPlan();
+		result.scan_plan = result.chunks.BuildScanPlan();
 	}
 
-	InferSchema(*result, *reader, options.sample_lines);
+	InferSchema(result, reader, options.sample_lines);
 
-	for (const auto &col : result->columns) {
+	for (const auto &col : result.columns) {
 		names.push_back(col.name);
 		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
 	}
 
+	return result;
+}
+
+unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
+                                          vector<LogicalType> &return_types, vector<string> &names,
+                                          const std::string &function_name,
+                                          std::unique_ptr<CityJSONReader> reader, bool streaming) {
+	auto result = make_uniq<CityJSONBindData>(
+	    BindCityJSONReadRaw(context, input, return_types, names, function_name, *reader, streaming));
 	return result;
 }
 
