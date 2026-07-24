@@ -1,0 +1,17 @@
+# name: test/sql/cityjson_fcb_reader_native.test
+# description: read_flatcitybuf against the native C++ flatcitybuf reader
+# group: [sql]
+
+require cityjson
+
+query I
+SELECT COUNT(*) FROM read_flatcitybuf('test/data/sample.fcb');
+----
+2
+
+query I
+SELECT feature_id FROM read_flatcitybuf('test/data/fcb_bbox_attr.fcb') ORDER BY feature_id;
+----
+f1
+f2
+f3
