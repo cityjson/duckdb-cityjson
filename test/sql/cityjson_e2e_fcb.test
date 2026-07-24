@@ -12,9 +12,6 @@
 
 require cityjson
 
-# FCB uses a pre-built glibc binary — skip on musl
-require notmusl
-
 # ============================================================
 # Phase 1: Establish source files for each format
 # ============================================================
