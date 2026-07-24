@@ -57,6 +57,7 @@ set(EXTENSION_SOURCES
     src/cityjson/metadata_table.cpp
     src/cityjson/metadata_table_function.cpp
     # FlatCityBuf (compiled always but guarded by #ifdef CITYJSON_HAS_FCB)
+    src/cityjson/duckdb_fs_range_reader.cpp
     src/cityjson/flatcitybuf_reader.cpp
     src/cityjson/flatcitybuf_table_function.cpp
     # COPY TO
