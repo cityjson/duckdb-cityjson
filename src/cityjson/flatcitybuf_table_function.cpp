@@ -9,9 +9,154 @@
 #include "cityjson/column_types.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
+#include <fcb/generated/header_generated.h>
+#include <algorithm>
 
 namespace duckdb {
 namespace cityjson {
+
+namespace {
+
+std::optional<fcb::Operator> ToFcbOperator(ExpressionType type, bool column_on_right) {
+	switch (type) {
+	case ExpressionType::COMPARE_EQUAL:
+		return fcb::Operator::Eq;
+	case ExpressionType::COMPARE_NOTEQUAL:
+		return fcb::Operator::Ne;
+	case ExpressionType::COMPARE_GREATERTHAN:
+		return column_on_right ? fcb::Operator::Lt : fcb::Operator::Gt;
+	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+		return column_on_right ? fcb::Operator::Le : fcb::Operator::Ge;
+	case ExpressionType::COMPARE_LESSTHAN:
+		return column_on_right ? fcb::Operator::Gt : fcb::Operator::Lt;
+	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+		return column_on_right ? fcb::Operator::Ge : fcb::Operator::Le;
+	default:
+		return std::nullopt;
+	}
+}
+
+// Types a DuckDB constant against the column's ON-DISK type, mirroring
+// upstream's query_attributes.cpp make_value(). Getting this wrong doesn't
+// throw -- the bytes are reinterpreted -- so every branch pulls the constant
+// via the DuckDB getter that matches the on-disk type's own category.
+std::optional<fcb::KeyValue> BuildKeyValue(const fcb::ColumnInfo &col, const Value &constant) {
+	switch (static_cast<::ColumnType>(col.type)) {
+	case ::ColumnType::Byte:
+		return fcb::KeyValue::from_i8(static_cast<int8_t>(constant.GetValue<int64_t>()));
+	case ::ColumnType::UByte:
+		return fcb::KeyValue::from_u8(static_cast<uint8_t>(constant.GetValue<int64_t>()));
+	case ::ColumnType::Bool:
+		return fcb::KeyValue::from_bool(constant.GetValue<bool>());
+	case ::ColumnType::Short:
+		return fcb::KeyValue::from_i16(static_cast<int16_t>(constant.GetValue<int64_t>()));
+	case ::ColumnType::UShort:
+		return fcb::KeyValue::from_u16(static_cast<uint16_t>(constant.GetValue<int64_t>()));
+	case ::ColumnType::Int:
+		return fcb::KeyValue::from_i32(static_cast<int32_t>(constant.GetValue<int64_t>()));
+	case ::ColumnType::UInt:
+		return fcb::KeyValue::from_u32(static_cast<uint32_t>(constant.GetValue<int64_t>()));
+	case ::ColumnType::Long:
+		return fcb::KeyValue::from_i64(constant.GetValue<int64_t>());
+	case ::ColumnType::ULong:
+		return fcb::KeyValue::from_u64(static_cast<uint64_t>(constant.GetValue<int64_t>()));
+	case ::ColumnType::Float:
+		return fcb::KeyValue::from_f32(static_cast<float>(constant.GetValue<double>()));
+	case ::ColumnType::Double:
+		return fcb::KeyValue::from_f64(constant.GetValue<double>());
+	case ::ColumnType::String:
+		return fcb::KeyValue::from_string(fcb::KeyKind::String50, constant.ToString());
+	case ::ColumnType::Json:
+	case ::ColumnType::Binary:
+		return fcb::KeyValue::from_string(fcb::KeyKind::String100, constant.ToString());
+	default:
+		return std::nullopt; // unsupported column type for pushdown -- leave unpushed
+	}
+}
+
+} // namespace
+
+void FlatCityBufPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
+                                      vector<unique_ptr<Expression>> &filters) {
+	auto &bind_data = bind_data_p->Cast<FlatCityBufBindData>();
+	if (!bind_data.reader) {
+		return;
+	}
+	auto indexed_columns = bind_data.reader->IndexedAttributeColumns();
+	if (indexed_columns.empty()) {
+		return;
+	}
+
+	fcb::AttrQuery conditions;
+
+	for (auto it = filters.begin(); it != filters.end();) {
+		auto &expr = *it;
+		bool consumed = false;
+
+		if (expr->type >= ExpressionType::COMPARE_EQUAL && expr->type <= ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
+			auto &comp = expr->Cast<BoundComparisonExpression>();
+
+			BoundColumnRefExpression *col_ref = nullptr;
+			BoundConstantExpression *constant = nullptr;
+			bool column_on_right = false;
+
+			if (comp.left->type == ExpressionType::BOUND_COLUMN_REF &&
+			    comp.right->type == ExpressionType::VALUE_CONSTANT) {
+				col_ref = &comp.left->Cast<BoundColumnRefExpression>();
+				constant = &comp.right->Cast<BoundConstantExpression>();
+			} else if (comp.right->type == ExpressionType::BOUND_COLUMN_REF &&
+			           comp.left->type == ExpressionType::VALUE_CONSTANT) {
+				col_ref = &comp.right->Cast<BoundColumnRefExpression>();
+				constant = &comp.left->Cast<BoundConstantExpression>();
+				column_on_right = true;
+			}
+
+			if (col_ref && constant && col_ref->binding.table_index == get.table_index &&
+			    col_ref->binding.column_index < get.GetColumnIds().size()) {
+				idx_t schema_idx = get.GetColumnIds()[col_ref->binding.column_index].GetPrimaryIndex();
+				if (schema_idx < bind_data.columns.size()) {
+					const auto &column_name = bind_data.columns[schema_idx].name;
+					bool is_indexed =
+					    std::find(indexed_columns.begin(), indexed_columns.end(), column_name) != indexed_columns.end();
+					if (is_indexed) {
+						auto op = ToFcbOperator(expr->type, column_on_right);
+						auto col_info = bind_data.reader->FindColumn(column_name);
+						if (op.has_value() && col_info.has_value()) {
+							auto key_value = BuildKeyValue(col_info.value(), constant->value);
+							if (key_value.has_value()) {
+								conditions.push_back({column_name, op.value(), key_value.value()});
+								consumed = true;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if (consumed) {
+			it = filters.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	if (conditions.empty()) {
+		return;
+	}
+
+	bind_data.reader->SetAttrQueryFilter(conditions, false);
+	try {
+		bind_data.chunks = bind_data.reader->ReadAllChunks();
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to re-read FlatCityBuf with pushed-down attribute filter: " +
+		                      std::string(e.what()));
+	}
+	bind_data.scan_plan = bind_data.chunks.BuildScanPlan();
+}
 
 // ============================================================
 // FlatCityBufBindData
@@ -109,6 +254,7 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 	func.cardinality = CityJSONCardinality;
 	func.statistics = CityJSONStatistics;
 	func.projection_pushdown = true;
+	func.pushdown_complex_filter = FlatCityBufPushdownComplexFilter;
 
 	loader.RegisterFunction(func);
 }
