@@ -9,7 +9,6 @@
 #include "cityjson/column_types.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "fcb.h"
 
 namespace duckdb {
 namespace cityjson {
@@ -26,7 +25,7 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 	std::string file_name = StringValue::Get(input.inputs[0]);
 	auto options = ParseCityJSONReadOptions(input, "read_flatcitybuf");
 
-	auto reader = std::make_unique<FlatCityBufReader>(file_name, file_name, options.sample_lines);
+	auto reader = std::make_unique<FlatCityBufReader>(context, file_name, file_name, options.sample_lines);
 
 	return BindCityJSONRead(context, input, return_types, names, "read_flatcitybuf", std::move(reader));
 }
@@ -85,7 +84,7 @@ static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFun
 	auto result = make_uniq<FcbMetadataBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 
-	auto reader = std::make_unique<FlatCityBufReader>(result->file_name, result->file_name);
+	auto reader = std::make_unique<FlatCityBufReader>(context, result->file_name, result->file_name);
 
 	try {
 		result->metadata = reader->ReadMetadata();
@@ -93,10 +92,9 @@ static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFun
 		throw BinderException("Failed to read FlatCityBuf metadata: " + std::string(e.what()));
 	}
 
-	// Use features_count from FCB metadata for a fast count without reading all features
-	auto fcb_reader_raw = fcb::fcb_reader_open(result->file_name);
-	auto fcb_meta = fcb::fcb_reader_metadata(*fcb_reader_raw);
-	result->city_objects_count = fcb_meta.features_count;
+	// features_count comes straight from the header -- no separate reopen needed now
+	// that FlatCityBufReader exposes Header() directly.
+	result->city_objects_count = reader->Header().info().features_count;
 
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
 	names = MetadataTableUtils::GetMetadataTableNames();

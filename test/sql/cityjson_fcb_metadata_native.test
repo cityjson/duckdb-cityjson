@@ -1,0 +1,10 @@
+# name: test/sql/cityjson_fcb_metadata_native.test
+# description: flatcitybuf_metadata against the native C++ flatcitybuf reader
+# group: [sql]
+
+require cityjson
+
+query I
+SELECT city_objects_count FROM flatcitybuf_metadata('test/data/sample.fcb');
+----
+2
