@@ -5,6 +5,7 @@
 #include "cityjson/metadata_table_function.hpp"
 #include "cityjson/geoparquet_table_function.hpp"
 #include "cityjson/wkb_extent.hpp"
+#include "cityjson/cityparquet_package.hpp"
 #include "cityjson/copy_function.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_table_function.hpp"
@@ -32,6 +33,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register cityjson_wkb_extent (3D extent of a WKB blob, solid family included)
 	cityjson::RegisterWKBExtentFunction(loader);
+
+	// Register CityParquet package bookkeeping (cityparquet_init)
+	cityjson::RegisterCityParquetPackageFunctions(loader);
 
 	// Register COPY TO functions (cityjson and cityjsonseq formats)
 	cityjson::RegisterCityJSONCopyFunction(loader);

@@ -65,6 +65,8 @@ set(EXTENSION_SOURCES
     # COPY TO
     src/cityjson/copy_function.cpp
     src/cityjson/cityjson_writer.cpp
+    # CityParquet package layer
+    src/cityjson/cityparquet_package.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
