@@ -190,7 +190,7 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	for (const auto &lod : lods) {
 		std::string suffix = LODTableUtils::FormatLODAsColumnSuffix(lod);
 		result.emplace_back("geometry_" + suffix, ColumnType::GeometryWKB);
-		result.emplace_back("geometry_properties_" + suffix, ColumnType::GeometryPropertiesJson);
+		result.emplace_back("geometry_properties_" + suffix, ColumnType::GeometryPropertiesStruct);
 		// Per-LoD appearance columns paired to the geometry by name (§11.1). Present
 		// for every LoD that has a geometry column, whether or not any row carries
 		// appearance for it (nullable).
@@ -217,11 +217,11 @@ std::vector<uint8_t> CityObjectUtils::GetGeometryWKB(const Geometry &geometry,
 	return WKBEncoder::Encode(geometry, vertices, transform);
 }
 
-json CityObjectUtils::GetGeometryPropertiesJson(const Geometry &geometry, bool include_lod,
-                                                const std::optional<std::string> &object_id) {
+json CityObjectUtils::GetGeometryPropertiesStruct(const Geometry &geometry,
+                                                  const std::optional<std::string> &object_id) {
 	// Note: object_id parameter reserved for future use
 	(void)object_id; // Suppress unused parameter warning
-	return GeometryPropertiesSerializer::Serialize(geometry, include_lod);
+	return GeometryPropertiesSerializer::Serialize(geometry);
 }
 
 static void CollectExtentRecursive(const json &boundaries, const std::vector<std::array<double, 3>> &vertices,

@@ -114,14 +114,14 @@ public:
 	                  const std::optional<Transform> &transform);
 
 	/**
-	 * Serialize geometry properties to JSON
+	 * Serialize geometry properties to the spec §8 payload
 	 *
 	 * @param geometry Geometry object to serialize
 	 * @param object_id Optional parent CityObject ID
-	 * @return JSON object with geometry properties (type, LOD, semantics, etc.)
+	 * @return JSON object with geometry properties (type, surfaces, face_semantics, shells)
 	 */
-	static json GetGeometryPropertiesJson(const Geometry &geometry, bool include_lod = false,
-	                                      const std::optional<std::string> &object_id = std::nullopt);
+	static json GetGeometryPropertiesStruct(const Geometry &geometry,
+	                                        const std::optional<std::string> &object_id = std::nullopt);
 };
 
 } // namespace cityjson

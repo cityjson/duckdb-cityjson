@@ -111,30 +111,29 @@ static json FlattenFaceSemantics(const Geometry &geometry, const json &values) {
 	return out;
 }
 
-json GeometryPropertiesSerializer::Serialize(const Geometry &geometry, bool include_lod) {
+json GeometryPropertiesSerializer::Serialize(const Geometry &geometry) {
 	// Spec §8 flattened, face-aligned form: {type, surfaces?, face_semantics?, shells?}.
 	// `type` is the CityJSON string type; the int type code / cityjsonType of the
-	// old form are dropped. The LoD is normally carried by the column name; it is
-	// added here only for an un-suffixed column (include_lod), as a permitted §8
-	// extra key.
+	// old form are dropped. There is no `lod` key: the LoD is carried by the column
+	// name (geometry_properties_lod2_2), and in the single-LoD `lod=` reading mode
+	// the caller supplied it and GetGeometryAtLOD matched it exactly.
 	json result;
 	result["type"] = geometry.type;
-	if (include_lod) {
-		result["lod"] = geometry.lod;
-	}
 
 	const std::string &t = geometry.type;
 	const bool is_solid = (t == "Solid");
 	const bool is_multisolid = (t == "MultiSolid" || t == "CompositeSolid");
 
-	// shells: per-shell emitted-face counts. Flat for Solid, one array per solid
-	// (WKB GeometryCollection member order) for MultiSolid/CompositeSolid. Present
-	// for solid-family geometry regardless of semantics; absent for non-solid types.
+	// shells: per-solid, then per-shell, emitted-face counts -- always two levels
+	// deep, so a lone Solid is [[12, 4]], not [12, 4]. Present for solid-family
+	// geometry regardless of semantics; absent for non-solid types.
 	if (is_solid && geometry.boundaries.is_array()) {
-		json shells = json::array();
+		json solid_shells = json::array();
 		for (const auto &shell : geometry.boundaries) {
-			shells.push_back(shell.is_array() ? shell.size() : 0);
+			solid_shells.push_back(shell.is_array() ? shell.size() : 0);
 		}
+		json shells = json::array();
+		shells.push_back(std::move(solid_shells));
 		result["shells"] = shells;
 	} else if (is_multisolid && geometry.boundaries.is_array()) {
 		json shells = json::array();

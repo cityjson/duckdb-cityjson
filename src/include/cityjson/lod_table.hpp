@@ -14,8 +14,8 @@ namespace cityjson {
  *
  * Each LOD level gets its own table with:
  * - Standard columns (id, feature_id, object_type, attributes)
- * - Single geometry column (WKB BLOB)
- * - Single geometry_properties column (JSON)
+ * - One LoD-suffixed geometry column (WKB BLOB), e.g. geometry_lod2_2
+ * - Its matching geometry_properties_lod* STRUCT and material_/texture_ columns
  */
 struct LODTableDefinition {
 	std::string table_name;      // e.g., "buildings_lod2"
@@ -58,15 +58,18 @@ public:
 	static std::vector<Column> GetBaseColumns();
 
 	/**
-	 * Get geometry-specific columns for WKB encoding
+	 * Get geometry-specific columns for WKB encoding, suffixed with the given LoD
 	 *
-	 * Columns:
-	 * - geometry: BLOB (WKB)
-	 * - geometry_properties: JSON
+	 * Columns, for lod "2.2":
+	 * - geometry_lod2_2: BLOB (WKB)
+	 * - geometry_properties_lod2_2: STRUCT (spec § "Geometry properties and semantics")
+	 * - material_lod2_2 / texture_lod2_2: JSON appearance (§11)
+	 * - bbox: STRUCT
 	 *
+	 * @param lod Normalised LoD string, e.g. "2.2" or "3.0"
 	 * @return Vector of geometry column definitions
 	 */
-	static std::vector<Column> GetGeometryColumns();
+	static std::vector<Column> GetGeometryColumns(const std::string &lod);
 
 	/**
 	 * Collect all unique LOD values from features

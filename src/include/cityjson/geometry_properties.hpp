@@ -74,16 +74,17 @@ struct GeometryProperties {
 class GeometryPropertiesSerializer {
 public:
 	/**
-	 * Serialize CityJSON Geometry to the spec §8 geometry_properties JSON:
-	 * {type, surfaces?, face_semantics?, shells?}.
+	 * Serialize CityJSON Geometry to the spec §8 geometry_properties payload:
+	 * {type, surfaces?, face_semantics?, shells?}. Carries no `lod` key -- the
+	 * level of detail lives in the column name.
+	 *
+	 * The result is the intermediate form; VectorWriter turns it into the
+	 * STRUCT(type, surfaces, face_semantics, shells) the column actually holds.
 	 *
 	 * @param geometry The CityJSON geometry object
-	 * @param include_lod When true, add a `lod` key (a spec §8 permitted extra
-	 *   key). Set only for an un-suffixed geometry_properties column, whose LoD
-	 *   is not carried by the column name; the wide per-LoD layout omits it.
 	 * @return JSON object containing geometry properties
 	 */
-	static json Serialize(const Geometry &geometry, bool include_lod = false);
+	static json Serialize(const Geometry &geometry);
 
 	/**
 	 * Get geometry type code for CityJSON type

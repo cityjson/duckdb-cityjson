@@ -52,7 +52,11 @@ Key entry points:
 
 When `lod='X'` is passed:
 
-- Schema switches to `geometry` (BLOB/WKB) + `geometry_properties` (VARCHAR/JSON)
+- Schema restricts to that one LoD but keeps the same suffixed column grammar as
+  the wide layout: `geometry_lodX_Y` (BLOB/WKB) + `geometry_properties_lodX_Y`
+  (STRUCT) + `material_lodX_Y` / `texture_lodX_Y` + `bbox`. There is no bare
+  `geometry` column, so the LoD stays recoverable from the column name — which
+  is what lets `COPY TO cityjson` re-emit it.
 - Per-feature vertex pool is used for CityJSONSeq; global metadata vertices used for regular CityJSON
 - `GetGeometryAtLOD()` finds the geometry matching the requested LOD string
 - `lod` field in geometry objects is optional (not all features declare it)

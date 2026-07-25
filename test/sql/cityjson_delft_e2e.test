@@ -103,14 +103,14 @@ GROUP BY object_type ORDER BY object_type;
 Building	10	0	0
 BuildingPart	0	10	10
 
-# geometry_properties carries the spec §8 form: string `type`, verbatim
-# `surfaces`, and a flat `face_semantics` array (the LoD is carried by the
-# column name, not repeated in the JSON).
+# geometry_properties carries the spec form as a STRUCT: string `type`, verbatim
+# `surfaces`, and a flat `face_semantics` list (the LoD is carried by the column
+# name, never repeated in the value).
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
-WHERE geometry_properties_lod2_2 LIKE '%"type":"Solid"%'
-  AND geometry_properties_lod2_2 LIKE '%RoofSurface%'
-  AND geometry_properties_lod2_2 LIKE '%face_semantics%';
+WHERE geometry_properties_lod2_2."type" = 'Solid'
+  AND geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%'
+  AND geometry_properties_lod2_2.face_semantics IS NOT NULL;
 ----
 10
 
@@ -159,7 +159,7 @@ b3_kas_warenhuis	BOOLEAN
 # ============================================================
 
 query TI
-SELECT typeof(geometry), COUNT(*) FILTER (WHERE geometry IS NOT NULL)
+SELECT typeof(geometry_lod2_2), COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)
 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
 GROUP BY 1;
 ----
@@ -168,7 +168,7 @@ BLOB	10
 # The WKB payloads are non-empty
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
-WHERE octet_length(geometry) > 0;
+WHERE octet_length(geometry_lod2_2) > 0;
 ----
 10
 
@@ -215,8 +215,8 @@ TO '__TEST_DIR__/delft_rt_lossless.city.jsonl'
 
 # All 10 geometries survive and every bbox coordinate matches within 1 cm
 query I
-WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL),
-     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL)
+WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL),
+     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) AS n
 FROM o JOIN r USING (id)
 WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01
@@ -302,8 +302,8 @@ TO '__TEST_DIR__/delft_rt_default.city.jsonl' (FORMAT cityjsonseq);
 # Geometry is preserved and every bbox coordinate matches within 1 cm, with no
 # explicit transform passed.
 query I
-WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL),
-     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_default.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL)
+WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL),
+     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_default.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) AS n
 FROM o JOIN r USING (id)
 WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01

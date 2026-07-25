@@ -46,7 +46,7 @@ SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FR
 statement ok
 DROP TABLE bdef;
 
-# CityJSONSeq per-LOD mode also exposes geometry + bbox (streaming bind)
+# CityJSONSeq per-LOD mode also exposes geometry_lod2_2 + bbox (streaming bind)
 statement ok
 CREATE TABLE bseq AS SELECT * FROM read_cityjsonseq('test/data/bbox_seq.city.jsonl', lod => '2.2');
 
@@ -66,7 +66,7 @@ SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FR
 0.0	0.0	0.0	10.0	10.0	0.0
 
 query T
-SELECT typeof(geometry) FROM bseq WHERE geometry IS NOT NULL;
+SELECT typeof(geometry_lod2_2) FROM bseq WHERE geometry_lod2_2 IS NOT NULL;
 ----
 BLOB
 

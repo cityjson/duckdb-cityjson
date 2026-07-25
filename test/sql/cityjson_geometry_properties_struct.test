@@ -1,0 +1,126 @@
+# name: test/sql/cityjson_geometry_properties_struct.test
+# description: geometry_properties is a spec §8 STRUCT, not JSON text
+# group: [sql]
+
+require cityjson
+
+# The CityParquet specification (§ "Geometry properties and semantics") types
+# geometry_properties_lod* as
+#
+#   STRUCT<type VARCHAR, surfaces JSON, face_semantics LIST<INT>, shells LIST<LIST<INT>>>
+#
+# with no `lod` field — the level of detail is carried by the column name. This
+# file pins that contract for both the wide per-LoD layout and the single-LoD
+# `lod=` reading mode, which emit the identical struct.
+
+# ============================================================
+# Wide layout: geometry_properties_lod*
+# ============================================================
+
+statement ok
+CREATE TABLE minimal AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+query T
+SELECT typeof(geometry_properties_lod2_2) FROM minimal;
+----
+STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+
+# Fields are reachable as native columns — no JSON parsing.
+query T
+SELECT geometry_properties_lod2_2."type" FROM minimal;
+----
+Solid
+
+# `shells` is LIST<LIST<INT>>: one inner list per solid. This Solid has a single
+# shell of a single face, so the spec form is [[1]] — NOT the flat [1].
+query T
+SELECT geometry_properties_lod2_2.shells FROM minimal;
+----
+[[1]]
+
+# No semantics on this fixture: surfaces and face_semantics are null together.
+query TT
+SELECT geometry_properties_lod2_2.surfaces IS NULL,
+       geometry_properties_lod2_2.face_semantics IS NULL
+FROM minimal;
+----
+true	true
+
+statement ok
+DROP TABLE minimal;
+
+# ============================================================
+# Single-LoD `lod=` mode: same column grammar, same struct
+# ============================================================
+#
+# `lod=` restricts the read to one LoD but uses the identical suffixed column
+# names, so the level of detail stays recoverable from the column name -- which
+# is what lets COPY TO cityjson re-emit it.
+
+statement ok
+CREATE TABLE delft AS
+SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2');
+
+query T
+SELECT DISTINCT typeof(geometry_properties_lod2_2) FROM delft;
+----
+STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+
+# A struct field named `lod` must not exist — the spec keeps the LoD in the
+# column name and forbids storing it again in the value.
+statement error
+SELECT geometry_properties_lod2_2.lod FROM delft;
+----
+
+# Real semantics: surfaces is a JSON array, face_semantics a native INTEGER list
+# that a columnar engine can UNNEST.
+query TT
+SELECT typeof(geometry_properties_lod2_2.surfaces),
+       typeof(geometry_properties_lod2_2.face_semantics)
+FROM delft
+WHERE geometry_properties_lod2_2.surfaces IS NOT NULL
+LIMIT 1;
+----
+VARCHAR	INTEGER[]
+
+query T
+SELECT geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%'
+FROM delft
+WHERE geometry_properties_lod2_2.surfaces IS NOT NULL
+LIMIT 1;
+----
+true
+
+# Spec invariant: len(face_semantics) == the WKB face count, and shells totals
+# to that same count. Verified across every semantic solid in the fixture.
+query I
+SELECT count(*) FROM delft
+WHERE geometry_properties_lod2_2.face_semantics IS NOT NULL
+  AND len(geometry_properties_lod2_2.face_semantics)
+      <> list_sum(list_transform(geometry_properties_lod2_2.shells, s -> list_sum(s)));
+----
+0
+
+# Spec invariant: every non-null face_semantics entry indexes an existing surface.
+# The surface count is derived by counting '"type"' keys rather than with
+# json_array_length, so this file does not depend on the json extension (which
+# this extension does not require and which is not loaded by default). Each
+# semantic surface object carries exactly one "type" key, so the count is exact.
+query I
+SELECT count(*) FROM delft
+WHERE geometry_properties_lod2_2.face_semantics IS NOT NULL
+  AND list_max(geometry_properties_lod2_2.face_semantics) >=
+      (length(geometry_properties_lod2_2.surfaces)
+       - length(replace(geometry_properties_lod2_2.surfaces, '"type"', ''))) / length('"type"');
+----
+0
+
+# Absent geometry_lod2_2 yields a null struct, not a struct of nulls.
+query I
+SELECT count(*) FROM delft
+WHERE geometry_lod2_2 IS NULL AND geometry_properties_lod2_2 IS NOT NULL;
+----
+0
+
+statement ok
+DROP TABLE delft;

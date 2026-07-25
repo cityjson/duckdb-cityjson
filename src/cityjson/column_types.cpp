@@ -38,7 +38,9 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 		return "STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)";
 	case ColumnType::GeometryWKB:
 		return "BLOB";
-	case ColumnType::GeometryPropertiesJson:
+	case ColumnType::GeometryPropertiesStruct:
+		// `surfaces` holds JSON text; see ToDuckDBType for why it is typed VARCHAR.
+		return "STRUCT(\"type\" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])";
 	case ColumnType::AppearanceJson:
 		return "JSON";
 	default:
@@ -72,7 +74,8 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 		return LogicalTypeId::STRUCT;
 	case ColumnType::GeometryWKB:
 		return LogicalTypeId::BLOB;
-	case ColumnType::GeometryPropertiesJson:
+	case ColumnType::GeometryPropertiesStruct:
+		return LogicalTypeId::STRUCT;
 	case ColumnType::AppearanceJson:
 		return LogicalTypeId::VARCHAR; // JSON stored as VARCHAR
 	default:
@@ -133,7 +136,29 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 	case ColumnType::GeometryWKB:
 		return LogicalType::BLOB;
 
-	case ColumnType::GeometryPropertiesJson:
+	case ColumnType::GeometryPropertiesStruct: {
+		// Spec § "Geometry properties and semantics": the CityGML CM information WKB
+		// has no slot for. `surfaces` stays JSON because semantic surfaces have no
+		// fixed shape (each may carry different attributes); the rest are typed so a
+		// query engine reads them without parsing. There is deliberately no `lod`
+		// field -- the column name carries the level of detail.
+		// `surfaces` is VARCHAR rather than LogicalType::JSON(). The spec's "JSON"
+		// names the logical content, not a physical annotation, and DuckDB's JSON
+		// type buys nothing here while costing real usability: it is a VARCHAR alias
+		// whose operators (`->`, `.field`) bind to json_extract from the `json`
+		// extension, which this extension does not depend on and which is not loaded
+		// by default -- so even `surfaces LIKE '%RoofSurface%'` fails to bind. It
+		// would not buy interoperability either: cityparquet-rs marks the same field
+		// with the Arrow extension name `arrow.json`, not the Parquet JSON logical
+		// type DuckDB emits, so the two never agreed via this mechanism anyway.
+		child_list_t<LogicalType> children;
+		children.push_back(std::make_pair("type", LogicalType::VARCHAR));
+		children.push_back(std::make_pair("surfaces", LogicalType::VARCHAR));
+		children.push_back(std::make_pair("face_semantics", LogicalType::LIST(LogicalType::INTEGER)));
+		children.push_back(std::make_pair("shells", LogicalType::LIST(LogicalType::LIST(LogicalType::INTEGER))));
+		return LogicalType::STRUCT(children);
+	}
+
 	case ColumnType::AppearanceJson:
 		return LogicalType::VARCHAR; // JSON stored as VARCHAR
 
@@ -197,7 +222,7 @@ ColumnType ColumnTypeUtils::Parse(const std::string &name) {
 		return ColumnType::GeometryWKB;
 	}
 	if (lower_name == "geometrypropertiesjson" || lower_name == "geometry_properties") {
-		return ColumnType::GeometryPropertiesJson;
+		return ColumnType::GeometryPropertiesStruct;
 	}
 
 	// Not found - throw error
@@ -350,7 +375,7 @@ bool ColumnTypeUtils::IsTemporal(ColumnType type) {
 bool ColumnTypeUtils::IsComplex(ColumnType type) {
 	return type == ColumnType::Json || type == ColumnType::VarcharArray || type == ColumnType::Geometry ||
 	       type == ColumnType::GeographicalExtent || type == ColumnType::GeometryWKB ||
-	       type == ColumnType::GeometryPropertiesJson || type == ColumnType::AppearanceJson;
+	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::AppearanceJson;
 }
 
 // ============================================================

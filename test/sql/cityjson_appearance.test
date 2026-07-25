@@ -70,12 +70,12 @@ TO '__TEST_DIR__/rt_appearance.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', lod => '3')
-WHERE id = 'GMLID_855011_330784_753' AND material LIKE '%"visual"%';
+WHERE id = 'GMLID_855011_330784_753' AND material_lod3_0 LIKE '%"visual"%';
 ----
 1
 
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', lod => '3')
-WHERE id = 'GMLID_BUI100628_817_8083' AND texture LIKE '%"visual"%';
+WHERE id = 'GMLID_BUI100628_817_8083' AND texture_lod3_0 LIKE '%"visual"%';
 ----
 1

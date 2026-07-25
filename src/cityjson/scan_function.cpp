@@ -30,9 +30,9 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		size_t schema_idx = projected_cols[col_idx];
 		const Column &col = bind_data.columns[schema_idx];
 
-		// Handle WKB geometry column. In per-LOD mode (lod => ...) the single "geometry"
-		// column uses target_geom; in default mode each "geometry_lodX_Y" column resolves
-		// its own LOD from the column name.
+		// Handle WKB geometry column. Both modes name it "geometry_lodX_Y"; in per-LOD
+		// mode (lod => ...) the one such column uses target_geom, while in default mode
+		// each column resolves its own LOD from the column name.
 		if (col.kind == ColumnType::GeometryWKB) {
 			std::optional<Geometry> geom = bind_data.target_lod.has_value()
 			                                   ? target_geom
@@ -47,22 +47,17 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			continue;
 		}
 
-		// Handle geometry properties column (single "geometry_properties" in per-LOD mode,
-		// or per-LOD "geometry_properties_lodX_Y" in default mode).
-		if (col.kind == ColumnType::GeometryPropertiesJson) {
+		// Handle the geometry properties column ("geometry_properties_lodX_Y" in both
+		// modes), paired to the geometry column of the same LoD suffix.
+		if (col.kind == ColumnType::GeometryPropertiesStruct) {
 			std::optional<Geometry> geom = bind_data.target_lod.has_value()
 			                                   ? target_geom
 			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
-			if (geom.has_value()) {
-				// The LoD is carried by a suffixed column name (geometry_properties_lod*);
-				// an un-suffixed "geometry_properties" column (single-LoD mode) has no
-				// name to carry it, so the LoD is added inside the JSON instead (spec §8).
-				bool include_lod = (col.name == "geometry_properties");
-				auto props = CityObjectUtils::GetGeometryPropertiesJson(geom.value(), include_lod);
-				WriteGeometryProperties(wrappers[col_idx].AsFlatMut(), props, output_row);
-			} else {
-				wrappers[col_idx].SetNull(output_row);
-			}
+			// Always routed through WriteGeometryProperties, including the absent-geometry
+			// case: a null STRUCT still needs its LIST children given a well-formed
+			// list_entry_t, which a bare SetNull on the struct would leave uninitialised.
+			auto props = geom.has_value() ? CityObjectUtils::GetGeometryPropertiesStruct(geom.value()) : json(nullptr);
+			WriteGeometryProperties(wrappers[col_idx].AsStructMut(), props, output_row);
 			continue;
 		}
 
@@ -82,7 +77,7 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				}
 			}
 			if (appearance != nullptr) {
-				WriteGeometryProperties(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
+				WriteJsonText(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
 			} else {
 				wrappers[col_idx].SetNull(output_row);
 			}

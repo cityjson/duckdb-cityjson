@@ -192,39 +192,55 @@ In default mode (no `lod` parameter), the schema includes:
 STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
 ```
 
-**Geometry columns (CityParquet wide layout)** — one pair of columns per LOD found in the data, named after the normalized LOD (e.g. `geometry_lod2_2`, `geometry_properties_lod2_2`; a whole-number LOD like `2.0` normalizes to `geometry_lod2`):
+**Geometry columns (CityParquet wide layout)** — one pair of columns per LOD found in the data, named after the normalized LOD (e.g. `geometry_lod2_2`, `geometry_properties_lod2_2`; a suffix always carries a minor, so a whole-number LOD like `2.0` becomes `geometry_lod2_0`, never `geometry_lod2`):
 
 | Column                          | Type           | Description                                             |
 | ------------------------------- | -------------- | ------------------------------------------------------- |
 | `geometry_lodX_Y`               | BLOB           | WKB-encoded geometry for that LOD (NULL if absent)      |
-| `geometry_properties_lodX_Y`    | JSON (VARCHAR) | Geometry metadata in the CityParquet spec §8 form (below) |
+| `geometry_properties_lodX_Y`    | STRUCT        | Geometry metadata in the CityParquet spec form (below) |
 | `material_lodX_Y`               | JSON (VARCHAR) | Per-surface material map for that LOD's geometry (§11.1); NULL if none |
 | `texture_lodX_Y`                | JSON (VARCHAR) | Per-surface texture map for that LOD's geometry (§11.1); NULL if none |
 
 This is the layout the CityParquet encoding formalises: each LOD becomes its own WKB column, and `COPY ... TO (FORMAT PARQUET)` yields a Parquet-encoded city model directly.
 
-**`geometry_properties` shape (CityParquet spec §8).** The WKB geometry cannot
+**`geometry_properties` shape (CityParquet spec).** The WKB geometry cannot
 carry semantics or the solid's shell structure, so those live in
-`geometry_properties` as a flattened, WKB-face-aligned JSON object:
+`geometry_properties_lod*` as a flattened, WKB-face-aligned **STRUCT** — the
+fixed-shape parts are typed columns a query engine reads without parsing JSON:
 
-| Key | Present when | Meaning |
+```text
+STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+```
+
+| Field | Present when | Meaning |
 | --- | --- | --- |
 | `type` | always | CityJSON geometry type as a string (`"Solid"`, `"MultiSurface"`, …) |
-| `shells` | solid-family geometry | Per-shell emitted-face counts. Flat for `Solid` (`[12]`); one array per solid for `MultiSolid`/`CompositeSolid` (`[[12],[8,4]]`). Recovers the shell partition the WKB flattens away. |
-| `surfaces` | source has semantics | The CityJSON `surfaces` array, verbatim (order and content preserved, extended `+`-attributes inline) |
-| `face_semantics` | source has semantics | A flat array with one entry per WKB face, in WKB face order — each the index of that face's surface in `surfaces`, or `null`. Replaces CityJSON's nested `semantics.values`. |
-| `lod` | un-suffixed column only | Present only in per-LoD mode (below), where the column name carries no LoD |
+| `surfaces` | source has semantics | The CityJSON `surfaces` array verbatim as JSON text (order and content preserved, extended `+`-attributes inline). NULL otherwise. |
+| `face_semantics` | source has semantics | One entry per WKB face, in WKB face order — each the index of that face's surface in `surfaces`, or `NULL`. Replaces CityJSON's nested `semantics.values`. |
+| `shells` | solid-family geometry | Per-solid, then per-shell, face counts — always two levels deep, so a lone `Solid` is `[[12, 4]]` and a `MultiSolid`/`CompositeSolid` is `[[12], [8, 4]]`. Recovers the shell partition the WKB flattens away. NULL for non-solid types. |
+
+There is no `lod` field: the level of detail is carried by the column name.
 
 Example (a `Solid` with per-surface semantics):
 
-```json
-{"type":"Solid",
- "shells":[6],
- "surfaces":[{"type":"GroundSurface"},{"type":"RoofSurface"},{"type":"WallSurface"},{"type":"WallSurface"}],
- "face_semantics":[0,1,2,2,2,3]}
+```sql
+SELECT geometry_properties_lod2_2.* FROM read_cityjsonseq('buildings.city.jsonl');
+-- type           = 'Solid'
+-- surfaces       = '[{"type":"GroundSurface"},{"type":"RoofSurface"},{"type":"WallSurface"},{"type":"WallSurface"}]'
+-- face_semantics = [0, 1, 2, 2, 2, 3]
+-- shells         = [[6]]
 ```
 
-`len(face_semantics)` always equals `sum(shells)` (the WKB face count). This is
+Because `face_semantics` is a native `INTEGER[]`, surface-level analysis is a
+positional filter a columnar engine can `UNNEST` rather than a JSON parse:
+
+```sql
+-- how many roof faces does each building have?
+SELECT id, len(list_filter(geometry_properties_lod2_2.face_semantics, i -> i = 1)) AS roof_faces
+FROM read_cityjsonseq('buildings.city.jsonl');
+```
+
+`len(face_semantics)` always equals the total of `shells` (the WKB face count). This is
 also the metadata the [`duckdb-3d`](https://github.com/HideBa/duckdb-3d)
 extension reads from `shells` to compute the volume of a solid with inner
 shells. (Note: the old form — an integer `type` code, `cityjsonType`, and
@@ -261,8 +277,9 @@ When `lod` is specified, the schema switches to:
 | `id`                  | VARCHAR       | CityObject identifier                           |
 | `feature_id`          | VARCHAR       | Feature identifier                              |
 | `object_type`         | VARCHAR       | CityJSON type                                   |
-| `geometry`            | BLOB          | WKB-encoded geometry for the requested LOD      |
-| `geometry_properties` | JSON (VARCHAR)| Geometry metadata, spec §8 form (see above); carries `lod` here since the column name has no suffix |
+| `geometry_lodX_Y`     | BLOB          | WKB-encoded geometry for the requested LOD      |
+| `geometry_properties_lodX_Y` | STRUCT | Geometry metadata, spec form (see above)        |
+| `material_lodX_Y` / `texture_lodX_Y` | JSON (VARCHAR) | Appearance for that geometry (§11.1); NULL if none |
 | `bbox`                | STRUCT        | 3D extent of the geometry (`min_x..max_z DOUBLE`) |
 | *(attributes)*        | *(inferred)*  | Dynamic attribute columns                       |
 
@@ -270,9 +287,9 @@ Use with DuckDB Spatial:
 
 ```sql
 LOAD spatial;
-SELECT id, ST_GeomFromWKB(geometry) AS geom
+SELECT id, ST_GeomFromWKB(geometry_lod2_2) AS geom
 FROM read_cityjsonseq('buildings.city.jsonl', lod => '2.2')
-WHERE geometry IS NOT NULL;
+WHERE geometry_lod2_2 IS NOT NULL;
 ```
 
 ### Metadata Columns
@@ -376,7 +393,7 @@ The `COPY TO` statement requires these columns in the input query:
 | `children`    | No       | Child object IDs                   |
 | `parents`     | No       | Parent object IDs                  |
 | `geometry`    | No       | WKB geometry or geometry struct    |
-| `geometry_properties` | No | Geometry metadata — JSON text **or** a CityParquet spec §8 STRUCT (`STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])`); either form reconstructs semantics/shells |
+| `geometry_properties` | No | Geometry metadata — a CityParquet STRUCT (`STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])`) **or** JSON text from an external producer; either form reconstructs semantics/shells |
 
 All other columns are written as CityJSON attributes. The wide CityParquet layout
 (`geometry_lodX_Y` + `geometry_properties_lodX_Y` per LoD, as written by

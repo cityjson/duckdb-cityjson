@@ -26,15 +26,20 @@ BLOB
 query T
 SELECT typeof(geometry_properties_lod2_2) FROM buildings;
 ----
-VARCHAR
+STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
 
-# geometry_properties uses the spec §8 flattened, face-aligned form:
-# {type:<string>, surfaces?, face_semantics?, shells?}. This Solid has one
-# shell of one face and no semantics, so only `type` and `shells` appear.
-query T
-SELECT geometry_properties_lod2_2 FROM buildings;
+# geometry_properties is the spec's flattened, face-aligned STRUCT
+# {type, surfaces, face_semantics, shells}. This Solid has one shell of one face
+# and no semantics, so only `type` and `shells` are populated -- and `shells` is
+# nested one list per solid, so a lone Solid reads [[1]] rather than [1].
+query TTTT
+SELECT geometry_properties_lod2_2."type",
+       geometry_properties_lod2_2.surfaces,
+       geometry_properties_lod2_2.face_semantics,
+       geometry_properties_lod2_2.shells
+FROM buildings;
 ----
-{"shells":[1],"type":"Solid"}
+Solid	NULL	NULL	[[1]]
 
 # Clean up
 statement ok
@@ -47,13 +52,23 @@ DROP TABLE buildings;
 # A real Delft Solid with per-surface semantics. Its CityJSON semantics
 # values [[0,2,2,2,2,1]] (one shell, six faces) flatten to a per-face
 # face_semantics array aligned to the WKB face order; shells records the
-# six-face shell; surfaces is preserved verbatim in order.
-query T
-SELECT geometry_properties_lod2_2
+# six-face shell as [[6]] (one list per solid); surfaces is preserved verbatim,
+# in order, including the extended `on_footprint_edge` attributes WKB cannot hold.
+query TTT
+SELECT geometry_properties_lod2_2."type",
+       geometry_properties_lod2_2.face_semantics,
+       geometry_properties_lod2_2.shells
 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
 WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
 ----
-{"face_semantics":[0,2,2,2,2,1],"shells":[6],"surfaces":[{"type":"GroundSurface"},{"type":"RoofSurface"},{"on_footprint_edge":true,"type":"WallSurface"},{"on_footprint_edge":false,"type":"WallSurface"}],"type":"Solid"}
+Solid	[0, 2, 2, 2, 2, 1]	[[6]]
+
+query T
+SELECT geometry_properties_lod2_2.surfaces
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+[{"type":"GroundSurface"},{"type":"RoofSurface"},{"on_footprint_edge":true,"type":"WallSurface"},{"on_footprint_edge":false,"type":"WallSurface"}]
 
 # ============================================================
 # Tests for LOD parameter with WKB geometry encoding
@@ -69,17 +84,18 @@ SELECT COUNT(*) FROM buildings_lod;
 ----
 1
 
-# Verify the 'geometry' column exists and is a BLOB (WKB format)
+# `lod=` mode uses the same suffixed column grammar as the wide layout, so the
+# geometry column is geometry_lod2_2 (never a bare `geometry`) and its LoD stays
+# recoverable from the name.
 query T
-SELECT typeof(geometry) FROM buildings_lod;
+SELECT typeof(geometry_lod2_2) FROM buildings_lod;
 ----
 BLOB
 
-# Verify 'geometry_properties' column exists and is VARCHAR (JSON)
 query T
-SELECT typeof(geometry_properties) FROM buildings_lod;
+SELECT typeof(geometry_properties_lod2_2) FROM buildings_lod;
 ----
-VARCHAR
+STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
 
 # Verify 'object_type' column exists
 query T
@@ -97,18 +113,21 @@ SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '9.9');
 ----
 LOD '9.9' not found
 
-# Same file with and without LOD must produce different schemas
+# Both modes use the same suffixed column grammar — a bare `geometry` column is
+# never emitted. What `lod=` changes is how many LoDs are present, not how they
+# are named: the multi-LoD Delft fixture yields four geometry columns in the wide
+# layout and exactly the requested one under `lod=`.
 query II
-SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2'),
+SELECT COUNT(*) FILTER (WHERE column_name LIKE 'geometry_lod%'),
        COUNT(*) FILTER (WHERE column_name = 'geometry')
-FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
 UNION ALL
-SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2'),
+SELECT COUNT(*) FILTER (WHERE column_name LIKE 'geometry_lod%'),
        COUNT(*) FILTER (WHERE column_name = 'geometry')
-FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '2.2'));
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2'));
 ----
+4	0
 1	0
-0	1
 
 # ============================================================
 # LOD normalization
@@ -135,4 +154,4 @@ BLOB
 query T
 SELECT typeof(geometry_properties_lod2_0) FROM read_cityjson('test/data/numeric_lod.city.json') WHERE geometry_properties_lod2_0 IS NOT NULL;
 ----
-VARCHAR
+STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])

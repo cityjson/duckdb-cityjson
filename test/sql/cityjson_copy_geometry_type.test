@@ -27,17 +27,17 @@ COPY (SELECT * FROM cp) TO '__TEST_DIR__/geom.city.jsonl' (FORMAT cityjsonseq);
 # The LoD0 footprint round-trips: read back at LoD 0.0, its geometry is present.
 query I
 SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/geom.city.jsonl', lod => '0.0')
-WHERE geometry IS NOT NULL;
+WHERE geometry_lod0_0 IS NOT NULL;
 ----
 1
 
 # … and it decoded to a MultiSurface (CityJSON mapping of WKB MultiPolygon).
 query I
-SELECT geometry_properties LIKE '%MultiSurface%'
+SELECT geometry_properties_lod0_0."type"
 FROM read_cityjsonseq('__TEST_DIR__/geom.city.jsonl', lod => '0.0')
-WHERE geometry IS NOT NULL;
+WHERE geometry_lod0_0 IS NOT NULL;
 ----
-true
+MultiSurface
 
 # Multi-row + a filter (forces sliced/dictionary vectors — the case a flat read
 # would corrupt) + an interleaved NULL geometry. The GEOMETRY→WKB view must be
@@ -54,6 +54,6 @@ COPY (SELECT * FROM cp2 WHERE id IN ('b', 'c')) TO '__TEST_DIR__/geom2.city.json
 # Only 'c' has a footprint ('b' is NULL, filtered set still slices the vector).
 query I
 SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/geom2.city.jsonl', lod => '0.0')
-WHERE geometry IS NOT NULL;
+WHERE geometry_lod0_0 IS NOT NULL;
 ----
 1
