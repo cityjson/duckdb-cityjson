@@ -67,6 +67,7 @@ set(EXTENSION_SOURCES
     src/cityjson/cityjson_writer.cpp
     # CityParquet package layer
     src/cityjson/cityparquet_package.cpp
+    src/cityjson/cityparquet_validate.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

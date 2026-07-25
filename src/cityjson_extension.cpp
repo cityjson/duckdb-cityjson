@@ -6,6 +6,7 @@
 #include "cityjson/geoparquet_table_function.hpp"
 #include "cityjson/wkb_extent.hpp"
 #include "cityjson/cityparquet_package.hpp"
+#include "cityjson/cityparquet_validate.hpp"
 #include "cityjson/copy_function.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_table_function.hpp"
@@ -36,6 +37,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register CityParquet package bookkeeping (cityparquet_init)
 	cityjson::RegisterCityParquetPackageFunctions(loader);
+
+	// Register CityParquet consistency checks (cityparquet_validate)
+	cityjson::RegisterCityParquetValidateFunctions(loader);
 
 	// Register COPY TO functions (cityjson and cityjsonseq formats)
 	cityjson::RegisterCityJSONCopyFunction(loader);

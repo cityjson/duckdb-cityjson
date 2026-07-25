@@ -1,0 +1,100 @@
+# name: test/sql/cityparquet_validate.test
+# description: cityparquet_validate / cityparquet_orphans — the consistency oracle
+# group: [sql]
+
+require cityjson
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+# The pragma materialises its findings into a temp table and then selects them, so
+# the results stay filterable afterwards — a PRAGMA cannot itself be a subquery.
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+# A freshly loaded, untouched package is clean.
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# Break the hierarchy: delete a BuildingPart without touching its parent's
+# children array, leaving the parent with a dangling child reference.
+statement ok
+DELETE FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query TTT
+SELECT check_name, severity, object_id FROM cityparquet_validation WHERE check_name = 'child_dangling';
+----
+child_dangling	error	NL.IMBAG.Pand.0503100000012869
+
+# Break feature_id: point a row at a feature family that does not exist.
+statement ok
+UPDATE ams.building SET feature_id = 'no-such-feature'
+  WHERE id = 'NL.IMBAG.Pand.0503100000016459';
+
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE check_name = 'feature_id_dangling';
+----
+1
+
+# Misaligned children_roles is an error even when both arrays are non-null.
+statement ok
+UPDATE ams.building SET children_roles = ['a', 'b']
+  WHERE id = 'NL.IMBAG.Pand.0503100000005156';
+
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE check_name = 'children_roles_misaligned';
+----
+1
+
+# A NULL feature_id is an error in its own right.
+statement ok
+UPDATE ams.building SET feature_id = NULL
+  WHERE id = 'NL.IMBAG.Pand.0503100000005156-0';
+
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE check_name = 'feature_id_null';
+----
+1
+
+# Duplicate ids across the package are detected even when the rows sit in
+# different module tables — parents/children/feature_id resolve by bare id.
+statement ok
+CREATE TABLE ams.generics AS SELECT * FROM ams.building LIMIT 1;
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE check_name = 'id_duplicate';
+----
+1
+
+# The _sql twin returns the text without running it.
+query I
+SELECT cityparquet_validate_sql('ams') LIKE '%feature_id_dangling%';
+----
+true
