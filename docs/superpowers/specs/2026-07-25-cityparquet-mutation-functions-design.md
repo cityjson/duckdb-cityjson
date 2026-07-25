@@ -91,9 +91,23 @@ so `PRAGMA insert_cityjson('ams', 'f.city.json', lod := '2.2')` parses.
 ### Constraint: expansion happens before execution
 
 `StatementPreprocessor::Preprocess` expands every pragma in a submitted script *before* any of
-it runs. A pragma generator therefore cannot observe tables created by earlier statements in
-the same submission. This design avoids the problem entirely by having each generator derive
-what it needs at plan time in C++ (file inspection, catalog lookup) rather than by querying.
+it runs. Two consequences, and the second is easy to get wrong:
+
+1. A generator cannot observe tables created by earlier statements in the same submission. This
+   design sidesteps that by deriving what it needs at plan time in C++ — file inspection and
+   catalog lookup — rather than by querying.
+2. **A generator's view of the destination is also pre-batch.** In the two-insert example
+   above, the second pragma is expanded against the schema and data as they were *before* the
+   first insert ran. Any decision that depends on destination state must therefore be either
+   idempotent or deferred into the generated SQL:
+   - **Schema evolution is made idempotent** — every generated `ALTER TABLE … ADD COLUMN` uses
+     `IF NOT EXISTS`, and type widening is emitted only as a widening, so re-emitting it is a
+     no-op.
+   - **Sidecar id offsets are deferred**, because they depend on row data rather than the
+     catalog (see Phase 4).
+
+   With those two rules, batching several mutation pragmas in one submission is safe. Without
+   them it silently corrupts, which is why they are normative here rather than an optimisation.
 
 ## Function surface
 
@@ -168,6 +182,14 @@ PRAGMA cityparquet_delete('ams', $$object_type = 'Building' AND b3_h_dak_max > 2
 | *predicate* (positional 2) | VARCHAR | — | SQL predicate, evaluated against each object table |
 | `cascade` | BOOLEAN | `true` | Delete the transitive `children` closure |
 | `tables` | VARCHAR[] | all | Restrict which object tables the *predicate* is evaluated against |
+
+**Predicate scoping across heterogeneous tables.** Object tables do not share a column set — a
+predicate naming `b3_h_dak_max` cannot bind against `transportation`, which has no such column.
+The generator therefore parses the predicate at plan time (`Parser::ParseExpressionList`, then
+walking for `ColumnRefExpression`) and applies it only to those object tables that carry every
+column it references. Tables that do not are skipped, and the set actually searched is
+reported. This makes the natural invocation work without the user having to spell out `tables`
+themselves, which is the point of the wrapper.
 
 `tables` scopes only the predicate, never the cascade. The `children` closure and the
 survivor-reference cleanup are always package-wide; restricting them would leave orphaned
@@ -262,6 +284,24 @@ Ids are assigned by ordinal position in the source's `appearance.materials` /
 stays `appearance := 'local'`, leaving existing behaviour and the `COPY TO cityjson` round trip
 untouched. The same option is added to `read_cityjsonseq` and `read_flatcitybuf`.
 
+## Prerequisite: a WKB extent scalar
+
+`bbox` recomputation must derive an extent from a `geometry_lod*` cell. Generated SQL has
+nothing to do that with today: the extension exposes no WKB-to-extent function, and DuckDB
+spatial cannot help — it rejects exactly the encodings CityParquet relies on, raising
+`Unsupported geometry type in WKB` on `PolyhedralSurfaceZ`, which is what every solid LoD is.
+Without this, `cityparquet_reconcile` cannot service its headline case (a raw
+`UPDATE … SET geometry_lod2_2 = …`) for solids, which is most of the interesting data.
+
+```sql
+cityjson_wkb_extent(geom BLOB) -> STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE,
+                                         xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
+```
+
+A scalar function over the existing `wkb_decoder.cpp`, returning `NULL` for a `NULL` input. It
+handles the whole WKB vocabulary CityParquet writes, solid family included, which is precisely
+why it cannot be delegated to `spatial`.
+
 ## Consistency algorithms
 
 ### Insert / merge
@@ -269,8 +309,9 @@ untouched. The same option is added to `read_cityjsonseq` and `read_flatcitybuf`
 Ordered; each phase depends on the previous having completed.
 
 **Phase 0 — plan time (C++, no SQL).** Infer the source schema; take a full pass for the
-complete `object_type` set; diff against the destination catalog. Produces the `ALTER` /
-`CREATE` statements, the routing map, and the sidecar id offsets.
+complete `object_type` set; diff against the destination *catalog*. Produces the `ALTER` /
+`CREATE` statements and the routing map — all catalog-derivable. Nothing that depends on row
+**data** may be decided here; such decisions are emitted as SQL instead.
 
 **Phase 1 — stage** into temp tables.
 
@@ -292,13 +333,32 @@ complete `object_type` set; diff against the destination catalog. Produces the `
 - Add new attribute columns.
 - Widen existing attribute columns per the promotion lattice (`BIGINT` → `DOUBLE`; otherwise
   `VARCHAR`, or `JSON` for structured values).
-- Create missing module tables when `create_tables := true`.
+- Create missing module tables when `create_tables := true`, **and insert the corresponding
+  `__cityparquet` row in the same statement group**, carrying the package's `city` values from
+  any existing sibling row. A module table without its bookkeeping row cannot be written with
+  valid footer metadata.
 
-**Phase 4 — sidecar merge with id remap.** `materials.id` and `textures.id` are `BIGINT`, so
-offsetting by the destination's `max(id) + 1` is deterministic and collision-free. Then rewrite
-every reference: the ids embedded in `material_lod*` / `texture_lod*` JSON *values*, and
-`template.id`. The spec states these are values, not row positions, and "MUST NOT be
-interpreted as a row position".
+Every `ADD COLUMN` is emitted with `IF NOT EXISTS` so that batching several pragmas in one
+submission cannot produce a duplicate-column error.
+
+**Phase 4 — sidecar merge with id remap.** `materials.id` and `textures.id` are `BIGINT`. The
+offset depends on row **data**, not the catalog, so it is computed in the generated SQL after
+staging, never at plan time:
+
+```sql
+CREATE TEMP TABLE __cp_mat_off AS
+  SELECT (SELECT coalesce(max(id), -1) FROM ams.materials) + 1
+       - (SELECT coalesce(min(id),  0) FROM __cp_stg_materials) AS off;
+```
+
+Offsetting by `dst_max + 1 − src_min` rather than `dst_max + 1` is what makes this correct for
+arbitrary `BIGINT` ids: a source id may be negative, in which case adding `dst_max + 1` alone
+can land back inside the destination's occupied range. Subtracting the source minimum maps the
+incoming range to start immediately after the destination's maximum, whatever its sign.
+
+Then rewrite every reference through the mapping: the ids embedded in `material_lod*` /
+`texture_lod*` JSON *values*, and `template.id`. The spec states these are values, not row
+positions, and "MUST NOT be interpreted as a row position".
 
 **Phase 5 — routed inserts** into the evolved tables, by `object_type` → module.
 
@@ -333,7 +393,12 @@ interpreted as a row position".
    ```
 
    Each stripped reference is reported.
-5. **`bbox` bottom-up** from surviving ancestors. Because `bbox` is unioned across every stored
+5. **Recompute `feature_id`** over the survivors. This is not optional bookkeeping under
+   `cascade := false`: deleting a root leaves its descendants alive, and once the deleted parent
+   has been stripped from their `parents` they *are* roots — but they still carry a
+   `feature_id` pointing at an object that no longer exists. Re-deriving the root-parent chain
+   is the only thing that repairs the family.
+6. **`bbox` bottom-up** from surviving ancestors. Because `bbox` is unioned across every stored
    LoD *and* across descendants, this is a recursive CTE over the hierarchy, and it crosses
    module tables — a `CityObjectGroup` in `generics` may have members in `building`. An
    ancestor whose subtree is now empty falls back to its own geometry, or `NULL` if it has
@@ -357,13 +422,23 @@ finalize (`duckdb/src/execution/operator/persistent/physical_copy_to_file.cpp:49
 is how the existing `COPY TO cityjson` is already safe. `cityparquet_write` reuses that
 discipline per file.
 
-**Cross-file atomicity does not exist.** No POSIX or S3 primitive provides it. The mitigation is
-ordering only: write and rename every data file, then rename `metadata.json` last. A reader that
-consults `metadata.json` before trusting file contents sees either the whole old generation or
-the whole new one. A reader that opens `building.parquet` directly can observe a torn package
-during the commit window. This is the manifest-as-commit-point convention from Iceberg and
-Delta without a catalog behind it, and it is a **permanent limitation of a bare directory
-package**, not a defect to fix later — genuine cross-file atomicity is what DuckLake is for.
+**Cross-file atomicity is not provided at all, and ordering does not rescue it.** No POSIX or
+S3 primitive gives a multi-file swap. It is tempting to reach for the manifest-last convention
+from Iceberg and Delta — rename every data file, rename `metadata.json` last — but that
+convention does **not** transfer here, and claiming it would be wrong. Iceberg works because its
+data files are immutable and generation-scoped: a new snapshot writes *new* paths, so the old
+manifest keeps resolving to an intact old generation for as long as anyone needs it. CityParquet
+mandates stable basenames (`building.parquet`), so a write **overwrites in place**. The old
+`metadata.json` therefore already points at the very files being replaced, and a reader holding
+it can still observe a new `building.parquet` beside an old `transportation.parquet`. Renaming
+the manifest last buys nothing.
+
+What is honestly on offer is: **per-file atomicity, and no more.** Each file individually flips
+whole; the package as a whole has a window during which it is inconsistent. Concurrent readers
+during a write are unsupported. Making this genuinely atomic would need either
+generation-scoped filenames or a directory-level swap, both of which conflict with the spec's
+directory layout — which is exactly the boundary where DuckLake, with a real catalog, is the
+right tool instead.
 
 `cityparquet_write` runs on an internal connection and therefore sees **committed** state:
 mutate, commit, then write.
@@ -376,8 +451,11 @@ mutate, commit, then write.
   `bbox`;
 - `city.primary_column` — which may have to change if the previous primary's column emptied;
 - `city.attributes` — the attribute-column list;
-- `city.version`, `crs`, `source_format`, `extensions`, `appearance_defaults` — carried from
-  `__cityparquet`;
+- `city.version`, `crs`, `source_format`, `source_version`, `extensions`,
+  `appearance_defaults` and `other` — carried verbatim from `__cityparquet`. The carried set is
+  "every `city` field the writer does not recompute", not an enumerated allow-list:
+  `source_version` and `other` hold non-derivable provenance and producer metadata, so dropping
+  them would make even an unmodified read/write cycle lossy;
 - `geo` — **recomputed from the mutated data, never carried over**.
 
 The `geo` recomputation is not optional bookkeeping. GeoParquet legality flips in both
@@ -438,6 +516,7 @@ already takes the same trade-off (`ReadAllChunks` rather than sampling) for the 
 
 ## Build order
 
+0. `cityjson_wkb_extent` — small, self-contained, and every later `bbox` step depends on it.
 1. Appearance normalisation — `appearance := 'sidecar'`, `cityjson_materials`,
    `cityjson_textures`, `cityjson_geometry_templates`.
 2. Package I/O — `cityparquet_init`, `cityparquet_read`, `cityparquet_write`, including footer
