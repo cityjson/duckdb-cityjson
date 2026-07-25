@@ -14,6 +14,21 @@ This is **plan 1 of 2**. It covers everything that works on a hand-loaded packag
 
 Design: `docs/superpowers/specs/2026-07-25-cityparquet-mutation-functions-design.md`.
 
+## Corrections discovered during implementation
+
+Tasks 1–3 are done. Six things the plan got wrong, corrected here so the remaining tasks do not rediscover them:
+
+1. **A PRAGMA cannot be a subquery.** `SELECT … FROM (PRAGMA cityparquet_validate('ams'))` is a *parser* error. Every pragma that needs to return an inspectable result therefore expands to `CREATE OR REPLACE TEMP TABLE <name> AS <query>; SELECT * FROM <name>;` — the caller gets rows immediately *and* a filterable relation afterwards. `cityparquet_validate` uses `cityparquet_validation`; `cityparquet_orphans` should use `cityparquet_orphan_rows`. Task 3's and Task 5's tests in this plan use the invalid form; use the temp-table form instead.
+2. **`check` is a reserved keyword.** The validate column is `check_name`, not `check`.
+3. **The `JSON` type is not available.** It lives in the json extension, which this extension does not require and which is not built into this tree. `__cityparquet.city` is `VARCHAR` holding JSON text — consistent with `material_lod*` / `texture_lod*` / `other`, which this extension already carries as VARCHAR.
+4. **Consequently, `json_extract` is not available either**, so `ReferencedIds` cannot be built from it as Task 3 described. Add a C++ scalar function instead — `cityjson_appearance_ids(cell VARCHAR, kind VARCHAR) -> BIGINT[]`, parsing the theme map with the nlohmann::json already vendored here and returning the referenced material or texture ids. This is both dependency-free and more correct than path-guessing with `json_extract`, which would have to distinguish material's flat `values` from texture's per-ring nesting where only each ring's *first* element is an id.
+5. **Two ODR link-time traps.** Binding a *reference* to a `static constexpr` member emits a comdat definition that collides with DuckDB's strong one, failing the link with "multiple definition":
+   - `children.emplace_back("min_x", LogicalType::DOUBLE)` — write `LogicalType(LogicalTypeId::DOUBLE)`.
+   - `Catalog::GetEntry<TableCatalogEntry>(…)` ODR-uses `TableCatalogEntry::Name` — use the non-templated `Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, …)` and `.Cast<TableCatalogEntry>()`.
+
+   New headers should include `duckdb.hpp`, matching the rest of this repo, not individual `duckdb/common/*.hpp` headers.
+6. **`SQLString` is a formatting wrapper, not a quoting function.** It has no `operator+`. Use `KeywordHelper::WriteQuoted(text, '\'')` for string literals and `KeywordHelper::WriteOptionallyQuoted` for identifiers. `cityparquet_package.cpp` exposes a `Literal()` helper for the former.
+
 ## Global Constraints
 
 - C++17. The extension is C++, not Rust.
