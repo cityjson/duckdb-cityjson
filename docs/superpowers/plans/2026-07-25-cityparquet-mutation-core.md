@@ -14,9 +14,27 @@ This is **plan 1 of 2**. It covers everything that works on a hand-loaded packag
 
 Design: `docs/superpowers/specs/2026-07-25-cityparquet-mutation-functions-design.md`.
 
+## Status: complete
+
+All eight tasks are implemented and committed; 27 test files, 603 assertions passing. Shipped:
+
+- `cityjson_wkb_extent(BLOB)` and `cityjson_appearance_ids(cell, kind)` scalars
+- `PRAGMA cityparquet_init` / `_validate` / `_orphans` / `_vacuum` / `_reconcile` / `_delete`
+- a `*_sql()` scalar twin for each mutating pragma
+- README, CLAUDE.md and AGENTS.md documentation
+- `docs/CITYPARQUET_SPEC_QUESTIONS.md`
+
 ## Corrections discovered during implementation
 
-Tasks 1–3 are done. Six things the plan got wrong, corrected here so the remaining tasks do not rediscover them:
+Eleven things the plan got wrong. The first six were found during Tasks 1–3; the rest during Tasks 4–6. All are recorded in `CLAUDE.md` / `AGENTS.md` too, since they are traps for any future work in this layer:
+
+7. **PRAGMA named parameters use `=`, not `:=`.** `PRAGMA f('x', checks := ['a'])` parses the named argument as a second *positional* one and fails to bind. The transformer looks for a `COMPARE_EQUAL` node (`transform_pragma.cpp:26-33`).
+8. **Subqueries are not allowed inside lambda bodies.** `list_filter(children, x -> x NOT IN (SELECT id FROM …))` raises "subqueries in lambda expressions are not supported". Hoist the set with `SET VARIABLE` and use `list_contains(getvariable('…'), x)`.
+9. **A recursive CTE cannot recurse through `UNNEST` of a list column.** Materialise nodes and child→parent edges into plain temp tables first, then recurse over those.
+10. **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to. Each file needing it defines a local `Join`.
+11. **`bbox` semantics differ between the reader and the spec's normative text** — see `docs/CITYPARQUET_SPEC_QUESTIONS.md` §3. `cityparquet_reconcile` implements the normative "unioned across descendants" rule, so it legitimately changes every non-leaf row's `bbox` on a freshly-read package. This is asserted explicitly in `test/sql/cityparquet_reconcile.test` rather than papered over.
+
+The original six:
 
 1. **A PRAGMA cannot be a subquery.** `SELECT … FROM (PRAGMA cityparquet_validate('ams'))` is a *parser* error. Every pragma that needs to return an inspectable result therefore expands to `CREATE OR REPLACE TEMP TABLE <name> AS <query>; SELECT * FROM <name>;` — the caller gets rows immediately *and* a filterable relation afterwards. `cityparquet_validate` uses `cityparquet_validation`; `cityparquet_orphans` should use `cityparquet_orphan_rows`. Task 3's and Task 5's tests in this plan use the invalid form; use the temp-table form instead.
 2. **`check` is a reserved keyword.** The validate column is `check_name`, not `check`.
