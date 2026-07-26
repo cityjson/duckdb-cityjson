@@ -23,8 +23,16 @@ Atomicity is DuckDB's, not ours — the extension only generates text. Each muta
 pragma has a scalar `*_sql()` twin returning the same text without running it.
 
 Functions: `cityparquet_init`, `cityparquet_validate`, `cityparquet_orphans`,
-`cityparquet_vacuum`, `cityparquet_reconcile`, `cityparquet_delete`, plus the scalars
-`cityjson_wkb_extent` and `cityjson_appearance_ids`. See `CLAUDE.md` for the full table
+`cityparquet_vacuum`, `cityparquet_reconcile`, `cityparquet_delete`, `cityparquet_merge`,
+`cityparquet_read`, plus the scalars `cityjson_wkb_extent`, `cityjson_wkb_geometry_type`,
+`cityjson_appearance_ids`, `cityjson_shift_appearance_ids` and `cityparquet_city_field`.
+
+**`cityparquet_write` is the one exception to the pragma rule.** `KV_METADATA` accepts
+`getvariable()` (so a footer *value* can be computed in generated SQL) but cannot omit a
+*key*: a NULL value writes the literal string `"NULL"`. The spec requires a solid-only
+table to write no `geo` key at all, legality depends on the data, and SQL cannot branch
+the shape of a `COPY`. So it is a **table function** assembling the metadata in C++ — at
+the cost of an internal connection that sees only committed state. See `CLAUDE.md` for the full table
 and `README.md` for usage.
 
 **Traps worth knowing before adding to this layer:**
@@ -47,6 +55,9 @@ and `README.md` for usage.
   CatalogType::TABLE_ENTRY, ...)` rather than `Catalog::GetEntry<TableCatalogEntry>`,
   which ODR-uses `TableCatalogEntry::Name`.
 - **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
+- **`parquet_kv_metadata` returns BLOB.** Use `decode(value)`, not `value::VARCHAR`.
+- **A third ODR trap: `FileFlags::FILE_FLAGS_READ`** is a `static constexpr FileOpenFlags`.
+  Use the scalar `FileOpenFlags::FILE_FLAGS_READ`, as `duckdb_fs_range_reader.cpp` does.
 - **`SQLString` is a formatting wrapper, not a quoting function**; use
   `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
 

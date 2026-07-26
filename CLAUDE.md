@@ -48,9 +48,19 @@ ours — the extension only generates text.
 | `PRAGMA cityparquet_vacuum(schema)` | `cityparquet_validate.cpp` | Delete unreferenced sidecar rows |
 | `PRAGMA cityparquet_reconcile(schema [, checks = [...]])` | `cityparquet_reconcile.cpp` | Re-derive `feature_id`, hierarchy, `bbox` |
 | `PRAGMA cityparquet_delete(schema, predicate [, cascade =] [, tables =])` | `cityparquet_delete.cpp` | Delete with cascade |
+| `PRAGMA cityparquet_merge(dst, src [, create_tables =] [, tables =])` | `cityparquet_merge.cpp` | Merge one package into another |
+| `PRAGMA cityparquet_read(dir, schema)` | `cityparquet_package.cpp` | Load a package directory into a schema |
+| `cityparquet_write(schema, dir [, crs =])` | `cityparquet_write.cpp` | Write the package back out (**table function**, sees committed state) |
 
 Each mutating pragma has a scalar `*_sql()` twin returning the same text without
 running it.
+
+**`cityparquet_write` is the one exception to the pragma rule.** `KV_METADATA` accepts
+`getvariable()` (so a footer *value* can be computed in generated SQL) but cannot omit a
+*key*: a NULL value writes the literal string `"NULL"`. The spec requires a solid-only
+table to write no `geo` key at all, legality is data-dependent, and SQL cannot branch the
+shape of a `COPY`. So it is a table function that assembles the metadata in C++ — at the
+cost of running on an internal connection and seeing only committed state.
 
 **Traps worth knowing before adding to this layer:**
 
@@ -73,6 +83,11 @@ running it.
   CatalogType::TABLE_ENTRY, ...)` rather than `Catalog::GetEntry<TableCatalogEntry>`,
   which ODR-uses `TableCatalogEntry::Name`.
 - **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
+- **`parquet_kv_metadata` returns BLOB.** Use `decode(value)`, not `value::VARCHAR` — the
+  cast escapes bytes and the JSON no longer parses.
+- **`FileFlags::FILE_FLAGS_READ` is a third ODR trap** (it is a `static constexpr
+  FileOpenFlags`). Use the scalar `FileOpenFlags::FILE_FLAGS_READ` instead, as
+  `duckdb_fs_range_reader.cpp` already does.
 - **`SQLString` is a formatting wrapper, not a quoting function**; use
   `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
 

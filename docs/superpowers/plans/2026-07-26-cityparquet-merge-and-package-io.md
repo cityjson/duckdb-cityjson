@@ -33,8 +33,42 @@ ingredients and hoping the recipe matches. Two candidates, in preference order:
    table — which requires the two-call `stage` + `merge` shape, since a pragma cannot see
    tables its own generated statements create.
 
-Everything else in this plan (Tasks 4–7: `cityparquet_read`, `cityparquet_write`,
-`metadata.json`, docs) is untouched.
+**Tasks 4, 5 and 7 are now done** — `cityparquet_read`, `cityparquet_write` (data files,
+`city`/`geo` footers, a minimal `metadata.json`), and the README/CLAUDE.md/AGENTS.md
+documentation. 735 assertions across 30 test files pass.
+
+**Remaining: Task 3 (`insert_cityjson`) and the rest of Task 6.** Task 6's `metadata.json`
+is written but minimal — assets and `file:size` only, not the aggregate `city3d:*`
+inventory (`city3d:lods` as the union across files, `city3d:co_types`,
+`city3d:city_objects`, and the Projection/Statistics extension fields).
+
+### Resuming Task 3 from a cold start
+
+Everything needed is on disk. The concrete steps:
+
+1. `src/cityjson/bind_function.cpp` has a file-static `InferSchema` and
+   `ParseCityJSONReadOptions`. Extract the inference into a public entry point —
+   something like `std::vector<Column> InferCityJSONSchema(ClientContext &, const
+   std::string &path, const CityJSONReadOptions &)` declared in
+   `cityjson/table_function.hpp` — and have `CityJSONBind` call it, so there is exactly
+   one implementation.
+2. Write `BuildInsertSQL` in `src/cityjson/cityparquet_merge.cpp` using that entry point
+   for the incoming column list. The previous attempt is in the reflog if useful; its
+   shape was right apart from the schema derivation.
+3. Route rows with `ModuleForObjectType` (needs re-adding to `cityparquet_package.cpp` —
+   it was reverted with the rest; the mapping is the specification's by-module table and
+   should accept both the CityGML 3.0 class names and the four CityJSON spellings that
+   differ: `TransportSquare`→`Square`, `GenericCityObject`→`GenericOccupiedSpace`,
+   `BuildingStorey`→`Storey`, `TunnelHollowSpace`→`HollowSpace`).
+4. `INSERT … BY NAME` matches source columns to destination columns and leaves unmatched
+   destination columns NULL, so no explicit per-table column list is needed.
+5. Ensure the destination's sidecar tables exist **before** any offset is computed against
+   them — a package with no appearance has no `materials` table, and the earlier attempt
+   failed on exactly this.
+6. Take the **complete** `object_type` set, not a sample: a rare type in the file's tail
+   would otherwise land in no module table.
+7. Register `insert_cityjson`, `insert_cityjsonseq`, `insert_flatcitybuf` and
+   `insert_cityjson_sql`.
 
 ## Scope and order
 

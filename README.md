@@ -546,9 +546,62 @@ SELECT cityjson_appearance_ids(material_lod2_2, 'material') FROM ams.building;
 SELECT cityjson_appearance_ids(texture_lod2_2,  'texture')  FROM ams.building;
 ```
 
+### Merging packages
+
+```sql
+PRAGMA cityparquet_merge('ams', 'utrecht');
+--   named: create_tables = true, tables = ['building', ...]
+```
+
+Merges one loaded package into another. Object ids must be unique across the **whole**
+destination package, not just the target module — `parents`, `children` and `feature_id`
+all resolve by bare id across files — and a collision refuses the entire merge rather than
+renaming silently.
+
+Sidecar ids are renumbered onto the destination's numbering and every reference in the
+incoming rows is shifted to match, so nothing is left pointing at the destination's own
+definitions. The offset is `dst_max + 1 − src_min`, not `dst_max + 1`: a source id may be
+negative, and adding `dst_max + 1` alone could then land back inside the occupied range.
+Schema evolution (new LoD columns, new attributes, type widening) runs before any insert,
+and derived state is re-derived afterwards.
+
+### The package round trip
+
+```sql
+PRAGMA cityparquet_read('amsterdam/', 'ams');
+-- … mutate …
+SELECT * FROM cityparquet_write('ams', 'out/', crs => 'EPSG:7415');
+--   → (file, action, rows, bytes)
+```
+
+`cityparquet_read` loads each package file into a table and recovers the Parquet footer
+into `__cityparquet` — the one thing a hand-rolled `read_parquet` load throws away.
+
+`cityparquet_write` regenerates each file's `city` and `geo` footers from the data and
+writes a `metadata.json` STAC Item. Three things worth knowing:
+
+- **`crs` is required** when the package's footer does not carry one (as after a
+  hand-rolled load). Writing geometry with no CRS would silently mis-georeference the
+  package, so the write fails instead.
+- **`geo` is recomputed, never carried.** GeoParquet legality flips in both directions
+  under mutation — inserting one `Solid` makes a previously-clean column illegal to
+  declare, deleting the last one makes it newly legal. A stale `geo` declaring a column
+  that now holds a `PolyhedralSurface Z` makes the *whole file* unreadable to Shapely,
+  GeoPandas and DuckDB spatial. A table whose geometry is entirely solid gets **no `geo`
+  key at all** — a valid CityParquet table that is simply not a GeoParquet file.
+- **It sees committed state.** Unlike the pragmas, `cityparquet_write` is a table function
+  running on an internal connection, because `KV_METADATA` cannot omit a key and the
+  `geo`-or-no-`geo` decision depends on the data. Mutate, commit, then write.
+
+Atomicity is **per file only**. Each file flips whole via temp-file + rename, but the
+package as a whole has a window during a write in which it is inconsistent, and
+concurrent readers are unsupported. CityParquet mandates stable basenames, so a write
+overwrites in place; renaming a manifest last would not help. Where genuine cross-file
+atomicity matters, that is DuckLake's job.
+
 ### Not yet implemented
 
-`insert_cityjson` and `cityparquet_merge` are designed but not built — they depend on appearance normalisation (dataset-global sidecar ids, inlined texture UVs) and on package I/O (`cityparquet_read` / `cityparquet_write`, including footer and STAC Item regeneration). See `docs/superpowers/specs/2026-07-25-cityparquet-mutation-functions-design.md`.
+`insert_cityjson` is designed but not built — they depend on appearance normalisation (dataset-global sidecar ids, inlined texture UVs) and on package I/O (`cityparquet_read` / `cityparquet_write`, including footer and STAC Item regeneration). See `docs/superpowers/specs/2026-07-25-cityparquet-mutation-functions-design.md`.
 
 Two specification divergences found while building this are recorded in `docs/CITYPARQUET_SPEC_QUESTIONS.md`; one — whether a parent's `bbox` includes its descendants' geometry — is a genuine contradiction in the spec and currently makes `cityparquet_reconcile` disagree with the reader on non-leaf rows.
 
