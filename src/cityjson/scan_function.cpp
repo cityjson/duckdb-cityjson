@@ -102,16 +102,27 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			}
 			continue;
 		} else if (col.name == "bbox") {
-			// Per-LOD mode uses target_geom; default (wide) mode has no target LOD, so the
-			// bbox is computed from the city object's highest-LOD geometry.
-			std::optional<Geometry> bbox_geom =
-			    bind_data.target_lod.has_value() ? target_geom : city_obj.GetHighestLODGeometry();
-			if (bbox_geom.has_value() && vertex_pool != nullptr) {
-				auto extent =
-				    CityObjectUtils::GetGeometryExtent(bbox_geom.value(), *vertex_pool, bind_data.metadata.transform);
+			if (vertex_pool == nullptr) {
+				value = json(nullptr);
+			} else if (bind_data.target_lod.has_value()) {
+				// Per-LOD mode restricts the table to one LoD, so the bbox describes that
+				// geometry alone -- there is no other LoD in the table to union with, and
+				// a descendant's bbox at this LoD is its own row's business.
+				auto extent = target_geom.has_value() ? CityObjectUtils::GetGeometryExtent(
+				                                            target_geom.value(), *vertex_pool,
+				                                            bind_data.metadata.transform)
+				                                      : std::nullopt;
 				value = extent.has_value() ? extent->ToJson() : json(nullptr);
 			} else {
-				value = json(nullptr);
+				// Wide mode: the specification defines bbox as unioned across every stored
+				// LoD *and* across the object's descendants. Using only the highest LoD
+				// understated objects whose LoDs differ in extent, and ignoring descendants
+				// gave a Building carrying just an LoD0 footprint a flat bbox that excluded
+				// its BuildingPart's solid -- so a query pruning on the parent's bbox
+				// silently missed the building, which is the normal 3DBAG shape.
+				auto extent = CityObjectUtils::GetObjectExtent(city_obj_id, feature.city_objects, *vertex_pool,
+				                                               bind_data.metadata.transform);
+				value = extent.has_value() ? extent->ToJson() : json(nullptr);
 			}
 		} else {
 			value = CityObjectUtils::GetAttributeValue(city_obj, col);

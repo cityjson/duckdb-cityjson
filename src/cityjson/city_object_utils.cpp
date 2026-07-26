@@ -1,4 +1,6 @@
 #include "cityjson/city_object_utils.hpp"
+#include <set>
+#include <algorithm>
 #include "cityjson/column_types.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/wkb_encoder.hpp"
@@ -255,6 +257,58 @@ static void CollectExtentRecursive(const json &boundaries, const std::vector<std
 			CollectExtentRecursive(child, vertices, transform, extent, found);
 		}
 	}
+}
+
+namespace {
+
+void MergeExtent(std::optional<GeographicalExtent> &into, const GeographicalExtent &other) {
+	if (!into.has_value()) {
+		into = other;
+		return;
+	}
+	into->min_x = std::min(into->min_x, other.min_x);
+	into->min_y = std::min(into->min_y, other.min_y);
+	into->min_z = std::min(into->min_z, other.min_z);
+	into->max_x = std::max(into->max_x, other.max_x);
+	into->max_y = std::max(into->max_y, other.max_y);
+	into->max_z = std::max(into->max_z, other.max_z);
+}
+
+void AccumulateObjectExtent(const std::string &object_id, const std::map<std::string, CityObject> &objects,
+                            const std::vector<std::array<double, 3>> &vertices,
+                            const std::optional<Transform> &transform, std::set<std::string> &visited,
+                            std::optional<GeographicalExtent> &result) {
+	if (!visited.insert(object_id).second) {
+		return; // already folded in; also guards a cyclic hierarchy
+	}
+	auto entry = objects.find(object_id);
+	if (entry == objects.end()) {
+		return; // dangling child reference contributes nothing
+	}
+	const auto &object = entry->second;
+
+	// Every stored LoD, not just the highest.
+	for (const auto &geometry : object.geometry) {
+		auto extent = CityObjectUtils::GetGeometryExtent(geometry, vertices, transform);
+		if (extent.has_value()) {
+			MergeExtent(result, extent.value());
+		}
+	}
+	for (const auto &child_id : object.children) {
+		AccumulateObjectExtent(child_id, objects, vertices, transform, visited, result);
+	}
+}
+
+} // namespace
+
+std::optional<GeographicalExtent> CityObjectUtils::GetObjectExtent(const std::string &object_id,
+                                                                   const std::map<std::string, CityObject> &objects,
+                                                                   const std::vector<std::array<double, 3>> &vertices,
+                                                                   const std::optional<Transform> &transform) {
+	std::optional<GeographicalExtent> result;
+	std::set<std::string> visited;
+	AccumulateObjectExtent(object_id, objects, vertices, transform, visited, result);
+	return result;
 }
 
 std::optional<GeographicalExtent> CityObjectUtils::GetGeometryExtent(const Geometry &geometry,

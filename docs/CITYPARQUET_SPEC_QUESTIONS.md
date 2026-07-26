@@ -49,9 +49,28 @@ elsewhere (a `name` column, or `other`) rather than serving as the id.
 
 ---
 
-## 3. `bbox` and descendants — **open, and a genuine contradiction in the spec**
+## 3. `bbox` and descendants — **resolved: the normative text wins**
 
-**Status:** open. Discovered 2026-07-26 while implementing `cityparquet_reconcile`.
+**Status:** decided 2026-07-26. The reader has been fixed; the specification's worked
+example must be corrected.
+
+**Decision:** `bbox` is the union across every stored LoD **and** across the object's
+descendants, as the metadata page states. `read_cityjson` / `read_cityjsonseq` /
+`read_flatcitybuf` now compute it that way (`CityObjectUtils::GetObjectExtent`), so the
+reader and `cityparquet_reconcile` agree and a freshly-read package is already
+reconciled.
+
+Note this fixed **two** deviations, not one: the reader previously used only the
+*highest* LoD's geometry, so it also understated any object whose LoDs differ in extent.
+
+**Still to do:** correct the worked example on the object-table-schema page — the
+`Building` row's `bbox` must span its `BuildingPart`'s z-range rather than being flat —
+and the surrounding prose that currently presents the flat parent box as correct. Check
+`cityparquet-rs` computes the union too.
+
+The original write-up follows, for the trail.
+
+### Background
 
 The specification contradicts itself about whether a parent's `bbox` includes its
 descendants' geometry.
@@ -71,17 +90,7 @@ descendants' geometry.
 Both cannot be right. A parent whose bbox excludes its children is useless for the
 hierarchy-aware spatial pruning the metadata page justifies `bbox` by.
 
-**Current behaviour, which is split:**
-
-- `read_cityjson` / `read_cityjsonseq` compute each row's `bbox` from **that row's own
-  geometry only** — matching the worked example.
-- `cityparquet_reconcile` unions **across descendants** — matching the normative text.
-
-So reconciling a freshly-read package legitimately changes every non-leaf row's `bbox`.
-`test/sql/cityparquet_reconcile.test` asserts this explicitly rather than papering over
-it.
-
-**Options:**
+**Options considered:**
 
 1. **Union across descendants** (keep the normative text; fix the reader and the worked
    example). Makes `bbox` a real pruning aid on parents; costs a hierarchy walk at read
@@ -92,9 +101,23 @@ it.
    correctness trap.
 3. **Both, in separate columns.** Rejected as scope creep; the format has one `bbox`.
 
-**Recommendation:** option 1. The normative text states the intent, the pruning argument
+**Chosen:** option 1. The normative text states the intent, the pruning argument
 depends on it, and the worked example looks like it was transcribed from the current
 reader's output rather than derived from the rule.
 
-**Impact if option 2 is chosen instead:** `cityparquet_reconcile`'s bbox phase and its
-test must change, and `cityparquet_delete` inherits the change.
+## 4. feature_id with several parents — **resolved: first parent**
+
+**Status:** decided 2026-07-26.
+
+The spec defines `feature_id` as "the `id` of its **root** parent (the top of its parent
+chain)" but does not say which chain applies when an object has several parents — which
+`CityObjectGroup` membership legitimately produces.
+
+**Decision:** follow the **first** parent's chain (`parents[1]` in SQL terms), matching
+the reader. It is deterministic and is the least surprising reading of "its parent
+chain". `cityparquet_reconcile` uses a dedicated single-valued edge set for this walk;
+recursing through every parent reaches several roots and lets the result depend on join
+order.
+
+**Still to do:** state the first-parent rule explicitly in the object-table-schema page's
+`feature_id` note.

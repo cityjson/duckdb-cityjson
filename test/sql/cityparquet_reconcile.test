@@ -14,7 +14,10 @@ CREATE TABLE ams.building AS
 statement ok
 PRAGMA cityparquet_init('ams');
 
-# Reconciling an already-correct package leaves identity and hierarchy untouched.
+# Reconciling an already-correct package changes nothing at all — including bbox.
+# The reader and reconcile now agree on the specification's rule that bbox is
+# unioned across every stored LoD *and* across the object's descendants, so a
+# freshly-read package is already reconciled.
 statement ok
 CREATE TABLE before AS SELECT id, feature_id, children, children_roles, bbox FROM ams.building;
 
@@ -25,29 +28,19 @@ query I
 SELECT COUNT(*) FROM before b JOIN ams.building a USING (id)
 WHERE a.feature_id IS DISTINCT FROM b.feature_id
    OR a.children IS DISTINCT FROM b.children
-   OR a.children_roles IS DISTINCT FROM b.children_roles;
+   OR a.children_roles IS DISTINCT FROM b.children_roles
+   OR a.bbox IS DISTINCT FROM b.bbox;
 ----
 0
 
-# bbox is the exception, and deliberately so. The reader computes each row's bbox
-# from that row's own geometry; the specification defines bbox as unioned across
-# every stored LoD *and* across the object's descendants. So a parent Building
-# whose 3D detail lives on a child BuildingPart gets a flat footprint bbox from
-# the reader and a correctly-grown one from reconcile. See
-# docs/CITYPARQUET_SPEC_QUESTIONS.md -- the spec's own worked example contradicts
-# its normative text here, so this is recorded rather than silently resolved.
+# The union is real: a parent Building whose 3D detail lives on its BuildingPart
+# has a bbox taller than its own LoD0 footprint. Before the reader was fixed this
+# was flat (zmin == zmax), which made pruning on a parent's bbox silently miss
+# buildings — the normal 3DBAG shape.
 query I
-SELECT COUNT(*) FROM before b JOIN ams.building a USING (id)
-WHERE a.bbox.max_z > b.bbox.max_z;
+SELECT COUNT(*) FROM ams.building WHERE parents IS NULL AND bbox.max_z > bbox.min_z;
 ----
 10
-
-# Leaf objects, having no descendants, are unchanged.
-query I
-SELECT COUNT(*) FROM before b JOIN ams.building a USING (id)
-WHERE a.bbox IS DISTINCT FROM b.bbox AND b.id LIKE '%-0';
-----
-0
 
 # feature_id: a child is re-pointed at its root parent.
 statement ok
