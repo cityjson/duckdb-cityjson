@@ -8,6 +8,34 @@
 
 **Tech Stack:** C++17, DuckDB extension API, nlohmann::json, SQL logic tests.
 
+## Status
+
+**Tasks 1 and 2 are done** (713 assertions passing): the supporting scalars and
+`cityparquet_merge`. **Tasks 3–7 are not.**
+
+Task 3 (`insert_cityjson`) was attempted and **reverted**. The approach was sound —
+`INSERT … BY NAME` removes the need to know the source schema for the insert itself, and
+plan-time inference covers the `ALTER`s — but re-deriving the incoming column list in C++
+(`GetDefinedColumns` + `InferGeometryColumns` + `InferAttributeColumns`) does **not**
+reproduce what `read_cityjson(path, appearance := 'sidecar')` actually emits, so the
+generated `* REPLACE (…)` referenced an appearance column the staged relation did not
+have.
+
+**The fix is not to re-derive.** The generator should obtain the staged schema from the
+same code path the reader's bind uses, rather than reconstructing it from the same
+ingredients and hoping the recipe matches. Two candidates, in preference order:
+
+1. Refactor `CityJSONBind`'s inference into a reusable entry point returning the exact
+   `std::vector<Column>` a given path and options produce, and call that from both the
+   bind and the insert generator. Single source of truth; the divergence becomes
+   impossible rather than merely unlikely.
+2. Failing that, build the `REPLACE` list from `AppearanceLodColumns` over a *staged*
+   table — which requires the two-call `stage` + `merge` shape, since a pragma cannot see
+   tables its own generated statements create.
+
+Everything else in this plan (Tasks 4–7: `cityparquet_read`, `cityparquet_write`,
+`metadata.json`, docs) is untouched.
+
 ## Scope and order
 
 **Plan 3 of 3.** Ordered to deliver `insert_cityjson` first, because it is the headline
