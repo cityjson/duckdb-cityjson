@@ -57,17 +57,28 @@ Design: `docs/superpowers/specs/2026-07-25-cityparquet-mutation-functions-design
 - **Batched pragmas see pre-batch state.** Every generated `ALTER` uses `IF NOT EXISTS`;
   anything depending on row data is computed by the generated SQL, never at plan time.
 
-## Two verified facts this plan rests on
+## Mechanism notes
 
-1. **`KV_METADATA` accepts `getvariable()`.** Verified:
+1. **`parquet_kv_metadata(path)` reads the footer back**, so `cityparquet_read` can
+   populate `__cityparquet.city` in pure generated SQL. It stays a pragma.
+2. **`KV_METADATA` accepts `getvariable()`** — verified — which solves computing a footer
+   *value* in generated SQL.
+3. **But it cannot omit a *key*.** A `NULL` variable writes the literal string `"NULL"`
+   as the value, not an absent key:
    ```sql
-   SET VARIABLE c = 'from-variable';
-   COPY (SELECT 1 AS a) TO 'f.parquet' (FORMAT PARQUET, KV_METADATA {city: getvariable('c')});
+   SET VARIABLE g = NULL;
+   COPY (SELECT 1 AS a) TO 'f.parquet' (FORMAT PARQUET, KV_METADATA {geo: getvariable('g')});
+   -- parquet_kv_metadata then reports  geo | NULL  as a written value
    ```
-   So the write side needs no internal connection, and `cityparquet_write` stays a pragma
-   that participates in the caller's transaction like everything else.
-2. **`parquet_kv_metadata(path)` reads the footer back**, so `cityparquet_read` can
-   populate `__cityparquet.city` in pure generated SQL.
+   This is decisive for the write side. The specification requires a table whose geometry
+   is entirely solid to write **no `geo` key at all** — and solid-only is the normal 3DBAG
+   shape, not an edge case. Legality is data-dependent, so it cannot be decided at plan
+   time, and SQL cannot branch the shape of a `COPY` statement.
+
+   **Therefore `cityparquet_write` is a table function, not a pragma.** It uses an
+   internal connection, computes each footer in C++, and emits a `COPY` carrying only the
+   keys that belong. The cost is that it sees **committed** state: mutate, commit, then
+   write. That is the design the original spec proposed, and this is why.
 
 ---
 
