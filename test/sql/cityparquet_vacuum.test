@@ -1,0 +1,133 @@
+# name: test/sql/cityparquet_vacuum.test
+# description: cityjson_appearance_ids, cityparquet_orphans, cityparquet_vacuum
+# group: [sql]
+
+require cityjson
+
+# --- cityjson_appearance_ids ------------------------------------------------
+
+# material: a flat per-face list of ids, deduplicated.
+query T
+SELECT cityjson_appearance_ids('{"visual":{"values":[0,0,1,1,null,2]}}', 'material');
+----
+[0, 1, 2]
+
+# material: the single-value form, one material for the whole geometry.
+query T
+SELECT cityjson_appearance_ids('{"visual":{"value":7}}', 'material');
+----
+[7]
+
+# Every theme contributes; the outer key set is dynamic.
+query T
+SELECT cityjson_appearance_ids('{"a":{"value":1},"b":{"value":2}}', 'material');
+----
+[1, 2]
+
+# texture: per face, then per ring; only each ring's FIRST element is an id, the
+# rest are UV references. Reading the whole ring would collect UVs as ids.
+query T
+SELECT cityjson_appearance_ids('{"visual":{"values":[[[0,1,2,3]],[[5,40,41,42]]]}}', 'texture');
+----
+[0, 5]
+
+# A ring with no texture is [null] and contributes nothing.
+query T
+SELECT cityjson_appearance_ids('{"visual":{"values":[[[null]]]}}', 'texture');
+----
+[]
+
+query I
+SELECT cityjson_appearance_ids(NULL, 'material') IS NULL;
+----
+true
+
+statement error
+SELECT cityjson_appearance_ids('{}', 'nonsense');
+----
+kind must be 'material' or 'texture'
+
+# --- orphans and vacuum ------------------------------------------------------
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl');
+
+# The fixture's material_lod3_0 cells reference ids 0 and 1. Id 999 references
+# nothing.
+statement ok
+CREATE TABLE ams.materials (id BIGINT, name VARCHAR);
+
+statement ok
+INSERT INTO ams.materials VALUES (0, 'used'), (1, 'used'), (999, 'orphaned');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+statement ok
+PRAGMA cityparquet_orphans('ams');
+
+query TTT
+SELECT table_name, id, reason FROM cityparquet_orphan_rows;
+----
+materials	999	unreferenced
+
+statement ok
+PRAGMA cityparquet_vacuum('ams');
+
+query I
+SELECT COUNT(*) FROM ams.materials WHERE id = 999;
+----
+0
+
+# The referenced materials survive — vacuum must not invert its own test.
+query I
+SELECT COUNT(*) FROM ams.materials;
+----
+2
+
+# Vacuum is idempotent and leaves nothing orphaned.
+statement ok
+PRAGMA cityparquet_vacuum('ams');
+
+statement ok
+PRAGMA cityparquet_orphans('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_orphan_rows;
+----
+0
+
+# Deleting the objects that referenced a material orphans it, and vacuum then
+# reclaims it — the delete/vacuum split the design calls for, since orphanhood is
+# a whole-package property rather than a per-delete one.
+statement ok
+PRAGMA cityparquet_delete('ams', 'id = ''GMLID_855011_330784_753''');
+
+statement ok
+PRAGMA cityparquet_orphans('ams');
+
+query I
+SELECT COUNT(*) > 0 FROM cityparquet_orphan_rows;
+----
+true
+
+statement ok
+PRAGMA cityparquet_vacuum('ams');
+
+statement ok
+PRAGMA cityparquet_orphans('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_orphan_rows;
+----
+0
+
+# The _sql twin returns text and mutates nothing.
+query I
+SELECT cityparquet_vacuum_sql('ams') LIKE '%DELETE FROM%NOT IN%';
+----
+true
