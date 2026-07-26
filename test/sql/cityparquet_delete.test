@@ -1,0 +1,144 @@
+# name: test/sql/cityparquet_delete.test
+# description: cityparquet_delete — cascade, survivor cleanup, derived state
+# group: [sql]
+
+require cityjson
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+20
+
+# Deleting a root Building cascades to its BuildingPart child.
+statement ok
+PRAGMA cityparquet_delete('ams', 'id = ''NL.IMBAG.Pand.0503100000012869''');
+
+query I
+SELECT COUNT(*) FROM ams.building
+WHERE id IN ('NL.IMBAG.Pand.0503100000012869', 'NL.IMBAG.Pand.0503100000012869-0');
+----
+0
+
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+18
+
+# Cascade must not travel upward: deleting a BuildingPart leaves its parent
+# alive, even though the two share a feature_id. Walking feature_id instead of
+# children would wrongly take the parent with it.
+statement ok
+PRAGMA cityparquet_delete('ams', 'id = ''NL.IMBAG.Pand.0503100000016459-0''');
+
+query I
+SELECT COUNT(*) FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000016459';
+----
+1
+
+# The surviving parent no longer references the deleted child.
+query T
+SELECT children FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000016459';
+----
+NULL
+
+# The package validates clean after every delete.
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# cascade = false leaves the child alive, and its feature_id is repaired to
+# point at itself now that it has become a root.
+statement ok
+PRAGMA cityparquet_delete('ams', 'id = ''NL.IMBAG.Pand.0503100000005156''', cascade = false);
+
+query TT
+SELECT id, feature_id FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000005156-0';
+----
+NL.IMBAG.Pand.0503100000005156-0	NL.IMBAG.Pand.0503100000005156-0
+
+query T
+SELECT parents FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000005156-0';
+----
+NULL
+
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# A predicate naming a column only some object tables carry still works: the
+# predicate is applied to the tables that can bind it, and the others skipped.
+statement ok
+CREATE TABLE ams.transportation (id VARCHAR, feature_id VARCHAR, object_type VARCHAR,
+  parents VARCHAR[], children VARCHAR[], children_roles VARCHAR[],
+  bbox STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE));
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+statement ok
+PRAGMA cityparquet_delete('ams', 'b3_h_dak_max > 100000');
+
+# Nothing matched that threshold, so nothing was deleted — but crucially the
+# statement bound and ran despite ams.transportation having no such column.
+query I
+SELECT COUNT(*) > 0 FROM ams.building;
+----
+true
+
+# object_type exists on every object table, so the predicate applies to all.
+statement ok
+PRAGMA cityparquet_delete('ams', 'object_type = ''BuildingPart''');
+
+query I
+SELECT COUNT(*) FROM ams.building WHERE object_type = 'BuildingPart';
+----
+0
+
+# The whole expansion is one transaction: a rollback undoes all of it.
+statement ok
+BEGIN;
+
+statement ok
+PRAGMA cityparquet_delete('ams', 'object_type = ''Building''');
+
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+0
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT COUNT(*) > 0 FROM ams.building;
+----
+true
+
+# The _sql twin returns text and mutates nothing.
+query I
+SELECT cityparquet_delete_sql('ams', 'id = ''x''') LIKE '%DELETE FROM%';
+----
+true
+
+query I
+SELECT COUNT(*) > 0 FROM ams.building;
+----
+true
