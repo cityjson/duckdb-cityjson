@@ -1,0 +1,63 @@
+# name: test/sql/cityparquet_merge.test
+# description: cityparquet_merge — sidecar remap, schema evolution, derived state
+# group: [sql]
+
+require cityjson
+
+# --- supporting scalars ------------------------------------------------------
+
+# Shifting material ids moves every integer leaf, at whatever nesting depth.
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"values":[0,1,null]}}', 'material', 10);
+----
+{"visual":{"values":[10,11,null]}}
+
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[0,1],[2]]}}', 'material', 5);
+----
+{"visual":{"values":[[5,6],[7]]}}
+
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"value":3}}', 'material', 2);
+----
+{"visual":{"value":5}}
+
+# For textures only each ring's FIRST element is an id. The [u,v] pairs must not
+# move -- shifting a coordinate would silently distort the texture.
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[[0,[0.5,0.25]]]]}}', 'texture', 4);
+----
+{"visual":{"values":[[[4,[0.5,0.25]]]]}}
+
+# A ring that is still index-based (local mode) shifts only its id.
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[[1,7,8]]]}}', 'texture', 3);
+----
+{"visual":{"values":[[[4,7,8]]]}}
+
+query I
+SELECT cityjson_shift_appearance_ids(NULL, 'material', 1) IS NULL;
+----
+true
+
+# The WKB type name feeds the footer's geometry_types, with the " Z" suffix.
+query T
+SELECT DISTINCT cityjson_wkb_geometry_type(geometry_lod2_2)
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+PolyhedralSurface Z
+
+# A MultiSurface maps to MultiPolygon Z, which is GeoParquet-legal -- the
+# distinction that decides whether a column may be declared in the `geo` object.
+query T
+SELECT DISTINCT cityjson_wkb_geometry_type(geometry_lod1_0)
+FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
+WHERE geometry_lod1_0 IS NOT NULL;
+----
+MultiPolygon Z
+
+query I
+SELECT cityjson_wkb_geometry_type(NULL) IS NULL;
+----
+true

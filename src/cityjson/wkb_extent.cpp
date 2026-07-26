@@ -54,6 +54,75 @@ void Accumulate(const json &node, Extent3D &extent) {
 	}
 }
 
+//! The WKB type name with the CityParquet " Z" suffix, e.g. "PolyhedralSurface Z".
+//! Feeds the footer's `city.columns[].geometry_types`, which is also what decides
+//! whether a column may legally be declared in the GeoParquet `geo` object.
+const char *WKBTypeName(uint32_t code) {
+	switch (code) {
+	case 1001:
+		return "Point Z";
+	case 1002:
+		return "LineString Z";
+	case 1003:
+		return "Polygon Z";
+	case 1004:
+		return "MultiPoint Z";
+	case 1005:
+		return "MultiLineString Z";
+	case 1006:
+		return "MultiPolygon Z";
+	case 1007:
+		return "GeometryCollection Z";
+	case 1015:
+		return "PolyhedralSurface Z";
+	case 1016:
+		return "TIN Z";
+	case 1017:
+		return "Triangle Z";
+	default:
+		return nullptr;
+	}
+}
+
+void WKBGeometryTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	const auto count = args.size();
+	UnifiedVectorFormat format;
+	args.data[0].ToUnifiedFormat(count, format);
+	const auto blobs = UnifiedVectorFormat::GetData<string_t>(format);
+
+	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
+	for (idx_t i = 0; i < count; i++) {
+		const auto idx = format.sel->get_index(i);
+		if (!format.validity.RowIsValid(idx)) {
+			result.SetValue(i, Value(LogicalType(LogicalTypeId::VARCHAR)));
+			continue;
+		}
+		const auto &blob = blobs[idx];
+		// Only the 5-byte header is needed: byte order, then the type code. No decode.
+		if (blob.GetSize() < 5) {
+			throw InvalidInputException("cityjson_wkb_geometry_type: WKB shorter than its 5-byte header");
+		}
+		const auto *data = reinterpret_cast<const uint8_t *>(blob.GetData());
+		const bool little_endian = data[0] == 1;
+		uint32_t code = 0;
+		if (little_endian) {
+			code = static_cast<uint32_t>(data[1]) | (static_cast<uint32_t>(data[2]) << 8) |
+			       (static_cast<uint32_t>(data[3]) << 16) | (static_cast<uint32_t>(data[4]) << 24);
+		} else {
+			code = (static_cast<uint32_t>(data[1]) << 24) | (static_cast<uint32_t>(data[2]) << 16) |
+			       (static_cast<uint32_t>(data[3]) << 8) | static_cast<uint32_t>(data[4]);
+		}
+		const auto *name = WKBTypeName(code);
+		if (name == nullptr) {
+			throw InvalidInputException("cityjson_wkb_geometry_type: unsupported WKB type code %u", code);
+		}
+		result.SetValue(i, Value(name));
+	}
+	if (count == 1) {
+		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
+	}
+}
+
 void WKBExtentFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto count = args.size();
 	auto &input = args.data[0];
@@ -126,6 +195,10 @@ LogicalType ExtentType() {
 void RegisterWKBExtentFunction(ExtensionLoader &loader) {
 	ScalarFunction func("cityjson_wkb_extent", {LogicalType::BLOB}, ExtentType(), WKBExtentFunction);
 	loader.RegisterFunction(func);
+
+	ScalarFunction type_name("cityjson_wkb_geometry_type", {LogicalType::BLOB},
+	                         LogicalType(LogicalTypeId::VARCHAR), WKBGeometryTypeFunction);
+	loader.RegisterFunction(type_name);
 }
 
 } // namespace cityjson
