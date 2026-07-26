@@ -552,6 +552,38 @@ SELECT cityjson_appearance_ids(texture_lod2_2,  'texture')  FROM ams.building;
 
 Two specification divergences found while building this are recorded in `docs/CITYPARQUET_SPEC_QUESTIONS.md`; one — whether a parent's `bbox` includes its descendants' geometry — is a genuine contradiction in the spec and currently makes `cityparquet_reconcile` disagree with the reader on non-leaf rows.
 
+## Appearance normalisation
+
+CityJSON carries appearance as **feature-local indices** into per-feature arrays.
+CityParquet requires **dataset-global sidecar ids** and **inlined texture UVs**, because
+once every feature's rows share one table a feature-local index resolves to the wrong
+definition — or to nothing.
+
+```sql
+-- The sidecar tables, shaped as materials.parquet / textures.parquet
+SELECT * FROM cityjson_materials('delft.city.jsonl');
+SELECT * FROM cityjson_textures('delft.city.jsonl');
+
+-- Object rows whose appearance references those ids
+SELECT id, material_lod2_2, texture_lod2_2
+FROM read_cityjsonseq('delft.city.jsonl', appearance := 'sidecar');
+```
+
+`appearance` accepts `'local'` (the default, unchanged) or `'sidecar'`, on
+`read_cityjson`, `read_cityjsonseq` and `read_flatcitybuf`.
+
+**Definitions are interned, not read from the header.** CityJSONSeq does not keep every
+definition in one place: the header line carries some, and each feature carries the ones
+it uses under its *own* local indices — so a feature's material `0` is not in general the
+header's material `0`. The sidecar is therefore the interned union across the whole file,
+matched by structural equality (CityJSON gives a material no identity of its own). Header
+entries are interned first, so their ids stay their ordinal positions, which is exactly
+what a plain CityJSON document yields.
+
+**Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; the sidecar mode
+emits `[texId, [u,v], [u,v], …]`. Both rewrites recurse to their leaves rather than
+assuming a nesting depth, since a `Solid` nests one level deeper than a `MultiSurface`.
+
 ## Common Patterns
 
 ### Create tables from CityJSON

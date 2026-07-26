@@ -27,6 +27,8 @@ Key entry points:
 | `cityjsonseq_metadata(path)` | `metadata_table_function.cpp`            | Metadata for CityJSONSeq         |
 | `cityjson_wkb_extent(blob)`  | `wkb_extent.cpp`                         | 3D extent of a WKB blob, solids included |
 | `cityjson_appearance_ids(cell, kind)` | `cityparquet_appearance.cpp`    | Sidecar ids an appearance cell references |
+| `cityjson_materials(path)`   | `appearance_table_function.cpp`          | materials.parquet rows, ids interned across the file |
+| `cityjson_textures(path)`    | `appearance_table_function.cpp`          | textures.parquet rows |
 
 ### CityParquet package mutation
 
