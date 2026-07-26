@@ -9,6 +9,7 @@
 #include "cityjson/cityparquet_validate.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_delete.hpp"
+#include "cityjson/cityparquet_merge.hpp"
 #include "cityjson/cityparquet_appearance.hpp"
 #include "cityjson/appearance_table_function.hpp"
 #include "cityjson/copy_function.hpp"
@@ -50,6 +51,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register CityParquet delete with cascade (cityparquet_delete)
 	cityjson::RegisterCityParquetDeleteFunctions(loader);
+
+	// Register CityParquet package-to-package merge (cityparquet_merge)
+	cityjson::RegisterCityParquetMergeFunctions(loader);
 
 	// Register cityjson_appearance_ids (sidecar ids referenced by an appearance cell)
 	cityjson::RegisterAppearanceIdsFunction(loader);

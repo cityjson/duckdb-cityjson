@@ -70,6 +70,7 @@ set(EXTENSION_SOURCES
     src/cityjson/cityparquet_validate.cpp
     src/cityjson/cityparquet_reconcile.cpp
     src/cityjson/cityparquet_delete.cpp
+    src/cityjson/cityparquet_merge.cpp
     src/cityjson/cityparquet_appearance.cpp
     src/cityjson/appearance_normalise.cpp
     src/cityjson/appearance_table_function.cpp

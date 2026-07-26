@@ -61,3 +61,111 @@ query I
 SELECT cityjson_wkb_geometry_type(NULL) IS NULL;
 ----
 true
+
+# --- cityparquet_merge -------------------------------------------------------
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 10;
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+# A second package with disjoint ids, its own sidecar numbered from 0.
+statement ok
+CREATE SCHEMA utr;
+
+statement ok
+CREATE TABLE utr.building AS
+  SELECT 'U-' || id AS id, 'U-' || feature_id AS feature_id, object_type,
+         list_transform(parents, x -> 'U-' || x) AS parents,
+         list_transform(children, x -> 'U-' || x) AS children,
+         children_roles, bbox, geometry_lod2_2, geometry_properties_lod2_2,
+         '{"visual":{"values":[0]}}' AS material_lod2_2, texture_lod2_2
+  FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 10;
+
+statement ok
+CREATE TABLE ams.materials (id BIGINT, name VARCHAR);
+
+statement ok
+INSERT INTO ams.materials VALUES (0, 'ams-zero'), (1, 'ams-one');
+
+statement ok
+CREATE TABLE utr.materials (id BIGINT, name VARCHAR);
+
+statement ok
+INSERT INTO utr.materials VALUES (0, 'utr-zero');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+statement ok
+PRAGMA cityparquet_init('utr');
+
+statement ok
+PRAGMA cityparquet_merge('ams', 'utr');
+
+# Both packages' objects are present.
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+20
+
+# The incoming sidecar row did not collide: it was renumbered past the
+# destination's maximum rather than overwriting id 0.
+query IT
+SELECT id, name FROM ams.materials ORDER BY id;
+----
+0	ams-zero
+1	ams-one
+2	utr-zero
+
+# And the merged rows' references were shifted to match, so every id a geometry
+# names still resolves.
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod2_2, 'material')) AS ref FROM ams.building
+  WHERE material_lod2_2 IS NOT NULL
+) r WHERE r.ref NOT IN (SELECT id FROM ams.materials);
+----
+0
+
+# The rows that came from utr point at the renumbered material, not at 0.
+query I
+SELECT COUNT(*) FROM ams.building
+WHERE id LIKE 'U-%' AND material_lod2_2 LIKE '%2%';
+----
+10
+
+# The package validates clean after the merge.
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# A colliding object id rejects the entire merge.
+statement ok
+CREATE SCHEMA dup;
+
+statement ok
+CREATE TABLE dup.building AS SELECT * FROM ams.building LIMIT 1;
+
+statement ok
+PRAGMA cityparquet_init('dup');
+
+statement error
+PRAGMA cityparquet_merge('ams', 'dup');
+----
+duplicate id
+
+# The _sql twin returns text and mutates nothing.
+query I
+SELECT cityparquet_merge_sql('ams', 'utr') LIKE '%INSERT INTO%';
+----
+true

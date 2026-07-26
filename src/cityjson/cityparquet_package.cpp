@@ -1,5 +1,7 @@
 #include "cityjson/cityparquet_package.hpp"
 
+#include "cityjson/json_utils.hpp"
+
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
@@ -195,6 +197,35 @@ std::string BuildInitSQL(ClientContext &context, const std::string &schema) {
 	return sql;
 }
 
+//! Read one field out of a stored `city` footer object as text. The JSON type and
+//! json_extract live in the json extension, which this one does not require, so the
+//! parsing is done here with the vendored nlohmann::json. A nested value is returned as
+//! its compact JSON text, which is enough to compare two CRSs for equality.
+void CityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::ExecuteWithNulls<string_t, string_t, string_t>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t city, string_t field, ValidityMask &mask, idx_t idx) {
+		    json parsed;
+		    try {
+			    parsed = json::parse(city.GetString());
+		    } catch (const std::exception &) {
+			    mask.SetInvalid(idx);
+			    return string_t();
+		    }
+		    if (!parsed.is_object()) {
+			    mask.SetInvalid(idx);
+			    return string_t();
+		    }
+		    auto entry = parsed.find(field.GetString());
+		    if (entry == parsed.end() || entry->is_null()) {
+			    mask.SetInvalid(idx);
+			    return string_t();
+		    }
+		    const auto text = entry->is_string() ? entry->get<std::string>() : entry->dump();
+		    return StringVector::AddString(result, text);
+	    });
+}
+
 std::string PragmaInit(ClientContext &context, const FunctionParameters &parameters) {
 	return BuildInitSQL(context, parameters.values[0].ToString());
 }
@@ -215,6 +246,11 @@ void RegisterCityParquetPackageFunctions(ExtensionLoader &loader) {
 	ScalarFunction init_sql("cityparquet_init_sql", {LogicalType(LogicalTypeId::VARCHAR)},
 	                        LogicalType(LogicalTypeId::VARCHAR), InitSQLScalar);
 	loader.RegisterFunction(init_sql);
+
+	ScalarFunction city_field("cityparquet_city_field",
+	                          {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
+	                          LogicalType(LogicalTypeId::VARCHAR), CityFieldFunction);
+	loader.RegisterFunction(city_field);
 }
 
 } // namespace cityjson
