@@ -23,6 +23,47 @@ Plan 1 (shipped): `docs/superpowers/plans/2026-07-25-cityparquet-mutation-core.m
 - Every new `.cpp` goes in `EXTENSION_SOURCES` in `CMakeLists.txt`.
 - **`appearance := 'local'` stays the default.** The existing behaviour and the `COPY TO cityjson` round trip must not change; every current test must keep passing untouched.
 
+## Status
+
+Tasks 1, 2 and **6** are done — 657 assertions passing. Task 6 (per-feature appearance
+definitions) turned out **not** to be deferrable and was absorbed into Task 2; see the
+correction below. Remaining: Task 3 (`appearance := 'sidecar'`), Task 4 (inline UVs),
+Task 5 (`cityjson_geometry_templates`), Task 7 (docs).
+
+## Correction: the header does not hold the union
+
+The plan assumed CityJSONSeq keeps all material and texture *definitions* in the header
+line, with only the UV pool per-feature, and deferred the alternative to Task 6 behind a
+hard error. **That assumption is wrong**, and the only appearance fixture in the repo
+disproves it.
+
+`test/data/railway_appearance.city.jsonl`:
+
+| line | materials | textures | vertices-texture |
+|---|---|---|---|
+| header | 2 | 2 | 1015 |
+| feature `GMLID_BUI100628_817_8083` | 0 | 2 | 115 |
+| feature `GMLID_855011_330784_753` | 2 | 0 | 0 |
+
+The features' definitions are **not** repeats of the header's — interning yields **four**
+distinct materials and four textures, not two. Each feature indexes its own array, so a
+feature's material `0` is not the header's material `0`.
+
+Reading the header alone would therefore have produced a sidecar missing half the
+definitions, with every feature reference silently resolving to the wrong material. That
+is a data-corruption bug, not a missing feature, so interning was implemented
+immediately (`src/cityjson/appearance_normalise.cpp`) rather than deferred:
+
+- Header entries are interned first, so their ids remain their ordinal positions — which
+  keeps a plain CityJSON document numbered exactly by source array position.
+- Each feature's definitions are then interned in feature order, and a per-feature
+  `local index -> global id` map is kept for Tasks 3 and 4.
+- Definitions are matched by **structural equality**. CityJSON gives a material no
+  identity of its own, so content is the only thing available to key on.
+
+`AppearanceIndex::Build` also reads the **whole** file rather than a sample: a definition
+used only by a feature in the tail belongs in the sidecar just as much as a header one.
+
 ## Where appearance actually lives
 
 Verified against `test/data/railway_appearance.city.jsonl`:
@@ -294,16 +335,11 @@ No fixture in `test/data/` currently has geometry templates. **Add one** — a m
 
 ---
 
-### Task 6: Per-feature appearance definitions
+### Task 6: Per-feature appearance definitions — **done, absorbed into Task 2**
 
-Lifts Task 2's restriction: a CityJSONSeq feature carrying its own non-empty `materials` / `textures` must be interned into the dataset-global set, with each feature's local indices remapped to the interned ids.
-
-Deliberately last: it needs a fixture that does not exist yet, the header-only case covers the data actually to hand, and Task 2's hard error means nothing silently mis-numbers in the meantime.
-
-- [ ] **Step 1:** construct a fixture with two features declaring overlapping-but-distinct materials.
-- [ ] **Step 2:** intern by structural equality of the definition, assigning ids in first-seen order (header entries first, keeping their ordinals stable).
-- [ ] **Step 3:** remap each feature's local indices through its own mapping.
-- [ ] **Step 4:** remove the Task 2 error; assert the previously-rejected input now normalises.
+Not deferrable: the repo's only appearance fixture has per-feature definitions, so the
+header-only shortcut would have silently mis-numbered every reference. Implemented as
+`AppearanceIndex` in Task 2. See "Correction" above.
 
 ---
 
