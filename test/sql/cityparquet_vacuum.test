@@ -131,3 +131,65 @@ query I
 SELECT cityparquet_vacuum_sql('ams') LIKE '%DELETE FROM%NOT IN%';
 ----
 true
+
+# --- regressions from the 2026-07-26 review --------------------------------
+
+# Solid material appearance nests per shell, then per surface. Reading only the
+# top level returned nothing here, which made vacuum delete live materials.
+query T
+SELECT cityjson_appearance_ids('{"visual":{"values":[[0,0,1],[2,2]]}}', 'material');
+----
+[0, 1, 2]
+
+# MultiSolid nests one level deeper again.
+query T
+SELECT cityjson_appearance_ids('{"visual":{"values":[[[3]],[[4,5]]]}}', 'material');
+----
+[3, 4, 5]
+
+# Solid textures nest shell -> surface -> ring; the ring is still the innermost
+# array and only its first element is a texture id.
+query T
+SELECT cityjson_appearance_ids('{"visual":{"values":[[[[9,1,2,3]]],[[[8,4,5,6]]]]}}', 'texture');
+----
+[8, 9]
+
+# A material referenced only by a geometry template must not be vacuumed: the
+# template sidecar carries its own appearance columns.
+statement ok
+CREATE TABLE ams.geometry_templates (id VARCHAR, material_lod1_0 VARCHAR);
+
+statement ok
+INSERT INTO ams.geometry_templates VALUES ('tree', '{"visual":{"values":[42]}}');
+
+statement ok
+INSERT INTO ams.materials VALUES (42, 'used-only-by-a-template');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+statement ok
+PRAGMA cityparquet_vacuum('ams');
+
+query I
+SELECT COUNT(*) FROM ams.materials WHERE id = 42;
+----
+1
+
+# An ordinary attribute that merely starts with the appearance prefix is not an
+# appearance column, so orphan detection must not try to parse it.
+statement ok
+CREATE SCHEMA look;
+
+statement ok
+CREATE TABLE look.building AS
+  SELECT * FROM read_cityjsonseq('test/data/appearance_lookalike.city.jsonl');
+
+statement ok
+CREATE TABLE look.materials (id BIGINT, name VARCHAR);
+
+statement ok
+PRAGMA cityparquet_init('look');
+
+statement ok
+PRAGMA cityparquet_orphans('look');

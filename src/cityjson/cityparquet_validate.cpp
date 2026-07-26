@@ -59,7 +59,19 @@ std::string ReferencedIds(ClientContext &context, const std::string &schema, con
 	} else {
 		const std::string prefix = (sidecar == "materials") ? "material_lod" : "texture_lod";
 		const std::string kind = (sidecar == "materials") ? "material" : "texture";
-		for (const auto &table : object_tables) {
+
+		// Object tables are not the only holders of appearance references:
+		// geometry_templates.parquet carries its own material_lod*/texture_lod* columns,
+		// so a material used only by a template would otherwise look unreferenced and be
+		// vacuumed out from under the template that needs it.
+		auto tables = object_tables;
+		for (const auto &sidecar_table : SidecarTablesInSchema(context, schema)) {
+			if (sidecar_table == "geometry_templates") {
+				tables.push_back(sidecar_table);
+			}
+		}
+
+		for (const auto &table : tables) {
 			// Which LoDs a table carries is a property of the dataset, so the appearance
 			// columns are discovered from the catalog rather than assumed.
 			for (const auto &column : AppearanceLodColumns(context, schema, table, prefix)) {
@@ -71,10 +83,13 @@ std::string ReferencedIds(ClientContext &context, const std::string &schema, con
 		}
 	}
 
+	// No column anywhere in the package can hold a reference to this sidecar. That is
+	// "no information", not "nothing is referenced" -- the reader does not currently
+	// emit a `template` column at all, so reading it the other way would make vacuum
+	// silently delete every geometry template in every real package. The empty string
+	// signals "undeterminable"; callers skip the sidecar.
 	if (terms.empty()) {
-		// Nothing in the package can reference this sidecar, so every row in it is
-		// unreferenced. Returning a typed empty set says exactly that.
-		return "SELECT NULL WHERE false";
+		return std::string();
 	}
 	return Join(terms, "\nUNION\n");
 }
@@ -82,17 +97,21 @@ std::string ReferencedIds(ClientContext &context, const std::string &schema, con
 std::string BuildOrphansSQL(ClientContext &context, const std::string &schema) {
 	auto sidecars = SidecarTablesInSchema(context, schema);
 
+	std::vector<std::string> parts;
+	for (const auto &sidecar : sidecars) {
+		const auto referenced = ReferencedIds(context, schema, sidecar);
+		if (referenced.empty()) {
+			continue; // undeterminable — see ReferencedIds
+		}
+		parts.push_back("SELECT " + KeywordHelper::WriteQuoted(sidecar, '\'') + " AS table_name, "
+		                "CAST(s.id AS VARCHAR) AS id, 'unreferenced' AS reason FROM " +
+		                QualifiedName(schema, sidecar) + " s WHERE s.id NOT IN (" + referenced + ")");
+	}
+
 	std::string body;
-	if (sidecars.empty()) {
+	if (parts.empty()) {
 		body = "SELECT NULL::VARCHAR AS table_name, NULL::VARCHAR AS id, NULL::VARCHAR AS reason WHERE false";
 	} else {
-		std::vector<std::string> parts;
-		for (const auto &sidecar : sidecars) {
-			parts.push_back("SELECT " + KeywordHelper::WriteQuoted(sidecar, '\'') + " AS table_name, "
-			                "CAST(s.id AS VARCHAR) AS id, 'unreferenced' AS reason FROM " +
-			                QualifiedName(schema, sidecar) + " s WHERE s.id NOT IN (" +
-			                ReferencedIds(context, schema, sidecar) + ")");
-		}
 		body = Join(parts, "\nUNION ALL\n");
 	}
 
@@ -106,14 +125,31 @@ std::string BuildVacuumSQL(ClientContext &context, const std::string &schema) {
 	if (sidecars.empty()) {
 		return "SELECT 1 WHERE false;";
 	}
-	std::string sql;
+	// Snapshot every sidecar's referenced set *before* deleting from any of them.
+	// Sidecars can reference each other -- geometry_templates carries its own
+	// material_lod*/texture_lod* columns -- so computing each set lazily would make the
+	// result depend on delete order: vacuuming templates first would orphan the very
+	// materials those templates referenced, and the next statement would delete them.
+	std::string snapshot;
+	std::string deletes;
+	std::string cleanup;
 	for (const auto &sidecar : sidecars) {
+		const auto referenced = ReferencedIds(context, schema, sidecar);
+		if (referenced.empty()) {
+			continue; // undeterminable — see ReferencedIds
+		}
+		const auto temp = "__cp_ref_" + sidecar;
+		snapshot += "CREATE OR REPLACE TEMP TABLE " + temp + " AS " + referenced + ";\n";
 		// NOT IN: vacuum removes what nothing references. Inverting this would delete
 		// precisely the rows still in use.
-		sql += "DELETE FROM " + QualifiedName(schema, sidecar) + " WHERE id NOT IN (" +
-		       ReferencedIds(context, schema, sidecar) + ");\n";
+		deletes += "DELETE FROM " + QualifiedName(schema, sidecar) + " WHERE id NOT IN (SELECT ref FROM " + temp +
+		           ");\n";
+		cleanup += "DROP TABLE IF EXISTS " + temp + ";\n";
 	}
-	return sql;
+	if (snapshot.empty()) {
+		return "SELECT 1 WHERE false;";
+	}
+	return snapshot + deletes + cleanup;
 }
 
 namespace {
@@ -123,6 +159,11 @@ namespace {
 // children_roles -- are common to every module; only attribute columns differ.
 std::vector<std::string> Checks() {
 	return {
+	    // The three dangling checks below anti-join against `SELECT id ... WHERE id IS
+	    // NOT NULL`. Without that filter, a single NULL id anywhere in the package puts
+	    // NULL in the NOT IN set, so every comparison evaluates to UNKNOWN and all three
+	    // checks silently report nothing -- on precisely the malformed package they
+	    // exist to diagnose.
 	    "SELECT 'feature_id_null' AS check_name, 'error' AS severity, __tbl AS table_name, "
 	    "id AS object_id, 'feature_id is NULL' AS message "
 	    "FROM all_objects WHERE feature_id IS NULL",
@@ -130,19 +171,19 @@ std::vector<std::string> Checks() {
 	    "SELECT 'feature_id_dangling', 'error', __tbl, id, "
 	    "'feature_id ' || feature_id || ' matches no object id in the package' "
 	    "FROM all_objects WHERE feature_id IS NOT NULL "
-	    "AND feature_id NOT IN (SELECT id FROM all_objects)",
+	    "AND feature_id NOT IN (SELECT id FROM all_objects WHERE id IS NOT NULL)",
 
 	    // A parent or child reference resolves by bare id across every module file, so
 	    // these anti-joins must span the whole package, not one table.
 	    "SELECT 'parent_dangling', 'error', __tbl, id, "
 	    "'parent ' || p || ' matches no object id in the package' "
 	    "FROM all_objects, UNNEST(parents) AS t(p) "
-	    "WHERE p IS NOT NULL AND p NOT IN (SELECT id FROM all_objects)",
+	    "WHERE p IS NOT NULL AND p NOT IN (SELECT id FROM all_objects WHERE id IS NOT NULL)",
 
 	    "SELECT 'child_dangling', 'error', __tbl, id, "
 	    "'child ' || c || ' matches no object id in the package' "
 	    "FROM all_objects, UNNEST(children) AS t(c) "
-	    "WHERE c IS NOT NULL AND c NOT IN (SELECT id FROM all_objects)",
+	    "WHERE c IS NOT NULL AND c NOT IN (SELECT id FROM all_objects WHERE id IS NOT NULL)",
 
 	    "SELECT 'children_roles_misaligned', 'error', __tbl, id, "
 	    "'children_roles has ' || len(children_roles) || ' entries for ' "

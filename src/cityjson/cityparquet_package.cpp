@@ -63,7 +63,43 @@ std::vector<std::string> Intersect(const std::set<std::string> &present, const s
 	return found;
 }
 
-//! Column names of `schema.table` beginning with `prefix`, in catalog order.
+//! True when `name` is exactly `prefix` followed by the LoD suffix grammar: digits,
+//! optionally `_` and more digits, and nothing else.
+//!
+//! A bare prefix test is not enough. `material_lodging` is a perfectly ordinary source
+//! attribute, and the reader already takes care not to swallow it as an appearance
+//! column (test/sql/cityjson_appearance.test). Misclassifying it here would hand
+//! arbitrary attribute text to cityjson_appearance_ids, which cannot parse it and would
+//! abort the whole orphan scan.
+bool MatchesLodSuffix(const std::string &name, const std::string &prefix) {
+	if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) {
+		return false;
+	}
+	const auto rest = name.substr(prefix.size());
+	size_t i = 0;
+	auto digits = [&]() {
+		const auto start = i;
+		while (i < rest.size() && rest[i] >= '0' && rest[i] <= '9') {
+			i++;
+		}
+		return i > start;
+	};
+	if (!digits()) {
+		return false;
+	}
+	if (i < rest.size()) {
+		if (rest[i] != '_') {
+			return false;
+		}
+		i++;
+		if (!digits()) {
+			return false;
+		}
+	}
+	return i == rest.size();
+}
+
+//! Column names of `schema.table` matching `prefix` + the LoD suffix grammar.
 std::vector<std::string> ColumnsWithPrefix(ClientContext &context, const std::string &schema, const std::string &table,
                                            const std::string &prefix) {
 	// The non-templated GetEntry, deliberately: Catalog::GetEntry<TableCatalogEntry>
@@ -76,7 +112,7 @@ std::vector<std::string> ColumnsWithPrefix(ClientContext &context, const std::st
 	    Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
 	auto &entry = catalog_entry.Cast<TableCatalogEntry>();
 	for (auto &column : entry.GetColumns().Logical()) {
-		if (StringUtil::StartsWith(StringUtil::Lower(column.Name()), prefix)) {
+		if (MatchesLodSuffix(StringUtil::Lower(column.Name()), prefix)) {
 			found.push_back(column.Name());
 		}
 	}

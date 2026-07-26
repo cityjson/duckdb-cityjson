@@ -152,3 +152,33 @@ query T
 SELECT feature_id FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
 ----
 wrong
+
+# --- regressions from the 2026-07-26 review --------------------------------
+
+# An object with several parents takes the root of its FIRST parent chain.
+# Recursing through every parent reaches several roots and lets the UPDATE pick
+# arbitrarily, making feature_id depend on join order.
+statement ok
+CREATE SCHEMA multi;
+
+statement ok
+CREATE TABLE multi.building (id VARCHAR, feature_id VARCHAR, object_type VARCHAR,
+  parents VARCHAR[], children VARCHAR[], children_roles VARCHAR[],
+  bbox STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE));
+
+statement ok
+INSERT INTO multi.building VALUES
+  ('r1', 'r1', 'Building', NULL, NULL, NULL, NULL),
+  ('r2', 'r2', 'Building', NULL, NULL, NULL, NULL),
+  ('c',  'x',  'BuildingPart', ['r1','r2'], NULL, NULL, NULL);
+
+statement ok
+PRAGMA cityparquet_init('multi');
+
+statement ok
+PRAGMA cityparquet_reconcile('multi', checks = ['feature_id']);
+
+query T
+SELECT feature_id FROM multi.building WHERE id = 'c';
+----
+r1

@@ -39,6 +39,14 @@ std::string NodesAndEdges(const std::string &schema, const std::vector<std::stri
 	sql += "CREATE OR REPLACE TEMP TABLE __cp_nodes AS\n" + cte + "SELECT id FROM all_objects;\n";
 	sql += "CREATE OR REPLACE TEMP TABLE __cp_edges AS\n" + cte +
 	       "SELECT id AS child, p AS parent FROM all_objects, UNNEST(parents) AS u(p) WHERE p IS NOT NULL;\n";
+	// A second, single-valued edge set for the feature_id walk. feature_id names *the*
+	// root of the object's parent chain, so with several parents the chain has to be
+	// pinned to one of them -- the first, matching the reader. Recursing over the full
+	// edge set instead would reach several roots and let the UPDATE pick arbitrarily,
+	// making feature_id depend on join order.
+	sql += "CREATE OR REPLACE TEMP TABLE __cp_first_edges AS\n" + cte +
+	       "SELECT id AS child, parents[1] AS parent FROM all_objects "
+	       "WHERE parents IS NOT NULL AND len(parents) > 0 AND parents[1] IS NOT NULL;\n";
 	return sql;
 }
 
@@ -51,10 +59,10 @@ std::string FeatureIdPhase(const std::string &schema, const std::vector<std::str
 	       "WITH RECURSIVE up(node, ancestor) AS (\n"
 	       "  SELECT id, id FROM __cp_nodes\n"
 	       "  UNION\n"
-	       "  SELECT u.node, e.parent FROM up u JOIN __cp_edges e ON e.child = u.ancestor\n"
+	       "  SELECT u.node, e.parent FROM up u JOIN __cp_first_edges e ON e.child = u.ancestor\n"
 	       ")\n"
 	       "SELECT node AS id, ancestor AS root FROM up\n"
-	       "WHERE ancestor NOT IN (SELECT child FROM __cp_edges);\n";
+	       "WHERE ancestor NOT IN (SELECT child FROM __cp_first_edges);\n";
 
 	for (const auto &table : object_tables) {
 		sql += "UPDATE " + QualifiedName(schema, table) + " t SET feature_id = r.root " + "FROM __cp_roots r WHERE r.id = t.id AND t.feature_id IS DISTINCT FROM r.root;\n";
@@ -160,6 +168,7 @@ std::string DropTemps() {
 	       "DROP TABLE IF EXISTS __cp_anc;\n"
 	       "DROP TABLE IF EXISTS __cp_bbox;\n"
 	       "DROP TABLE IF EXISTS __cp_edges;\n"
+	       "DROP TABLE IF EXISTS __cp_first_edges;\n"
 	       "DROP TABLE IF EXISTS __cp_nodes;\n";
 }
 

@@ -142,3 +142,16 @@ query I
 SELECT COUNT(*) > 0 FROM ams.building;
 ----
 true
+
+# --- regressions from the 2026-07-26 review --------------------------------
+
+# A struct-field predicate binds fine against the table, so table selection must
+# resolve `bbox.max_z` to its base column `bbox` rather than looking for a
+# top-level `max_z` and rejecting the delete.
+statement ok
+PRAGMA cityparquet_delete('ams', 'bbox.max_z > 1000000');
+
+query I
+SELECT COUNT(*) > 0 FROM ams.building;
+----
+true
