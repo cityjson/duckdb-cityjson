@@ -48,6 +48,27 @@ struct AppearanceIndex {
 	static AppearanceIndex Build(const CityJSON &header, const std::vector<CityJSONFeature> &features);
 };
 
+/**
+ * Rewrite one geometry's material map so every index is a dataset-global sidecar id.
+ */
+json NormaliseMaterialMap(const json &material_map, const AppearanceIndex &index,
+                          const std::string &feature_id);
+
+/**
+ * Rewrite one geometry's texture map: every texture index becomes a global sidecar id,
+ * and every UV *index* is replaced by the `[u, v]` pair it names in `uv_pool`.
+ *
+ * The UV pool is per-feature, so a stored index would be meaningless once features are
+ * merged into one table — which is exactly what CityParquet does. Inlining the
+ * coordinates is what makes the object table self-contained.
+ *
+ * A ring is recognised as the innermost array (the one whose own elements are scalars)
+ * rather than assumed at a fixed depth: the nesting above it varies with geometry type,
+ * a Solid sitting one level deeper than a MultiSurface.
+ */
+json NormaliseTextureMap(const json &texture_map, const AppearanceIndex &index, const std::string &feature_id,
+                         const std::vector<std::array<double, 2>> &uv_pool);
+
 //! Stable content keys, used to intern definitions by structural equality.
 std::string MaterialKey(const Material &material);
 std::string TextureKey(const Texture &texture);

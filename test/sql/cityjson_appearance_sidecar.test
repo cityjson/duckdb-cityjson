@@ -75,3 +75,66 @@ query I
 SELECT COUNT(*) FROM cityjson_textures('test/data/minimal.city.json');
 ----
 0
+
+# --- appearance := 'sidecar' -------------------------------------------------
+
+statement error
+SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'nonsense');
+----
+appearance must be 'local' or 'sidecar'
+
+# Every material id a geometry references resolves against the sidecar. In local
+# mode the indices are feature-local and this is only true by coincidence.
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE material_lod3_0 IS NOT NULL
+) r
+WHERE r.ref NOT IN (SELECT id FROM cityjson_materials('test/data/railway_appearance.city.jsonl'));
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(texture_lod3_0, 'texture')) AS ref
+  FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE texture_lod3_0 IS NOT NULL
+) r
+WHERE r.ref NOT IN (SELECT id FROM cityjson_textures('test/data/railway_appearance.city.jsonl'));
+----
+0
+
+# Texture UVs are inlined. A ring is [texId, uvIdx, uvIdx, ...] in the source and
+# becomes [texId, [u,v], [u,v], ...] here, so a ring's second element is an array
+# rather than a bare integer. Real coordinates carry a decimal point; indices
+# never do.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+WHERE texture_lod3_0 IS NOT NULL AND texture_lod3_0 LIKE '%,[%.%]%';
+----
+1
+
+# In local mode the ring entries stay bare integer indices into the feature's
+# per-feature vertices-texture pool -- meaningless once features share a table,
+# which is why the sidecar mode exists.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE texture_lod3_0 IS NOT NULL AND texture_lod3_0 NOT LIKE '%,[%.%]%';
+----
+1
+
+# The inlined coordinates are the ones the source's UV pool actually held: the
+# first ring's first UV index is 0, and vertices-texture[0] is [2.3283218, ...].
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+WHERE texture_lod3_0 LIKE '%[0,[2.3283218,0.8466667]%';
+----
+1
+
+# The default is unchanged — local mode must keep behaving exactly as before.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE material_lod3_0 IS NOT NULL;
+----
+1

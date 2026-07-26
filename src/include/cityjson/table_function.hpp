@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cityjson/types.hpp"
+#include "cityjson/appearance_normalise.hpp"
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/reader.hpp"
@@ -33,6 +34,9 @@ struct CityJSONBindData : public TableFunctionData {
 	std::optional<std::string> target_lod; // Optional: filter to specific LOD
 	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
 	bool streaming = false;                // True when data is loaded during scan init instead of bind
+	// Set only when appearance := 'sidecar'. Holds the dataset-global material/texture
+	// sets and the per-feature index maps that reach them.
+	std::optional<AppearanceIndex> appearance_index;
 
 	// Pushed-down equality filters on scalar columns (column_name -> expected_value)
 	std::vector<std::pair<std::string, std::string>> equality_filters;
@@ -45,6 +49,10 @@ struct CityJSONBindData : public TableFunctionData {
  * Read options parsed from named parameters
  */
 struct CityJSONReadOptions {
+	// 'local' (default) keeps the source's feature-local appearance indices verbatim.
+	// 'sidecar' rewrites them to dataset-global sidecar ids and inlines texture UVs,
+	// which is what the CityParquet encoding requires.
+	bool sidecar_appearance = false;
 	std::optional<std::string> target_lod;
 	bool use_wkb_encoding = false;
 	size_t sample_lines = 100;

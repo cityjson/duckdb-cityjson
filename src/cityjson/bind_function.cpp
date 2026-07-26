@@ -1,4 +1,5 @@
 #include "cityjson/table_function.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
@@ -19,6 +20,15 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
 		if (kv.first == "lod") {
 			options.target_lod = LODTableUtils::NormalizeLOD(StringValue::Get(kv.second));
 			options.use_wkb_encoding = true; // Enable WKB encoding when LOD is specified
+		} else if (kv.first == "appearance") {
+			auto mode = StringUtil::Lower(StringValue::Get(kv.second));
+			if (mode == "sidecar") {
+				options.sidecar_appearance = true;
+			} else if (mode == "local") {
+				options.sidecar_appearance = false;
+			} else {
+				throw BinderException(function_name + ": appearance must be 'local' or 'sidecar', got '" + mode + "'");
+			}
 		} else if (kv.first == "sample_lines") {
 			auto sample_lines = BigIntValue::Get(kv.second);
 			if (sample_lines < 0) {
@@ -106,6 +116,14 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 	}
 
 	InferSchema(result, reader, options.sample_lines);
+
+	if (options.sidecar_appearance) {
+		// Reading the whole file, not a sample: a definition used only by a feature in
+		// the tail belongs in the dataset's sidecar just as much as a header one, and
+		// omitting it would leave that feature's references unresolvable.
+		auto all = reader.ReadAllChunks();
+		result.appearance_index = AppearanceIndex::Build(result.metadata, all.records);
+	}
 
 	for (const auto &col : result.columns) {
 		names.push_back(col.name);

@@ -77,7 +77,28 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				}
 			}
 			if (appearance != nullptr) {
-				WriteJsonText(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
+				if (bind_data.appearance_index.has_value()) {
+					// appearance := 'sidecar'. Rewrite the source's feature-local indices
+					// into dataset-global sidecar ids, and (for textures) replace UV
+					// indices with the coordinates themselves -- the UV pool is
+					// per-feature, so a stored index would be meaningless once features
+					// share one table.
+					const auto &index = bind_data.appearance_index.value();
+					const std::vector<std::array<double, 2>> *uv_pool = nullptr;
+					if (feature.appearance.has_value()) {
+						uv_pool = &feature.appearance->vertices_texture;
+					} else if (bind_data.metadata.appearance.has_value()) {
+						uv_pool = &bind_data.metadata.appearance->vertices_texture;
+					}
+					static const std::vector<std::array<double, 2>> empty_pool;
+					const auto normalised =
+					    is_material ? NormaliseMaterialMap(*appearance, index, feature.id)
+					                : NormaliseTextureMap(*appearance, index, feature.id,
+					                                      uv_pool != nullptr ? *uv_pool : empty_pool);
+					WriteJsonText(wrappers[col_idx].AsFlatMut(), normalised, output_row);
+				} else {
+					WriteJsonText(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
+				}
 			} else {
 				wrappers[col_idx].SetNull(output_row);
 			}

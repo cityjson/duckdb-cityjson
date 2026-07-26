@@ -11,6 +11,7 @@ TableFunction CreateReadCityJSONTableFunction() {
 	// Named parameters
 	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
 	func.named_parameters["lod"] = LogicalType::VARCHAR; // Filter to specific LOD (e.g., "2.2")
+	func.named_parameters["appearance"] = LogicalType::VARCHAR; // 'local' (default) or 'sidecar'
 
 	// Set callbacks
 	func.init_global = CityJSONInitGlobal;
@@ -40,6 +41,7 @@ TableFunction CreateReadCityJSONSeqTableFunction() {
 	// Named parameters (same as read_cityjson)
 	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
 	func.named_parameters["lod"] = LogicalType::VARCHAR; // Filter to specific LOD (e.g., "2.2")
+	func.named_parameters["appearance"] = LogicalType::VARCHAR; // 'local' (default) or 'sidecar'
 
 	// Set callbacks (reuse same stateless callbacks)
 	func.init_global = CityJSONInitGlobal;
