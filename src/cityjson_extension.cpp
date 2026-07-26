@@ -7,6 +7,7 @@
 #include "cityjson/wkb_extent.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_validate.hpp"
+#include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/copy_function.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_table_function.hpp"
@@ -40,6 +41,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register CityParquet consistency checks (cityparquet_validate)
 	cityjson::RegisterCityParquetValidateFunctions(loader);
+
+	// Register CityParquet derived-state re-derivation (cityparquet_reconcile)
+	cityjson::RegisterCityParquetReconcileFunctions(loader);
 
 	// Register COPY TO functions (cityjson and cityjsonseq formats)
 	cityjson::RegisterCityJSONCopyFunction(loader);
