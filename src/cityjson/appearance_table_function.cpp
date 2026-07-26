@@ -26,6 +26,8 @@ struct AppearanceBindData : public TableFunctionData {
 	// columns, exactly as an object table does, so a template's LoD is carried by its
 	// column name rather than by a value.
 	std::vector<std::string> template_lods;
+	// The document appearance's UV pool: what a template's texture rings index into.
+	std::vector<std::array<double, 2>> template_uv_pool;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<AppearanceBindData>();
@@ -34,6 +36,7 @@ struct AppearanceBindData : public TableFunctionData {
 		result->index = index;
 		result->templates = templates;
 		result->template_lods = template_lods;
+		result->template_uv_pool = template_uv_pool;
 		return std::move(result);
 	}
 	bool Equals(const FunctionData &other) const override {
@@ -86,13 +89,25 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 	try {
 		reader = OpenAnyCityJSONFile(context, result->file_name);
 		auto metadata = reader->ReadMetadata();
-		// The whole file, not a sample: an appearance definition used by one feature in
-		// the tail is as much a part of the dataset's sidecar as one in the header, and
-		// omitting it would leave that feature's references dangling.
-		auto all = reader->ReadAllChunks();
-		result->index = AppearanceIndex::Build(metadata, all.records);
-		if (metadata.geometry_templates.has_value()) {
-			result->templates = metadata.geometry_templates.value();
+		if (kind == SidecarKind::TEMPLATES) {
+			// Geometry templates are document-level and live entirely in the header, and
+			// a template's appearance can only reference the header's definitions. So
+			// build the index from the header alone and skip the feature scan -- reading
+			// every chunk merely to count templates would parse a multi-gigabyte sequence
+			// end to end.
+			result->index = AppearanceIndex::Build(metadata, {});
+			if (metadata.geometry_templates.has_value()) {
+				result->templates = metadata.geometry_templates.value();
+			}
+			if (metadata.appearance.has_value()) {
+				result->template_uv_pool = metadata.appearance->vertices_texture;
+			}
+		} else {
+			// Reading the whole file, not a sample: a definition used only by a feature in
+			// the tail belongs in the dataset's sidecar just as much as a header one, and
+			// omitting it would leave that feature's references dangling.
+			auto all = reader->ReadAllChunks();
+			result->index = AppearanceIndex::Build(metadata, all.records);
 		}
 	} catch (const CityJSONError &e) {
 		throw BinderException("%s: failed to read '%s': %s", function_name, result->file_name, e.what());
@@ -117,7 +132,24 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 		                varchar};
 	} else if (kind == SidecarKind::TEMPLATES) {
 		std::set<std::string> lods;
-		for (const auto &geometry : result->templates.templates) {
+		for (idx_t i = 0; i < result->templates.templates.size(); i++) {
+			const auto &geometry = result->templates.templates[i];
+			// A template's LoD becomes part of its column names, so it must satisfy the
+			// LoD suffix grammar. An absent or non-numeric lod would yield `geometry_lod`
+			// or `geometry_lodfoo`, which no conforming reader -- including this
+			// extension's own appearance-column discovery -- will recognise.
+			if (geometry.lod.empty()) {
+				throw BinderException("cityjson_geometry_templates: template %llu has no lod; a template's LoD names "
+				                      "its columns, so it cannot be omitted",
+				                      static_cast<uint64_t>(i));
+			}
+			try {
+				std::stod(geometry.lod);
+			} catch (const std::exception &) {
+				throw BinderException("cityjson_geometry_templates: template %llu has a non-numeric lod '%s'; a "
+				                      "template's LoD names its columns and must follow the LoD suffix grammar",
+				                      static_cast<uint64_t>(i), geometry.lod);
+			}
 			lods.insert(LODTableUtils::NormalizeLOD(geometry.lod));
 		}
 		result->template_lods.assign(lods.begin(), lods.end());
@@ -218,12 +250,23 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 				output.SetValue(base, emitted, Value::BLOB(wkb.data(), wkb.size()));
 				auto props = CityObjectUtils::GetGeometryPropertiesStruct(geometry);
 				output.SetValue(base + 1, emitted, Value(props.is_null() ? std::string() : props.dump()));
+				// A template's appearance needs the same normalisation an object row's
+				// does: emitted verbatim, its rings would keep source-local texture ids
+				// and bare UV indices, which no consumer of the package can resolve.
+				// Templates are document-level, so they carry no feature id and resolve
+				// against the header's definitions and UV pool.
+				static const std::vector<std::array<double, 2>> no_uvs;
+				const auto &uv_pool = bind_data.template_uv_pool;
 				output.SetValue(base + 2, emitted,
-				                geometry.material.has_value() ? Value(geometry.material->dump())
-				                                              : Value(LogicalType(LogicalTypeId::VARCHAR)));
+				                geometry.material.has_value()
+				                    ? Value(NormaliseMaterialMap(geometry.material.value(), bind_data.index, "").dump())
+				                    : Value(LogicalType(LogicalTypeId::VARCHAR)));
 				output.SetValue(base + 3, emitted,
-				                geometry.texture.has_value() ? Value(geometry.texture->dump())
-				                                             : Value(LogicalType(LogicalTypeId::VARCHAR)));
+				                geometry.texture.has_value()
+				                    ? Value(NormaliseTextureMap(geometry.texture.value(), bind_data.index, "",
+				                                                uv_pool.empty() ? no_uvs : uv_pool)
+				                                .dump())
+				                    : Value(LogicalType(LogicalTypeId::VARCHAR)));
 			}
 		} else if (bind_data.kind == SidecarKind::MATERIALS) {
 			const auto &material = bind_data.index.materials[index];

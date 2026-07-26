@@ -188,3 +188,22 @@ query I
 SELECT COUNT(*) FROM cityjson_geometry_templates('test/data/minimal.city.json');
 ----
 0
+
+# --- template regressions from the 2026-07-26 review -------------------------
+
+# A template's own appearance is normalised like an object row's. Emitted
+# verbatim it would keep source-local ids and bare UV indices that no consumer
+# of the package can resolve.
+query T
+SELECT material_lod1_0 FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
+WHERE material_lod1_0 IS NOT NULL;
+----
+{"":{"values":[0,0]}}
+
+# A template whose lod cannot name a conforming column is rejected: its LoD
+# becomes part of its column names, so `geometry_lod` or `geometry_lodfoo` would
+# be invisible to every conforming reader, this extension's own included.
+statement error
+SELECT * FROM cityjson_geometry_templates('test/data/geometry_templates_bad_lod.city.json');
+----
+non-numeric lod
