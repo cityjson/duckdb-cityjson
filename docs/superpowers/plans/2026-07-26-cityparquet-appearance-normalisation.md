@@ -23,12 +23,19 @@ Plan 1 (shipped): `docs/superpowers/plans/2026-07-25-cityparquet-mutation-core.m
 - Every new `.cpp` goes in `EXTENSION_SOURCES` in `CMakeLists.txt`.
 - **`appearance := 'local'` stays the default.** The existing behaviour and the `COPY TO cityjson` round trip must not change; every current test must keep passing untouched.
 
-## Status
+## Status: complete
 
-Tasks 1, 2 and **6** are done — 657 assertions passing. Task 6 (per-feature appearance
-definitions) turned out **not** to be deferrable and was absorbed into Task 2; see the
-correction below. Remaining: Task 3 (`appearance := 'sidecar'`), Task 4 (inline UVs),
-Task 5 (`cityjson_geometry_templates`), Task 7 (docs).
+All tasks done — 674 assertions across 28 test files passing. Task 6 (per-feature
+appearance definitions) turned out **not** to be deferrable and was absorbed into Task 2;
+see the correction below.
+
+Shipped:
+
+- `Material` / `Texture` / `Appearance` / `GeometryTemplates` parsing (none of it existed)
+- `cityjson_materials(path)`, `cityjson_textures(path)`, `cityjson_geometry_templates(path)`
+- `appearance := 'sidecar'` on all three readers, with global ids and inlined UVs
+- `test/data/geometry_templates.city.json`, a fixture the repo lacked
+- README / CLAUDE.md / AGENTS.md
 
 ## Correction: the header does not hold the union
 
