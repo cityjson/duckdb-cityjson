@@ -58,6 +58,11 @@ std::vector<std::string> AppearanceLodColumns(ClientContext &context, const std:
 //! per module.
 std::string AllObjectsCTE(const std::string &schema, const std::vector<std::string> &object_tables);
 
+//! Loads a CityParquet package directory into `schema`: one table per file found, plus
+//! a `__cityparquet` row per file with the footer's `city` object recovered via
+//! parquet_kv_metadata -- the one thing a hand-rolled read_parquet load throws away.
+std::string BuildReadSQL(ClientContext &context, const std::string &directory, const std::string &schema);
+
 //! Registers cityparquet_init (pragma) and cityparquet_init_sql (scalar).
 void RegisterCityParquetPackageFunctions(ExtensionLoader &loader);
 

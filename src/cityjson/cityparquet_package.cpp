@@ -6,6 +6,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -226,6 +227,10 @@ void CityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) 
 	    });
 }
 
+std::string PragmaRead(ClientContext &context, const FunctionParameters &parameters) {
+	return BuildReadSQL(context, parameters.values[0].ToString(), parameters.values[1].ToString());
+}
+
 std::string PragmaInit(ClientContext &context, const FunctionParameters &parameters) {
 	return BuildInitSQL(context, parameters.values[0].ToString());
 }
@@ -239,7 +244,65 @@ void InitSQLScalar(DataChunk &args, ExpressionState &state, Vector &result) {
 
 } // namespace
 
+std::string BuildReadSQL(ClientContext &context, const std::string &directory, const std::string &schema) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	if (!fs.DirectoryExists(directory)) {
+		throw BinderException("cityparquet_read: no such directory '%s'", directory);
+	}
+
+	// The file list comes from a directory listing at plan time -- no SQL, no data read.
+	// Only files this specification names are adopted; anything else in the directory is
+	// left alone rather than guessed at.
+	std::set<std::string> known;
+	for (const auto &name : ModuleTableNames()) {
+		known.insert(name);
+	}
+	for (const auto &name : SidecarTableNames()) {
+		known.insert(name);
+	}
+
+	std::vector<std::string> found;
+	fs.ListFiles(directory, [&](const std::string &name, bool) {
+		const auto suffix = std::string(".parquet");
+		if (name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+			return;
+		}
+		const auto table = StringUtil::Lower(name.substr(0, name.size() - suffix.size()));
+		if (known.count(table) > 0) {
+			found.push_back(table);
+		}
+	});
+	if (found.empty()) {
+		throw BinderException("cityparquet_read: '%s' contains no CityParquet object table or sidecar", directory);
+	}
+	std::sort(found.begin(), found.end());
+
+	const auto bookkeeping = QualifiedName(schema, "__cityparquet");
+	std::string sql = "CREATE SCHEMA IF NOT EXISTS " + KeywordHelper::WriteOptionallyQuoted(schema) + ";\n";
+	sql += "CREATE OR REPLACE TABLE " + bookkeeping +
+	       " (table_name VARCHAR, file_name VARCHAR, role VARCHAR, city VARCHAR);\n";
+
+	for (const auto &table : found) {
+		const auto file = table + ".parquet";
+		const auto path = fs.JoinPath(directory, file);
+		sql += "CREATE OR REPLACE TABLE " + QualifiedName(schema, table) + " AS SELECT * FROM read_parquet(" +
+		       Literal(path) + ");\n";
+		const bool is_object =
+		    std::find(ModuleTableNames().begin(), ModuleTableNames().end(), table) != ModuleTableNames().end();
+		// decode(), not a cast: parquet_kv_metadata returns BLOB, and casting it to
+		// VARCHAR escapes bytes so the JSON no longer parses.
+		sql += "INSERT INTO " + bookkeeping + " (table_name, file_name, role, city) SELECT " + Literal(table) + ", " +
+		       Literal(file) + ", " + Literal(std::string(is_object ? "object" : "sidecar")) +
+		       ", (SELECT decode(value) FROM parquet_kv_metadata(" + Literal(path) + ") WHERE decode(key) = 'city');\n";
+	}
+	return sql;
+}
+
 void RegisterCityParquetPackageFunctions(ExtensionLoader &loader) {
+	loader.RegisterFunction(PragmaFunction::PragmaCall(
+	    "cityparquet_read", PragmaRead,
+	    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}));
+
 	loader.RegisterFunction(
 	    PragmaFunction::PragmaCall("cityparquet_init", PragmaInit, {LogicalType(LogicalTypeId::VARCHAR)}));
 
