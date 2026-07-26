@@ -4,13 +4,25 @@
 
 require cityjson
 
-# The two materials in the CityJSONSeq header become two sidecar rows, ids
-# assigned by ordinal position in appearance.materials.
+# CityJSONSeq spreads appearance definitions across the file: the header line
+# carries some, and each feature carries the ones it uses under its OWN local
+# indices. The sidecar is therefore the interned union, not the header alone --
+# here two materials from the header plus two more contributed by features.
 query IT
 SELECT id, name FROM cityjson_materials('test/data/railway_appearance.city.jsonl') ORDER BY id;
 ----
 0	UUID_e58d9d68-2e8c-4b81-bec1-1892e9d71c81
 1	UUID_f55b5612-d5f9-4ef8-842d-ca4849d90b59
+2	UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
+3	UUID_0794715b-1334-4855-83d3-8e8270c11e78
+
+# Header entries are interned first, so their ids stay their ordinal positions.
+# That keeps a plain CityJSON document -- which has only a header appearance --
+# numbered exactly by source array position.
+query I
+SELECT COUNT(*) FROM cityjson_materials('test/data/railway_appearance.city.jsonl') WHERE id < 2;
+----
+2
 
 # Colour columns are typed lists, not JSON: they have a fixed, well-known shape,
 # so a typed column costs nothing and buys pushdown and validation.
@@ -23,24 +35,43 @@ query I
 SELECT COUNT(*) FROM cityjson_materials('test/data/railway_appearance.city.jsonl')
 WHERE len(diffuseColor) = 3 AND len(specularColor) = 3 AND len(emissiveColor) = 3;
 ----
-2
+4
 
-# Textures come from the same header appearance.
-query I
-SELECT COUNT(*) > 0 FROM cityjson_textures('test/data/railway_appearance.city.jsonl');
+# Ids are contiguous from zero and unique — they are what a geometry references.
+query II
+SELECT COUNT(*), COUNT(DISTINCT id) FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
 ----
-true
+4	4
 
 # CityJSON's "image" and "type" members map to the spec's image_uri and
 # image_type; image_type is the source token verbatim, not a MIME type.
+query IT
+SELECT id, image_type FROM cityjson_textures('test/data/railway_appearance.city.jsonl') ORDER BY id;
+----
+0	JPG
+1	PNG
+2	JPG
+3	JPG
+
 query I
 SELECT COUNT(*) FROM cityjson_textures('test/data/railway_appearance.city.jsonl')
-WHERE image_uri IS NOT NULL AND image_type IN ('PNG', 'JPG');
+WHERE image_uri IS NOT NULL AND wrapMode = 'wrap' AND len(borderColor) = 4;
 ----
-2
+4
+
+# image_data has no CityJSON source — the format references images by URI.
+query I
+SELECT COUNT(*) FROM cityjson_textures('test/data/railway_appearance.city.jsonl') WHERE image_data IS NULL;
+----
+4
 
 # A file with no appearance at all yields no sidecar rows rather than failing.
 query I
 SELECT COUNT(*) FROM cityjson_materials('test/data/minimal.city.json');
+----
+0
+
+query I
+SELECT COUNT(*) FROM cityjson_textures('test/data/minimal.city.json');
 ----
 0

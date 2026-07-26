@@ -10,6 +10,7 @@
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_delete.hpp"
 #include "cityjson/cityparquet_appearance.hpp"
+#include "cityjson/appearance_table_function.hpp"
 #include "cityjson/copy_function.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_table_function.hpp"
@@ -52,6 +53,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register cityjson_appearance_ids (sidecar ids referenced by an appearance cell)
 	cityjson::RegisterAppearanceIdsFunction(loader);
+
+	// Register the CityParquet appearance sidecar readers
+	cityjson::RegisterAppearanceTableFunctions(loader);
 
 	// Register COPY TO functions (cityjson and cityjsonseq formats)
 	cityjson::RegisterCityJSONCopyFunction(loader);
