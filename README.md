@@ -455,6 +455,103 @@ SELECT * FROM read_cityjson('buildings.city.json') WHERE id = 'building1';
 
 Other predicates (ranges, filters on attribute columns, `IN`, etc.) still work — they are simply applied by DuckDB after the scan rather than pushed into the reader.
 
+## CityParquet package mutation
+
+A CityParquet dataset is a *directory* of Parquet files — one object table per CityGML module, plus optional `materials` / `textures` / `geometry_templates` sidecars. Load it into DuckDB and it becomes a set of tables you can query. Mutating it is harder, because the package has internal relationships ordinary `INSERT` / `UPDATE` / `DELETE` knows nothing about: deleting a parent must cascade to its children, and `feature_id`, `bbox` and the reciprocal `parents` / `children` / `children_roles` arrays are derived state any structural edit invalidates.
+
+These functions generate that SQL for you.
+
+### The model: a package is a schema
+
+Load each file into a table named exactly as the spec names it, then register the package:
+
+```sql
+CREATE SCHEMA ams;
+CREATE TABLE ams.building  AS SELECT * FROM read_parquet('amsterdam/building.parquet');
+CREATE TABLE ams.materials AS SELECT * FROM read_parquet('amsterdam/materials.parquet');
+
+PRAGMA cityparquet_init('ams');
+```
+
+Object tables are `building`, `bridge`, `tunnel`, `construction`, `transportation`, `vegetation`, `relief`, `water_body`, `land_use`, `city_furniture`, `generics`; sidecars are `materials`, `textures`, `geometry_templates`. Naming is the whole binding — there is no registration state to keep in sync.
+
+`cityparquet_init` creates `__cityparquet`, one row per package file (`table_name`, `file_name`, `role`, `city`). It is the one thing a hand-rolled `read_parquet` load cannot give you, because that discards the Parquet footer. Re-run it after adding a table; it is idempotent.
+
+### Mutation
+
+```sql
+-- Delete, cascading to the transitive children closure
+PRAGMA cityparquet_delete('ams', 'object_type = ''Building'' AND b3_h_dak_max > 20');
+PRAGMA cityparquet_delete('ams', 'id = ''x''', cascade = false);
+PRAGMA cityparquet_delete('ams', 'object_type = ''Road''', tables = ['transportation']);
+
+-- Re-derive what a raw SQL edit invalidated
+UPDATE ams.building SET geometry_lod2_2 = … WHERE id = 'x';
+PRAGMA cityparquet_reconcile('ams');
+PRAGMA cityparquet_reconcile('ams', checks = ['bbox']);
+```
+
+There is deliberately **no `cityparquet_update`**. Attribute edits are ordinary `UPDATE` and need no wrapper; only structural edits — geometry, hierarchy, appearance — invalidate derived state, and `cityparquet_reconcile` re-derives exactly that.
+
+`cascade` walks `children` transitively, never `feature_id` equality: a predicate may match a non-root object, and deleting a `BuildingPart` must not take out the parent `Building` sharing its `feature_id`.
+
+### Inspection and housekeeping
+
+```sql
+PRAGMA cityparquet_validate('ams');
+SELECT * FROM cityparquet_validation WHERE severity = 'error';
+
+PRAGMA cityparquet_orphans('ams');
+SELECT * FROM cityparquet_orphan_rows;
+
+PRAGMA cityparquet_vacuum('ams');   -- delete unreferenced sidecar rows
+```
+
+`cityparquet_validate` reports `feature_id_null`, `feature_id_dangling`, `parent_dangling`, `child_dangling`, `children_roles_misaligned` and `id_duplicate`. Because a PRAGMA cannot be a subquery, both pragmas materialise their findings into a temp table and then select from it, so the results stay filterable afterwards.
+
+### Transactions
+
+Each pragma **returns SQL text**, which DuckDB parses and executes in place of the call. Atomicity is therefore DuckDB's own, not this extension's:
+
+```sql
+BEGIN;
+PRAGMA cityparquet_delete('ams', 'object_type = ''Building''');
+ROLLBACK;   -- undoes the whole cascade, survivor cleanup and re-derivation
+```
+
+One caveat: DuckDB expands *every* pragma in a submitted script before running *any* of it, so a generator's view of the catalog is the state before the batch began. The generated SQL is written to be idempotent so batching is safe, but if you script several of these, prefer submitting them as separate statements.
+
+### Seeing the SQL
+
+Every mutating pragma has a scalar twin returning the SQL it would run, without running it:
+
+```sql
+SELECT cityparquet_delete_sql('ams', 'id = ''x''');
+SELECT cityparquet_reconcile_sql('ams');
+SELECT cityparquet_vacuum_sql('ams');
+SELECT cityparquet_init_sql('ams');
+SELECT cityparquet_validate_sql('ams');
+```
+
+### Supporting scalar functions
+
+```sql
+-- 3D extent of a WKB blob, solid family included. DuckDB spatial rejects
+-- PolyhedralSurfaceZ, which is what every CityParquet solid LoD is.
+SELECT cityjson_wkb_extent(geometry_lod2_2) FROM ams.building;
+--> STRUCT(min_x, min_y, min_z, max_x, max_y, max_z DOUBLE)
+
+-- Sidecar ids an appearance cell references
+SELECT cityjson_appearance_ids(material_lod2_2, 'material') FROM ams.building;
+SELECT cityjson_appearance_ids(texture_lod2_2,  'texture')  FROM ams.building;
+```
+
+### Not yet implemented
+
+`insert_cityjson` and `cityparquet_merge` are designed but not built — they depend on appearance normalisation (dataset-global sidecar ids, inlined texture UVs) and on package I/O (`cityparquet_read` / `cityparquet_write`, including footer and STAC Item regeneration). See `docs/superpowers/specs/2026-07-25-cityparquet-mutation-functions-design.md`.
+
+Two specification divergences found while building this are recorded in `docs/CITYPARQUET_SPEC_QUESTIONS.md`; one — whether a parent's `bbox` includes its descendants' geometry — is a genuine contradiction in the spec and currently makes `cityparquet_reconcile` disagree with the reader on non-leaf rows.
+
 ## Common Patterns
 
 ### Create tables from CityJSON

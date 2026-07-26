@@ -13,6 +13,43 @@ This document provides guidance to coding agents focusing on C++ deliverables wh
 
 YOU SHOULD REFERENCE THE DESIGN_DOC.md FILE FOR THE ARCHITECTURAL OVERVIEW.
 
+### CityParquet package mutation layer
+
+`src/cityjson/cityparquet_*.cpp` implements mutation of a CityParquet package held as a
+DuckDB schema. These are **`PragmaFunction`s registered with a `pragma_query_t`**: the
+function *returns SQL text*, which DuckDB parses and runs in place of the pragma, inside
+the caller's transaction (`duckdb/src/planner/statement_preprocessor.cpp:107-122`).
+Atomicity is DuckDB's, not ours — the extension only generates text. Each mutating
+pragma has a scalar `*_sql()` twin returning the same text without running it.
+
+Functions: `cityparquet_init`, `cityparquet_validate`, `cityparquet_orphans`,
+`cityparquet_vacuum`, `cityparquet_reconcile`, `cityparquet_delete`, plus the scalars
+`cityjson_wkb_extent` and `cityjson_appearance_ids`. See `CLAUDE.md` for the full table
+and `README.md` for usage.
+
+**Traps worth knowing before adding to this layer:**
+
+- **Pragma expansion happens before execution**, for the *whole* submitted script, so a
+  generator's view of the catalog and data is pre-batch. Anything destination-dependent
+  must be idempotent or deferred into the generated SQL.
+- **A PRAGMA cannot be a subquery** — `FROM (PRAGMA x)` is a parser error. Result-returning
+  pragmas materialise a temp table and select from it.
+- **PRAGMA named parameters use `=`, not `:=`** (`transform_pragma.cpp:26-33`).
+- **No subqueries inside lambda bodies.** Hoist the set into a session variable and use
+  `list_contains(getvariable(...), x)`.
+- **The `JSON` type and `json_extract` are unavailable** (they live in the `json`
+  extension, which this one does not require). JSON is carried as `VARCHAR` and parsed in
+  C++ with the vendored nlohmann::json.
+- **Two ODR link traps.** Binding a *reference* to a `static constexpr` member emits a
+  comdat definition that collides with DuckDB's strong one: write
+  `LogicalType(LogicalTypeId::DOUBLE)` rather than `LogicalType::DOUBLE` in
+  `emplace_back`, and use the non-templated `Catalog::GetEntry(context,
+  CatalogType::TABLE_ENTRY, ...)` rather than `Catalog::GetEntry<TableCatalogEntry>`,
+  which ODR-uses `TableCatalogEntry::Name`.
+- **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
+- **`SQLString` is a formatting wrapper, not a quoting function**; use
+  `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
+
 ## Build & Tooling
 
 1. Run `make` once to prepare the DuckDB build environment. To make use of cache, try to use `GEN=ninja make` instead.

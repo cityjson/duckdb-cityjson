@@ -25,6 +25,53 @@ Key entry points:
 | `read_cityjsonseq(path)`     | `bind_function.cpp`, `scan_function.cpp` | Read CityJSONSeq (`.city.jsonl`) |
 | `cityjson_metadata(path)`    | `metadata_table_function.cpp`            | Metadata for CityJSON            |
 | `cityjsonseq_metadata(path)` | `metadata_table_function.cpp`            | Metadata for CityJSONSeq         |
+| `cityjson_wkb_extent(blob)`  | `wkb_extent.cpp`                         | 3D extent of a WKB blob, solids included |
+| `cityjson_appearance_ids(cell, kind)` | `cityparquet_appearance.cpp`    | Sidecar ids an appearance cell references |
+
+### CityParquet package mutation
+
+A CityParquet package is a **DuckDB schema** whose tables are named by the spec's file
+basenames, plus a `__cityparquet` bookkeeping table. These are **`PragmaFunction`s
+registered with a `pragma_query_t`**: the function *returns SQL text*, which DuckDB
+parses and runs in place of the pragma, inside the caller's transaction
+(`duckdb/src/planner/statement_preprocessor.cpp:107-122`). Atomicity is DuckDB's, not
+ours — the extension only generates text.
+
+| Function | File | Description |
+| -------- | ---- | ----------- |
+| `PRAGMA cityparquet_init(schema)` | `cityparquet_package.cpp` | Create/refresh `__cityparquet` |
+| `PRAGMA cityparquet_validate(schema)` | `cityparquet_validate.cpp` | Consistency checks → `cityparquet_validation` |
+| `PRAGMA cityparquet_orphans(schema)` | `cityparquet_validate.cpp` | Unreferenced sidecar rows → `cityparquet_orphan_rows` |
+| `PRAGMA cityparquet_vacuum(schema)` | `cityparquet_validate.cpp` | Delete unreferenced sidecar rows |
+| `PRAGMA cityparquet_reconcile(schema [, checks = [...]])` | `cityparquet_reconcile.cpp` | Re-derive `feature_id`, hierarchy, `bbox` |
+| `PRAGMA cityparquet_delete(schema, predicate [, cascade =] [, tables =])` | `cityparquet_delete.cpp` | Delete with cascade |
+
+Each mutating pragma has a scalar `*_sql()` twin returning the same text without
+running it.
+
+**Traps worth knowing before adding to this layer:**
+
+- **Pragma expansion happens before execution**, for the *whole* submitted script. A
+  generator's view of the catalog and data is pre-batch, so anything
+  destination-dependent must be idempotent (`ADD COLUMN IF NOT EXISTS`) or deferred into
+  the generated SQL.
+- **A PRAGMA cannot be a subquery.** `FROM (PRAGMA x)` is a parser error, so
+  result-returning pragmas materialise a temp table and select from it.
+- **PRAGMA named parameters use `=`, not `:=`** (`transform_pragma.cpp:26-33`).
+- **No subqueries inside lambda bodies.** `list_filter(l, x -> x IN (SELECT ...))` is
+  rejected; hoist the set into a session variable and use `list_contains(getvariable(...), x)`.
+- **The `JSON` type and `json_extract` are unavailable** — they live in the `json`
+  extension, which this one does not require. JSON is carried as `VARCHAR` and parsed in
+  C++ with the vendored nlohmann::json.
+- **Two ODR link traps.** Binding a *reference* to a `static constexpr` member emits a
+  comdat definition that collides with DuckDB's strong one: write
+  `LogicalType(LogicalTypeId::DOUBLE)` rather than `LogicalType::DOUBLE` in
+  `emplace_back`, and use the non-templated `Catalog::GetEntry(context,
+  CatalogType::TABLE_ENTRY, ...)` rather than `Catalog::GetEntry<TableCatalogEntry>`,
+  which ODR-uses `TableCatalogEntry::Name`.
+- **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
+- **`SQLString` is a formatting wrapper, not a quoting function**; use
+  `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
 
 ### Key Source Files
 
