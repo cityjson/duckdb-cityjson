@@ -529,6 +529,29 @@ Texture Texture::FromJson(const json &obj) {
 	return result;
 }
 
+GeometryTemplates GeometryTemplates::FromJson(const json &obj) {
+	GeometryTemplates result;
+	if (!obj.is_object()) {
+		return result;
+	}
+	auto templates = obj.find("templates");
+	if (templates != obj.end() && templates->is_array()) {
+		for (const auto &entry : *templates) {
+			result.templates.push_back(Geometry::FromJson(entry));
+		}
+	}
+	// Raw doubles: template vertices are not subject to the dataset transform.
+	auto vertices = obj.find("vertices-templates");
+	if (vertices != obj.end() && vertices->is_array()) {
+		for (const auto &entry : *vertices) {
+			if (entry.is_array() && entry.size() >= 3) {
+				result.vertices.push_back({entry[0].get<double>(), entry[1].get<double>(), entry[2].get<double>()});
+			}
+		}
+	}
+	return result;
+}
+
 Appearance Appearance::FromJson(const json &obj) {
 	Appearance result;
 	if (!obj.is_object()) {
@@ -667,6 +690,13 @@ CityJSON CityJSON::FromJson(const json &obj) {
 		auto appearance = Appearance::FromJson(obj["appearance"]);
 		if (!appearance.Empty()) {
 			result.appearance = std::move(appearance);
+		}
+	}
+
+	if (obj.contains("geometry-templates") && obj["geometry-templates"].is_object()) {
+		auto templates = GeometryTemplates::FromJson(obj["geometry-templates"]);
+		if (!templates.Empty()) {
+			result.geometry_templates = std::move(templates);
 		}
 	}
 

@@ -260,6 +260,25 @@ struct Texture {
  * asymmetry is why the CityParquet encoding inlines UV coordinates: a stored UV index
  * would be meaningless once features are merged into a single table.
  */
+/**
+ * The CityJSON `geometry-templates` object: reusable geometries plus the vertex pool
+ * they index.
+ *
+ * Template geometry is in **local** coordinates and is exempt from the dataset
+ * transform — an instance's own transformationMatrix and reference point place it into
+ * the world — so `vertices` here are raw doubles, not quantised integers.
+ */
+struct GeometryTemplates {
+	std::vector<Geometry> templates;
+	std::vector<std::array<double, 3>> vertices;
+
+	bool Empty() const {
+		return templates.empty();
+	}
+
+	static GeometryTemplates FromJson(const json &obj);
+};
+
 struct Appearance {
 	std::vector<Material> materials;
 	std::vector<Texture> textures;
@@ -321,6 +340,7 @@ struct CityJSON {
 	std::map<std::string, Extension> extensions;                // Active extensions
 	std::optional<std::vector<std::array<double, 3>>> vertices; // Shared vertex pool (optional)
 	std::optional<Appearance> appearance;                       // Material/texture definitions
+	std::optional<GeometryTemplates> geometry_templates;        // Reusable template geometries
 
 	CityJSON() : version("2.0") {
 	}

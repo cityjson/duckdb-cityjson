@@ -138,3 +138,53 @@ SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
 WHERE material_lod3_0 IS NOT NULL;
 ----
 1
+
+# --- cityjson_geometry_templates ---------------------------------------------
+
+# One row per template, id by ordinal position. Templates have no identifier of
+# their own in CityJSON (they are array entries), so `name` is null -- the spec's
+# name column exists for sources that do carry one.
+query IT
+SELECT id, name FROM cityjson_geometry_templates('test/data/geometry_templates.city.json') ORDER BY id;
+----
+0	NULL
+1	NULL
+
+# A template is a single geometry at a single LoD, so the table carries one
+# geometry column per distinct LoD and each row populates only its own.
+query II
+SELECT
+  COUNT(*) FILTER (WHERE geometry_lod1_0 IS NOT NULL),
+  COUNT(*) FILTER (WHERE geometry_lod2_1 IS NOT NULL)
+FROM cityjson_geometry_templates('test/data/geometry_templates.city.json');
+----
+1	1
+
+# Template geometry is WKB, like any other geometry column.
+query T
+SELECT typeof(geometry_lod1_0) FROM cityjson_geometry_templates('test/data/geometry_templates.city.json') LIMIT 1;
+----
+BLOB
+
+# Templates are in LOCAL coordinates and exempt from the dataset transform: the
+# vertices-templates entries are raw doubles, so the extent is the template's own
+# -1..1 by 0..4 box, not something scaled by the transform's 0.001.
+query T
+SELECT cityjson_wkb_extent(geometry_lod1_0)
+FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
+WHERE geometry_lod1_0 IS NOT NULL;
+----
+{'min_x': -1.0, 'min_y': -1.0, 'min_z': 0.0, 'max_x': 1.0, 'max_y': 1.0, 'max_z': 4.0}
+
+# A template's own appearance is carried, and references the same sidecar.
+query I
+SELECT COUNT(*) FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
+WHERE material_lod1_0 IS NOT NULL;
+----
+1
+
+# A file with no templates yields no rows rather than failing.
+query I
+SELECT COUNT(*) FROM cityjson_geometry_templates('test/data/minimal.city.json');
+----
+0

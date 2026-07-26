@@ -563,6 +563,7 @@ definition — or to nothing.
 -- The sidecar tables, shaped as materials.parquet / textures.parquet
 SELECT * FROM cityjson_materials('delft.city.jsonl');
 SELECT * FROM cityjson_textures('delft.city.jsonl');
+SELECT * FROM cityjson_geometry_templates('delft.city.json');
 
 -- Object rows whose appearance references those ids
 SELECT id, material_lod2_2, texture_lod2_2
@@ -579,6 +580,13 @@ header's material `0`. The sidecar is therefore the interned union across the wh
 matched by structural equality (CityJSON gives a material no identity of its own). Header
 entries are interned first, so their ids stay their ordinal positions, which is exactly
 what a plain CityJSON document yields.
+
+**Geometry templates are in local coordinates.** `cityjson_geometry_templates(path)`
+emits the template sidecar. A template's geometry is in its own local frame and is exempt
+from the dataset transform and the file CRS — an instance's `transformationMatrix` and
+reference point place it into the world — so the WKB holds raw doubles. Each row
+populates only its own LoD's columns, leaving the table sparse by construction; that is
+the cost of keeping one LoD-naming rule across the whole format.
 
 **Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; the sidecar mode
 emits `[texId, [u,v], [u,v], …]`. Both rewrites recurse to their leaves rather than

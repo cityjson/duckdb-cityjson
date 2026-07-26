@@ -56,7 +56,9 @@ and `README.md` for usage.
 CityJSON's feature-local appearance indices into the dataset-global sidecar ids and
 inlined UVs CityParquet requires. `cityjson_materials(path)` / `cityjson_textures(path)`
 emit the sidecar tables; `read_cityjson*(path, appearance := 'sidecar')` rewrites the
-object rows to match. `'local'` remains the default.
+object rows to match. `'local'` remains the default. `cityjson_geometry_templates(path)` emits the
+template sidecar; template geometry is in **local** coordinates and exempt from the
+dataset transform, so no transform is applied when encoding it.
 
 **Do not assume the header holds every definition.** CityJSONSeq spreads them: the header
 carries some and each feature carries the ones it uses under its *own* local indices, so

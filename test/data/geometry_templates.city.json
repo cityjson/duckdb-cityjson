@@ -1,0 +1,77 @@
+{
+  "type": "CityJSON",
+  "version": "2.0",
+  "transform": {
+    "scale": [0.001, 0.001, 0.001],
+    "translate": [0.0, 0.0, 0.0]
+  },
+  "metadata": {
+    "referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/7415"
+  },
+  "CityObjects": {
+    "tree-1": {
+      "type": "SolitaryVegetationObject",
+      "attributes": { "species": "Quercus" },
+      "geometry": [
+        {
+          "type": "GeometryInstance",
+          "template": 0,
+          "boundaries": [0],
+          "transformationMatrix": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        }
+      ]
+    },
+    "tree-2": {
+      "type": "SolitaryVegetationObject",
+      "attributes": { "species": "Tilia" },
+      "geometry": [
+        {
+          "type": "GeometryInstance",
+          "template": 1,
+          "boundaries": [1],
+          "transformationMatrix": [2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        }
+      ]
+    }
+  },
+  "vertices": [
+    [1000, 2000, 0],
+    [5000, 6000, 0]
+  ],
+  "appearance": {
+    "materials": [
+      {
+        "name": "bark",
+        "diffuseColor": [0.4, 0.25, 0.1],
+        "specularColor": [0.0, 0.0, 0.0],
+        "emissiveColor": [0.0, 0.0, 0.0],
+        "transparency": 0.0
+      }
+    ]
+  },
+  "geometry-templates": {
+    "templates": [
+      {
+        "type": "MultiSurface",
+        "lod": "1",
+        "boundaries": [[[0, 1, 2, 3]], [[4, 5, 6, 7]]],
+        "material": { "": { "values": [0, 0] } }
+      },
+      {
+        "type": "MultiSurface",
+        "lod": "2.1",
+        "boundaries": [[[0, 1, 2, 3]]]
+      }
+    ],
+    "vertices-templates": [
+      [-1.0, -1.0, 0.0],
+      [1.0, -1.0, 0.0],
+      [1.0, 1.0, 0.0],
+      [-1.0, 1.0, 0.0],
+      [-1.0, -1.0, 4.0],
+      [1.0, -1.0, 4.0],
+      [1.0, 1.0, 4.0],
+      [-1.0, 1.0, 4.0]
+    ]
+  }
+}

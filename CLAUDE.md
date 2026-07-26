@@ -29,6 +29,7 @@ Key entry points:
 | `cityjson_appearance_ids(cell, kind)` | `cityparquet_appearance.cpp`    | Sidecar ids an appearance cell references |
 | `cityjson_materials(path)`   | `appearance_table_function.cpp`          | materials.parquet rows, ids interned across the file |
 | `cityjson_textures(path)`    | `appearance_table_function.cpp`          | textures.parquet rows |
+| `cityjson_geometry_templates(path)` | `appearance_table_function.cpp`   | geometry_templates.parquet rows, local coordinates |
 
 ### CityParquet package mutation
 
