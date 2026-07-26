@@ -27,26 +27,6 @@ Functions: `cityparquet_init`, `cityparquet_validate`, `cityparquet_orphans`,
 `cityjson_wkb_extent` and `cityjson_appearance_ids`. See `CLAUDE.md` for the full table
 and `README.md` for usage.
 
-### Appearance normalisation
-
-`src/cityjson/appearance_normalise.cpp` and `appearance_table_function.cpp` turn
-CityJSON's feature-local appearance indices into the dataset-global sidecar ids and
-inlined UVs CityParquet requires. `cityjson_materials(path)` / `cityjson_textures(path)`
-emit the sidecar tables; `read_cityjson*(path, appearance := 'sidecar')` rewrites the
-object rows to match. `'local'` remains the default.
-
-**Do not assume the header holds every definition.** CityJSONSeq spreads them: the header
-carries some and each feature carries the ones it uses under its *own* local indices, so
-a feature's material `0` is not in general the header's material `0`. `AppearanceIndex`
-interns across the whole file by structural equality, header entries first so their ids
-stay their ordinal positions. Reading the header alone silently resolves references to
-the wrong definitions.
-
-**Do not assume a nesting depth.** Material `values` nest per shell and surface depending
-on geometry type, and a texture ring sits one level deeper for a `Solid` than for a
-`MultiSurface`. Recurse to the leaves; recognise a ring as the innermost array (elements
-are scalars) rather than indexing at a fixed level.
-
 **Traps worth knowing before adding to this layer:**
 
 - **Pragma expansion happens before execution**, for the *whole* submitted script, so a
@@ -69,6 +49,26 @@ are scalars) rather than indexing at a fixed level.
 - **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
 - **`SQLString` is a formatting wrapper, not a quoting function**; use
   `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
+
+### Appearance normalisation
+
+`src/cityjson/appearance_normalise.cpp` and `appearance_table_function.cpp` turn
+CityJSON's feature-local appearance indices into the dataset-global sidecar ids and
+inlined UVs CityParquet requires. `cityjson_materials(path)` / `cityjson_textures(path)`
+emit the sidecar tables; `read_cityjson*(path, appearance := 'sidecar')` rewrites the
+object rows to match. `'local'` remains the default.
+
+**Do not assume the header holds every definition.** CityJSONSeq spreads them: the header
+carries some and each feature carries the ones it uses under its *own* local indices, so
+a feature's material `0` is not in general the header's material `0`. `AppearanceIndex`
+interns across the whole file by structural equality, header entries first so their ids
+stay their ordinal positions. Reading the header alone silently resolves references to
+the wrong definitions.
+
+**Do not assume a nesting depth.** Material `values` nest per shell and surface depending
+on geometry type, and a texture ring sits one level deeper for a `Solid` than for a
+`MultiSurface`. Recurse to the leaves; recognise a ring as the innermost array (elements
+are scalars) rather than indexing at a fixed level.
 
 ## Build & Tooling
 
