@@ -37,6 +37,16 @@ enum class ColumnType {
 	GeometryPropertiesStruct, // STRUCT("type" VARCHAR, surfaces JSON,
 	                          //        face_semantics INTEGER[], shells INTEGER[][])
 	AppearanceJson,           // JSON - per-LoD material_lod*/texture_lod* appearance (§11)
+
+	// Arrow-native geometry encoding (experimental, branch arrow-native-type -- see
+	// docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md in the parent
+	// workspace repo). A nested LIST of vertex-pool indices replaces the WKB BLOB,
+	// paired with a sibling column holding the row's compacted vertex pool. The shape
+	// MUST match cityparquet-rs's arrow_native_geometry_data_type() /
+	// arrow_native_vertices_data_type() exactly -- the point of the experiment is that
+	// either producer's file is readable by the other.
+	GeometryArrowNative,         // solid -> shell -> face -> ring -> INTEGER vertex-pool index
+	GeometryVerticesArrowNative, // LIST(STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))
 };
 
 /**

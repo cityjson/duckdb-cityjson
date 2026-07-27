@@ -1,0 +1,58 @@
+# name: test/sql/arrow_native_geometry.test
+# description: arrow-native geometry encoding — column types and schema shape
+# group: [sql]
+
+require cityjson
+
+# Experimental second geometry encoding (branch arrow-native-type; design:
+# docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md in the parent
+# workspace repo). `geometry_lod*` becomes a 5-level nested LIST of vertex-pool
+# indices -- solid -> shell -> face -> ring -> index -- paired with a
+# `geometry_vertices_lod*` sibling holding this row's compacted vertex pool.
+#
+# The physical shape MUST match cityparquet-rs's arrow_native_geometry_data_type()
+# and arrow_native_vertices_data_type() field-for-field: a file either producer
+# writes has to be readable by the other.
+
+statement ok
+CREATE TABLE t AS SELECT * FROM read_cityjson('test/data/minimal.city.json', geometry_encoding := 'arrow-native');
+
+query T
+SELECT typeof(geometry_lod2_2) FROM t;
+----
+INTEGER[][][][][]
+
+query T
+SELECT typeof(geometry_vertices_lod2_2) FROM t;
+----
+STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]
+
+# geometry_properties is unchanged by the encoding -- it is the same spec STRUCT
+# either way, and stays the sole basis on which a consumer decides whether a row
+# is a Solid or a MultiSurface (design doc "Critical invariant": dispatch on
+# .type, never on the physical nesting, which is uniform across both families).
+query T
+SELECT typeof(geometry_properties_lod2_2) FROM t;
+----
+STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+
+statement ok
+DROP TABLE t;
+
+# The default encoding is WKB, and is completely unaffected: a BLOB geometry
+# column and no vertices sibling at all.
+statement ok
+CREATE TABLE d AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+query T
+SELECT typeof(geometry_lod2_2) FROM d;
+----
+BLOB
+
+query I
+SELECT count(*) FROM (DESCRIBE d) WHERE column_name LIKE 'geometry_vertices%';
+----
+0
+
+statement ok
+DROP TABLE d;

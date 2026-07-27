@@ -84,6 +84,33 @@ three more nesting levels and to a `Struct` leaf.
 
 ---
 
+### Task 0 (was Task 8): `COPY ... TO (FORMAT PARQUET)` deep-nesting spike — **RUN, PASSED**
+
+Run first, as this document's Task 8 itself recommends, using a synthetic
+hand-built value in pure SQL — no extension code needed, so it gated the work
+before any was invested.
+
+- **Round-trip: PASS.** A hand-built `INTEGER[][][][][]` plus
+  `STRUCT(x,y,z)[]` written with `COPY ... TO (FORMAT PARQUET)` and read back
+  compares equal (`geom_equal`/`verts_equal` both true) with `typeof()`
+  unchanged on both columns. DuckDB does not collapse or mangle at this depth.
+- **Physical field names: PASS.** `parquet_schema()` shows the standard
+  three-level LIST annotation (`list` REPEATED → `element`) at all five levels,
+  and `x`/`y`/`z` survive by name under the vertex-pool list.
+- **Cross-producer naming difference, recorded, non-blocking.**
+  `cityparquet-rs` names every list child `"item"` and marks inner elements
+  non-nullable; DuckDB writes `"element"`/OPTIONAL. A Parquet file written with
+  arrow's naming *and* REQUIRED inner elements reads back in DuckDB as exactly
+  `INTEGER[][][][][]` / `STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]` with values
+  intact — Parquet identifies a LIST's element positionally (the repeated
+  group's single child), not by name, so the difference is cosmetic in the
+  physical schema. **Still to do:** repeat against a file written by
+  `cityparquet-rs` itself rather than a stand-in, once that branch pushes a
+  fixture — the check above used a hand-built file, since the local
+  `cityparquet` binary predates `--geometry-encoding`.
+
+---
+
 ### Task 1: Confirm test placement convention, then `ColumnType` additions
 
 **Files:**
@@ -94,7 +121,7 @@ three more nesting levels and to a `Struct` leaf.
 **Interfaces:**
 - Produces: `ColumnType::GeometryArrowNative` (→ 5-level nested `LIST<...<LIST<INTEGER>>...>`), `ColumnType::GeometryVerticesArrowNative` (→ `LIST<STRUCT<x DOUBLE, y DOUBLE, z DOUBLE>>`).
 
-- [ ] **Step 1: Determine this repo's unit-test convention before writing anything**
+- [x] **Step 1: Determine this repo's unit-test convention before writing anything**
 
 Run: `find test -maxdepth 1 -type d` and `ls test/cpp 2>&1`. This repo's directory
 listing (gathered while writing this plan) showed no `test/cpp/` — only `test/sql/*.test`
@@ -107,7 +134,7 @@ does exist (double-check — a build artifact or CI config might reference one t
 research missed), use it for Task 2's pure-logic tests and reserve `test/sql/` for
 integration.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 If `test/cpp/` exists, add a small compile-time/type test (mirroring whatever pattern
 `test_metadata.cpp` uses for the `catch.hpp` framework observed in this plan's research).
@@ -138,11 +165,11 @@ STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]
 `test/fixtures/` directory — grep an existing passing `.test` file for the naming
 convention rather than guessing `PLACEHOLDER.city.json`.)
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Expected: FAIL — `geometry_encoding` isn't a recognised named parameter yet (binder error), or `ColumnType::GeometryArrowNative` doesn't exist (compile error) if using a C++ test.
 
-- [ ] **Step 4: Add the two `ColumnType` values**
+- [x] **Step 4: Add the two `ColumnType` values**
 
 In `src/include/cityjson/types.hpp`, extend the `enum class ColumnType` (confirmed
 current members end with `AppearanceJson`):
@@ -160,7 +187,7 @@ current members end with `AppearanceJson`):
 };
 ```
 
-- [ ] **Step 5: Add the `DataType` construction to `column_types.cpp`**
+- [x] **Step 5: Add the `DataType` construction to `column_types.cpp`**
 
 In `src/cityjson/column_types.cpp`, add cases to all three `ColumnTypeUtils` methods (confirmed real cases in this plan's research: `ToString` around line ~41, `ToLogicalTypeId` around ~77, `ToDuckDBType` around ~139):
 
@@ -207,14 +234,14 @@ case ColumnType::GeometryVerticesArrowNative: {
 uses elsewhere for STRUCT construction — grep `LogicalType::STRUCT(` in this same file
 for the established pattern rather than trusting this snippet verbatim; adjust to match.)
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Expected: still FAILS at the `geometry_encoding := 'arrow-native'` binder step — Task 1
 only defines the types, nothing wires the named parameter or writer yet (Tasks 2-5 do
 that). Note the exact failure (should now be "unrecognized named parameter
 geometry_encoding", not a `ColumnType` compile error) and move to Task 2.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/include/cityjson/types.hpp src/cityjson/column_types.cpp test/
