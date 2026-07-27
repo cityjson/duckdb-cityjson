@@ -10,6 +10,8 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 
+#include <set>
+
 namespace duckdb {
 namespace cityjson {
 
@@ -52,7 +54,7 @@ static std::vector<CityJSONFeature> FlattenChunks(const CityJSONFeatureChunk &ch
 	return all_features;
 }
 
-static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines) {
+void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines) {
 	if (bind_data.target_lod.has_value()) {
 		std::vector<CityJSONFeature> features;
 		try {
@@ -85,6 +87,48 @@ static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader, siz
 	}
 }
 
+CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options) {
+	// A probe bind_data, populated in the same order BindCityJSONReadRaw populates the
+	// real one, so InferCityJSONColumns sees the state it expects. `streaming` stays
+	// false deliberately: the streaming path infers from a sample, and a sample cannot
+	// answer "which object types are in this file".
+	CityJSONBindData probe;
+	probe.streaming = false;
+	probe.target_lod = options.target_lod;
+	probe.use_wkb_encoding = options.use_wkb_encoding;
+
+	try {
+		probe.metadata = reader.ReadMetadata();
+		probe.chunks = reader.ReadAllChunks();
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to read source file: " + std::string(e.what()));
+	}
+	InferCityJSONColumns(probe, reader, options.sample_lines);
+
+	CityJSONSourceFacts facts;
+	facts.columns = probe.columns;
+	if (probe.metadata.metadata.has_value()) {
+		facts.reference_system = probe.metadata.metadata.value().reference_system;
+	}
+
+	std::set<std::string> types;
+	for (const auto &feature : probe.chunks.records) {
+		for (const auto &entry : feature.city_objects) {
+			types.insert(entry.second.type);
+		}
+	}
+	facts.object_types.assign(types.begin(), types.end());
+
+	// Interned, not counted from the header: a CityJSONSeq feature may carry definitions
+	// the header never declared, and those need a sidecar just as much.
+	const auto index = AppearanceIndex::Build(probe.metadata, probe.chunks.records);
+	facts.has_materials = !index.materials.empty();
+	facts.has_textures = !index.textures.empty();
+	facts.has_geometry_templates =
+	    probe.metadata.geometry_templates.has_value() && !probe.metadata.geometry_templates.value().Empty();
+	return facts;
+}
+
 CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
                                      vector<LogicalType> &return_types, vector<string> &names,
                                      const std::string &function_name, CityJSONReader &reader, bool streaming) {
@@ -115,7 +159,7 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 		result.scan_plan = result.chunks.BuildScanPlan();
 	}
 
-	InferSchema(result, reader, options.sample_lines);
+	InferCityJSONColumns(result, reader, options.sample_lines);
 
 	if (options.sidecar_appearance) {
 		// Reading the whole file, not a sample: a definition used only by a feature in

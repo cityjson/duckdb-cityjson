@@ -13,6 +13,7 @@
 #include "duckdb/parser/keyword_helper.hpp"
 
 #include <algorithm>
+#include <map>
 #include <set>
 
 namespace duckdb {
@@ -31,6 +32,56 @@ const std::vector<std::string> &ModuleTableNames() {
 const std::vector<std::string> &SidecarTableNames() {
 	static const std::vector<std::string> names = {"materials", "textures", "geometry_templates"};
 	return names;
+}
+
+std::string ModuleForObjectType(const std::string &object_type) {
+	// The specification's by-module table. Keyed on the CityGML 3.0 class name, but the
+	// four CityJSON spellings that differ are accepted too, because that is what the
+	// reader emits -- it does not currently rewrite the type on import.
+	static const std::map<std::string, std::string> modules = {
+	    {"building", "building"},
+	    {"buildingpart", "building"},
+	    {"buildinginstallation", "building"},
+	    {"buildingconstructiveelement", "building"},
+	    {"buildingfurniture", "building"},
+	    {"storey", "building"},
+	    {"buildingstorey", "building"}, // CityJSON spelling of Storey
+	    {"buildingroom", "building"},
+	    {"buildingunit", "building"},
+	    {"bridge", "bridge"},
+	    {"bridgepart", "bridge"},
+	    {"bridgeinstallation", "bridge"},
+	    {"bridgeconstructiveelement", "bridge"},
+	    {"bridgeroom", "bridge"},
+	    {"bridgefurniture", "bridge"},
+	    {"tunnel", "tunnel"},
+	    {"tunnelpart", "tunnel"},
+	    {"tunnelinstallation", "tunnel"},
+	    {"tunnelconstructiveelement", "tunnel"},
+	    {"hollowspace", "tunnel"},
+	    {"tunnelhollowspace", "tunnel"}, // CityJSON spelling of HollowSpace
+	    {"tunnelfurniture", "tunnel"},
+	    {"otherconstruction", "construction"},
+	    {"road", "transportation"},
+	    {"railway", "transportation"},
+	    {"waterway", "transportation"},
+	    {"square", "transportation"},
+	    {"transportsquare", "transportation"}, // CityJSON spelling of Square
+	    {"plantcover", "vegetation"},
+	    {"solitaryvegetationobject", "vegetation"},
+	    {"tinrelief", "relief"},
+	    {"waterbody", "water_body"},
+	    {"landuse", "land_use"},
+	    {"cityfurniture", "city_furniture"},
+	    {"genericoccupiedspace", "generics"},
+	    {"genericcityobject", "generics"}, // CityJSON spelling of GenericOccupiedSpace
+	    {"cityobjectgroup", "generics"},
+	};
+	auto found = modules.find(StringUtil::Lower(object_type));
+	// Routing is total by specification: a class that resolves to no module is a hard
+	// error, never a silent drop. Extension types are not resolvable here -- doing so
+	// needs the document's `extensions` declarations, which this mapping does not see.
+	return found == modules.end() ? std::string() : found->second;
 }
 
 std::string QualifiedName(const std::string &schema, const std::string &table) {

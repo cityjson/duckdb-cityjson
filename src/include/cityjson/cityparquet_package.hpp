@@ -32,6 +32,15 @@ const std::vector<std::string> &ModuleTableNames();
 //! materials, textures, geometry_templates.
 const std::vector<std::string> &SidecarTableNames();
 
+//! The module table one CityObject type belongs in, per the specification's by-module
+//! table — `Building` and `BuildingPart` alike give "building", `Road` and `Square` alike
+//! give "transportation". Both the CityGML 3.0 class names and the four CityJSON
+//! spellings that differ are accepted, since the reader emits the latter.
+//!
+//! Returns the empty string for a type it cannot place. Routing is total by
+//! specification, so callers must treat that as an error rather than dropping the rows.
+std::string ModuleForObjectType(const std::string &object_type);
+
 //! Object tables actually present in `schema`, sorted. Throws BinderException when the
 //! schema contains none — that is not a CityParquet package.
 std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema);

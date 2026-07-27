@@ -64,6 +64,46 @@ struct CityJSONReadOptions {
 CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input, const std::string &function_name);
 
 /**
+ * The reader's schema inference, as one function.
+ *
+ * `insert_cityjson` has to know the columns a read of the same file will produce
+ * *before* the read runs, in order to generate the ALTERs and the appearance rewrite.
+ * Re-deriving that list from the same ingredients does not work: it produced a column
+ * set that disagreed with the reader's, and the generated SQL then named a column the
+ * staged relation did not have. So there is exactly one implementation, and both the
+ * bind and the generator call it.
+ */
+void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines);
+
+/**
+ * Everything `insert_cityjson` must know about a source file at plan time.
+ *
+ * `object_types` is the **complete** distinct set, not a sample: routing sends each type
+ * to its module table, so a type appearing only in the file's tail would otherwise land
+ * in no table at all and its rows would be dropped without a word.
+ */
+struct CityJSONSourceFacts {
+	//! Exactly what a read of this file with these options emits.
+	std::vector<Column> columns;
+	//! Every distinct CityObject type in the file, sorted.
+	std::vector<std::string> object_types;
+	//! metadata.referenceSystem, when the file declares one.
+	std::optional<std::string> reference_system;
+	//! Whether the interned sidecars would have any rows at all. A package's `materials`
+	//! table must not be created for a file that has none.
+	bool has_materials = false;
+	bool has_textures = false;
+	bool has_geometry_templates = false;
+};
+
+/**
+ * Read `reader` far enough to answer everything in CityJSONSourceFacts. Always reads the
+ * whole file, whatever the reader's streaming mode: a sample cannot give a complete
+ * object-type set.
+ */
+CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options);
+
+/**
  * Shared bind implementation for CityJSON readers
  *
  * @param context DuckDB client context

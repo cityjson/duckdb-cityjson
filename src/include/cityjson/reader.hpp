@@ -186,6 +186,10 @@ private:
 
 	// Internal helper: open or reopen the file handle positioned at the start
 	void OpenHandle() const;
+
+	// Reposition at the first feature line, so a whole-file or sampling read can run
+	// again on a reader that has already been consumed.
+	void Rewind() const;
 };
 
 /**

@@ -126,9 +126,15 @@ WHERE texture_lod3_0 IS NOT NULL AND texture_lod3_0 NOT LIKE '%,[%.%]%';
 
 # The inlined coordinates are the ones the source's UV pool actually held: the
 # first ring's first UV index is 0, and vertices-texture[0] is [2.3283218, ...].
+#
+# The leading 2 is the texture id, and it is 2 rather than 0 because this feature
+# declares its own two textures, which the header does not: interning puts them after
+# the header's pair. It read 0 while the interning pass was being handed an exhausted
+# stream (see cityjson_seq_multipass.test) -- that pointed the ring at the header's
+# Vegetation_Juniper2.jpg instead of the bridge's own Bruecke-Schotter.jpg.
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
-WHERE texture_lod3_0 LIKE '%[0,[2.3283218,0.8466667]%';
+WHERE texture_lod3_0 LIKE '%[2,[2.3283218,0.8466667]%';
 ----
 1
 
