@@ -336,3 +336,60 @@ query I
 SELECT COUNT(*) > 0 FROM cityparquet_validation WHERE severity = 'error';
 ----
 true
+
+# Two inserts batched in one submission both create the same previously absent
+# module table, with different LoDs. Each generator sees the pre-batch catalog,
+# so the second one's geometry column list is its own file's, not the union the
+# ALTERs really produce. Computing no extent for the first insert's rows means
+# "I could not see their geometry", not "they have none" -- clearing on that
+# would throw away the bbox the reader had already put there.
+#
+# Both fixtures hold a CityFurniture, at LoD 2.0 and LoD 1.0, so both route to
+# `city_furniture` and neither generator sees the other's geometry column.
+statement ok
+CREATE SCHEMA batched;
+
+statement ok
+CREATE TABLE batched.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json') WHERE false;
+
+statement ok
+PRAGMA cityparquet_init('batched');
+
+statement ok
+PRAGMA insert_cityjson('batched', 'test/data/insert_appearance.city.json');
+PRAGMA insert_cityjson('batched', 'test/data/insert_other_lod.city.json');
+
+# Neither insert's rows lost the bbox the reader gave them.
+query I
+SELECT COUNT(*) FROM batched.city_furniture WHERE bbox IS NULL;
+----
+0
+
+query I
+SELECT COUNT(*) FROM batched.city_furniture;
+----
+2
+
+# The union schema really was produced -- both LoD columns are there.
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM batched.city_furniture)
+WHERE column_name IN ('geometry_lod2_0', 'geometry_lod1_0');
+----
+2
+
+# One bookkeeping row per table, not one per pragma that created it. The
+# NOT EXISTS guard has to actually gate the insert, which it did not while the
+# statement was an aggregate query -- an aggregate with no GROUP BY yields a row
+# however the WHERE evaluates.
+query I
+SELECT COUNT(*) FROM batched.__cityparquet WHERE table_name = 'city_furniture';
+----
+1
+
+statement ok
+PRAGMA cityparquet_validate('batched');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0

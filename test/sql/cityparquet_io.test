@@ -206,6 +206,15 @@ SELECT compact LIKE '%"geometry":null%' FROM item;
 ----
 true
 
+# ... and no top-level bbox, which STAC defines in WGS84. This package's
+# coordinates are EPSG:7415, and writing them into a field documented as WGS84
+# would place the package off the coast of Africa for anyone filtering
+# spatially. proj:bbox above is where a projected extent belongs.
+query I
+SELECT compact LIKE '%"bbox":%' AND compact NOT LIKE '%"proj:bbox":%' FROM item;
+----
+false
+
 # Every written file appears as an asset with its size and row count.
 query I
 SELECT regexp_matches(compact, '"materials\.parquet":\{[^}]*"table:row_count":4') FROM item;
@@ -222,3 +231,30 @@ query I
 SELECT compact LIKE '%tunnel.parquet%' FROM item;
 ----
 false
+
+# A package whose objects carry only GeometryInstance geometry has no populated
+# geometry_lod* column in any object table -- its LoDs live in the templates
+# sidecar. city3d:lods is the union across every file, so the sidecar has to
+# contribute or a valid package reports having no LoDs at all.
+statement ok
+CREATE SCHEMA tpl_only;
+
+statement ok
+CREATE TABLE tpl_only.vegetation AS
+  SELECT * FROM read_cityjson('test/data/geometry_templates.city.json', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE tpl_only.geometry_templates AS
+  SELECT * FROM cityjson_geometry_templates('test/data/geometry_templates.city.json');
+
+statement ok
+PRAGMA cityparquet_init('tpl_only');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('tpl_only', '__TEST_DIR__/tpl', crs => 'EPSG:7415');
+
+query I
+SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"city3d:lods":["1.0","2.1"]%'
+FROM read_text('__TEST_DIR__/tpl/metadata.json');
+----
+true

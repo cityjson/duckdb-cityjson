@@ -188,10 +188,19 @@ std::string BboxPhase(ClientContext &context, const std::string &schema,
 		if (!has_bbox) {
 			continue;
 		}
-		// An object with neither geometry of its own nor any descendant carrying
-		// geometry gets NULL, not a degenerate zero box.
-		sql += "UPDATE " + QualifiedName(schema, table) +
-		       " t SET bbox = CASE WHEN b.min_x IS NULL THEN NULL ELSE "
+		// An object with neither geometry of its own nor any descendant carrying geometry
+		// gets NULL, not a degenerate zero box -- but only for a table whose shape this
+		// generator actually knows.
+		//
+		// For a pending table it does not. Two insert pragmas batched in one submission
+		// each see the pre-batch catalog, so the second one's geometry column list is its
+		// own file's, not the union the ALTERs will really produce. Computing NULL there
+		// means "I could not see this row's geometry", not "this row has none", and
+		// clearing on it would throw away the correct bbox the reader had already put
+		// there. So a pending table keeps what it has when nothing was computed.
+		const char *absent = pending_entry == pending.end() ? "NULL" : "t.bbox";
+		sql += "UPDATE " + QualifiedName(schema, table) + " t SET bbox = CASE WHEN b.min_x IS NULL THEN " +
+		       std::string(absent) + " ELSE "
 		       "{'min_x': b.min_x, 'min_y': b.min_y, 'min_z': b.min_z, "
 		       "'max_x': b.max_x, 'max_y': b.max_y, 'max_z': b.max_z} END "
 		       "FROM __cp_bbox b WHERE b.id = t.id;\n";

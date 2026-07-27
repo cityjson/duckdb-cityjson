@@ -171,10 +171,15 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			// without one cannot be written with valid footer metadata.
 			sql += "CREATE TABLE IF NOT EXISTS " + QualifiedName(destination, table) + " AS SELECT * FROM " +
 			       QualifiedName(source, table) + " WHERE false;\n";
+			// No FROM on the outer SELECT, deliberately. With `ANY_VALUE(city) FROM
+			// __cityparquet` up here the statement is an aggregate query, which yields
+			// exactly one row whatever the WHERE says -- so the NOT EXISTS guard never
+			// fired and two pragmas batched in one submission each added a row for the
+			// same table. The aggregate belongs in a scalar subquery.
 			sql += "INSERT INTO " + QualifiedName(destination, "__cityparquet") +
 			       " (table_name, file_name, role, city) SELECT " + Literal(table) + ", " +
-			       Literal(table + ".parquet") + ", 'object', ANY_VALUE(city) FROM " +
-			       QualifiedName(destination, "__cityparquet") + " WHERE NOT EXISTS (SELECT 1 FROM " +
+			       Literal(table + ".parquet") + ", 'object', (SELECT ANY_VALUE(city) FROM " +
+			       QualifiedName(destination, "__cityparquet") + ") WHERE NOT EXISTS (SELECT 1 FROM " +
 			       QualifiedName(destination, "__cityparquet") + " WHERE table_name = " + Literal(table) + ");\n";
 			auto created = TableColumns(context, source, table);
 			// It does not exist for the reconcile at the end of this script either -- a

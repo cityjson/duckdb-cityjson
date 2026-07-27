@@ -797,3 +797,18 @@ SQL tests live in `test/sql/`.
 - [CityJSONSeq specification](https://www.cityjson.org/cityjsonseq/)
 - [DuckDB documentation](https://duckdb.org/docs/)
 - [DuckDB extension development](https://duckdb.org/community_extensions/development)
+
+#### Batching several mutations in one submission
+
+DuckDB expands every pragma in a submitted script *before* running any of it, so each
+generator sees the catalog and the data as they were **before the batch**. The generated
+statements are written to be idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT
+EXISTS`, a guarded bookkeeping insert), and a reconcile will not clear a bbox it merely
+could not see. But two things a generator cannot do for you:
+
+- **Preconditions only see the pre-batch state.** Two inserts in one submission whose
+  files share an object id will not catch each other; only the next `cityparquet_validate`
+  will. Submit them separately if that matters.
+- **Cross-file derived state settles on the last reconcile.** It covers the tables the
+  last generator knew about, which is every table that existed before the batch plus the
+  ones that generator creates itself.

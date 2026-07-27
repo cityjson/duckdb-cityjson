@@ -185,6 +185,29 @@ void CollectInventory(Connection &connection, const std::string &schema, const s
 	}
 }
 
+//! The geometry_templates sidecar's contribution to the package inventory: its LoDs and
+//! whether any template carries semantic surfaces. Templates are stored in local,
+//! unplaced coordinates, so they contribute no extent.
+void CollectTemplateInventory(Connection &connection, ClientContext &context, const std::string &schema,
+                              const std::string &table, PackageInventory &inventory) {
+	for (const auto &column : GeometryLodColumns(context, schema, table)) {
+		const auto suffix = column.substr(std::string("geometry_").size());
+		auto lod = LODTableUtils::ParseLODFromSuffix(suffix);
+		if (!lod.empty()) {
+			inventory.lods.insert(lod);
+		}
+		if (inventory.semantic_surfaces) {
+			continue;
+		}
+		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(schema, table) + " WHERE " +
+		                                   KeywordHelper::WriteOptionallyQuoted("geometry_properties_" + suffix) +
+		                                   ".surfaces IS NOT NULL");
+		if (present->GetValue(0, 0).GetValue<int64_t>() > 0) {
+			inventory.semantic_surfaces = true;
+		}
+	}
+}
+
 //! Per geometry column: the WKB types actually present and the column's extent. Both are
 //! recomputed from the data every time, never carried: GeoParquet legality flips in both
 //! directions under mutation, so a stale `geo` can declare a column that now holds a
@@ -415,6 +438,12 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			inventory.materials = rows;
 		} else if (table == "textures") {
 			inventory.textures = rows;
+		} else if (table == "geometry_templates") {
+			// A package whose objects carry only GeometryInstance geometry has no
+			// populated geometry_lod* column in any object table -- its LoDs live here.
+			// city3d:lods is the union across every file in the package, so leaving the
+			// sidecar out would report an empty LoD set for a perfectly valid package.
+			CollectTemplateInventory(connection, context, bind_data.schema, table, inventory);
 		}
 
 		std::string kv;
@@ -482,16 +511,15 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		item["id"] = bind_data.schema;
 		item["links"] = json::array();
 
-		// The Item's own footprint is the package's 2D extent, which the Projection
-		// extension then restates in the geometry CRS. STAC requires `geometry` to be in
-		// EPSG:4326, and the package's coordinates are not, so `geometry` stays null and
-		// `proj:bbox` carries the real thing -- which is exactly what the Projection
-		// extension exists for.
+		// STAC defines the Item's own `geometry` and `bbox` in WGS84, and a CityParquet
+		// package's coordinates are in its own projected CRS. Reprojecting needs a proj
+		// library this extension does not carry, and putting projected numbers in a field
+		// documented as WGS84 would be worse than omitting them -- a consumer filtering
+		// spatially would silently place the package somewhere off the coast of Africa.
+		// So `geometry` is null, `bbox` is omitted (STAC requires it only alongside a
+		// non-null geometry), and `proj:bbox` below carries the real extent, which is
+		// exactly what the Projection extension exists for.
 		item["geometry"] = nullptr;
-		if (inventory.has_extent) {
-			item["bbox"] = json::array({inventory.min_x, inventory.min_y, inventory.min_z, inventory.max_x,
-			                            inventory.max_y, inventory.max_z});
-		}
 
 		json properties = json::object();
 		properties["city3d:version"] = CITYPARQUET_VERSION;

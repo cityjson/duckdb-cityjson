@@ -334,10 +334,15 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			// table without one cannot later be written with valid footer metadata.
 			sql += "CREATE TABLE IF NOT EXISTS " + QualifiedName(schema, table) + " AS SELECT * FROM " +
 			       std::string(kStage) + " WHERE false;\n";
+			// No FROM on the outer SELECT, deliberately. With `ANY_VALUE(city) FROM
+			// __cityparquet` up here the statement is an aggregate query, which yields
+			// exactly one row whatever the WHERE says -- so the NOT EXISTS guard never
+			// fired and two pragmas batched in one submission each added a row for the
+			// same table. The aggregate belongs in a scalar subquery.
 			sql += "INSERT INTO " + QualifiedName(schema, "__cityparquet") +
 			       " (table_name, file_name, role, city) SELECT " + Literal(table) + ", " +
-			       Literal(table + ".parquet") + ", 'object', ANY_VALUE(city) FROM " +
-			       QualifiedName(schema, "__cityparquet") + " WHERE NOT EXISTS (SELECT 1 FROM " +
+			       Literal(table + ".parquet") + ", 'object', (SELECT ANY_VALUE(city) FROM " +
+			       QualifiedName(schema, "__cityparquet") + ") WHERE NOT EXISTS (SELECT 1 FROM " +
 			       QualifiedName(schema, "__cityparquet") + " WHERE table_name = " + Literal(table) + ");\n";
 			// The CREATE above is IF NOT EXISTS, so when two inserts are batched in one
 			// submission -- both seeing the pre-batch catalog, both taking this branch --
