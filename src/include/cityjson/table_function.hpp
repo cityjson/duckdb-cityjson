@@ -17,6 +17,14 @@ class ExtensionLoader;
 
 namespace cityjson {
 
+//! How the geometry columns are physically encoded. `Wkb` is the default and the
+//! only encoding the CityParquet specification currently blesses; `ArrowNative` is
+//! the experimental alternative under evaluation on the arrow-native-type branch
+//! (docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md in the parent
+//! workspace repo), where geometry_lod* becomes nested LISTs of vertex-pool indices
+//! and gains a geometry_vertices_lod* sibling. The two never mix within one read.
+enum class GeometryEncoding { Wkb, ArrowNative };
+
 // ============================================================
 // Bind Data
 // ============================================================
@@ -33,6 +41,7 @@ struct CityJSONBindData : public TableFunctionData {
 	std::vector<Column> columns;           // Complete column schema
 	std::optional<std::string> target_lod; // Optional: filter to specific LOD
 	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
+	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb; // Physical geometry encoding
 	bool streaming = false;                // True when data is loaded during scan init instead of bind
 	// Set only when appearance := 'sidecar'. Holds the dataset-global material/texture
 	// sets and the per-feature index maps that reach them.
@@ -55,6 +64,7 @@ struct CityJSONReadOptions {
 	bool sidecar_appearance = false;
 	std::optional<std::string> target_lod;
 	bool use_wkb_encoding = false;
+	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb;
 	size_t sample_lines = 100;
 };
 

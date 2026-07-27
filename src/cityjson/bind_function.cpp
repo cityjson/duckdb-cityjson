@@ -31,6 +31,16 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
 			} else {
 				throw BinderException(function_name + ": appearance must be 'local' or 'sidecar', got '" + mode + "'");
 			}
+		} else if (kv.first == "geometry_encoding") {
+			auto encoding = StringUtil::Lower(StringValue::Get(kv.second));
+			if (encoding == "wkb") {
+				options.geometry_encoding = GeometryEncoding::Wkb;
+			} else if (encoding == "arrow-native") {
+				options.geometry_encoding = GeometryEncoding::ArrowNative;
+			} else {
+				throw BinderException(function_name + ": geometry_encoding must be 'wkb' or 'arrow-native', got '" +
+				                      encoding + "'");
+			}
 		} else if (kv.first == "sample_lines") {
 			auto sample_lines = BigIntValue::Get(kv.second);
 			if (sample_lines < 0) {
@@ -95,6 +105,7 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 	probe.streaming = streaming;
 	probe.target_lod = options.target_lod;
 	probe.use_wkb_encoding = options.use_wkb_encoding;
+	probe.geometry_encoding = options.geometry_encoding;
 
 	CityJSONFeatureChunk all;
 	try {
@@ -149,6 +160,7 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 	auto options = ParseCityJSONReadOptions(input, function_name);
 	result.target_lod = options.target_lod;
 	result.use_wkb_encoding = options.use_wkb_encoding;
+	result.geometry_encoding = options.geometry_encoding;
 
 	try {
 		result.metadata = reader.ReadMetadata();

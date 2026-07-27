@@ -14,6 +14,25 @@ require cityjson
 # and arrow_native_vertices_data_type() field-for-field: a file either producer
 # writes has to be readable by the other.
 
+# The parameter takes exactly two values. Anything else is rejected at bind
+# rather than silently falling back to WKB, which would hand back a file in the
+# wrong encoding with no indication anything was ignored.
+statement error
+SELECT * FROM read_cityjson('test/data/minimal.city.json', geometry_encoding := 'not-a-real-encoding');
+----
+geometry_encoding must be 'wkb' or 'arrow-native'
+
+statement error
+SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl', geometry_encoding := 'not-a-real-encoding');
+----
+geometry_encoding must be 'wkb' or 'arrow-native'
+
+# 'wkb' is accepted explicitly and is identical to omitting the parameter.
+query T
+SELECT typeof(geometry_lod2_2) FROM read_cityjson('test/data/minimal.city.json', geometry_encoding := 'wkb');
+----
+BLOB
+
 statement ok
 CREATE TABLE t AS SELECT * FROM read_cityjson('test/data/minimal.city.json', geometry_encoding := 'arrow-native');
 

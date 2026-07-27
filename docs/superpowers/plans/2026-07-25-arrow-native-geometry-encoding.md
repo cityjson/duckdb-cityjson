@@ -259,7 +259,7 @@ git commit -m "feat(schema): ColumnType::GeometryArrowNative/GeometryVerticesArr
 **Interfaces:**
 - Produces: `CityJSONReadOptions.geometry_encoding` / `CityJSONBindData.geometry_encoding` (`enum class GeometryEncoding { Wkb, ArrowNative }`, default `Wkb`), parsed from `geometry_encoding := 'wkb' | 'arrow-native'`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```sql
 statement error
@@ -268,11 +268,11 @@ SELECT * FROM read_cityjson('test/fixtures/PLACEHOLDER.city.json', geometry_enco
 geometry_encoding must be "wkb" or "arrow-native"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — no such named parameter recognised, so the error message/behaviour doesn't match yet (silently ignored today, per `ParseCityJSONReadOptions`'s current `if/else if` chain having no `geometry_encoding` branch).
 
-- [ ] **Step 3: Add the enum and threading**
+- [x] **Step 3: Add the enum and threading**
 
 In `src/include/cityjson/table_function.hpp`, add near `CityJSONReadOptions`:
 
@@ -310,13 +310,13 @@ Also register `"geometry_encoding"` as a valid named parameter with the table fu
 there should be one per table function variant, e.g. `read_cityjson`, `read_cityjsonseq`,
 possibly not `read_flatcitybuf` since arrow-native is CityJSON-model-specific).
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Expected: PASS (the error-message test). Also add and run a positive-path smoke test
 (`geometry_encoding := 'arrow-native'` binds without error, even though it doesn't yet
 write real data — Task 5 makes it actually populate correctly).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/include/cityjson/table_function.hpp src/cityjson/bind_function.cpp test/
