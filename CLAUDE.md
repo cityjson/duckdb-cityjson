@@ -49,6 +49,7 @@ ours — the extension only generates text.
 | `PRAGMA cityparquet_reconcile(schema [, checks = [...]])` | `cityparquet_reconcile.cpp` | Re-derive `feature_id`, hierarchy, `bbox` |
 | `PRAGMA cityparquet_delete(schema, predicate [, cascade =] [, tables =])` | `cityparquet_delete.cpp` | Delete with cascade |
 | `PRAGMA cityparquet_merge(dst, src [, create_tables =] [, tables =])` | `cityparquet_merge.cpp` | Merge one package into another |
+| `PRAGMA insert_cityjson(schema, path [, create_tables =] [, tables =] [, lod =] [, sample_lines =])` | `cityparquet_insert.cpp` | Add a CityJSON file, routed by module (also `insert_cityjsonseq` / `insert_flatcitybuf`) |
 | `PRAGMA cityparquet_read(dir, schema)` | `cityparquet_package.cpp` | Load a package directory into a schema |
 | `cityparquet_write(schema, dir [, crs =])` | `cityparquet_write.cpp` | Write the package back out (**table function**, sees committed state) |
 
@@ -88,6 +89,22 @@ cost of running on an internal connection and seeing only committed state.
 - **`FileFlags::FILE_FLAGS_READ` is a third ODR trap** (it is a `static constexpr
   FileOpenFlags`). Use the scalar `FileOpenFlags::FILE_FLAGS_READ` instead, as
   `duckdb_fs_range_reader.cpp` already does.
+- **Never re-derive what the reader emits.** A generator that needs the incoming column
+  list must call `InferCityJSONColumns` / `InspectCityJSONSource`
+  (`bind_function.cpp`), the same inference the bind runs. Reconstructing it from
+  `GetDefinedColumns` + `InferAttributeColumns` + `InferGeometryColumns` gives a
+  different answer, and the generated SQL then names a column the staged relation does
+  not have.
+- **`INSERT ... BY NAME` is not symmetric.** It leaves an unmatched *destination* column
+  NULL, but a *source* column with no destination match is a binder error. Schema
+  evolution must therefore run over sidecars too, not only module tables —
+  `geometry_templates` carries per-LoD columns and so its shape varies by file.
+- **`bbox` is an optional column.** A source with only template geometry produces neither
+  `geometry_lod*` nor `bbox`, so anything generating `UPDATE ... SET bbox` must check the
+  column exists first.
+- **The CityJSONSeq reader is a forward stream.** `ReadAllChunks` and `ReadNFeatures`
+  rewind so they can be asked more than once; `ReadNextFeature` deliberately does not,
+  because it is the streaming scan's cursor.
 - **`SQLString` is a formatting wrapper, not a quoting function**; use
   `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
 

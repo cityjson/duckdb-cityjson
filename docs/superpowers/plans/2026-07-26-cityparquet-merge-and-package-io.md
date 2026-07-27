@@ -10,65 +10,40 @@
 
 ## Status
 
-**Tasks 1 and 2 are done** (713 assertions passing): the supporting scalars and
-`cityparquet_merge`. **Tasks 3–7 are not.**
+**Tasks 1-5 and 7 are done.** 811 assertions across 32 test files pass.
 
-Task 3 (`insert_cityjson`) was attempted and **reverted**. The approach was sound —
-`INSERT … BY NAME` removes the need to know the source schema for the insert itself, and
-plan-time inference covers the `ALTER`s — but re-deriving the incoming column list in C++
-(`GetDefinedColumns` + `InferGeometryColumns` + `InferAttributeColumns`) does **not**
-reproduce what `read_cityjson(path, appearance := 'sidecar')` actually emits, so the
-generated `* REPLACE (…)` referenced an appearance column the staged relation did not
-have.
+Shipped: the supporting scalars, `cityparquet_merge`, `insert_cityjson` (with
+`insert_cityjsonseq`, `insert_flatcitybuf` and `insert_cityjson_sql`),
+`cityparquet_read`, `cityparquet_write` (data files, `city`/`geo` footers, a minimal
+`metadata.json`), and the README/CLAUDE.md/AGENTS.md documentation.
 
-**The fix is not to re-derive.** The generator should obtain the staged schema from the
-same code path the reader's bind uses, rather than reconstructing it from the same
-ingredients and hoping the recipe matches. Two candidates, in preference order:
+**Remaining: the rest of Task 6.** `metadata.json` is written but minimal — assets and
+`file:size` only, not the aggregate `city3d:*` inventory (`city3d:lods` as the union
+across files, `city3d:co_types`, `city3d:city_objects`, and the Projection/Statistics
+extension fields).
 
-1. Refactor `CityJSONBind`'s inference into a reusable entry point returning the exact
-   `std::vector<Column>` a given path and options produce, and call that from both the
-   bind and the insert generator. Single source of truth; the divergence becomes
-   impossible rather than merely unlikely.
-2. Failing that, build the `REPLACE` list from `AppearanceLodColumns` over a *staged*
-   table — which requires the two-call `stage` + `merge` shape, since a pragma cannot see
-   tables its own generated statements create.
+### What Task 3 turned up
 
-**Tasks 4, 5 and 7 are now done** — `cityparquet_read`, `cityparquet_write` (data files,
-`city`/`geo` footers, a minimal `metadata.json`), and the README/CLAUDE.md/AGENTS.md
-documentation. 735 assertions across 30 test files pass.
+The first attempt at `insert_cityjson` was reverted because it re-derived the incoming
+column list instead of asking the reader. The fix was to extract `InferCityJSONColumns`
+and `InspectCityJSONSource` as the single source of truth — but pulling on that thread
+exposed four defects, three of them already shipped:
 
-**Remaining: Task 3 (`insert_cityjson`) and the rest of Task 6.** Task 6's `metadata.json`
-is written but minimal — assets and `file:size` only, not the aggregate `city3d:*`
-inventory (`city3d:lods` as the union across files, `city3d:co_types`,
-`city3d:city_objects`, and the Projection/Statistics extension fields).
-
-### Resuming Task 3 from a cold start
-
-Everything needed is on disk. The concrete steps:
-
-1. `src/cityjson/bind_function.cpp` has a file-static `InferSchema` and
-   `ParseCityJSONReadOptions`. Extract the inference into a public entry point —
-   something like `std::vector<Column> InferCityJSONSchema(ClientContext &, const
-   std::string &path, const CityJSONReadOptions &)` declared in
-   `cityjson/table_function.hpp` — and have `CityJSONBind` call it, so there is exactly
-   one implementation.
-2. Write `BuildInsertSQL` in `src/cityjson/cityparquet_merge.cpp` using that entry point
-   for the incoming column list. The previous attempt is in the reflog if useful; its
-   shape was right apart from the schema derivation.
-3. Route rows with `ModuleForObjectType` (needs re-adding to `cityparquet_package.cpp` —
-   it was reverted with the rest; the mapping is the specification's by-module table and
-   should accept both the CityGML 3.0 class names and the four CityJSON spellings that
-   differ: `TransportSquare`→`Square`, `GenericCityObject`→`GenericOccupiedSpace`,
-   `BuildingStorey`→`Storey`, `TunnelHollowSpace`→`HollowSpace`).
-4. `INSERT … BY NAME` matches source columns to destination columns and leaves unmatched
-   destination columns NULL, so no explicit per-table column list is needed.
-5. Ensure the destination's sidecar tables exist **before** any offset is computed against
-   them — a package with no appearance has no `materials` table, and the earlier attempt
-   failed on exactly this.
-6. Take the **complete** `object_type` set, not a sample: a rare type in the file's tail
-   would otherwise land in no module table.
-7. Register `insert_cityjson`, `insert_cityjsonseq`, `insert_flatcitybuf` and
-   `insert_cityjson_sql`.
+1. **The CityJSONSeq reader is a one-shot stream** (`fix(reader): a CityJSONSeq reader
+   must answer more than one whole-file question`). Two shipped paths asked it twice and
+   silently got nothing the second time: `read_cityjson` on a `.city.jsonl` returned a
+   schema with **no geometry columns at all**, and `appearance := 'sidecar'` interned
+   from the header alone, so every feature-local index fell through to the identity
+   mapping and pointed at the wrong definition. `ReadAllChunks` and `ReadNFeatures` now
+   rewind; `ReadNextFeature` deliberately does not.
+2. **`cityparquet_merge` did not evolve sidecar schemas.** `geometry_templates` carries
+   per-LoD columns, so merging two packages whose templates use different LoDs failed to
+   bind.
+3. **Template appearance references were not shifted on merge**, so the sidecar rows
+   moved while their references stayed put.
+4. **Reconcile assumed too much**: a table the script itself creates was invisible to it
+   (pre-batch catalog), and its bbox phase assumed every object table has a `bbox`
+   column, which a source with only template geometry does not.
 
 ## Scope and order
 

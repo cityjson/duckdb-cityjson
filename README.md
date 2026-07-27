@@ -546,6 +546,37 @@ SELECT cityjson_appearance_ids(material_lod2_2, 'material') FROM ams.building;
 SELECT cityjson_appearance_ids(texture_lod2_2,  'texture')  FROM ams.building;
 ```
 
+### Adding a CityJSON file to a package
+
+```sql
+PRAGMA insert_cityjson('ams', 'tile.city.json');
+--   also: insert_cityjsonseq, insert_flatcitybuf
+--   named: create_tables = true, tables = ['building', ...], lod = '2.2', sample_lines = 100
+```
+
+One call. Each object is routed to its **CityGML module** table — `Building` and
+`BuildingPart` both to `building`, `Road` and `Square` both to `transportation` — creating
+the module tables and appearance sidecars the source needs, renumbering the incoming
+material / texture / template ids so they cannot collide with the ones already there,
+rewriting every reference in the incoming rows to match, and re-deriving `feature_id`, the
+reciprocal hierarchy and `bbox` afterwards. It is a SQL-generating pragma like the rest, so
+DuckDB runs the whole script inside your transaction.
+
+`insert_cityjson_sql(schema, path)` returns the same script without running it.
+
+Worth knowing:
+
+- **Routing is total.** An object type that belongs to no CityGML module is an error, not a
+  silently skipped row. Extension types cannot be placed without their module declaration,
+  so load those with `read_cityjson` and insert them yourself.
+- **The file is opened twice** — once at plan time to learn its schema and its object
+  types, once by the generated read. The plan-time pass reads it *whole*, because a sample
+  cannot tell you that a rare type appears only in the tail.
+- **Ids are identity.** An incoming id that already exists in the destination refuses the
+  entire insert.
+- **The CRS must match** the destination's, when the destination's footer records one.
+  Reprojection is not performed.
+
 ### Merging packages
 
 ```sql
@@ -563,7 +594,10 @@ incoming rows is shifted to match, so nothing is left pointing at the destinatio
 definitions. The offset is `dst_max + 1 − src_min`, not `dst_max + 1`: a source id may be
 negative, and adding `dst_max + 1` alone could then land back inside the occupied range.
 Schema evolution (new LoD columns, new attributes, type widening) runs before any insert,
-and derived state is re-derived afterwards.
+and derived state is re-derived afterwards. Sidecars evolve too: `geometry_templates`
+carries per-LoD columns, so two packages whose templates use different LoDs genuinely have
+different sidecar schemas, and a template's own material and texture references are shifted
+along with the rows they name.
 
 ### The package round trip
 
