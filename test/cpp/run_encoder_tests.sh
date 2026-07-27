@@ -18,6 +18,8 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+rm -f "$HERE/test_arrow_native_encoder"
+
 g++ -std=c++20 -g \
   -I"$REPO/src/include" \
   -I"$REPO/duckdb/src/include" \
@@ -29,6 +31,9 @@ g++ -std=c++20 -g \
   "${FCB_PREFIX:?set FCB_PREFIX to the flatcitybuf install prefix}/lib/libfcb_core_cpp.a" "${FCB_PREFIX:?set FCB_PREFIX to the flatcitybuf install prefix}/lib/libflatbuffers.a" \
   -o "$HERE/test_arrow_native_encoder" 2>&1 | head -40
 
+# pipefail makes ${PIPESTATUS[0]} redundant, but be explicit: without this a failed
+# compile would leave the previous binary in place and the run below would report
+# success for code that no longer builds.
 if [ ! -x "$HERE/test_arrow_native_encoder" ]; then
   echo "COMPILE FAILED"
   exit 1

@@ -213,3 +213,68 @@ statement error
 SELECT geo FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl', geometry_encoding := 'nonsense');
 ----
 geometry_encoding must be 'wkb' or 'arrow-native'
+
+# ============================================================
+# COPY TO cityjson refuses arrow-native input
+# ============================================================
+#
+# Writing CityJSON back out needs WKB geometry to decode. Under the arrow-native
+# encoding geometry_lod* is a nested LIST the CityJSON writer cannot read, and
+# geometry_vertices_lod* is not an attribute despite sharing the geometry_ prefix.
+# Left alone, both misread silently: the geometry came out as [] and the vertex
+# pool was serialised into attributes as a display string. Decoding arrow-native
+# back to CityJSON is out of phase-1 scope, so this must fail loudly instead.
+
+statement error
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json', geometry_encoding := 'arrow-native'))
+TO '__TEST_DIR__/arrow_native_reject.city.json' (FORMAT cityjson);
+----
+arrow-native
+
+# The same COPY under the default encoding is unaffected.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/arrow_native_wkb_ok.city.json' (FORMAT cityjson);
+
+# ============================================================
+# geometry_vertices_lod* is a reserved structural name
+# ============================================================
+#
+# The generated vertex-pool column is inserted by name, so a source attribute
+# literally called geometry_vertices_lod2_2 would otherwise get its own attribute
+# column and collide with it -- two columns of one name, with the structural one
+# no longer reliably reachable. geometry_lod*/geometry_properties* are already
+# reserved for exactly this reason; this prefix has to be too.
+
+statement ok
+CREATE TABLE c AS SELECT * FROM read_cityjson('test/data/geometry_vertices_attr_collision.city.json', geometry_encoding := 'arrow-native');
+
+query I
+SELECT count(*) FROM (DESCRIBE c) WHERE lower(column_name) = 'geometry_vertices_lod2_2';
+----
+1
+
+# The surviving column is the structural vertex pool, not the attribute string.
+query T
+SELECT typeof(geometry_vertices_lod2_2) FROM c;
+----
+STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]
+
+# ... and the attribute's value is preserved in the `other` catch-all, as the
+# existing reserved-name handling already does for id/geometry_lod*.
+query T
+SELECT other::VARCHAR LIKE '%attr-collides-with-vertex-pool%' FROM c;
+----
+true
+
+statement ok
+DROP TABLE c;
+
+# The name is reserved regardless of encoding: under the default WKB layout no
+# such column is generated, but the attribute must not claim the reserved name.
+query I
+SELECT count(*) FROM (
+  DESCRIBE SELECT * FROM read_cityjson('test/data/geometry_vertices_attr_collision.city.json')
+) WHERE lower(column_name) = 'geometry_vertices_lod2_2';
+----
+0

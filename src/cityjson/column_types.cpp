@@ -458,8 +458,12 @@ bool IsReservedColumnName(const std::string &name) {
 	}
 	// Wide-layout per-LOD structural columns: geometry_lod*, geometry_properties*,
 	// and the paired appearance columns material_lod* / texture_lod* (§11).
+	// geometry_vertices* is reserved too: the arrow-native encoding generates one
+	// per geometry column, and an attribute of that name would collide with it.
+	// Reserved under either encoding, so a file does not change which of its
+	// attributes get columns depending on how it is read.
 	return lowered.rfind("geometry_lod", 0) == 0 || lowered.rfind("geometry_properties", 0) == 0 ||
-	       IsAppearanceColumnName(lowered);
+	       lowered.rfind("geometry_vertices", 0) == 0 || IsAppearanceColumnName(lowered);
 }
 
 bool IsAppearanceColumnName(const std::string &name) {

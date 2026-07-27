@@ -49,8 +49,14 @@ public:
 		return local;
 	}
 
-	//! One ring. The closing vertex is not repeated -- CityJSON does not repeat it
-	//! and this encoding keeps that, unlike WKB (design doc, "Ring-closure").
+	//! One ring. Closure is implicit: the first index is not repeated at the end
+	//! (design doc, "Ring-closure convention").
+	//!
+	//! Real files do contain pre-closed rings, so a repeated endpoint is dropped
+	//! rather than passed through -- keeping it would put a duplicate vertex and a
+	//! zero-length final edge in a representation that declares the opposite. This
+	//! mirrors the cleaning the WKB path already does from the other direction,
+	//! where it appends a closing point only when front != back.
 	std::vector<uint32_t> Ring(const json &ring_json) {
 		if (!ring_json.is_array()) {
 			throw CityJSONError::InvalidGeometry("Ring is not an array: " + ring_json.dump());
@@ -59,6 +65,11 @@ public:
 		ring.reserve(ring_json.size());
 		for (const auto &index_json : ring_json) {
 			ring.push_back(LocalIndex(index_json));
+		}
+		// Guarded on size so a degenerate one- or two-index ring is left as it is
+		// rather than trimmed away to nothing.
+		if (ring.size() > 2 && ring.front() == ring.back()) {
+			ring.pop_back();
 		}
 		return ring;
 	}

@@ -164,6 +164,34 @@ static void TestUnsupportedTypeRejected() {
 	CHECK(threw);
 }
 
+// CityJSON rings are implicitly closed and should not repeat the first index, but
+// real files do contain pre-closed rings. The WKB path already tolerates this (it
+// only appends a closing point when front != back); the arrow-native contract is
+// the opposite, so a repeated endpoint has to be dropped rather than passed
+// through, or the row carries a duplicate vertex and a degenerate final edge.
+static void TestPreClosedRingIsNormalised() {
+	std::printf("pre-closed ring drops its repeated endpoint\n");
+	std::vector<std::array<double, 3>> vertices = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}};
+	auto geom = MakeGeometry("MultiSurface", "[[[0,1,2,0]]]");
+
+	auto compacted = ArrowNativeEncoder::Encode(geom, vertices, std::nullopt);
+
+	CHECK((compacted.solids[0].shells[0].faces[0].rings[0] == std::vector<uint32_t> {0, 1, 2}));
+	CHECK(compacted.vertices.size() == 3);
+}
+
+// A ring that is genuinely a repeated single point is degenerate either way; the
+// point is that normalisation must not empty a ring it should have left alone.
+static void TestShortRingSurvivesNormalisation() {
+	std::printf("short ring is not over-trimmed\n");
+	std::vector<std::array<double, 3>> vertices = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}};
+	auto geom = MakeGeometry("MultiSurface", "[[[0,1,2]]]");
+
+	auto compacted = ArrowNativeEncoder::Encode(geom, vertices, std::nullopt);
+
+	CHECK(compacted.solids[0].shells[0].faces[0].rings[0].size() == 3);
+}
+
 int main() {
 	TestMultiSurfaceSharedVertices();
 	TestNeverMergesEqualCoordinates();
@@ -173,6 +201,8 @@ int main() {
 	TestPoolHoldsOnlyReferencedVertices();
 	TestOutOfRangeIndexRejected();
 	TestUnsupportedTypeRejected();
+	TestPreClosedRingIsNormalised();
+	TestShortRingSurvivesNormalisation();
 
 	if (failures == 0) {
 		std::printf("\nAll encoder assertions passed.\n");
