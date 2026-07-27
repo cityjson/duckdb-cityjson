@@ -91,6 +91,26 @@ public:
 	                                                size_t sample_size = 100);
 
 	/**
+	 * Rewrite an inferred column list for the chosen geometry encoding.
+	 *
+	 * Applied to a column list that was built for the default WKB encoding: each
+	 * `geometry_lod*` BLOB becomes the nested-LIST arrow-native shape and gains a
+	 * `geometry_vertices_lod*` sibling immediately after it. `GeometryEncoding::Wkb`
+	 * leaves the list untouched.
+	 *
+	 * This transforms the inferred list rather than re-deriving it, so the set of
+	 * LoDs still comes from whichever inference produced the input -- the wide
+	 * layout's InferGeometryColumns or the `lod=` path's GetGeometryColumns. Those
+	 * two build the same list independently, so branching inside both would be two
+	 * places to keep in step; there is exactly one point where either result becomes
+	 * bind_data.columns, and that is where this runs.
+	 *
+	 * @param columns Column list to rewrite in place
+	 * @param encoding Physical geometry encoding the read was asked for
+	 */
+	static void ApplyGeometryEncoding(std::vector<Column> &columns, GeometryEncoding encoding);
+
+	/**
 	 * Encode geometry to WKB format
 	 *
 	 * @param geometry Geometry object to encode

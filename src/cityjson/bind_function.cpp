@@ -4,6 +4,7 @@
 #include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/city_object_utils.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -95,6 +96,11 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 			throw BinderException("Failed to infer schema: " + std::string(e.what()));
 		}
 	}
+
+	// Both branches above build their column list for the default WKB encoding, in two
+	// independent derivations. Rewriting here -- the one point where either becomes
+	// bind_data.columns -- keeps them from having to agree about a second encoding too.
+	CityObjectUtils::ApplyGeometryEncoding(bind_data.columns, bind_data.geometry_encoding);
 }
 
 CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options, bool streaming) {

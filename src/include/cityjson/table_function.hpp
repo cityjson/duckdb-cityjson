@@ -17,14 +17,6 @@ class ExtensionLoader;
 
 namespace cityjson {
 
-//! How the geometry columns are physically encoded. `Wkb` is the default and the
-//! only encoding the CityParquet specification currently blesses; `ArrowNative` is
-//! the experimental alternative under evaluation on the arrow-native-type branch
-//! (docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md in the parent
-//! workspace repo), where geometry_lod* becomes nested LISTs of vertex-pool indices
-//! and gains a geometry_vertices_lod* sibling. The two never mix within one read.
-enum class GeometryEncoding { Wkb, ArrowNative };
-
 // ============================================================
 // Bind Data
 // ============================================================

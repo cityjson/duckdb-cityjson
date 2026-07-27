@@ -334,7 +334,24 @@ git commit -m "feat(bind): geometry_encoding named parameter (wkb default, arrow
 - Consumes: `GeometryEncoding` (Task 2).
 - Produces: `LODTableUtils::GetGeometryColumns(const std::string &lod, GeometryEncoding encoding)` (signature change — was `(const std::string &lod)`).
 
-- [ ] **Step 1: Write the failing test**
+> **Implemented differently, deliberately.** This plan assumed `GetGeometryColumns`
+> is *the* geometry-column builder. It is not: it serves only the `lod=` path, via
+> `InferLODTables`. The wide layout — which is what `geometry_encoding :=
+> 'arrow-native'` alone exercises — goes through `CityObjectUtils::InferGeometryColumns`,
+> called by each of the three readers, which independently builds the same list.
+> Changing only `GetGeometryColumns`, as written below, would have left the plan's
+> own Task 3 test failing.
+>
+> Rather than branch on the encoding in both derivations (two places to keep in
+> step, the duplication this repo has already been bitten by) or thread the encoding
+> through three reader constructors and their column caches, the encoding is applied
+> as a rewrite — `CityObjectUtils::ApplyGeometryEncoding` — at the single point where
+> either derivation's result becomes `bind_data.columns`, in `InferCityJSONColumns`.
+> The set of LoDs still comes from the reader's own inference; only the geometry
+> columns' types are rewritten and the sibling inserted. Both paths are covered by
+> construction, and `InspectCityJSONSource`'s probe inherits it for free.
+
+- [x] **Step 1: Write the failing test**
 
 ```sql
 statement ok
@@ -354,11 +371,11 @@ SELECT count(*) FROM (DESCRIBE t3) WHERE column_name LIKE 'geometry_vertices%';
 0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — no `geometry_vertices_lod*` column exists yet regardless of encoding (compile error once `GetGeometryColumns`'s signature changes are attempted, or a missing-column result before that).
 
-- [ ] **Step 3: Update `GetGeometryColumns`**
+- [x] **Step 3: Update `GetGeometryColumns`**
 
 In `src/cityjson/lod_table.cpp` (confirmed body at lines 101-116):
 
@@ -385,14 +402,14 @@ every call site (grep `GetGeometryColumns(` — likely one in the wide-layout sc
 builder and one in the `lod =>` single-LoD path per this plan's earlier research) to pass
 `bind_data.geometry_encoding`/`options.geometry_encoding` from whichever scope has it.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Expected: PASS. Run the full existing SQL test suite (`make test` or this repo's real
 test-running command — check `justfile`/`Makefile`) to confirm no regression to the WKB
 path (default) — every existing test uses no `geometry_encoding` parameter, so must be
 completely unaffected.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/cityjson/lod_table.cpp src/include/cityjson/lod_table.hpp
