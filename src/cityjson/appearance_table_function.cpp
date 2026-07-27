@@ -113,41 +113,17 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 		throw BinderException("%s: failed to read '%s': %s", function_name, result->file_name, e.what());
 	}
 
-	const auto varchar = LogicalType(LogicalTypeId::VARCHAR);
-	const auto dbl = LogicalType(LogicalTypeId::DOUBLE);
-	const auto dbl_list = LogicalType::LIST(LogicalType(LogicalTypeId::DOUBLE));
-
-	if (kind == SidecarKind::MATERIALS) {
-		names = {"id",           "name",        "ambientIntensity", "diffuseColor", "specularColor",
-		         "emissiveColor", "transparency", "shininess",       "isSmooth",     "other"};
-		return_types = {LogicalType(LogicalTypeId::BIGINT),
-		                varchar,
-		                dbl,
-		                dbl_list,
-		                dbl_list,
-		                dbl_list,
-		                dbl,
-		                dbl,
-		                LogicalType(LogicalTypeId::BOOLEAN),
-		                varchar};
-	} else if (kind == SidecarKind::TEMPLATES) {
-		std::vector<std::string> template_names;
-		std::vector<LogicalType> template_types;
-		GeometryTemplateColumns(result->templates, template_names, template_types, result->template_lods);
-		for (idx_t i = 0; i < template_names.size(); i++) {
-			names.push_back(template_names[i]);
-			return_types.push_back(template_types[i]);
-		}
+	std::vector<std::string> sidecar_names;
+	std::vector<LogicalType> sidecar_types;
+	if (kind == SidecarKind::TEMPLATES) {
+		GeometryTemplateColumns(result->templates, sidecar_names, sidecar_types, result->template_lods);
 	} else {
-		names = {"id", "image_uri", "image_data", "image_type", "wrapMode", "textureType", "borderColor", "other"};
-		return_types = {LogicalType(LogicalTypeId::BIGINT),
-		                varchar,
-		                LogicalType(LogicalTypeId::BLOB),
-		                varchar,
-		                varchar,
-		                varchar,
-		                dbl_list,
-		                varchar};
+		AppearanceSidecarColumns(kind == SidecarKind::MATERIALS ? "materials" : "textures", sidecar_names,
+		                         sidecar_types);
+	}
+	for (idx_t i = 0; i < sidecar_names.size(); i++) {
+		names.push_back(sidecar_names[i]);
+		return_types.push_back(sidecar_types[i]);
 	}
 	return std::move(result);
 }
@@ -268,6 +244,41 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 }
 
 } // namespace
+
+void AppearanceSidecarColumns(const std::string &sidecar, std::vector<std::string> &names,
+                              std::vector<LogicalType> &types) {
+	const auto varchar = LogicalType(LogicalTypeId::VARCHAR);
+	const auto dbl = LogicalType(LogicalTypeId::DOUBLE);
+	const auto dbl_list = LogicalType::LIST(LogicalType(LogicalTypeId::DOUBLE));
+
+	// The specification's sidecar tables exactly, including its mixed casing
+	// (`ambientIntensity`, `wrapMode`, `borderColor`) -- those are the spec's names, not a
+	// style choice, and a package is read by matching them.
+	if (sidecar == "materials") {
+		names = {"id",            "name",         "ambientIntensity", "diffuseColor", "specularColor",
+		         "emissiveColor", "transparency", "shininess",        "isSmooth",     "other"};
+		types = {LogicalType(LogicalTypeId::BIGINT),
+		         varchar,
+		         dbl,
+		         dbl_list,
+		         dbl_list,
+		         dbl_list,
+		         dbl,
+		         dbl,
+		         LogicalType(LogicalTypeId::BOOLEAN),
+		         varchar};
+		return;
+	}
+	names = {"id", "image_uri", "image_data", "image_type", "wrapMode", "textureType", "borderColor", "other"};
+	types = {LogicalType(LogicalTypeId::BIGINT),
+	         varchar,
+	         LogicalType(LogicalTypeId::BLOB),
+	         varchar,
+	         varchar,
+	         varchar,
+	         dbl_list,
+	         varchar};
+}
 
 void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std::string> &names,
                              std::vector<LogicalType> &types, std::vector<std::string> &lods) {

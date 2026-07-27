@@ -198,15 +198,37 @@ std::vector<std::string> AppearanceLodColumns(ClientContext &context, const std:
 	return ColumnsWithPrefix(context, schema, table, prefix);
 }
 
-std::string AllObjectsCTE(const std::string &schema, const std::vector<std::string> &object_tables) {
+bool HasColumn(ClientContext &context, const std::string &schema, const std::string &table,
+               const std::string &column) {
+	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	for (auto &existing : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
+		if (StringUtil::Lower(existing.Name()) == column) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::string AllObjectsCTE(ClientContext &context, const std::string &schema,
+                          const std::vector<std::string> &object_tables,
+                          const std::map<std::string, bool> &known_children_roles) {
 	std::string cte = "all_objects AS (\n";
 	for (idx_t i = 0; i < object_tables.size(); i++) {
 		if (i > 0) {
 			cte += "  UNION ALL\n";
 		}
-		cte += "  SELECT " + Literal(object_tables[i]) +
-		       " AS __tbl, id, feature_id, parents, children, children_roles FROM " +
-		       QualifiedName(schema, object_tables[i]) + "\n";
+		// `children_roles` is optional and a table read in `lod =` mode does not carry it
+		// at all. Substituting NULL keeps every consumer of this CTE working against
+		// whatever shape the package really has, rather than the shape the wide reader
+		// happens to produce.
+		auto known = known_children_roles.find(object_tables[i]);
+		const bool has_roles = known != known_children_roles.end()
+		                           ? known->second
+		                           : HasColumn(context, schema, object_tables[i], "children_roles");
+		const auto roles = has_roles ? std::string("children_roles")
+		                             : std::string("NULL::VARCHAR[] AS children_roles");
+		cte += "  SELECT " + Literal(object_tables[i]) + " AS __tbl, id, feature_id, parents, children, " + roles +
+		       " FROM " + QualifiedName(schema, object_tables[i]) + "\n";
 	}
 	cte += ")";
 	return cte;

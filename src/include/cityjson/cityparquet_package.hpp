@@ -4,6 +4,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -75,7 +76,17 @@ bool MatchesLodSuffix(const std::string &name, const std::string &prefix);
 //! columns, unioned. Those columns are common to every module — only attribute columns
 //! differ — so consistency checks and re-derivations are written once rather than once
 //! per module.
-std::string AllObjectsCTE(const std::string &schema, const std::vector<std::string> &object_tables);
+//! `known_children_roles` overrides the catalog probe for `children_roles`, which is an
+//! optional column a table read in `lod =` mode does not carry. A caller generating SQL
+//! for a table the same script is about to create MUST supply an entry, because there is
+//! no catalog row to probe.
+std::string AllObjectsCTE(ClientContext &context, const std::string &schema,
+                          const std::vector<std::string> &object_tables,
+                          const std::map<std::string, bool> &known_children_roles = {});
+
+//! True when `schema.table` has a column of this (lower-cased) name.
+bool HasColumn(ClientContext &context, const std::string &schema, const std::string &table,
+               const std::string &column);
 
 //! Loads a CityParquet package directory into `schema`: one table per file found, plus
 //! a `__cityparquet` row per file with the footer's `city` object recovered via

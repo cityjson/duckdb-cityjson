@@ -182,12 +182,15 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			// rather than looked up. Without this a destination row that has just become
 			// the parent of an incoming one never gets the reciprocal children entry.
 			PendingTable entry;
+			entry.has_children_roles = false;
 			for (const auto &column : created) {
 				const auto lowered = StringUtil::Lower(column.name);
 				if (MatchesLodSuffix(lowered, "geometry_lod")) {
 					entry.geometry_columns.push_back(column.name);
 				} else if (lowered == "bbox") {
 					entry.has_bbox = true;
+				} else if (lowered == "children_roles") {
+					entry.has_children_roles = true;
 				}
 			}
 			pending[table] = std::move(entry);

@@ -4,6 +4,7 @@
 #include "cityjson/column_types.hpp"
 #include "cityjson/crs_projjson.hpp"
 #include "cityjson/json_utils.hpp"
+#include "cityjson/lod_table.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -11,6 +12,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 
+#include <algorithm>
 #include <set>
 
 namespace duckdb {
@@ -77,6 +79,46 @@ struct WrittenFile {
 	int64_t bytes = 0;
 };
 
+//! The dataset-level view metadata.json carries, accumulated as the files are written.
+//!
+//! The footer answers for the one file it lives in; the STAC Item answers for the
+//! package, so every one of these is a union or a sum across files rather than a copy of
+//! any single footer. `city3d:lods` is the standing example — a package's LoD set is the
+//! union over its tables, and no table's footer holds it.
+struct PackageInventory {
+	std::set<std::string> lods;
+	std::set<std::string> co_types;
+	std::set<std::string> attributes;
+	int64_t city_objects = 0;
+	int64_t materials = 0;
+	int64_t textures = 0;
+	bool semantic_surfaces = false;
+	bool has_extent = false;
+	double min_x = 0, min_y = 0, min_z = 0, max_x = 0, max_y = 0, max_z = 0;
+
+	void Cover(const ColumnFacts &facts) {
+		if (!facts.has_extent) {
+			return;
+		}
+		if (!has_extent) {
+			has_extent = true;
+			min_x = facts.min_x;
+			min_y = facts.min_y;
+			min_z = facts.min_z;
+			max_x = facts.max_x;
+			max_y = facts.max_y;
+			max_z = facts.max_z;
+			return;
+		}
+		min_x = std::min(min_x, facts.min_x);
+		min_y = std::min(min_y, facts.min_y);
+		min_z = std::min(min_z, facts.min_z);
+		max_x = std::max(max_x, facts.max_x);
+		max_y = std::max(max_y, facts.max_y);
+		max_z = std::max(max_z, facts.max_z);
+	}
+};
+
 struct WriteGlobalState : public GlobalTableFunctionState {
 	std::vector<WrittenFile> files;
 	idx_t offset = 0;
@@ -97,6 +139,50 @@ unique_ptr<MaterializedQueryResult> Run(Connection &connection, const std::strin
 		throw InvalidInputException("cityparquet_write: %s\n(while running: %s)", result->GetError(), sql);
 	}
 	return result;
+}
+
+//! Fold one object table into the package-level inventory.
+void CollectInventory(Connection &connection, const std::string &schema, const std::string &table, int64_t rows,
+                      const std::vector<ColumnFacts> &facts, const std::vector<std::string> &attributes,
+                      PackageInventory &inventory) {
+	inventory.city_objects += rows;
+	for (const auto &attribute : attributes) {
+		inventory.attributes.insert(attribute);
+	}
+	for (const auto &column : facts) {
+		inventory.Cover(column);
+		// The LoD is recovered from the column name, which is where CityParquet keeps it.
+		// Only columns that some row actually populates reach here, so the union is of
+		// LoDs the package really carries rather than of columns it happens to declare.
+		const auto suffix = column.name.substr(std::string("geometry_").size());
+		auto lod = LODTableUtils::ParseLODFromSuffix(suffix);
+		if (!lod.empty()) {
+			inventory.lods.insert(lod);
+		}
+	}
+
+	// The source type vocabulary, per the specification: the STAC Item mirrors the
+	// source model's inventory, not the by-module routing that put the rows in this file.
+	auto types = Run(connection, "SELECT DISTINCT object_type FROM " + QualifiedName(schema, table) +
+	                                 " WHERE object_type IS NOT NULL");
+	for (idx_t row = 0; row < types->RowCount(); row++) {
+		inventory.co_types.insert(types->GetValue(0, row).ToString());
+	}
+
+	if (inventory.semantic_surfaces) {
+		return;
+	}
+	for (const auto &column : facts) {
+		const auto properties =
+		    "geometry_properties_" + column.name.substr(std::string("geometry_").size());
+		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(schema, table) + " WHERE " +
+		                                   KeywordHelper::WriteOptionallyQuoted(properties) +
+		                                   ".surfaces IS NOT NULL");
+		if (present->GetValue(0, 0).GetValue<int64_t>() > 0) {
+			inventory.semantic_surfaces = true;
+			return;
+		}
+	}
 }
 
 //! Per geometry column: the WKB types actually present and the column's extent. Both are
@@ -316,12 +402,19 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		fs.CreateDirectory(bind_data.directory);
 	}
 
+	PackageInventory inventory;
+
 	auto write_table = [&](const std::string &table, bool is_object) {
 		auto count = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(bind_data.schema, table));
 		const auto rows = count->GetValue(0, 0).GetValue<int64_t>();
 		if (rows == 0 && is_object) {
 			// "No file for a module with no rows."
 			return;
+		}
+		if (table == "materials") {
+			inventory.materials = rows;
+		} else if (table == "textures") {
+			inventory.textures = rows;
 		}
 
 		std::string kv;
@@ -336,6 +429,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 					attributes.push_back(name);
 				}
 			}
+			CollectInventory(connection, bind_data.schema, table, rows, facts, attributes, inventory);
 			auto carried_entry = carried.find(table);
 			const auto city = BuildCityJson(carried_entry == carried.end() ? std::string() : carried_entry->second,
 			                                crs_json, facts, attributes, bind_data.source_format);
@@ -380,12 +474,43 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		json item;
 		item["type"] = "Feature";
 		item["stac_version"] = "1.0.0";
-		item["stac_extensions"] = json::array({"https://raw.githubusercontent.com/cityjson/stac-city3d/main/json-schema/schema.json"});
+		item["stac_extensions"] = json::array(
+		    {"https://raw.githubusercontent.com/cityjson/stac-city3d/main/json-schema/schema.json",
+		     "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
+		     "https://stac-extensions.github.io/file/v2.1.0/schema.json",
+		     "https://stac-extensions.github.io/table/v1.2.0/schema.json"});
 		item["id"] = bind_data.schema;
-		item["geometry"] = nullptr;
-		item["properties"] = json::object();
-		item["properties"]["city3d:version"] = CITYPARQUET_VERSION;
 		item["links"] = json::array();
+
+		// The Item's own footprint is the package's 2D extent, which the Projection
+		// extension then restates in the geometry CRS. STAC requires `geometry` to be in
+		// EPSG:4326, and the package's coordinates are not, so `geometry` stays null and
+		// `proj:bbox` carries the real thing -- which is exactly what the Projection
+		// extension exists for.
+		item["geometry"] = nullptr;
+		if (inventory.has_extent) {
+			item["bbox"] = json::array({inventory.min_x, inventory.min_y, inventory.min_z, inventory.max_x,
+			                            inventory.max_y, inventory.max_z});
+		}
+
+		json properties = json::object();
+		properties["city3d:version"] = CITYPARQUET_VERSION;
+		// Every one of these is a union or a sum across the package's files. The footer
+		// answers only for the file it lives in.
+		properties["city3d:lods"] = json(inventory.lods);
+		properties["city3d:co_types"] = json(inventory.co_types);
+		properties["city3d:city_objects"] = inventory.city_objects;
+		properties["city3d:attributes"] = json(inventory.attributes);
+		properties["city3d:semantic_surfaces"] = inventory.semantic_surfaces;
+		properties["city3d:materials"] = inventory.materials > 0;
+		properties["city3d:textures"] = inventory.textures > 0;
+		// Projection extension: the CRS every geometry and bbox in the package shares.
+		properties["proj:projjson"] = crs_json;
+		if (inventory.has_extent) {
+			properties["proj:bbox"] = json::array({inventory.min_x, inventory.min_y, inventory.min_z, inventory.max_x,
+			                                       inventory.max_y, inventory.max_z});
+		}
+		item["properties"] = std::move(properties);
 
 		json assets = json::object();
 		for (const auto &written : state->files) {
@@ -393,6 +518,13 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			asset["href"] = written.file;
 			asset["type"] = "application/vnd.apache.parquet";
 			asset["file:size"] = written.bytes;
+			// Row counts per asset. The specification asks for "the Statistics
+			// extension"; for a tabular asset the extension that actually defines a row
+			// count is Table, so that is what is declared -- see
+			// docs/CITYPARQUET_SPEC_QUESTIONS.md. A sidecar's rows are definitions, not
+			// city objects, so they are reported per file rather than folded into
+			// city3d:city_objects.
+			asset["table:row_count"] = written.rows;
 			assets[written.file] = std::move(asset);
 		}
 		item["assets"] = std::move(assets);

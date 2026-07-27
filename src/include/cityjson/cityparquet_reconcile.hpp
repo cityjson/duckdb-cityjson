@@ -29,6 +29,8 @@ struct PendingTable {
 	//! no geometry columns and no bbox column either, and a bbox UPDATE against such a
 	//! table is a binder error rather than a no-op.
 	bool has_bbox = false;
+	//! Likewise for `children_roles`, which a table read in `lod =` mode does not carry.
+	bool has_children_roles = true;
 };
 
 using PendingTables = std::map<std::string, PendingTable>;

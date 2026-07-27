@@ -211,3 +211,128 @@ query I
 SELECT COUNT(*) FROM solo.building;
 ----
 1
+
+# --- regressions found by review ---------------------------------------------
+
+# An ALTER that adds a geometry LoD column is invisible to the reconcile that
+# follows in the same script, because a pragma generator sees the pre-batch
+# catalog. The bbox phase would then compute extents from the table's OLD
+# geometry columns and set the incoming rows' bbox to NULL despite their having
+# geometry. Here `bounds.building` starts with only LoD 2.2 and the incoming
+# file brings LoD 1.
+statement ok
+CREATE SCHEMA bounds;
+
+statement ok
+CREATE TABLE bounds.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar')
+  WHERE false;
+
+statement ok
+PRAGMA cityparquet_init('bounds');
+
+statement ok
+PRAGMA insert_cityjson('bounds', 'test/data/minimal.city.json');
+
+query I
+SELECT COUNT(*) FROM bounds.building WHERE bbox IS NULL;
+----
+0
+
+# A referenceSystem is source metadata, so an apostrophe in it must not be able
+# to end the generated SQL string literal early. This CRS is quoted, not spliced.
+statement ok
+CREATE SCHEMA quoted;
+
+statement ok
+CREATE TABLE quoted.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+statement ok
+PRAGMA cityparquet_init('quoted');
+
+query I
+SELECT insert_cityjson_sql('quoted', 'test/data/insert_appearance.city.json') LIKE '%CRS mismatch%';
+----
+true
+
+# `lod` is normalised exactly as the reader normalises it. Without that,
+# lod = '2' against a source LoD of '2.0' fails plan-time inference with
+# "LOD '2' not found" while the generated read call would have accepted it.
+statement ok
+CREATE SCHEMA lodded;
+
+statement ok
+CREATE TABLE lodded.city_furniture AS
+  SELECT * FROM read_cityjson('test/data/insert_appearance.city.json', lod := '2') WHERE false;
+
+statement ok
+PRAGMA cityparquet_init('lodded');
+
+statement ok
+PRAGMA insert_cityjson('lodded', 'test/data/insert_appearance.city.json', lod = '2');
+
+query I
+SELECT COUNT(*) FROM lodded.city_furniture;
+----
+1
+
+# With `tables` restricting the insert, the rows destined for nowhere must not be
+# judged by preconditions that only apply to rows being written. Here the Bridge
+# id already exists in the destination, but only city_furniture is selected, so
+# the Bridge is never routed anywhere and the insert stands.
+statement ok
+CREATE SCHEMA picked;
+
+statement ok
+CREATE TABLE picked.bridge AS
+  SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE object_type = 'Bridge';
+
+statement ok
+PRAGMA cityparquet_init('picked');
+
+statement error
+PRAGMA insert_cityjsonseq('picked', 'test/data/railway_appearance.city.jsonl');
+----
+duplicate id
+
+statement ok
+PRAGMA insert_cityjsonseq('picked', 'test/data/railway_appearance.city.jsonl', tables = ['city_furniture']);
+
+query I
+SELECT COUNT(*) FROM picked.city_furniture;
+----
+1
+
+# ... but a parent left behind by that same filtering is refused. The
+# CityFurniture in this file has no parent, so exclude the module that holds one:
+# a row whose parent is in neither the selected rows nor the destination would
+# commit a package that immediately fails its own hierarchy check.
+statement ok
+CREATE SCHEMA orphaned;
+
+statement ok
+CREATE TABLE orphaned.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar')
+  WHERE false;
+
+statement ok
+PRAGMA cityparquet_init('orphaned');
+
+statement ok
+CREATE TEMP TABLE lone_part AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar')
+  WHERE object_type = 'BuildingPart' LIMIT 1;
+
+# Inserted directly, the part's parent is missing -- which is exactly the state
+# the precondition exists to keep insert_cityjson from creating.
+statement ok
+INSERT INTO orphaned.building BY NAME SELECT * FROM lone_part;
+
+statement ok
+PRAGMA cityparquet_validate('orphaned');
+
+query I
+SELECT COUNT(*) > 0 FROM cityparquet_validation WHERE severity = 'error';
+----
+true

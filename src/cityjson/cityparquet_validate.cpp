@@ -29,17 +29,6 @@ std::string Join(const std::vector<std::string> &parts, const std::string &separ
 	return out;
 }
 
-bool HasColumn(ClientContext &context, const std::string &schema, const std::string &table,
-               const std::string &column) {
-	auto &catalog_entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
-	for (auto &existing : catalog_entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		if (StringUtil::Lower(existing.Name()) == column) {
-			return true;
-		}
-	}
-	return false;
-}
-
 } // namespace
 
 std::string ReferencedIds(ClientContext &context, const std::string &schema, const std::string &sidecar) {
@@ -213,7 +202,7 @@ void ValidateSQLScalar(DataChunk &args, ExpressionState &state, Vector &result) 
 std::string BuildValidateSQL(ClientContext &context, const std::string &schema) {
 	auto object_tables = ObjectTablesInSchema(context, schema);
 
-	std::string body = "WITH " + AllObjectsCTE(schema, object_tables) + "\n";
+	std::string body = "WITH " + AllObjectsCTE(context, schema, object_tables) + "\n";
 	body += StringUtil::Join(Checks(), "\nUNION ALL\n");
 
 	// Materialise, then select: a PRAGMA cannot be a subquery, so handing back a bare

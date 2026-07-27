@@ -9,6 +9,7 @@
 #include "duckdb/function/scalar_function.hpp"
 
 #include <algorithm>
+#include <map>
 #include <set>
 
 namespace duckdb {
@@ -35,8 +36,13 @@ bool Wants(const std::vector<std::string> &checks, const char *name) {
 //! Every object id in the package, and the child->parent edges between them. Both are
 //! plain temp tables so the recursive walks below can run over them directly -- a
 //! recursive CTE cannot recurse through UNNEST of a list column.
-std::string NodesAndEdges(const std::string &schema, const std::vector<std::string> &object_tables) {
-	const auto cte = "WITH " + AllObjectsCTE(schema, object_tables) + "\n";
+std::string NodesAndEdges(ClientContext &context, const std::string &schema,
+                          const std::vector<std::string> &object_tables, const PendingTables &pending) {
+	std::map<std::string, bool> known_children_roles;
+	for (const auto &entry : pending) {
+		known_children_roles[entry.first] = entry.second.has_children_roles;
+	}
+	const auto cte = "WITH " + AllObjectsCTE(context, schema, object_tables, known_children_roles) + "\n";
 	std::string sql;
 	sql += "CREATE OR REPLACE TEMP TABLE __cp_nodes AS\n" + cte + "SELECT id FROM all_objects;\n";
 	sql += "CREATE OR REPLACE TEMP TABLE __cp_edges AS\n" + cte +
@@ -73,25 +79,30 @@ std::string FeatureIdPhase(const std::string &schema, const std::vector<std::str
 }
 
 //! children/children_roles rebuilt from the parents arrays that actually point at each row.
-std::string HierarchyPhase(const std::string &schema, const std::vector<std::string> &object_tables) {
+std::string HierarchyPhase(ClientContext &context, const std::string &schema,
+                           const std::vector<std::string> &object_tables, const PendingTables &pending) {
 	std::string sql;
 	sql += "CREATE OR REPLACE TEMP TABLE __cp_kids AS\n"
 	       "SELECT parent AS parent_id, list(child ORDER BY child) AS kids FROM __cp_edges GROUP BY parent;\n";
 
 	for (const auto &table : object_tables) {
 		const auto qualified = QualifiedName(schema, table);
+		// `children_roles` is optional, and a table read in `lod =` mode has none.
+		auto pending_entry = pending.find(table);
+		const bool has_roles = pending_entry == pending.end()
+		                           ? HasColumn(context, schema, table, "children_roles")
+		                           : pending_entry->second.has_children_roles;
+		const std::string roles = has_roles ? ", children_roles = NULL" : "";
 		// Rewrite only where the child *set* is genuinely wrong. Comparing sorted lists
 		// rather than the lists themselves leaves a correct-but-differently-ordered
 		// children array alone, which matters because children_roles is positionally
 		// aligned to it and a needless reorder would silently invalidate the roles.
-		sql += "UPDATE " + qualified +
-		       " t SET children = k.kids, children_roles = NULL "
-		       "FROM __cp_kids k WHERE k.parent_id = t.id "
+		sql += "UPDATE " + qualified + " t SET children = k.kids" + roles +
+		       " FROM __cp_kids k WHERE k.parent_id = t.id "
 		       "AND list_sort(COALESCE(t.children, [])) IS DISTINCT FROM list_sort(k.kids);\n";
 		// A row nothing claims as a parent has no children at all.
-		sql += "UPDATE " + qualified +
-		       " t SET children = NULL, children_roles = NULL "
-		       "WHERE t.children IS NOT NULL "
+		sql += "UPDATE " + qualified + " t SET children = NULL" + roles +
+		       " WHERE t.children IS NOT NULL "
 		       "AND NOT EXISTS (SELECT 1 FROM __cp_kids k WHERE k.parent_id = t.id);\n";
 	}
 	return sql;
@@ -224,7 +235,7 @@ void ReconcileSQLScalar(DataChunk &args, ExpressionState &state, Vector &result)
 } // namespace
 
 std::string BuildReconcilePrelude(ClientContext &context, const std::string &schema) {
-	return NodesAndEdges(schema, ObjectTablesInSchema(context, schema));
+	return NodesAndEdges(context, schema, ObjectTablesInSchema(context, schema), {});
 }
 
 std::string BuildReconcileSQL(ClientContext &context, const std::string &schema,
@@ -246,11 +257,11 @@ std::string BuildReconcileSQL(ClientContext &context, const std::string &schema,
 		}
 	}
 
-	std::string sql = NodesAndEdges(schema, object_tables);
+	std::string sql = NodesAndEdges(context, schema, object_tables, pending);
 	// Order is normative: hierarchy corrects the parent chain that feature_id and bbox
 	// both read, and bbox unions across descendants so it must come last.
 	if (Wants(checks, "hierarchy")) {
-		sql += HierarchyPhase(schema, object_tables);
+		sql += HierarchyPhase(context, schema, object_tables, pending);
 	}
 	if (Wants(checks, "feature_id")) {
 		sql += FeatureIdPhase(schema, object_tables);

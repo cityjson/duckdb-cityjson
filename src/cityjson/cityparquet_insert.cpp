@@ -4,6 +4,7 @@
 #include "cityjson/column_types.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
+#include "cityjson/lod_table.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/table_function.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -187,22 +188,34 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// have a fixed shape; geometry_templates carries per-LoD columns and so its shape is
 	// a property of the file -- asked of the sidecar reader rather than reconstructed.
 	std::map<std::string, std::vector<ColumnInfo>> source_sidecar_columns;
-	if (facts.has_materials) {
-		source_sidecar_columns["materials"] = {};
-	}
-	if (facts.has_textures) {
-		source_sidecar_columns["textures"] = {};
-	}
-	if (!facts.geometry_templates.Empty()) {
-		std::vector<std::string> names;
-		std::vector<LogicalType> types;
-		std::vector<std::string> lods;
-		GeometryTemplateColumns(facts.geometry_templates, names, types, lods);
+	auto record_sidecar = [&](const std::string &sidecar, const std::vector<std::string> &names,
+	                          const std::vector<LogicalType> &types) {
 		std::vector<ColumnInfo> columns;
 		for (idx_t i = 0; i < names.size(); i++) {
 			columns.push_back({names[i], types[i]});
 		}
-		source_sidecar_columns["geometry_templates"] = std::move(columns);
+		source_sidecar_columns[sidecar] = std::move(columns);
+	};
+	{
+		std::vector<std::string> names;
+		std::vector<LogicalType> types;
+		// The fixed sidecars are asked for too, not left empty. A destination's
+		// `materials` may be sparser than what a read produces -- loaded from a Parquet
+		// file written before a column existed -- and INSERT ... BY NAME rejects a staged
+		// column the destination has not got.
+		if (facts.has_materials) {
+			AppearanceSidecarColumns("materials", names, types);
+			record_sidecar("materials", names, types);
+		}
+		if (facts.has_textures) {
+			AppearanceSidecarColumns("textures", names, types);
+			record_sidecar("textures", names, types);
+		}
+		if (!facts.geometry_templates.Empty()) {
+			std::vector<std::string> lods;
+			GeometryTemplateColumns(facts.geometry_templates, names, types, lods);
+			record_sidecar("geometry_templates", names, types);
+		}
 	}
 
 	std::vector<std::string> source_sidecars;
@@ -228,6 +241,20 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	}
 
 	// ---- Phase 2: preconditions, before any mutation ------------------------
+	// The rows this insert will actually route somewhere. With `tables` restricting the
+	// insert, the staged relation holds rows destined for nothing, and they must not be
+	// judged by preconditions that only apply to rows being written.
+	std::string routed;
+	{
+		std::vector<std::string> literals;
+		for (const auto &entry : types_by_module) {
+			for (const auto &object_type : entry.second) {
+				literals.push_back(Literal(object_type));
+			}
+		}
+		routed = "(SELECT * FROM " + std::string(kStage) + " WHERE object_type IN (" + Join(literals, ", ") + "))";
+	}
+
 	// Ids are identity and resolve by bare id across every file in the package, so
 	// uniqueness is checked against the whole destination, not just the target module.
 	{
@@ -238,32 +265,58 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		sql += "SELECT error('insert_cityjson: duplicate id ' || id ||\n"
 		       "  ' -- the destination already contains it; ids are identity, so the insert is refused rather '\n"
 		       "  'than renaming silently') FROM " +
-		       std::string(kStage) + " s WHERE s.id IN (" + Join(destination_ids, " UNION ALL ") + ");\n";
+		       routed + " s WHERE s.id IN (" + Join(destination_ids, " UNION ALL ") + ");\n";
+	}
+
+	// A parent an incoming row names must exist, either among the rows being inserted or
+	// already in the destination. Otherwise the reconcile would resolve feature_id to a
+	// parent that is not there and commit a package that immediately fails validation --
+	// which `tables` makes easy to do by accident, by excluding the module the parent
+	// lives in.
+	{
+		std::vector<std::string> known;
+		known.push_back("SELECT id FROM " + routed + " k");
+		for (const auto &table : destination_tables) {
+			known.push_back("SELECT id FROM " + QualifiedName(schema, table));
+		}
+		sql += "SELECT error('insert_cityjson: unresolved parent ' || p ||\n"
+		       "  ' -- named by ' || id || ', but present neither in the rows being inserted nor in the '\n"
+		       "  'destination; inserting would commit a package that fails its own hierarchy check') FROM (\n"
+		       "  SELECT id, u.p AS p FROM " +
+		       routed + " s, UNNEST(s.parents) AS u(p) WHERE u.p IS NOT NULL\n) WHERE p NOT IN (" +
+		       Join(known, " UNION ALL ") + ");\n";
 	}
 
 	// One CRS per package. Skipped when the destination's footer is unknown, which is
 	// what a hand-rolled read_parquet load leaves behind.
 	if (facts.reference_system.has_value()) {
-		sql += "SELECT error('insert_cityjson: CRS mismatch -- the destination is ' || d || ' and the source is " +
-		       facts.reference_system.value() +
-		       "; reprojection is not performed') FROM (SELECT\n"
+		// The CRS goes in as a quoted literal, never spliced into an open string. A
+		// referenceSystem is source metadata, so an apostrophe in it would otherwise end
+		// the literal early and let the file's own text continue the generated script.
+		const auto crs = Literal(facts.reference_system.value());
+		sql += "SELECT error('insert_cityjson: CRS mismatch -- the destination is ' || d || ' and the source is ' || " +
+		       crs +
+		       " || '; reprojection is not performed') FROM (SELECT\n"
 		       "  (SELECT DISTINCT cityparquet_city_field(city, 'crs') FROM " +
 		       QualifiedName(schema, "__cityparquet") +
 		       " WHERE city IS NOT NULL) AS d\n"
 		       ") WHERE d IS NOT NULL AND d <> " +
-		       Literal(facts.reference_system.value()) + ";\n";
+		       crs + ";\n";
 	}
 
 	// ---- Phase 3: schema evolution, before any INSERT -----------------------
 	PendingTables pending;
 	std::vector<std::string> incoming_geometry_columns;
 	bool incoming_has_bbox = false;
+	bool incoming_has_children_roles = false;
 	for (const auto &column : facts.columns) {
 		const auto lowered = StringUtil::Lower(column.name);
 		if (MatchesLodSuffix(lowered, "geometry_lod")) {
 			incoming_geometry_columns.push_back(column.name);
 		} else if (lowered == "bbox") {
 			incoming_has_bbox = true;
+		} else if (lowered == "children_roles") {
+			incoming_has_children_roles = true;
 		}
 	}
 
@@ -286,13 +339,22 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			       Literal(table + ".parquet") + ", 'object', ANY_VALUE(city) FROM " +
 			       QualifiedName(schema, "__cityparquet") + " WHERE NOT EXISTS (SELECT 1 FROM " +
 			       QualifiedName(schema, "__cityparquet") + " WHERE table_name = " + Literal(table) + ");\n";
+			// The CREATE above is IF NOT EXISTS, so when two inserts are batched in one
+			// submission -- both seeing the pre-batch catalog, both taking this branch --
+			// the second one's CREATE does nothing and its own columns would never be
+			// added. Evolving unconditionally afterwards makes the branch idempotent.
+			for (const auto &column : facts.columns) {
+				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ADD COLUMN IF NOT EXISTS " +
+				       Quoted(column.name) + " " + ColumnTypeUtils::ToDuckDBType(column.kind).ToString() + ";\n";
+			}
 			// It does not exist for the reconcile that follows either, so its columns are
 			// handed over rather than looked up.
-			pending[table] = PendingTable {incoming_geometry_columns, incoming_has_bbox};
+			pending[table] = PendingTable {incoming_geometry_columns, incoming_has_bbox, incoming_has_children_roles};
 			continue;
 		}
 
 		auto existing = TableColumns(context, schema, table);
+		bool evolved = false;
 		for (const auto &column : facts.columns) {
 			const auto type = ColumnTypeUtils::ToDuckDBType(column.kind);
 			const auto *match = FindColumn(existing, column.name);
@@ -302,6 +364,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ADD COLUMN IF NOT EXISTS " +
 				       Quoted(column.name) + " " + type.ToString() + ";\n";
 				existing.push_back({column.name, type});
+				evolved = true;
 				continue;
 			}
 			const auto widened = WidenedType(match->type, type);
@@ -309,6 +372,25 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ALTER COLUMN " + Quoted(column.name) +
 				       " SET DATA TYPE " + widened.ToString() + ";\n";
 			}
+		}
+		if (evolved) {
+			// An ALTER above is invisible to BuildReconcileSQL, which reads the pre-batch
+			// catalog: it would compute the bbox from the table's *old* geometry columns
+			// and so ignore the very column the incoming rows carry their geometry in,
+			// setting their bbox to NULL. `existing` is the post-ALTER shape.
+			PendingTable entry;
+			entry.has_children_roles = false;
+			for (const auto &column : existing) {
+				const auto lowered = StringUtil::Lower(column.name);
+				if (MatchesLodSuffix(lowered, "geometry_lod")) {
+					entry.geometry_columns.push_back(column.name);
+				} else if (lowered == "bbox") {
+					entry.has_bbox = true;
+				} else if (lowered == "children_roles") {
+					entry.has_children_roles = true;
+				}
+			}
+			pending[table] = std::move(entry);
 		}
 	}
 
@@ -442,7 +524,11 @@ InsertOptions OptionsFromParameters(const FunctionParameters &parameters) {
 	}
 	auto lod = parameters.named_parameters.find("lod");
 	if (lod != parameters.named_parameters.end()) {
-		options.target_lod = StringValue::Get(lod->second);
+		// Normalised exactly as ParseCityJSONReadOptions normalises it. Storing the raw
+		// value would make plan-time inference reject `lod = '2'` for a source LoD of
+		// '2.0' with "LOD '2' not found", while the generated read call -- which does
+		// normalise -- would have accepted it.
+		options.target_lod = LODTableUtils::NormalizeLOD(StringValue::Get(lod->second));
 	}
 	auto sample_lines = parameters.named_parameters.find("sample_lines");
 	if (sample_lines != parameters.named_parameters.end()) {

@@ -25,6 +25,19 @@ void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std
                              std::vector<LogicalType> &types, std::vector<std::string> &lods);
 
 /**
+ * The columns `cityjson_materials(path)` / `cityjson_textures(path)` emit.
+ *
+ * Fixed, unlike the templates sidecar — but still worth asking for rather than
+ * hard-coding a second time, because a destination sidecar may be *sparser* than what a
+ * read produces (loaded from a Parquet file written before a column existed, say), and
+ * `insert_cityjson` has to widen it before `INSERT ... BY NAME` can match.
+ *
+ * `sidecar` is "materials" or "textures".
+ */
+void AppearanceSidecarColumns(const std::string &sidecar, std::vector<std::string> &names,
+                              std::vector<LogicalType> &types);
+
+/**
  * Registers the CityParquet appearance sidecar readers:
  *
  *   cityjson_materials(path) -> materials.parquet rows
