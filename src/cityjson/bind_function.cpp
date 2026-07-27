@@ -1,4 +1,5 @@
 #include "cityjson/table_function.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
@@ -8,6 +9,8 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+
+#include <set>
 
 namespace duckdb {
 namespace cityjson {
@@ -19,6 +22,15 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
 		if (kv.first == "lod") {
 			options.target_lod = LODTableUtils::NormalizeLOD(StringValue::Get(kv.second));
 			options.use_wkb_encoding = true; // Enable WKB encoding when LOD is specified
+		} else if (kv.first == "appearance") {
+			auto mode = StringUtil::Lower(StringValue::Get(kv.second));
+			if (mode == "sidecar") {
+				options.sidecar_appearance = true;
+			} else if (mode == "local") {
+				options.sidecar_appearance = false;
+			} else {
+				throw BinderException(function_name + ": appearance must be 'local' or 'sidecar', got '" + mode + "'");
+			}
 		} else if (kv.first == "sample_lines") {
 			auto sample_lines = BigIntValue::Get(kv.second);
 			if (sample_lines < 0) {
@@ -42,7 +54,7 @@ static std::vector<CityJSONFeature> FlattenChunks(const CityJSONFeatureChunk &ch
 	return all_features;
 }
 
-static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines) {
+void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines) {
 	if (bind_data.target_lod.has_value()) {
 		std::vector<CityJSONFeature> features;
 		try {
@@ -75,6 +87,54 @@ static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader, siz
 	}
 }
 
+CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options, bool streaming) {
+	// A probe bind_data, populated exactly as BindCityJSONReadRaw populates the real one,
+	// so InferCityJSONColumns produces the column list that read really will emit. That
+	// equality is the whole point of routing through this rather than re-deriving.
+	CityJSONBindData probe;
+	probe.streaming = streaming;
+	probe.target_lod = options.target_lod;
+	probe.use_wkb_encoding = options.use_wkb_encoding;
+
+	CityJSONFeatureChunk all;
+	try {
+		probe.metadata = reader.ReadMetadata();
+		if (!streaming) {
+			probe.chunks = reader.ReadAllChunks();
+		}
+		InferCityJSONColumns(probe, reader, options.sample_lines);
+		all = streaming ? reader.ReadAllChunks() : probe.chunks;
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to read source file: " + std::string(e.what()));
+	}
+
+	CityJSONSourceFacts facts;
+	facts.columns = probe.columns;
+	if (probe.metadata.metadata.has_value()) {
+		facts.reference_system = probe.metadata.metadata.value().reference_system;
+	}
+
+	// The complete set, from every feature: routing sends each type to its module table,
+	// so a type appearing only in the tail would otherwise land in no table at all.
+	std::set<std::string> types;
+	for (const auto &feature : all.records) {
+		for (const auto &entry : feature.city_objects) {
+			types.insert(entry.second.type);
+		}
+	}
+	facts.object_types.assign(types.begin(), types.end());
+
+	// Interned, not counted off the header: a CityJSONSeq feature may carry definitions
+	// the header never declared, and those need a sidecar just as much.
+	const auto index = AppearanceIndex::Build(probe.metadata, all.records);
+	facts.has_materials = !index.materials.empty();
+	facts.has_textures = !index.textures.empty();
+	if (probe.metadata.geometry_templates.has_value()) {
+		facts.geometry_templates = probe.metadata.geometry_templates.value();
+	}
+	return facts;
+}
+
 CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
                                      vector<LogicalType> &return_types, vector<string> &names,
                                      const std::string &function_name, CityJSONReader &reader, bool streaming) {
@@ -105,7 +165,15 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 		result.scan_plan = result.chunks.BuildScanPlan();
 	}
 
-	InferSchema(result, reader, options.sample_lines);
+	InferCityJSONColumns(result, reader, options.sample_lines);
+
+	if (options.sidecar_appearance) {
+		// Reading the whole file, not a sample: a definition used only by a feature in
+		// the tail belongs in the dataset's sidecar just as much as a header one, and
+		// omitting it would leave that feature's references unresolvable.
+		auto all = reader.ReadAllChunks();
+		result.appearance_index = AppearanceIndex::Build(result.metadata, all.records);
+	}
 
 	for (const auto &col : result.columns) {
 		names.push_back(col.name);

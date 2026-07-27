@@ -516,15 +516,6 @@ static json StructPropsToJson(const Value &sval) {
 			props[name] = ListValueToJson(child);
 		}
 	}
-	// cityparquet-rs nests `shells` one array per solid even for a single Solid
-	// ([[6]] not [6]); the Solid reconstruction expects the flat per-shell form, so
-	// unwrap the lone solid. MultiSolid/CompositeSolid keep the nested form.
-	if (props.value("type", std::string()) == "Solid" && props.contains("shells")) {
-		auto &sh = props["shells"];
-		if (sh.is_array() && sh.size() == 1 && sh[0].is_array()) {
-			props["shells"] = sh[0];
-		}
-	}
 	return props;
 }
 
@@ -567,16 +558,33 @@ static json PartitionFlat(const json &flat, const std::vector<size_t> &counts) {
 	return groups;
 }
 
-// Read per-shell face counts out of a spec §8 `shells` value for a Solid (flat
-// array) as a plain vector; returns empty for anything else.
-static std::vector<size_t> SolidShellCounts(const json &shells) {
+// Read a flat list of per-shell face counts out of one solid's `shells` entry.
+static std::vector<size_t> ShellCountsOfSolid(const json &solid_shells) {
 	std::vector<size_t> counts;
-	if (shells.is_array()) {
-		for (const auto &n : shells) {
+	if (solid_shells.is_array()) {
+		for (const auto &n : solid_shells) {
 			counts.push_back(n.is_number_unsigned() ? n.get<size_t>() : 0);
 		}
 	}
 	return counts;
+}
+
+// Read the per-shell face counts of a `Solid` out of a spec `shells` value.
+//
+// The spec form is nested one array per solid, so a Solid -- which has exactly
+// one -- is [[12, 4]] and its counts live in shells[0]. A flat [12, 4] is
+// accepted as well: it is what this extension itself wrote before the encoding
+// was corrected, and what a third-party producer with the same bug may still
+// emit. The two are told apart by whether the first element is an array, which
+// is unambiguous down to the degenerate single-shell case ([1] vs [[1]]).
+static std::vector<size_t> SolidShellCounts(const json &shells) {
+	if (!shells.is_array() || shells.empty()) {
+		return {};
+	}
+	if (shells[0].is_array()) {
+		return ShellCountsOfSolid(shells[0]); // spec form: [[12, 4]]
+	}
+	return ShellCountsOfSolid(shells); // legacy flat form: [12, 4]
 }
 
 static size_t SumCounts(const std::vector<size_t> &counts) {
@@ -615,7 +623,7 @@ static json RenestValues(const std::string &type, const json &face_semantics, co
 					ok = false;
 					break;
 				}
-				total += SumCounts(SolidShellCounts(solid_shells));
+				total += SumCounts(ShellCountsOfSolid(solid_shells));
 			}
 		}
 		if (!ok || total != n) {
@@ -664,7 +672,7 @@ static json RenestBoundaries(const std::string &type, const json &boundaries, co
 		for (size_t soi = 0; soi < boundaries.size(); ++soi) {
 			const json &solid = boundaries[soi];
 			const json flat = (solid.is_array() && !solid.empty() && solid[0].is_array()) ? solid[0] : json::array();
-			auto counts = SolidShellCounts(shells[soi]);
+			auto counts = ShellCountsOfSolid(shells[soi]);
 			if (!counts.empty() && SumCounts(counts) == flat.size()) {
 				out.push_back(PartitionFlat(flat, counts));
 			} else {

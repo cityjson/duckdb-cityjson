@@ -192,39 +192,55 @@ In default mode (no `lod` parameter), the schema includes:
 STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
 ```
 
-**Geometry columns (CityParquet wide layout)** — one pair of columns per LOD found in the data, named after the normalized LOD (e.g. `geometry_lod2_2`, `geometry_properties_lod2_2`; a whole-number LOD like `2.0` normalizes to `geometry_lod2`):
+**Geometry columns (CityParquet wide layout)** — one pair of columns per LOD found in the data, named after the normalized LOD (e.g. `geometry_lod2_2`, `geometry_properties_lod2_2`; a suffix always carries a minor, so a whole-number LOD like `2.0` becomes `geometry_lod2_0`, never `geometry_lod2`):
 
 | Column                          | Type           | Description                                             |
 | ------------------------------- | -------------- | ------------------------------------------------------- |
 | `geometry_lodX_Y`               | BLOB           | WKB-encoded geometry for that LOD (NULL if absent)      |
-| `geometry_properties_lodX_Y`    | JSON (VARCHAR) | Geometry metadata in the CityParquet spec §8 form (below) |
+| `geometry_properties_lodX_Y`    | STRUCT        | Geometry metadata in the CityParquet spec form (below) |
 | `material_lodX_Y`               | JSON (VARCHAR) | Per-surface material map for that LOD's geometry (§11.1); NULL if none |
 | `texture_lodX_Y`                | JSON (VARCHAR) | Per-surface texture map for that LOD's geometry (§11.1); NULL if none |
 
 This is the layout the CityParquet encoding formalises: each LOD becomes its own WKB column, and `COPY ... TO (FORMAT PARQUET)` yields a Parquet-encoded city model directly.
 
-**`geometry_properties` shape (CityParquet spec §8).** The WKB geometry cannot
+**`geometry_properties` shape (CityParquet spec).** The WKB geometry cannot
 carry semantics or the solid's shell structure, so those live in
-`geometry_properties` as a flattened, WKB-face-aligned JSON object:
+`geometry_properties_lod*` as a flattened, WKB-face-aligned **STRUCT** — the
+fixed-shape parts are typed columns a query engine reads without parsing JSON:
 
-| Key | Present when | Meaning |
+```text
+STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+```
+
+| Field | Present when | Meaning |
 | --- | --- | --- |
 | `type` | always | CityJSON geometry type as a string (`"Solid"`, `"MultiSurface"`, …) |
-| `shells` | solid-family geometry | Per-shell emitted-face counts. Flat for `Solid` (`[12]`); one array per solid for `MultiSolid`/`CompositeSolid` (`[[12],[8,4]]`). Recovers the shell partition the WKB flattens away. |
-| `surfaces` | source has semantics | The CityJSON `surfaces` array, verbatim (order and content preserved, extended `+`-attributes inline) |
-| `face_semantics` | source has semantics | A flat array with one entry per WKB face, in WKB face order — each the index of that face's surface in `surfaces`, or `null`. Replaces CityJSON's nested `semantics.values`. |
-| `lod` | un-suffixed column only | Present only in per-LoD mode (below), where the column name carries no LoD |
+| `surfaces` | source has semantics | The CityJSON `surfaces` array verbatim as JSON text (order and content preserved, extended `+`-attributes inline). NULL otherwise. |
+| `face_semantics` | source has semantics | One entry per WKB face, in WKB face order — each the index of that face's surface in `surfaces`, or `NULL`. Replaces CityJSON's nested `semantics.values`. |
+| `shells` | solid-family geometry | Per-solid, then per-shell, face counts — always two levels deep, so a lone `Solid` is `[[12, 4]]` and a `MultiSolid`/`CompositeSolid` is `[[12], [8, 4]]`. Recovers the shell partition the WKB flattens away. NULL for non-solid types. |
+
+There is no `lod` field: the level of detail is carried by the column name.
 
 Example (a `Solid` with per-surface semantics):
 
-```json
-{"type":"Solid",
- "shells":[6],
- "surfaces":[{"type":"GroundSurface"},{"type":"RoofSurface"},{"type":"WallSurface"},{"type":"WallSurface"}],
- "face_semantics":[0,1,2,2,2,3]}
+```sql
+SELECT geometry_properties_lod2_2.* FROM read_cityjsonseq('buildings.city.jsonl');
+-- type           = 'Solid'
+-- surfaces       = '[{"type":"GroundSurface"},{"type":"RoofSurface"},{"type":"WallSurface"},{"type":"WallSurface"}]'
+-- face_semantics = [0, 1, 2, 2, 2, 3]
+-- shells         = [[6]]
 ```
 
-`len(face_semantics)` always equals `sum(shells)` (the WKB face count). This is
+Because `face_semantics` is a native `INTEGER[]`, surface-level analysis is a
+positional filter a columnar engine can `UNNEST` rather than a JSON parse:
+
+```sql
+-- how many roof faces does each building have?
+SELECT id, len(list_filter(geometry_properties_lod2_2.face_semantics, i -> i = 1)) AS roof_faces
+FROM read_cityjsonseq('buildings.city.jsonl');
+```
+
+`len(face_semantics)` always equals the total of `shells` (the WKB face count). This is
 also the metadata the [`duckdb-3d`](https://github.com/HideBa/duckdb-3d)
 extension reads from `shells` to compute the volume of a solid with inner
 shells. (Note: the old form — an integer `type` code, `cityjsonType`, and
@@ -261,8 +277,9 @@ When `lod` is specified, the schema switches to:
 | `id`                  | VARCHAR       | CityObject identifier                           |
 | `feature_id`          | VARCHAR       | Feature identifier                              |
 | `object_type`         | VARCHAR       | CityJSON type                                   |
-| `geometry`            | BLOB          | WKB-encoded geometry for the requested LOD      |
-| `geometry_properties` | JSON (VARCHAR)| Geometry metadata, spec §8 form (see above); carries `lod` here since the column name has no suffix |
+| `geometry_lodX_Y`     | BLOB          | WKB-encoded geometry for the requested LOD      |
+| `geometry_properties_lodX_Y` | STRUCT | Geometry metadata, spec form (see above)        |
+| `material_lodX_Y` / `texture_lodX_Y` | JSON (VARCHAR) | Appearance for that geometry (§11.1); NULL if none |
 | `bbox`                | STRUCT        | 3D extent of the geometry (`min_x..max_z DOUBLE`) |
 | *(attributes)*        | *(inferred)*  | Dynamic attribute columns                       |
 
@@ -270,9 +287,9 @@ Use with DuckDB Spatial:
 
 ```sql
 LOAD spatial;
-SELECT id, ST_GeomFromWKB(geometry) AS geom
+SELECT id, ST_GeomFromWKB(geometry_lod2_2) AS geom
 FROM read_cityjsonseq('buildings.city.jsonl', lod => '2.2')
-WHERE geometry IS NOT NULL;
+WHERE geometry_lod2_2 IS NOT NULL;
 ```
 
 ### Metadata Columns
@@ -376,7 +393,7 @@ The `COPY TO` statement requires these columns in the input query:
 | `children`    | No       | Child object IDs                   |
 | `parents`     | No       | Parent object IDs                  |
 | `geometry`    | No       | WKB geometry or geometry struct    |
-| `geometry_properties` | No | Geometry metadata — JSON text **or** a CityParquet spec §8 STRUCT (`STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])`); either form reconstructs semantics/shells |
+| `geometry_properties` | No | Geometry metadata — a CityParquet STRUCT (`STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])`) **or** JSON text from an external producer; either form reconstructs semantics/shells |
 
 All other columns are written as CityJSON attributes. The wide CityParquet layout
 (`geometry_lodX_Y` + `geometry_properties_lodX_Y` per LoD, as written by
@@ -437,6 +454,238 @@ SELECT * FROM read_cityjson('buildings.city.json') WHERE id = 'building1';
 ```
 
 Other predicates (ranges, filters on attribute columns, `IN`, etc.) still work — they are simply applied by DuckDB after the scan rather than pushed into the reader.
+
+## CityParquet package mutation
+
+A CityParquet dataset is a *directory* of Parquet files — one object table per CityGML module, plus optional `materials` / `textures` / `geometry_templates` sidecars. Load it into DuckDB and it becomes a set of tables you can query. Mutating it is harder, because the package has internal relationships ordinary `INSERT` / `UPDATE` / `DELETE` knows nothing about: deleting a parent must cascade to its children, and `feature_id`, `bbox` and the reciprocal `parents` / `children` / `children_roles` arrays are derived state any structural edit invalidates.
+
+These functions generate that SQL for you.
+
+### The model: a package is a schema
+
+Load each file into a table named exactly as the spec names it, then register the package:
+
+```sql
+CREATE SCHEMA ams;
+CREATE TABLE ams.building  AS SELECT * FROM read_parquet('amsterdam/building.parquet');
+CREATE TABLE ams.materials AS SELECT * FROM read_parquet('amsterdam/materials.parquet');
+
+PRAGMA cityparquet_init('ams');
+```
+
+Object tables are `building`, `bridge`, `tunnel`, `construction`, `transportation`, `vegetation`, `relief`, `water_body`, `land_use`, `city_furniture`, `generics`; sidecars are `materials`, `textures`, `geometry_templates`. Naming is the whole binding — there is no registration state to keep in sync.
+
+`cityparquet_init` creates `__cityparquet`, one row per package file (`table_name`, `file_name`, `role`, `city`). It is the one thing a hand-rolled `read_parquet` load cannot give you, because that discards the Parquet footer. Re-run it after adding a table; it is idempotent.
+
+### Mutation
+
+```sql
+-- Delete, cascading to the transitive children closure
+PRAGMA cityparquet_delete('ams', 'object_type = ''Building'' AND b3_h_dak_max > 20');
+PRAGMA cityparquet_delete('ams', 'id = ''x''', cascade = false);
+PRAGMA cityparquet_delete('ams', 'object_type = ''Road''', tables = ['transportation']);
+
+-- Re-derive what a raw SQL edit invalidated
+UPDATE ams.building SET geometry_lod2_2 = … WHERE id = 'x';
+PRAGMA cityparquet_reconcile('ams');
+PRAGMA cityparquet_reconcile('ams', checks = ['bbox']);
+```
+
+There is deliberately **no `cityparquet_update`**. Attribute edits are ordinary `UPDATE` and need no wrapper; only structural edits — geometry, hierarchy, appearance — invalidate derived state, and `cityparquet_reconcile` re-derives exactly that.
+
+`cascade` walks `children` transitively, never `feature_id` equality: a predicate may match a non-root object, and deleting a `BuildingPart` must not take out the parent `Building` sharing its `feature_id`.
+
+### Inspection and housekeeping
+
+```sql
+PRAGMA cityparquet_validate('ams');
+SELECT * FROM cityparquet_validation WHERE severity = 'error';
+
+PRAGMA cityparquet_orphans('ams');
+SELECT * FROM cityparquet_orphan_rows;
+
+PRAGMA cityparquet_vacuum('ams');   -- delete unreferenced sidecar rows
+```
+
+`cityparquet_validate` reports `feature_id_null`, `feature_id_dangling`, `parent_dangling`, `child_dangling`, `children_roles_misaligned` and `id_duplicate`. Because a PRAGMA cannot be a subquery, both pragmas materialise their findings into a temp table and then select from it, so the results stay filterable afterwards.
+
+### Transactions
+
+Each pragma **returns SQL text**, which DuckDB parses and executes in place of the call. Atomicity is therefore DuckDB's own, not this extension's:
+
+```sql
+BEGIN;
+PRAGMA cityparquet_delete('ams', 'object_type = ''Building''');
+ROLLBACK;   -- undoes the whole cascade, survivor cleanup and re-derivation
+```
+
+One caveat: DuckDB expands *every* pragma in a submitted script before running *any* of it, so a generator's view of the catalog is the state before the batch began. The generated SQL is written to be idempotent so batching is safe, but if you script several of these, prefer submitting them as separate statements.
+
+### Seeing the SQL
+
+Every mutating pragma has a scalar twin returning the SQL it would run, without running it:
+
+```sql
+SELECT cityparquet_delete_sql('ams', 'id = ''x''');
+SELECT cityparquet_reconcile_sql('ams');
+SELECT cityparquet_vacuum_sql('ams');
+SELECT cityparquet_init_sql('ams');
+SELECT cityparquet_validate_sql('ams');
+```
+
+### Supporting scalar functions
+
+```sql
+-- 3D extent of a WKB blob, solid family included. DuckDB spatial rejects
+-- PolyhedralSurfaceZ, which is what every CityParquet solid LoD is.
+SELECT cityjson_wkb_extent(geometry_lod2_2) FROM ams.building;
+--> STRUCT(min_x, min_y, min_z, max_x, max_y, max_z DOUBLE)
+
+-- Sidecar ids an appearance cell references
+SELECT cityjson_appearance_ids(material_lod2_2, 'material') FROM ams.building;
+SELECT cityjson_appearance_ids(texture_lod2_2,  'texture')  FROM ams.building;
+```
+
+### Adding a CityJSON file to a package
+
+```sql
+PRAGMA insert_cityjson('ams', 'tile.city.json');
+--   also: insert_cityjsonseq, insert_flatcitybuf
+--   named: create_tables = true, tables = ['building', ...], lod = '2.2', sample_lines = 100
+```
+
+One call. Each object is routed to its **CityGML module** table — `Building` and
+`BuildingPart` both to `building`, `Road` and `Square` both to `transportation` — creating
+the module tables and appearance sidecars the source needs, renumbering the incoming
+material / texture / template ids so they cannot collide with the ones already there,
+rewriting every reference in the incoming rows to match, and re-deriving `feature_id`, the
+reciprocal hierarchy and `bbox` afterwards. It is a SQL-generating pragma like the rest, so
+DuckDB runs the whole script inside your transaction.
+
+`insert_cityjson_sql(schema, path)` returns the same script without running it.
+
+Worth knowing:
+
+- **Routing is total.** An object type that belongs to no CityGML module is an error, not a
+  silently skipped row. Extension types cannot be placed without their module declaration,
+  so load those with `read_cityjson` and insert them yourself.
+- **The file is opened twice** — once at plan time to learn its schema and its object
+  types, once by the generated read. The plan-time pass reads it *whole*, because a sample
+  cannot tell you that a rare type appears only in the tail.
+- **Ids are identity.** An incoming id that already exists in the destination refuses the
+  entire insert.
+- **The CRS must match** the destination's, when the destination's footer records one.
+  Reprojection is not performed.
+
+### Merging packages
+
+```sql
+PRAGMA cityparquet_merge('ams', 'utrecht');
+--   named: create_tables = true, tables = ['building', ...]
+```
+
+Merges one loaded package into another. Object ids must be unique across the **whole**
+destination package, not just the target module — `parents`, `children` and `feature_id`
+all resolve by bare id across files — and a collision refuses the entire merge rather than
+renaming silently.
+
+Sidecar ids are renumbered onto the destination's numbering and every reference in the
+incoming rows is shifted to match, so nothing is left pointing at the destination's own
+definitions. The offset is `dst_max + 1 − src_min`, not `dst_max + 1`: a source id may be
+negative, and adding `dst_max + 1` alone could then land back inside the occupied range.
+Schema evolution (new LoD columns, new attributes, type widening) runs before any insert,
+and derived state is re-derived afterwards. Sidecars evolve too: `geometry_templates`
+carries per-LoD columns, so two packages whose templates use different LoDs genuinely have
+different sidecar schemas, and a template's own material and texture references are shifted
+along with the rows they name.
+
+### The package round trip
+
+```sql
+PRAGMA cityparquet_read('amsterdam/', 'ams');
+-- … mutate …
+SELECT * FROM cityparquet_write('ams', 'out/', crs => 'EPSG:7415');
+--   → (file, action, rows, bytes)
+```
+
+`cityparquet_read` loads each package file into a table and recovers the Parquet footer
+into `__cityparquet` — the one thing a hand-rolled `read_parquet` load throws away.
+
+`cityparquet_write` regenerates each file's `city` and `geo` footers from the data and
+writes a `metadata.json` STAC Item. Three things worth knowing:
+
+- **`crs` is required** when the package's footer does not carry one (as after a
+  hand-rolled load). Writing geometry with no CRS would silently mis-georeference the
+  package, so the write fails instead.
+- **`geo` is recomputed, never carried.** GeoParquet legality flips in both directions
+  under mutation — inserting one `Solid` makes a previously-clean column illegal to
+  declare, deleting the last one makes it newly legal. A stale `geo` declaring a column
+  that now holds a `PolyhedralSurface Z` makes the *whole file* unreadable to Shapely,
+  GeoPandas and DuckDB spatial. A table whose geometry is entirely solid gets **no `geo`
+  key at all** — a valid CityParquet table that is simply not a GeoParquet file.
+- **It sees committed state.** Unlike the pragmas, `cityparquet_write` is a table function
+  running on an internal connection, because `KV_METADATA` cannot omit a key and the
+  `geo`-or-no-`geo` decision depends on the data. Mutate, commit, then write.
+
+`metadata.json` is the **dataset-level** view, where the footers are per-file. So every
+`city3d:*` field in it is a union or a sum across the package — `city3d:lods` is the union
+over all tables, `city3d:city_objects` the sum over the object tables — and none of them
+is a copy of any single footer. It also carries the Projection extension (`proj:projjson`,
+`proj:bbox`), and each asset its `file:size` and `table:row_count`. `geometry` stays null:
+STAC wants EPSG:4326 there and a package's coordinates are not, so `proj:bbox` carries the
+real extent.
+
+Atomicity is **per file only**. Each file flips whole via temp-file + rename, but the
+package as a whole has a window during a write in which it is inconsistent, and
+concurrent readers are unsupported. CityParquet mandates stable basenames, so a write
+overwrites in place; renaming a manifest last would not help. Where genuine cross-file
+atomicity matters, that is DuckLake's job.
+
+### Not yet implemented
+
+`insert_cityjson` is designed but not built — they depend on appearance normalisation (dataset-global sidecar ids, inlined texture UVs) and on package I/O (`cityparquet_read` / `cityparquet_write`, including footer and STAC Item regeneration). See `docs/superpowers/specs/2026-07-25-cityparquet-mutation-functions-design.md`.
+
+Two specification divergences found while building this are recorded in `docs/CITYPARQUET_SPEC_QUESTIONS.md`; one — whether a parent's `bbox` includes its descendants' geometry — is a genuine contradiction in the spec and currently makes `cityparquet_reconcile` disagree with the reader on non-leaf rows.
+
+## Appearance normalisation
+
+CityJSON carries appearance as **feature-local indices** into per-feature arrays.
+CityParquet requires **dataset-global sidecar ids** and **inlined texture UVs**, because
+once every feature's rows share one table a feature-local index resolves to the wrong
+definition — or to nothing.
+
+```sql
+-- The sidecar tables, shaped as materials.parquet / textures.parquet
+SELECT * FROM cityjson_materials('delft.city.jsonl');
+SELECT * FROM cityjson_textures('delft.city.jsonl');
+SELECT * FROM cityjson_geometry_templates('delft.city.json');
+
+-- Object rows whose appearance references those ids
+SELECT id, material_lod2_2, texture_lod2_2
+FROM read_cityjsonseq('delft.city.jsonl', appearance := 'sidecar');
+```
+
+`appearance` accepts `'local'` (the default, unchanged) or `'sidecar'`, on
+`read_cityjson`, `read_cityjsonseq` and `read_flatcitybuf`.
+
+**Definitions are interned, not read from the header.** CityJSONSeq does not keep every
+definition in one place: the header line carries some, and each feature carries the ones
+it uses under its *own* local indices — so a feature's material `0` is not in general the
+header's material `0`. The sidecar is therefore the interned union across the whole file,
+matched by structural equality (CityJSON gives a material no identity of its own). Header
+entries are interned first, so their ids stay their ordinal positions, which is exactly
+what a plain CityJSON document yields.
+
+**Geometry templates are in local coordinates.** `cityjson_geometry_templates(path)`
+emits the template sidecar. A template's geometry is in its own local frame and is exempt
+from the dataset transform and the file CRS — an instance's `transformationMatrix` and
+reference point place it into the world — so the WKB holds raw doubles. Each row
+populates only its own LoD's columns, leaving the table sparse by construction; that is
+the cost of keeping one LoD-naming rule across the whole format.
+
+**Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; the sidecar mode
+emits `[texId, [u,v], [u,v], …]`. Both rewrites recurse to their leaves rather than
+assuming a nesting depth, since a `Solid` nests one level deeper than a `MultiSurface`.
 
 ## Common Patterns
 
@@ -548,3 +797,18 @@ SQL tests live in `test/sql/`.
 - [CityJSONSeq specification](https://www.cityjson.org/cityjsonseq/)
 - [DuckDB documentation](https://duckdb.org/docs/)
 - [DuckDB extension development](https://duckdb.org/community_extensions/development)
+
+#### Batching several mutations in one submission
+
+DuckDB expands every pragma in a submitted script *before* running any of it, so each
+generator sees the catalog and the data as they were **before the batch**. The generated
+statements are written to be idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT
+EXISTS`, a guarded bookkeeping insert), and a reconcile will not clear a bbox it merely
+could not see. But two things a generator cannot do for you:
+
+- **Preconditions only see the pre-batch state.** Two inserts in one submission whose
+  files share an object id will not catch each other; only the next `cityparquet_validate`
+  will. Submit them separately if that matters.
+- **Cross-file derived state settles on the last reconcile.** It covers the tables the
+  last generator knew about, which is every table that existed before the batch plus the
+  ones that generator creates itself.

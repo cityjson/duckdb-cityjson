@@ -1,4 +1,5 @@
 #include "cityjson/cityjson_types.hpp"
+#include <set>
 #include "cityjson/lod_table.hpp"
 #include <algorithm>
 
@@ -437,6 +438,148 @@ Extension Extension::FromJson(const json &obj) {
 // CityJSONFeature
 // ============================================================
 
+// ============================================================
+// Appearance (materials, textures, UV pool)
+// ============================================================
+
+namespace {
+
+//! Read a numeric array member into a vector<double>. A member of the wrong shape is
+//! left unset rather than throwing: a malformed colour must not abort the whole read of
+//! an otherwise usable dataset.
+std::optional<std::vector<double>> AppearanceDoubleArray(const json &obj, const std::string &key) {
+	auto it = obj.find(key);
+	if (it == obj.end() || !it->is_array()) {
+		return std::nullopt;
+	}
+	std::vector<double> values;
+	for (const auto &entry : *it) {
+		if (!entry.is_number()) {
+			return std::nullopt;
+		}
+		values.push_back(entry.get<double>());
+	}
+	return values;
+}
+
+std::optional<double> AppearanceDouble(const json &obj, const std::string &key) {
+	auto it = obj.find(key);
+	if (it == obj.end() || !it->is_number()) {
+		return std::nullopt;
+	}
+	return it->get<double>();
+}
+
+std::optional<std::string> AppearanceString(const json &obj, const std::string &key) {
+	auto it = obj.find(key);
+	if (it == obj.end() || !it->is_string()) {
+		return std::nullopt;
+	}
+	return it->get<std::string>();
+}
+
+//! Every member of `obj` not in `known`, so nothing in the source is silently dropped.
+json AppearanceOther(const json &obj, const std::set<std::string> &known) {
+	json other = json::object();
+	for (const auto &entry : obj.items()) {
+		if (known.count(entry.key()) == 0) {
+			other[entry.key()] = entry.value();
+		}
+	}
+	return other.empty() ? json(nullptr) : other;
+}
+
+} // namespace
+
+Material Material::FromJson(const json &obj) {
+	Material result;
+	if (!obj.is_object()) {
+		return result;
+	}
+	result.name = AppearanceString(obj, "name");
+	result.ambient_intensity = AppearanceDouble(obj, "ambientIntensity");
+	result.diffuse_color = AppearanceDoubleArray(obj, "diffuseColor");
+	result.specular_color = AppearanceDoubleArray(obj, "specularColor");
+	result.emissive_color = AppearanceDoubleArray(obj, "emissiveColor");
+	result.transparency = AppearanceDouble(obj, "transparency");
+	result.shininess = AppearanceDouble(obj, "shininess");
+	auto smooth = obj.find("isSmooth");
+	if (smooth != obj.end() && smooth->is_boolean()) {
+		result.is_smooth = smooth->get<bool>();
+	}
+	result.other = AppearanceOther(obj, {"name", "ambientIntensity", "diffuseColor", "specularColor", "emissiveColor",
+	                                  "transparency", "shininess", "isSmooth"});
+	return result;
+}
+
+Texture Texture::FromJson(const json &obj) {
+	Texture result;
+	if (!obj.is_object()) {
+		return result;
+	}
+	// CityJSON calls these `image` and `type`; the specification calls them `image_uri`
+	// and `image_type`. `image_type` keeps the source token verbatim ("PNG", "JPG") --
+	// it is deliberately not a MIME type.
+	result.image_uri = AppearanceString(obj, "image");
+	result.image_type = AppearanceString(obj, "type");
+	result.wrap_mode = AppearanceString(obj, "wrapMode");
+	result.texture_type = AppearanceString(obj, "textureType");
+	result.border_color = AppearanceDoubleArray(obj, "borderColor");
+	result.other = AppearanceOther(obj, {"image", "type", "wrapMode", "textureType", "borderColor"});
+	return result;
+}
+
+GeometryTemplates GeometryTemplates::FromJson(const json &obj) {
+	GeometryTemplates result;
+	if (!obj.is_object()) {
+		return result;
+	}
+	auto templates = obj.find("templates");
+	if (templates != obj.end() && templates->is_array()) {
+		for (const auto &entry : *templates) {
+			result.templates.push_back(Geometry::FromJson(entry));
+		}
+	}
+	// Raw doubles: template vertices are not subject to the dataset transform.
+	auto vertices = obj.find("vertices-templates");
+	if (vertices != obj.end() && vertices->is_array()) {
+		for (const auto &entry : *vertices) {
+			if (entry.is_array() && entry.size() >= 3) {
+				result.vertices.push_back({entry[0].get<double>(), entry[1].get<double>(), entry[2].get<double>()});
+			}
+		}
+	}
+	return result;
+}
+
+Appearance Appearance::FromJson(const json &obj) {
+	Appearance result;
+	if (!obj.is_object()) {
+		return result;
+	}
+	auto materials = obj.find("materials");
+	if (materials != obj.end() && materials->is_array()) {
+		for (const auto &entry : *materials) {
+			result.materials.push_back(Material::FromJson(entry));
+		}
+	}
+	auto textures = obj.find("textures");
+	if (textures != obj.end() && textures->is_array()) {
+		for (const auto &entry : *textures) {
+			result.textures.push_back(Texture::FromJson(entry));
+		}
+	}
+	auto uvs = obj.find("vertices-texture");
+	if (uvs != obj.end() && uvs->is_array()) {
+		for (const auto &entry : *uvs) {
+			if (entry.is_array() && entry.size() >= 2 && entry[0].is_number() && entry[1].is_number()) {
+				result.vertices_texture.push_back({entry[0].get<double>(), entry[1].get<double>()});
+			}
+		}
+	}
+	return result;
+}
+
 CityJSONFeature CityJSONFeature::FromJson(const json &obj) {
 	if (!obj.is_object()) {
 		throw CityJSONError::InvalidSchema("CityJSONFeature must be a JSON object");
@@ -461,6 +604,15 @@ CityJSONFeature CityJSONFeature::FromJson(const json &obj) {
 
 	for (auto &[obj_id, obj_data] : city_objs.items()) {
 		result.city_objects[obj_id] = CityObject::FromJson(obj_data);
+	}
+
+	// Parse per-feature appearance. In CityJSONSeq the material/texture definitions are
+	// in the header, but each feature carries its own `vertices-texture` UV pool.
+	if (obj.contains("appearance") && obj["appearance"].is_object()) {
+		auto appearance = Appearance::FromJson(obj["appearance"]);
+		if (!appearance.Empty()) {
+			result.appearance = std::move(appearance);
+		}
 	}
 
 	// Parse per-feature local vertex pool (CityJSONSeq format)
@@ -529,6 +681,22 @@ CityJSON CityJSON::FromJson(const json &obj) {
 	if (obj.contains("extensions") && obj["extensions"].is_object()) {
 		for (auto &[ext_name, ext_data] : obj["extensions"].items()) {
 			result.extensions[ext_name] = Extension::FromJson(ext_data);
+		}
+	}
+
+	// Parse the document-level appearance: material and texture definitions, and (for
+	// plain CityJSON) the single document-wide UV pool.
+	if (obj.contains("appearance") && obj["appearance"].is_object()) {
+		auto appearance = Appearance::FromJson(obj["appearance"]);
+		if (!appearance.Empty()) {
+			result.appearance = std::move(appearance);
+		}
+	}
+
+	if (obj.contains("geometry-templates") && obj["geometry-templates"].is_object()) {
+		auto templates = GeometryTemplates::FromJson(obj["geometry-templates"]);
+		if (!templates.Empty()) {
+			result.geometry_templates = std::move(templates);
 		}
 	}
 

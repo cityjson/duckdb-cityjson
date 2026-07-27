@@ -13,6 +13,93 @@ This document provides guidance to coding agents focusing on C++ deliverables wh
 
 YOU SHOULD REFERENCE THE DESIGN_DOC.md FILE FOR THE ARCHITECTURAL OVERVIEW.
 
+### CityParquet package mutation layer
+
+`src/cityjson/cityparquet_*.cpp` implements mutation of a CityParquet package held as a
+DuckDB schema. These are **`PragmaFunction`s registered with a `pragma_query_t`**: the
+function *returns SQL text*, which DuckDB parses and runs in place of the pragma, inside
+the caller's transaction (`duckdb/src/planner/statement_preprocessor.cpp:107-122`).
+Atomicity is DuckDB's, not ours — the extension only generates text. Each mutating
+pragma has a scalar `*_sql()` twin returning the same text without running it.
+
+Functions: `cityparquet_init`, `cityparquet_validate`, `cityparquet_orphans`,
+`cityparquet_vacuum`, `cityparquet_reconcile`, `cityparquet_delete`, `cityparquet_merge`,
+`cityparquet_read`, `insert_cityjson` (and `insert_cityjsonseq` / `insert_flatcitybuf`),
+plus the scalars `cityjson_wkb_extent`, `cityjson_wkb_geometry_type`,
+`cityjson_appearance_ids`, `cityjson_shift_appearance_ids` and `cityparquet_city_field`.
+
+**`cityparquet_write` is the one exception to the pragma rule.** `KV_METADATA` accepts
+`getvariable()` (so a footer *value* can be computed in generated SQL) but cannot omit a
+*key*: a NULL value writes the literal string `"NULL"`. The spec requires a solid-only
+table to write no `geo` key at all, legality depends on the data, and SQL cannot branch
+the shape of a `COPY`. So it is a **table function** assembling the metadata in C++ — at
+the cost of an internal connection that sees only committed state. See `CLAUDE.md` for the full table
+and `README.md` for usage.
+
+**Traps worth knowing before adding to this layer:**
+
+- **Pragma expansion happens before execution**, for the *whole* submitted script, so a
+  generator's view of the catalog and data is pre-batch. Anything destination-dependent
+  must be idempotent or deferred into the generated SQL.
+- **A PRAGMA cannot be a subquery** — `FROM (PRAGMA x)` is a parser error. Result-returning
+  pragmas materialise a temp table and select from it.
+- **PRAGMA named parameters use `=`, not `:=`** (`transform_pragma.cpp:26-33`).
+- **No subqueries inside lambda bodies.** Hoist the set into a session variable and use
+  `list_contains(getvariable(...), x)`.
+- **The `JSON` type and `json_extract` are unavailable** (they live in the `json`
+  extension, which this one does not require). JSON is carried as `VARCHAR` and parsed in
+  C++ with the vendored nlohmann::json.
+- **Two ODR link traps.** Binding a *reference* to a `static constexpr` member emits a
+  comdat definition that collides with DuckDB's strong one: write
+  `LogicalType(LogicalTypeId::DOUBLE)` rather than `LogicalType::DOUBLE` in
+  `emplace_back`, and use the non-templated `Catalog::GetEntry(context,
+  CatalogType::TABLE_ENTRY, ...)` rather than `Catalog::GetEntry<TableCatalogEntry>`,
+  which ODR-uses `TableCatalogEntry::Name`.
+- **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
+- **`parquet_kv_metadata` returns BLOB.** Use `decode(value)`, not `value::VARCHAR`.
+- **A third ODR trap: `FileFlags::FILE_FLAGS_READ`** is a `static constexpr FileOpenFlags`.
+  Use the scalar `FileOpenFlags::FILE_FLAGS_READ`, as `duckdb_fs_range_reader.cpp` does.
+- **Never re-derive what the reader emits.** A generator that needs the incoming column
+  list must call `InferCityJSONColumns` / `InspectCityJSONSource`
+  (`bind_function.cpp`), the same inference the bind runs. Reconstructing it from
+  `GetDefinedColumns` + `InferAttributeColumns` + `InferGeometryColumns` gives a
+  different answer, and the generated SQL then names a column the staged relation does
+  not have.
+- **`INSERT ... BY NAME` is not symmetric.** It leaves an unmatched *destination* column
+  NULL, but a *source* column with no destination match is a binder error. Schema
+  evolution must therefore run over sidecars too, not only module tables —
+  `geometry_templates` carries per-LoD columns and so its shape varies by file.
+- **`bbox` is an optional column.** A source with only template geometry produces neither
+  `geometry_lod*` nor `bbox`, so anything generating `UPDATE ... SET bbox` must check the
+  column exists first.
+- **The CityJSONSeq reader is a forward stream.** `ReadAllChunks` and `ReadNFeatures`
+  rewind so they can be asked more than once; `ReadNextFeature` deliberately does not,
+  because it is the streaming scan's cursor.
+- **`SQLString` is a formatting wrapper, not a quoting function**; use
+  `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
+
+### Appearance normalisation
+
+`src/cityjson/appearance_normalise.cpp` and `appearance_table_function.cpp` turn
+CityJSON's feature-local appearance indices into the dataset-global sidecar ids and
+inlined UVs CityParquet requires. `cityjson_materials(path)` / `cityjson_textures(path)`
+emit the sidecar tables; `read_cityjson*(path, appearance := 'sidecar')` rewrites the
+object rows to match. `'local'` remains the default. `cityjson_geometry_templates(path)` emits the
+template sidecar; template geometry is in **local** coordinates and exempt from the
+dataset transform, so no transform is applied when encoding it.
+
+**Do not assume the header holds every definition.** CityJSONSeq spreads them: the header
+carries some and each feature carries the ones it uses under its *own* local indices, so
+a feature's material `0` is not in general the header's material `0`. `AppearanceIndex`
+interns across the whole file by structural equality, header entries first so their ids
+stay their ordinal positions. Reading the header alone silently resolves references to
+the wrong definitions.
+
+**Do not assume a nesting depth.** Material `values` nest per shell and surface depending
+on geometry type, and a texture ring sits one level deeper for a `Solid` than for a
+`MultiSurface`. Recurse to the leaves; recognise a ring as the innermost array (elements
+are scalars) rather than indexing at a fixed level.
+
 ## Build & Tooling
 
 1. Run `make` once to prepare the DuckDB build environment. To make use of cache, try to use `GEN=ninja make` instead.

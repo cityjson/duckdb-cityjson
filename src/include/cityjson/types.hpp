@@ -33,9 +33,10 @@ enum class ColumnType {
 	                    //        max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
 
 	// New WKB-based geometry types
-	GeometryWKB,            // BLOB - WKB-encoded geometry (3D)
-	GeometryPropertiesJson, // JSON - geometry properties (type, semantics, etc.)
-	AppearanceJson,         // JSON - per-LoD material_lod*/texture_lod* appearance (§11)
+	GeometryWKB,              // BLOB - WKB-encoded geometry (3D)
+	GeometryPropertiesStruct, // STRUCT("type" VARCHAR, surfaces JSON,
+	                          //        face_semantics INTEGER[], shells INTEGER[][])
+	AppearanceJson,           // JSON - per-LoD material_lod*/texture_lod* appearance (§11)
 };
 
 /**

@@ -53,6 +53,15 @@ void LocalCityJSONSeqReader::OpenHandle() const {
 	metadata_read_ = false;
 }
 
+void LocalCityJSONSeqReader::Rewind() const {
+	OpenHandle();
+	// The header line has to be consumed again, not merely re-parsed. ReadMetadata()
+	// short-circuits on the cache and leaves the handle where it is, so without this the
+	// next ReadLine() would hand the header to CityJSONFeature::FromJson.
+	handle_->ReadLine();
+	metadata_read_ = true;
+}
+
 // ============================================================
 // ReadMetadata
 // ============================================================
@@ -148,6 +157,14 @@ std::vector<CityJSONFeature> LocalCityJSONSeqReader::ReadNFeatures(size_t n) con
 	std::vector<CityJSONFeature> features;
 	features.reserve(n);
 
+	// "The first n features", not "the next n". A sample must start at the start, and a
+	// caller that has already read the file gets the same sample as one that has not.
+	// Without this, inferring the schema after any other whole-file read sampled an
+	// exhausted stream and produced a schema with neither geometry nor attributes.
+	// ReadNextFeature is the incremental cursor and is deliberately left alone -- the
+	// streaming scan opens a reader of its own (init_global.cpp) and is unaffected.
+	Rewind();
+
 	for (size_t i = 0; i < n; i++) {
 		auto feature = ReadNextFeature();
 		if (!feature.has_value()) {
@@ -165,6 +182,13 @@ std::vector<CityJSONFeature> LocalCityJSONSeqReader::ReadNFeatures(size_t n) con
 
 CityJSONFeatureChunk LocalCityJSONSeqReader::ReadAllChunks() const {
 	std::vector<CityJSONFeature> features;
+
+	// "All chunks" has to mean all of them however often it is asked. The bind reads all
+	// chunks and then interns the appearance from all chunks again; the second call used
+	// to return nothing, so every feature-local material index fell through to the
+	// identity mapping and pointed at whichever definition the header happened to hold
+	// at that position.
+	Rewind();
 
 	while (true) {
 		auto feature = ReadNextFeature();

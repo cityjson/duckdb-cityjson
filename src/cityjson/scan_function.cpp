@@ -30,9 +30,9 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		size_t schema_idx = projected_cols[col_idx];
 		const Column &col = bind_data.columns[schema_idx];
 
-		// Handle WKB geometry column. In per-LOD mode (lod => ...) the single "geometry"
-		// column uses target_geom; in default mode each "geometry_lodX_Y" column resolves
-		// its own LOD from the column name.
+		// Handle WKB geometry column. Both modes name it "geometry_lodX_Y"; in per-LOD
+		// mode (lod => ...) the one such column uses target_geom, while in default mode
+		// each column resolves its own LOD from the column name.
 		if (col.kind == ColumnType::GeometryWKB) {
 			std::optional<Geometry> geom = bind_data.target_lod.has_value()
 			                                   ? target_geom
@@ -47,22 +47,17 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			continue;
 		}
 
-		// Handle geometry properties column (single "geometry_properties" in per-LOD mode,
-		// or per-LOD "geometry_properties_lodX_Y" in default mode).
-		if (col.kind == ColumnType::GeometryPropertiesJson) {
+		// Handle the geometry properties column ("geometry_properties_lodX_Y" in both
+		// modes), paired to the geometry column of the same LoD suffix.
+		if (col.kind == ColumnType::GeometryPropertiesStruct) {
 			std::optional<Geometry> geom = bind_data.target_lod.has_value()
 			                                   ? target_geom
 			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
-			if (geom.has_value()) {
-				// The LoD is carried by a suffixed column name (geometry_properties_lod*);
-				// an un-suffixed "geometry_properties" column (single-LoD mode) has no
-				// name to carry it, so the LoD is added inside the JSON instead (spec §8).
-				bool include_lod = (col.name == "geometry_properties");
-				auto props = CityObjectUtils::GetGeometryPropertiesJson(geom.value(), include_lod);
-				WriteGeometryProperties(wrappers[col_idx].AsFlatMut(), props, output_row);
-			} else {
-				wrappers[col_idx].SetNull(output_row);
-			}
+			// Always routed through WriteGeometryProperties, including the absent-geometry
+			// case: a null STRUCT still needs its LIST children given a well-formed
+			// list_entry_t, which a bare SetNull on the struct would leave uninitialised.
+			auto props = geom.has_value() ? CityObjectUtils::GetGeometryPropertiesStruct(geom.value()) : json(nullptr);
+			WriteGeometryProperties(wrappers[col_idx].AsStructMut(), props, output_row);
 			continue;
 		}
 
@@ -82,7 +77,28 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				}
 			}
 			if (appearance != nullptr) {
-				WriteGeometryProperties(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
+				if (bind_data.appearance_index.has_value()) {
+					// appearance := 'sidecar'. Rewrite the source's feature-local indices
+					// into dataset-global sidecar ids, and (for textures) replace UV
+					// indices with the coordinates themselves -- the UV pool is
+					// per-feature, so a stored index would be meaningless once features
+					// share one table.
+					const auto &index = bind_data.appearance_index.value();
+					const std::vector<std::array<double, 2>> *uv_pool = nullptr;
+					if (feature.appearance.has_value()) {
+						uv_pool = &feature.appearance->vertices_texture;
+					} else if (bind_data.metadata.appearance.has_value()) {
+						uv_pool = &bind_data.metadata.appearance->vertices_texture;
+					}
+					static const std::vector<std::array<double, 2>> empty_pool;
+					const auto normalised =
+					    is_material ? NormaliseMaterialMap(*appearance, index, feature.id)
+					                : NormaliseTextureMap(*appearance, index, feature.id,
+					                                      uv_pool != nullptr ? *uv_pool : empty_pool);
+					WriteJsonText(wrappers[col_idx].AsFlatMut(), normalised, output_row);
+				} else {
+					WriteJsonText(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
+				}
 			} else {
 				wrappers[col_idx].SetNull(output_row);
 			}
@@ -107,16 +123,27 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			}
 			continue;
 		} else if (col.name == "bbox") {
-			// Per-LOD mode uses target_geom; default (wide) mode has no target LOD, so the
-			// bbox is computed from the city object's highest-LOD geometry.
-			std::optional<Geometry> bbox_geom =
-			    bind_data.target_lod.has_value() ? target_geom : city_obj.GetHighestLODGeometry();
-			if (bbox_geom.has_value() && vertex_pool != nullptr) {
-				auto extent =
-				    CityObjectUtils::GetGeometryExtent(bbox_geom.value(), *vertex_pool, bind_data.metadata.transform);
+			if (vertex_pool == nullptr) {
+				value = json(nullptr);
+			} else if (bind_data.target_lod.has_value()) {
+				// Per-LOD mode restricts the table to one LoD, so the bbox describes that
+				// geometry alone -- there is no other LoD in the table to union with, and
+				// a descendant's bbox at this LoD is its own row's business.
+				auto extent = target_geom.has_value() ? CityObjectUtils::GetGeometryExtent(
+				                                            target_geom.value(), *vertex_pool,
+				                                            bind_data.metadata.transform)
+				                                      : std::nullopt;
 				value = extent.has_value() ? extent->ToJson() : json(nullptr);
 			} else {
-				value = json(nullptr);
+				// Wide mode: the specification defines bbox as unioned across every stored
+				// LoD *and* across the object's descendants. Using only the highest LoD
+				// understated objects whose LoDs differ in extent, and ignoring descendants
+				// gave a Building carrying just an LoD0 footprint a flat bbox that excluded
+				// its BuildingPart's solid -- so a query pruning on the parent's bbox
+				// silently missed the building, which is the normal 3DBAG shape.
+				auto extent = CityObjectUtils::GetObjectExtent(city_obj_id, feature.city_objects, *vertex_pool,
+				                                               bind_data.metadata.transform);
+				value = extent.has_value() ? extent->ToJson() : json(nullptr);
 			}
 		} else {
 			value = CityObjectUtils::GetAttributeValue(city_obj, col);

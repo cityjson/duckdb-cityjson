@@ -387,16 +387,19 @@ public:
  * Dynamically appended after the predefined columns (CityParquet wide layout):
  * - bbox: STRUCT - 3D extent computed from the object's highest-LOD geometry
  * - geometry_lod{X}_{Y}: BLOB - WKB geometry for each LOD present in the data
- * - geometry_properties_lod{X}_{Y}: JSON - per-LOD geometry metadata in the
- *     CityParquet spec §8 flattened form: {type:<string>, shells?, surfaces?,
- *     face_semantics?}. `shells` gives per-shell emitted-face counts (flat for
- *     Solid, nested per solid for Multi/CompositeSolid); `face_semantics` is a
- *     flat, WKB-face-aligned surface-index array replacing CityJSON's nested
- *     semantics.values. The LoD rides the column name (added inside the JSON
- *     only for the un-suffixed per-LOD-mode column).
+ * - geometry_properties_lod{X}_{Y}: STRUCT - per-LOD geometry metadata in the
+ *     CityParquet spec flattened form:
+ *       STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+ *     `shells` gives per-solid, then per-shell, emitted-face counts -- always two
+ *     levels deep, so a lone Solid is [[12,4]]; `face_semantics` is a flat,
+ *     WKB-face-aligned surface-index array replacing CityJSON's nested
+ *     semantics.values. The LoD rides the column name and is never stored in the
+ *     value, so the struct has no `lod` field.
  *
- * In per-LOD mode (lod => 'X.Y') the wide geometry columns collapse to a single
- * `geometry` BLOB + `geometry_properties` JSON pair plus the `bbox` STRUCT.
+ * In per-LOD mode (lod => 'X.Y') the schema keeps this same suffixed grammar,
+ * restricted to the one requested LoD: geometry_lod{X}_{Y} + its
+ * geometry_properties_/material_/texture_ columns, plus the bbox STRUCT. There is
+ * no bare `geometry` column in either mode.
  *
  * Reserved column names (may not be shadowed by attribute columns): id, feature_id,
  * object_type, children, children_roles, parents, other, bbox, geometry, and any

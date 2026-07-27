@@ -47,7 +47,7 @@ SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '2.2
 2
 
 query T
-SELECT typeof(geometry) FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '2.2') LIMIT 1;
+SELECT typeof(geometry_lod2_2) FROM read_cityjsonseq('test/data/sample.city.jsonl', lod => '2.2') LIMIT 1;
 ----
 BLOB
 

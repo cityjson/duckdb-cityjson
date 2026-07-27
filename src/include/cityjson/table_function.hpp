@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cityjson/types.hpp"
+#include "cityjson/appearance_normalise.hpp"
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/reader.hpp"
@@ -33,6 +34,9 @@ struct CityJSONBindData : public TableFunctionData {
 	std::optional<std::string> target_lod; // Optional: filter to specific LOD
 	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
 	bool streaming = false;                // True when data is loaded during scan init instead of bind
+	// Set only when appearance := 'sidecar'. Holds the dataset-global material/texture
+	// sets and the per-feature index maps that reach them.
+	std::optional<AppearanceIndex> appearance_index;
 
 	// Pushed-down equality filters on scalar columns (column_name -> expected_value)
 	std::vector<std::pair<std::string, std::string>> equality_filters;
@@ -45,6 +49,10 @@ struct CityJSONBindData : public TableFunctionData {
  * Read options parsed from named parameters
  */
 struct CityJSONReadOptions {
+	// 'local' (default) keeps the source's feature-local appearance indices verbatim.
+	// 'sidecar' rewrites them to dataset-global sidecar ids and inlines texture UVs,
+	// which is what the CityParquet encoding requires.
+	bool sidecar_appearance = false;
 	std::optional<std::string> target_lod;
 	bool use_wkb_encoding = false;
 	size_t sample_lines = 100;
@@ -54,6 +62,52 @@ struct CityJSONReadOptions {
  * Parse named parameters shared by read_cityjson, read_cityjsonseq, and read_flatcitybuf
  */
 CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input, const std::string &function_name);
+
+/**
+ * The reader's schema inference, as one function.
+ *
+ * `insert_cityjson` has to know the columns a read of the same file will produce
+ * *before* the read runs, in order to generate the ALTERs and the appearance rewrite.
+ * Re-deriving that list from the same ingredients does not work: it produced a column
+ * set that disagreed with the reader's, and the generated SQL then named a column the
+ * staged relation did not have. So there is exactly one implementation, and both the
+ * bind and the generator call it.
+ */
+void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines);
+
+/**
+ * Everything `insert_cityjson` must know about a source file at plan time.
+ *
+ * `object_types` is the **complete** distinct set, not a sample: routing sends each type
+ * to its module table, so a type appearing only in the file's tail would otherwise land
+ * in no table at all and its rows would be dropped without a word.
+ */
+struct CityJSONSourceFacts {
+	//! Exactly what a read of this file with these options emits.
+	std::vector<Column> columns;
+	//! Every distinct CityObject type in the file, sorted.
+	std::vector<std::string> object_types;
+	//! metadata.referenceSystem, when the file declares one.
+	std::optional<std::string> reference_system;
+	//! Whether the interned sidecars would have any rows at all. A package's `materials`
+	//! table must not be created for a file that has none.
+	bool has_materials = false;
+	bool has_textures = false;
+	//! The document's templates, kept whole rather than reduced to a flag: the
+	//! geometry_templates sidecar's columns depend on which LoDs they use, and a caller
+	//! evolving a destination sidecar has to know them.
+	GeometryTemplates geometry_templates;
+};
+
+/**
+ * Read `reader` far enough to answer everything in CityJSONSourceFacts.
+ *
+ * `streaming` must match the read function whose output is being described —
+ * read_cityjsonseq binds in streaming mode and read_cityjson does not, and with `lod =`
+ * the two infer from different amounts of the file. The object types and the appearance
+ * are always taken from the whole file regardless, because a sample cannot answer either.
+ */
+CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options, bool streaming);
 
 /**
  * Shared bind implementation for CityJSON readers

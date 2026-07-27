@@ -1,0 +1,395 @@
+# name: test/sql/cityparquet_insert.test
+# description: insert_cityjson / insert_cityjsonseq — one call, transactional, consistent
+# group: [sql]
+
+require cityjson
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+20
+
+# --- the headline case -------------------------------------------------------
+
+# A CityJSON file goes in with one call. Its Building lands in the module table
+# that already holds buildings; no new table, no sidecars, nothing to route.
+statement ok
+PRAGMA insert_cityjson('ams', 'test/data/minimal.city.json');
+
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+21
+
+query T
+SELECT object_type FROM ams.building WHERE id = 'building1';
+----
+Building
+
+# The reader's derived state survives the insert: a row arrives with its own
+# feature_id and a bbox, not with NULLs waiting for a later reconcile.
+query I
+SELECT COUNT(*) FROM ams.building WHERE feature_id IS NULL;
+----
+0
+
+# --- routing -----------------------------------------------------------------
+
+# This file holds a Bridge and a CityFurniture, which belong to two different
+# CityGML modules, so one insert creates two tables. Routing is by module, not by
+# type: the whole Bridge module shares one file.
+statement ok
+PRAGMA insert_cityjsonseq('ams', 'test/data/railway_appearance.city.jsonl');
+
+# The sidecars the source needs are created alongside: this file carries materials,
+# textures and geometry templates, and each gets its bookkeeping row too.
+query TT
+SELECT table_name, role FROM ams.__cityparquet ORDER BY table_name;
+----
+bridge	object
+building	object
+city_furniture	object
+geometry_templates	sidecar
+materials	sidecar
+textures	sidecar
+
+query T
+SELECT object_type FROM ams.bridge;
+----
+Bridge
+
+query T
+SELECT object_type FROM ams.city_furniture;
+----
+CityFurniture
+
+# Rows must not be duplicated across module tables -- each goes to exactly one.
+query I
+SELECT COUNT(*) FROM ams.bridge WHERE object_type <> 'Bridge';
+----
+0
+
+# --- appearance --------------------------------------------------------------
+
+# The sidecars were created and filled from the same interned index the object
+# rows' ids were drawn from, so every reference resolves.
+query I
+SELECT COUNT(*) FROM ams.materials;
+----
+4
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM ams.bridge WHERE material_lod3_0 IS NOT NULL
+  UNION ALL
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM ams.city_furniture WHERE material_lod3_0 IS NOT NULL
+) r WHERE r.ref NOT IN (SELECT id FROM ams.materials);
+----
+0
+
+# --- sidecar id offsetting ---------------------------------------------------
+
+# A second file with its own appearance cannot reuse ids 0..3. Its single
+# material becomes id 4, and the inserted row's reference is rewritten to match
+# -- if the shift were applied to only one of the two, the row would silently
+# point at another file's material.
+statement ok
+PRAGMA insert_cityjson('ams', 'test/data/insert_appearance.city.json');
+
+query I
+SELECT COUNT(*) FROM ams.materials;
+----
+5
+
+query T
+SELECT name FROM ams.materials WHERE id = 4;
+----
+kiosk-paint
+
+query T
+SELECT material_lod2_0 FROM ams.city_furniture WHERE id = 'kiosk-1';
+----
+{"visual":{"values":[4]}}
+
+# Texture ids shift the same way, and the inlined UV pairs must not be touched by
+# the shift -- they are coordinates, not ids.
+query T
+SELECT texture_lod2_0 FROM ams.city_furniture WHERE id = 'kiosk-1';
+----
+{"visual":{"values":[[[4,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]]]}}
+
+# --- geometry templates ------------------------------------------------------
+
+statement ok
+PRAGMA insert_cityjson('ams', 'test/data/geometry_templates.city.json');
+
+query I
+SELECT COUNT(*) > 0 FROM ams.geometry_templates;
+----
+true
+
+query I
+SELECT COUNT(*) FROM ams.vegetation WHERE object_type = 'SolitaryVegetationObject';
+----
+2
+
+# These objects have template geometry only, so the reader emits no geometry_lod*
+# columns and no bbox for them. Reconcile must leave such a table alone rather than
+# trying to write a bbox column that does not exist.
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM ams.vegetation) WHERE column_name = 'bbox';
+----
+0
+
+# --- the package stays consistent throughout ---------------------------------
+
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# --- refusals ----------------------------------------------------------------
+
+# Ids are identity. Re-inserting the same file would give two rows claiming to be
+# the same object, so the whole insert is refused rather than renaming silently.
+statement error
+PRAGMA insert_cityjson('ams', 'test/data/minimal.city.json');
+----
+duplicate id
+
+statement ok
+CREATE SCHEMA solo;
+
+statement ok
+CREATE TABLE solo.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+statement ok
+PRAGMA cityparquet_init('solo');
+
+# create_tables := false means the caller has decided which files this package
+# holds; a source needing a new one is an error, not a silent extension.
+statement error
+PRAGMA insert_cityjson('solo', 'test/data/geometry_templates.city.json', create_tables = false);
+----
+create_tables
+
+# One CRS per package, with no per-row escape hatch, so a mismatch is refused
+# rather than silently producing a mis-georeferenced package.
+statement ok
+UPDATE solo.__cityparquet SET city = '{"crs": "https://www.opengis.net/def/crs/EPSG/0/28992"}';
+
+statement error
+PRAGMA insert_cityjson('solo', 'test/data/insert_appearance.city.json');
+----
+CRS mismatch
+
+# --- the SQL twin ------------------------------------------------------------
+
+# Every mutating pragma has a scalar returning the same text without running it,
+# so a script can be reviewed before it touches anything.
+query I
+SELECT insert_cityjson_sql('solo', 'test/data/minimal.city.json') LIKE '%INSERT INTO%';
+----
+true
+
+query I
+SELECT COUNT(*) FROM solo.building;
+----
+1
+
+# --- regressions found by review ---------------------------------------------
+
+# An ALTER that adds a geometry LoD column is invisible to the reconcile that
+# follows in the same script, because a pragma generator sees the pre-batch
+# catalog. The bbox phase would then compute extents from the table's OLD
+# geometry columns and set the incoming rows' bbox to NULL despite their having
+# geometry. Here `bounds.building` starts with only LoD 2.2 and the incoming
+# file brings LoD 1.
+statement ok
+CREATE SCHEMA bounds;
+
+statement ok
+CREATE TABLE bounds.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar')
+  WHERE false;
+
+statement ok
+PRAGMA cityparquet_init('bounds');
+
+statement ok
+PRAGMA insert_cityjson('bounds', 'test/data/minimal.city.json');
+
+query I
+SELECT COUNT(*) FROM bounds.building WHERE bbox IS NULL;
+----
+0
+
+# A referenceSystem is source metadata, so an apostrophe in it must not be able
+# to end the generated SQL string literal early. This CRS is quoted, not spliced.
+statement ok
+CREATE SCHEMA quoted;
+
+statement ok
+CREATE TABLE quoted.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+statement ok
+PRAGMA cityparquet_init('quoted');
+
+query I
+SELECT insert_cityjson_sql('quoted', 'test/data/insert_appearance.city.json') LIKE '%CRS mismatch%';
+----
+true
+
+# `lod` is normalised exactly as the reader normalises it. Without that,
+# lod = '2' against a source LoD of '2.0' fails plan-time inference with
+# "LOD '2' not found" while the generated read call would have accepted it.
+statement ok
+CREATE SCHEMA lodded;
+
+statement ok
+CREATE TABLE lodded.city_furniture AS
+  SELECT * FROM read_cityjson('test/data/insert_appearance.city.json', lod := '2') WHERE false;
+
+statement ok
+PRAGMA cityparquet_init('lodded');
+
+statement ok
+PRAGMA insert_cityjson('lodded', 'test/data/insert_appearance.city.json', lod = '2');
+
+query I
+SELECT COUNT(*) FROM lodded.city_furniture;
+----
+1
+
+# With `tables` restricting the insert, the rows destined for nowhere must not be
+# judged by preconditions that only apply to rows being written. Here the Bridge
+# id already exists in the destination, but only city_furniture is selected, so
+# the Bridge is never routed anywhere and the insert stands.
+statement ok
+CREATE SCHEMA picked;
+
+statement ok
+CREATE TABLE picked.bridge AS
+  SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE object_type = 'Bridge';
+
+statement ok
+PRAGMA cityparquet_init('picked');
+
+statement error
+PRAGMA insert_cityjsonseq('picked', 'test/data/railway_appearance.city.jsonl');
+----
+duplicate id
+
+statement ok
+PRAGMA insert_cityjsonseq('picked', 'test/data/railway_appearance.city.jsonl', tables = ['city_furniture']);
+
+query I
+SELECT COUNT(*) FROM picked.city_furniture;
+----
+1
+
+# ... but a parent left behind by that same filtering is refused. The
+# CityFurniture in this file has no parent, so exclude the module that holds one:
+# a row whose parent is in neither the selected rows nor the destination would
+# commit a package that immediately fails its own hierarchy check.
+statement ok
+CREATE SCHEMA orphaned;
+
+statement ok
+CREATE TABLE orphaned.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar')
+  WHERE false;
+
+statement ok
+PRAGMA cityparquet_init('orphaned');
+
+statement ok
+CREATE TEMP TABLE lone_part AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar')
+  WHERE object_type = 'BuildingPart' LIMIT 1;
+
+# Inserted directly, the part's parent is missing -- which is exactly the state
+# the precondition exists to keep insert_cityjson from creating.
+statement ok
+INSERT INTO orphaned.building BY NAME SELECT * FROM lone_part;
+
+statement ok
+PRAGMA cityparquet_validate('orphaned');
+
+query I
+SELECT COUNT(*) > 0 FROM cityparquet_validation WHERE severity = 'error';
+----
+true
+
+# Two inserts batched in one submission both create the same previously absent
+# module table, with different LoDs. Each generator sees the pre-batch catalog,
+# so the second one's geometry column list is its own file's, not the union the
+# ALTERs really produce. Computing no extent for the first insert's rows means
+# "I could not see their geometry", not "they have none" -- clearing on that
+# would throw away the bbox the reader had already put there.
+#
+# Both fixtures hold a CityFurniture, at LoD 2.0 and LoD 1.0, so both route to
+# `city_furniture` and neither generator sees the other's geometry column.
+statement ok
+CREATE SCHEMA batched;
+
+statement ok
+CREATE TABLE batched.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json') WHERE false;
+
+statement ok
+PRAGMA cityparquet_init('batched');
+
+statement ok
+PRAGMA insert_cityjson('batched', 'test/data/insert_appearance.city.json');
+PRAGMA insert_cityjson('batched', 'test/data/insert_other_lod.city.json');
+
+# Neither insert's rows lost the bbox the reader gave them.
+query I
+SELECT COUNT(*) FROM batched.city_furniture WHERE bbox IS NULL;
+----
+0
+
+query I
+SELECT COUNT(*) FROM batched.city_furniture;
+----
+2
+
+# The union schema really was produced -- both LoD columns are there.
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM batched.city_furniture)
+WHERE column_name IN ('geometry_lod2_0', 'geometry_lod1_0');
+----
+2
+
+# One bookkeeping row per table, not one per pragma that created it. The
+# NOT EXISTS guard has to actually gate the insert, which it did not while the
+# statement was an aggregate query -- an aggregate with no GROUP BY yields a row
+# however the WHERE evaluates.
+query I
+SELECT COUNT(*) FROM batched.__cityparquet WHERE table_name = 'city_furniture';
+----
+1
+
+statement ok
+PRAGMA cityparquet_validate('batched');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0

@@ -1,0 +1,260 @@
+# name: test/sql/cityparquet_io.test
+# description: cityparquet_write / cityparquet_read — the package round trip
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+# A hand-rolled load discarded the footer, so the writer must be told the CRS.
+# Writing a file with CRS-bearing coordinates and no crs is a conversion error,
+# never a silent omission.
+statement error
+SELECT * FROM cityparquet_write('ams', '__TEST_DIR__/pkg_nocrs');
+----
+crs
+
+query I
+SELECT COUNT(*) > 0 FROM cityparquet_write('ams', '__TEST_DIR__/pkg', crs => 'EPSG:7415');
+----
+true
+
+# One data file per non-empty object table.
+query T
+SELECT file FROM cityparquet_write('ams', '__TEST_DIR__/pkg', crs => 'EPSG:7415')
+WHERE file LIKE '%.parquet' ORDER BY file;
+----
+building.parquet
+
+# The written package reads back with every row intact.
+query I
+SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/pkg/building.parquet');
+----
+20
+
+# The footer carries a `city` object with the CRS resolved to PROJJSON.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet')
+WHERE key = 'city';
+----
+1
+
+query T
+SELECT cityparquet_city_field(decode(value), 'version')
+FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet') WHERE key = 'city';
+----
+0.1.0-draft
+
+# This fixture carries a legal LoD0 footprint (MultiPolygon Z) alongside solid
+# LoDs (PolyhedralSurface Z), so `geo` is written -- but declaring ONLY the
+# footprint. Declaring a solid column would make the whole file unreadable to
+# Shapely, GeoPandas and DuckDB spatial, taking the good column down with it.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet')
+WHERE key = 'geo';
+----
+1
+
+query T
+SELECT cityparquet_city_field(decode(value), 'primary_column')
+FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet') WHERE key = 'geo';
+----
+geometry_lod0_0
+
+# No solid column appears anywhere in the geo object.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet')
+WHERE key = 'geo' AND decode(value) LIKE '%PolyhedralSurface%';
+----
+0
+
+# city, by contrast, registers EVERY geometry column including the solids, and
+# its primary is the finest analysis geometry. The two primaries legitimately
+# differ -- there is no rule that they match.
+query T
+SELECT cityparquet_city_field(decode(value), 'primary_column')
+FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet') WHERE key = 'city';
+----
+geometry_lod2_2
+
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet')
+WHERE key = 'city' AND decode(value) LIKE '%PolyhedralSurface%';
+----
+1
+
+# metadata.json is written as a STAC Item.
+query I
+SELECT COUNT(*) FROM cityparquet_write('ams', '__TEST_DIR__/pkg', crs => 'EPSG:7415')
+WHERE file = 'metadata.json';
+----
+1
+
+# cityparquet_read loads the package back, and recovers the footer that a
+# hand-rolled read_parquet load would have thrown away.
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/pkg', 'back');
+
+query I
+SELECT COUNT(*) FROM back.building;
+----
+20
+
+query TT
+SELECT table_name, role FROM back.__cityparquet ORDER BY table_name;
+----
+building	object
+
+query I
+SELECT city IS NOT NULL FROM back.__cityparquet WHERE table_name = 'building';
+----
+true
+
+# Round trip: the reloaded package validates clean and still reconciles to a
+# no-op, so nothing was lost or distorted by the write.
+statement ok
+PRAGMA cityparquet_validate('back');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# --- metadata.json is the DATASET-level view ---------------------------------
+
+# The footer answers for the one file it lives in; the STAC Item answers for the
+# whole package. So every city3d:* field here is a union or a sum across files,
+# and none of them is a copy of any single footer.
+#
+# Asserted by matching the file text with whitespace stripped, not with JSON
+# functions: the `json` extension is not one this extension requires, which is
+# also why the writer assembles the Item with the vendored nlohmann::json in C++.
+
+statement ok
+CREATE SCHEMA pkg;
+
+statement ok
+CREATE TABLE pkg.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar');
+
+statement ok
+PRAGMA cityparquet_init('pkg');
+
+# A second module, with appearance, so the aggregate spans more than one file.
+statement ok
+PRAGMA insert_cityjsonseq('pkg', 'test/data/railway_appearance.city.jsonl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('pkg', '__TEST_DIR__/agg', crs => 'EPSG:7415');
+
+statement ok
+CREATE TEMP TABLE item AS
+  SELECT regexp_replace(content, '\s+', '', 'g') AS compact
+  FROM read_text('__TEST_DIR__/agg/metadata.json');
+
+# city3d:city_objects sums every object table: 20 buildings and parts, plus the
+# Bridge and the CityFurniture. Sidecar rows are definitions, not city objects,
+# and are reported per asset instead.
+query I
+SELECT compact LIKE '%"city3d:city_objects":22%' FROM item;
+----
+true
+
+# co_types spans both files, and uses the source type vocabulary.
+query I
+SELECT compact LIKE '%"city3d:co_types":["Bridge","Building","BuildingPart","CityFurniture"]%' FROM item;
+----
+true
+
+# city3d:lods is the union over all tables -- 3.0 comes only from the bridge and
+# the rest only from the buildings, so neither file's footer holds this list.
+query I
+SELECT compact LIKE '%"city3d:lods":["0.0","1.2","1.3","2.2","3.0"]%' FROM item;
+----
+true
+
+query I
+SELECT compact LIKE '%"city3d:materials":true%' AND compact LIKE '%"city3d:textures":true%' FROM item;
+----
+true
+
+query I
+SELECT compact LIKE '%"city3d:semantic_surfaces":true%' FROM item;
+----
+true
+
+# The Projection extension carries the CRS every geometry in the package shares,
+# resolved to PROJJSON. `geometry` stays null because STAC requires EPSG:4326
+# there and the package's coordinates are not; proj:bbox is the real extent.
+query I
+SELECT compact LIKE '%"proj:projjson":{%' AND compact LIKE '%"proj:bbox":[%' FROM item;
+----
+true
+
+query I
+SELECT compact LIKE '%"geometry":null%' FROM item;
+----
+true
+
+# ... and no top-level bbox, which STAC defines in WGS84. This package's
+# coordinates are EPSG:7415, and writing them into a field documented as WGS84
+# would place the package off the coast of Africa for anyone filtering
+# spatially. proj:bbox above is where a projected extent belongs.
+query I
+SELECT compact LIKE '%"bbox":%' AND compact NOT LIKE '%"proj:bbox":%' FROM item;
+----
+false
+
+# Every written file appears as an asset with its size and row count.
+query I
+SELECT regexp_matches(compact, '"materials\.parquet":\{[^}]*"table:row_count":4') FROM item;
+----
+true
+
+query I
+SELECT regexp_matches(compact, '"building\.parquet":\{"file:size":[1-9][0-9]*') FROM item;
+----
+true
+
+# A module table with no rows gets no file, so it gets no asset either.
+query I
+SELECT compact LIKE '%tunnel.parquet%' FROM item;
+----
+false
+
+# A package whose objects carry only GeometryInstance geometry has no populated
+# geometry_lod* column in any object table -- its LoDs live in the templates
+# sidecar. city3d:lods is the union across every file, so the sidecar has to
+# contribute or a valid package reports having no LoDs at all.
+statement ok
+CREATE SCHEMA tpl_only;
+
+statement ok
+CREATE TABLE tpl_only.vegetation AS
+  SELECT * FROM read_cityjson('test/data/geometry_templates.city.json', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE tpl_only.geometry_templates AS
+  SELECT * FROM cityjson_geometry_templates('test/data/geometry_templates.city.json');
+
+statement ok
+PRAGMA cityparquet_init('tpl_only');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('tpl_only', '__TEST_DIR__/tpl', crs => 'EPSG:7415');
+
+query I
+SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"city3d:lods":["1.0","2.1"]%'
+FROM read_text('__TEST_DIR__/tpl/metadata.json');
+----
+true

@@ -1,0 +1,25 @@
+{
+  "type": "CityJSON",
+  "version": "2.0",
+  "transform": { "scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0] },
+  "metadata": { "referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/7415" },
+  "CityObjects": {
+    "bench-1": {
+      "type": "CityFurniture",
+      "attributes": { "function": "bench" },
+      "geometry": [
+        {
+          "type": "MultiSurface",
+          "lod": "1",
+          "boundaries": [[[0, 1, 2, 3]]]
+        }
+      ]
+    }
+  },
+  "vertices": [
+    [100, 100, 0],
+    [102, 100, 0],
+    [102, 101, 0],
+    [100, 101, 0]
+  ]
+}

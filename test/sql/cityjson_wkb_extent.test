@@ -1,0 +1,59 @@
+# name: test/sql/cityjson_wkb_extent.test
+# description: cityjson_wkb_extent — 3D extent of a WKB blob, solid family included
+# group: [sql]
+
+require cityjson
+
+statement ok
+CREATE TABLE b AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+# The struct shape matches the existing bbox column exactly, so a recomputed
+# extent can be assigned straight into bbox by generated SQL.
+query T
+SELECT typeof(cityjson_wkb_extent(geometry_lod2_2)) FROM b WHERE geometry_lod2_2 IS NOT NULL;
+----
+STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+
+# minimal.city.json has one object at one LoD, so its bbox — which is unioned
+# across LoDs and descendants — reduces to exactly this geometry's extent.
+query I
+SELECT COUNT(*) FROM b
+WHERE geometry_lod2_2 IS NOT NULL
+  AND cityjson_wkb_extent(geometry_lod2_2) IS NOT DISTINCT FROM bbox;
+----
+1
+
+# NULL in, NULL out. bbox recomputation relies on this for rows carrying no
+# geometry at a given LoD.
+query I
+SELECT cityjson_wkb_extent(NULL::BLOB) IS NULL;
+----
+true
+
+# Solid geometry (PolyhedralSurfaceZ) works. This is the case DuckDB spatial
+# rejects with "Unsupported geometry type in WKB", and it is most of the
+# interesting data.
+statement ok
+CREATE TABLE d AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+query I
+SELECT COUNT(*) FROM d
+WHERE geometry_lod2_2 IS NOT NULL
+  AND cityjson_wkb_extent(geometry_lod2_2).min_z < cityjson_wkb_extent(geometry_lod2_2).max_z;
+----
+10
+
+# Every solid's extent contains its own footprint, and the reader's own bbox
+# agrees with the recomputed one for these leaf objects.
+query I
+SELECT COUNT(*) FROM d
+WHERE geometry_lod2_2 IS NOT NULL
+  AND (cityjson_wkb_extent(geometry_lod2_2).min_x > bbox.min_x
+    OR cityjson_wkb_extent(geometry_lod2_2).max_x < bbox.max_x);
+----
+0
+
+statement error
+SELECT cityjson_wkb_extent('not wkb'::BLOB);
+----
+cityjson_wkb_extent

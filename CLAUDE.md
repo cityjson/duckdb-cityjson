@@ -25,6 +25,88 @@ Key entry points:
 | `read_cityjsonseq(path)`     | `bind_function.cpp`, `scan_function.cpp` | Read CityJSONSeq (`.city.jsonl`) |
 | `cityjson_metadata(path)`    | `metadata_table_function.cpp`            | Metadata for CityJSON            |
 | `cityjsonseq_metadata(path)` | `metadata_table_function.cpp`            | Metadata for CityJSONSeq         |
+| `cityjson_wkb_extent(blob)`  | `wkb_extent.cpp`                         | 3D extent of a WKB blob, solids included |
+| `cityjson_appearance_ids(cell, kind)` | `cityparquet_appearance.cpp`    | Sidecar ids an appearance cell references |
+| `cityjson_materials(path)`   | `appearance_table_function.cpp`          | materials.parquet rows, ids interned across the file |
+| `cityjson_textures(path)`    | `appearance_table_function.cpp`          | textures.parquet rows |
+| `cityjson_geometry_templates(path)` | `appearance_table_function.cpp`   | geometry_templates.parquet rows, local coordinates |
+
+### CityParquet package mutation
+
+A CityParquet package is a **DuckDB schema** whose tables are named by the spec's file
+basenames, plus a `__cityparquet` bookkeeping table. These are **`PragmaFunction`s
+registered with a `pragma_query_t`**: the function *returns SQL text*, which DuckDB
+parses and runs in place of the pragma, inside the caller's transaction
+(`duckdb/src/planner/statement_preprocessor.cpp:107-122`). Atomicity is DuckDB's, not
+ours — the extension only generates text.
+
+| Function | File | Description |
+| -------- | ---- | ----------- |
+| `PRAGMA cityparquet_init(schema)` | `cityparquet_package.cpp` | Create/refresh `__cityparquet` |
+| `PRAGMA cityparquet_validate(schema)` | `cityparquet_validate.cpp` | Consistency checks → `cityparquet_validation` |
+| `PRAGMA cityparquet_orphans(schema)` | `cityparquet_validate.cpp` | Unreferenced sidecar rows → `cityparquet_orphan_rows` |
+| `PRAGMA cityparquet_vacuum(schema)` | `cityparquet_validate.cpp` | Delete unreferenced sidecar rows |
+| `PRAGMA cityparquet_reconcile(schema [, checks = [...]])` | `cityparquet_reconcile.cpp` | Re-derive `feature_id`, hierarchy, `bbox` |
+| `PRAGMA cityparquet_delete(schema, predicate [, cascade =] [, tables =])` | `cityparquet_delete.cpp` | Delete with cascade |
+| `PRAGMA cityparquet_merge(dst, src [, create_tables =] [, tables =])` | `cityparquet_merge.cpp` | Merge one package into another |
+| `PRAGMA insert_cityjson(schema, path [, create_tables =] [, tables =] [, lod =] [, sample_lines =])` | `cityparquet_insert.cpp` | Add a CityJSON file, routed by module (also `insert_cityjsonseq` / `insert_flatcitybuf`) |
+| `PRAGMA cityparquet_read(dir, schema)` | `cityparquet_package.cpp` | Load a package directory into a schema |
+| `cityparquet_write(schema, dir [, crs =])` | `cityparquet_write.cpp` | Write the package back out (**table function**, sees committed state) |
+
+Each mutating pragma has a scalar `*_sql()` twin returning the same text without
+running it.
+
+**`cityparquet_write` is the one exception to the pragma rule.** `KV_METADATA` accepts
+`getvariable()` (so a footer *value* can be computed in generated SQL) but cannot omit a
+*key*: a NULL value writes the literal string `"NULL"`. The spec requires a solid-only
+table to write no `geo` key at all, legality is data-dependent, and SQL cannot branch the
+shape of a `COPY`. So it is a table function that assembles the metadata in C++ — at the
+cost of running on an internal connection and seeing only committed state.
+
+**Traps worth knowing before adding to this layer:**
+
+- **Pragma expansion happens before execution**, for the *whole* submitted script. A
+  generator's view of the catalog and data is pre-batch, so anything
+  destination-dependent must be idempotent (`ADD COLUMN IF NOT EXISTS`) or deferred into
+  the generated SQL.
+- **A PRAGMA cannot be a subquery.** `FROM (PRAGMA x)` is a parser error, so
+  result-returning pragmas materialise a temp table and select from it.
+- **PRAGMA named parameters use `=`, not `:=`** (`transform_pragma.cpp:26-33`).
+- **No subqueries inside lambda bodies.** `list_filter(l, x -> x IN (SELECT ...))` is
+  rejected; hoist the set into a session variable and use `list_contains(getvariable(...), x)`.
+- **The `JSON` type and `json_extract` are unavailable** — they live in the `json`
+  extension, which this one does not require. JSON is carried as `VARCHAR` and parsed in
+  C++ with the vendored nlohmann::json.
+- **Two ODR link traps.** Binding a *reference* to a `static constexpr` member emits a
+  comdat definition that collides with DuckDB's strong one: write
+  `LogicalType(LogicalTypeId::DOUBLE)` rather than `LogicalType::DOUBLE` in
+  `emplace_back`, and use the non-templated `Catalog::GetEntry(context,
+  CatalogType::TABLE_ENTRY, ...)` rather than `Catalog::GetEntry<TableCatalogEntry>`,
+  which ODR-uses `TableCatalogEntry::Name`.
+- **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
+- **`parquet_kv_metadata` returns BLOB.** Use `decode(value)`, not `value::VARCHAR` — the
+  cast escapes bytes and the JSON no longer parses.
+- **`FileFlags::FILE_FLAGS_READ` is a third ODR trap** (it is a `static constexpr
+  FileOpenFlags`). Use the scalar `FileOpenFlags::FILE_FLAGS_READ` instead, as
+  `duckdb_fs_range_reader.cpp` already does.
+- **Never re-derive what the reader emits.** A generator that needs the incoming column
+  list must call `InferCityJSONColumns` / `InspectCityJSONSource`
+  (`bind_function.cpp`), the same inference the bind runs. Reconstructing it from
+  `GetDefinedColumns` + `InferAttributeColumns` + `InferGeometryColumns` gives a
+  different answer, and the generated SQL then names a column the staged relation does
+  not have.
+- **`INSERT ... BY NAME` is not symmetric.** It leaves an unmatched *destination* column
+  NULL, but a *source* column with no destination match is a binder error. Schema
+  evolution must therefore run over sidecars too, not only module tables —
+  `geometry_templates` carries per-LoD columns and so its shape varies by file.
+- **`bbox` is an optional column.** A source with only template geometry produces neither
+  `geometry_lod*` nor `bbox`, so anything generating `UPDATE ... SET bbox` must check the
+  column exists first.
+- **The CityJSONSeq reader is a forward stream.** `ReadAllChunks` and `ReadNFeatures`
+  rewind so they can be asked more than once; `ReadNextFeature` deliberately does not,
+  because it is the streaming scan's cursor.
+- **`SQLString` is a formatting wrapper, not a quoting function**; use
+  `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
 
 ### Key Source Files
 
@@ -52,7 +134,11 @@ Key entry points:
 
 When `lod='X'` is passed:
 
-- Schema switches to `geometry` (BLOB/WKB) + `geometry_properties` (VARCHAR/JSON)
+- Schema restricts to that one LoD but keeps the same suffixed column grammar as
+  the wide layout: `geometry_lodX_Y` (BLOB/WKB) + `geometry_properties_lodX_Y`
+  (STRUCT) + `material_lodX_Y` / `texture_lodX_Y` + `bbox`. There is no bare
+  `geometry` column, so the LoD stays recoverable from the column name — which
+  is what lets `COPY TO cityjson` re-emit it.
 - Per-feature vertex pool is used for CityJSONSeq; global metadata vertices used for regular CityJSON
 - `GetGeometryAtLOD()` finds the geometry matching the requested LOD string
 - `lod` field in geometry objects is optional (not all features declare it)

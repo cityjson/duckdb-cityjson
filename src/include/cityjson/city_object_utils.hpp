@@ -109,19 +109,39 @@ public:
 	 * applies the transform, and returns the min/max extent. Returns nullopt
 	 * if the geometry references no valid vertices.
 	 */
+	/**
+	 * The extent stored in a city object's `bbox` column: the union of the object's own
+	 * geometry across **every** stored LoD *and* across all of its descendants, per the
+	 * CityParquet specification.
+	 *
+	 * Both halves matter. Taking only the highest LoD understates an object whose LoDs
+	 * differ in extent; ignoring descendants understates the common case where a
+	 * Building carries only an LoD0 footprint while its BuildingPart carries the solid,
+	 * which would make the parent's bbox useless for spatial pruning — a query filtering
+	 * on it would silently miss the building.
+	 *
+	 * `objects` is the pool the object's `children` ids resolve against (one
+	 * CityJSONFeature's objects, or the whole document's for plain CityJSON). Cycles in
+	 * the hierarchy are tolerated: each id is visited once.
+	 */
+	static std::optional<GeographicalExtent>
+	GetObjectExtent(const std::string &object_id, const std::map<std::string, CityObject> &objects,
+	                const std::vector<std::array<double, 3>> &vertices,
+	                const std::optional<Transform> &transform);
+
 	static std::optional<GeographicalExtent>
 	GetGeometryExtent(const Geometry &geometry, const std::vector<std::array<double, 3>> &vertices,
 	                  const std::optional<Transform> &transform);
 
 	/**
-	 * Serialize geometry properties to JSON
+	 * Serialize geometry properties to the spec §8 payload
 	 *
 	 * @param geometry Geometry object to serialize
 	 * @param object_id Optional parent CityObject ID
-	 * @return JSON object with geometry properties (type, LOD, semantics, etc.)
+	 * @return JSON object with geometry properties (type, surfaces, face_semantics, shells)
 	 */
-	static json GetGeometryPropertiesJson(const Geometry &geometry, bool include_lod = false,
-	                                      const std::optional<std::string> &object_id = std::nullopt);
+	static json GetGeometryPropertiesStruct(const Geometry &geometry,
+	                                        const std::optional<std::string> &object_id = std::nullopt);
 };
 
 } // namespace cityjson

@@ -198,10 +198,28 @@ void WriteGeographicalExtent(Vector *struct_vec, const json &value, size_t row);
 void WriteGeometryWKB(Vector *blob_vec, const std::vector<uint8_t> &wkb_data, size_t row);
 
 /**
- * Write geometry properties JSON to varchar vector
- * Handles GeometryPropertiesJson type (stored as VARCHAR)
+ * Write a json value to a varchar vector as JSON text
+ * Handles AppearanceJson (material_lod* / texture_lod*), which stays JSON text
  *
  * @param vec Pointer to varchar vector
+ * @param value JSON value to serialise
+ * @param row Row index in vector
+ */
+void WriteJsonText(Vector *vec, const json &value, size_t row);
+
+/**
+ * Write geometry properties to a struct vector
+ * Handles GeometryPropertiesStruct:
+ *   STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
+ *
+ * A null or non-object `properties` writes a null struct while still giving the
+ * LIST children a well-formed (empty) list_entry_t, so no downstream
+ * flatten/copy pass dereferences uninitialised list metadata.
+ *
+ * Assumes rows are written in increasing order within a chunk: each LIST child's
+ * offset for this row is that child's current size.
+ *
+ * @param vec Pointer to struct vector
  * @param properties JSON object containing geometry properties
  * @param row Row index in vector
  */

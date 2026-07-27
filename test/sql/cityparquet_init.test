@@ -1,0 +1,74 @@
+# name: test/sql/cityparquet_init.test
+# description: cityparquet_init — package bookkeeping over hand-loaded tables
+# group: [sql]
+
+require cityjson
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+# One bookkeeping row per package table, roles assigned by name convention.
+query TTT
+SELECT table_name, file_name, role FROM ams.__cityparquet ORDER BY table_name;
+----
+building	building.parquet	object
+
+# A hand-rolled read_parquet load has discarded the footer, so city is NULL and
+# the writer will have to be told the CRS explicitly.
+query I
+SELECT city IS NULL FROM ams.__cityparquet WHERE table_name = 'building';
+----
+true
+
+# Sidecars are recognised by name and get role 'sidecar'.
+statement ok
+CREATE TABLE ams.materials (id BIGINT, name VARCHAR);
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+query TT
+SELECT table_name, role FROM ams.__cityparquet ORDER BY table_name;
+----
+building	object
+materials	sidecar
+
+# Re-running is idempotent — it does not duplicate rows.
+query I
+SELECT COUNT(*) FROM ams.__cityparquet;
+----
+2
+
+# A non-package table in the schema is ignored, not adopted.
+statement ok
+CREATE TABLE ams.scratch (x INTEGER);
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+query I
+SELECT COUNT(*) FROM ams.__cityparquet WHERE table_name = 'scratch';
+----
+0
+
+# The _sql twin returns the text without running it.
+query I
+SELECT cityparquet_init_sql('ams') LIKE '%CREATE TABLE IF NOT EXISTS%__cityparquet%';
+----
+true
+
+# A schema with no object table is not a CityParquet package.
+statement ok
+CREATE SCHEMA empty_pkg;
+
+statement error
+PRAGMA cityparquet_init('empty_pkg');
+----
+no CityParquet object table
