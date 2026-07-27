@@ -2,6 +2,7 @@
 
 #include "cityjson/types.hpp"
 #include "cityjson/cityjson_types.hpp"
+#include "cityjson/arrow_native_encoder.hpp"
 #include "cityjson/json_utils.hpp"
 #include <vector>
 #include <string>
@@ -109,6 +110,18 @@ public:
 	 * @param encoding Physical geometry encoding the read was asked for
 	 */
 	static void ApplyGeometryEncoding(std::vector<Column> &columns, GeometryEncoding encoding);
+
+	/**
+	 * Encode geometry in the arrow-native form, mirroring GetGeometryWKB
+	 *
+	 * @param geometry Geometry object to encode
+	 * @param vertices Shared vertex array from CityJSON
+	 * @param transform Optional transform to apply to vertices
+	 * @return The compacted geometry: row-local vertex pool plus nested indices
+	 */
+	static CompactedGeometry GetGeometryArrowNative(const Geometry &geometry,
+	                                                const std::vector<std::array<double, 3>> &vertices,
+	                                                const std::optional<Transform> &transform);
 
 	/**
 	 * Encode geometry to WKB format

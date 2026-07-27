@@ -55,8 +55,114 @@ SELECT typeof(geometry_properties_lod2_2) FROM t;
 ----
 STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
 
+# The fixture is a Solid with one shell, one face, one ring of four vertices --
+# so the nesting is solids(1) -> shells(1) -> faces(1) -> rings(1) -> 4 indices.
+# The outermost level is the padding dimension; the shell level is real structure.
+query T
+SELECT geometry_lod2_2 FROM t;
+----
+[[[[[0, 1, 2, 3]]]]]
+
+# The pool carries the vertices the geometry references, dereferenced through the
+# file's transform, in first-seen order.
+query T
+SELECT geometry_vertices_lod2_2 FROM t;
+----
+[{'x': 0.0, 'y': 0.0, 'z': 0.0}, {'x': 10.0, 'y': 0.0, 'z': 0.0}, {'x': 10.0, 'y': 10.0, 'z': 0.0}, {'x': 0.0, 'y': 10.0, 'z': 0.0}]
+
+# Every index is a valid position in this row's own pool -- the invariant a reader
+# relies on to dereference without a bounds check per element.
+query I
+SELECT count(*) FROM (
+  SELECT unnest(geometry_lod2_2, recursive := true) AS idx,
+         len(geometry_vertices_lod2_2) AS pool FROM t
+) WHERE idx < 0 OR idx >= pool;
+----
+0
+
+# Face count agrees with the WKB encoding of the same object, read independently:
+# the two encodings describe the same topology, and geometry_properties.shells --
+# which is unchanged by the encoding -- says how many faces each shell has.
+query II
+SELECT (SELECT len(geometry_lod2_2[1][1]) FROM t),
+       (SELECT geometry_properties_lod2_2.shells[1][1] FROM t);
+----
+1	1
+
 statement ok
 DROP TABLE t;
+
+# CityJSONSeq over real data: the vertex pool is per-feature rather than global, so
+# this exercises a different pool resolution than the file above, across a fixture
+# carrying both in-scope families -- MultiSurface at LoD0.0, Solid at LoD2.2.
+statement ok
+CREATE TABLE s AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', geometry_encoding := 'arrow-native');
+
+query T
+SELECT DISTINCT typeof(geometry_vertices_lod2_2) FROM s;
+----
+STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]
+
+# Pairing invariant: a geometry cell and its vertex-pool sibling are null together
+# or non-null together, never one without the other.
+query I
+SELECT count(*) FROM s
+WHERE (geometry_lod2_2 IS NULL) <> (geometry_vertices_lod2_2 IS NULL)
+   OR (geometry_lod0_0 IS NULL) <> (geometry_vertices_lod0_0 IS NULL);
+----
+0
+
+# Every index in every row is in range for that row's own pool. A reader
+# dereferences on this basis, so an out-of-range index is not encodable data.
+query I
+SELECT count(*) FROM (
+  SELECT unnest(geometry_lod2_2, recursive := true) AS idx,
+         len(geometry_vertices_lod2_2) AS pool
+  FROM s WHERE geometry_lod2_2 IS NOT NULL
+) WHERE idx < 0 OR idx >= pool;
+----
+0
+
+# Compaction is real, and this is the storage claim the encoding rests on: the
+# pools hold far fewer vertices in total than the boundaries reference, because a
+# vertex shared between adjacent faces is stored once per object rather than once
+# per occurrence -- which WKB, having no index concept, cannot do at all.
+query II
+SELECT (SELECT sum(len(geometry_vertices_lod2_2)) FROM s),
+       (SELECT count(*) FROM (SELECT unnest(geometry_lod2_2, recursive := true) FROM s));
+----
+230	728
+
+# Padding dimensions: a MultiSurface has no solid or shell concept, so both outer
+# levels are length 1 and carry no meaning. Its faces live at the third level.
+query I
+SELECT count(*) FROM s
+WHERE geometry_lod0_0 IS NOT NULL
+  AND (len(geometry_lod0_0) <> 1 OR len(geometry_lod0_0[1]) <> 1);
+----
+0
+
+# ... whereas for the Solid rows the shell level is real structure, not padding:
+# it agrees with geometry_properties.shells, which the encoding leaves untouched.
+query I
+SELECT count(*) FROM s
+WHERE geometry_lod2_2 IS NOT NULL
+  AND len(geometry_lod2_2[1]) <> len(geometry_properties_lod2_2.shells[1]);
+----
+0
+
+# Face counts agree with geometry_properties.shells face-per-shell counts, which
+# is what lets face_semantics keep indexing faces in the same traversal order
+# under either encoding.
+query I
+SELECT count(*) FROM s
+WHERE geometry_lod2_2 IS NOT NULL
+  AND len(geometry_lod2_2[1][1]) <> geometry_properties_lod2_2.shells[1][1];
+----
+0
+
+statement ok
+DROP TABLE s;
 
 # The default encoding is WKB, and is completely unaffected: a BLOB geometry
 # column and no vertices sibling at all.

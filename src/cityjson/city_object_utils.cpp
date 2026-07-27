@@ -210,6 +210,12 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	return result;
 }
 
+CompactedGeometry CityObjectUtils::GetGeometryArrowNative(const Geometry &geometry,
+                                                          const std::vector<std::array<double, 3>> &vertices,
+                                                          const std::optional<Transform> &transform) {
+	return ArrowNativeEncoder::Encode(geometry, vertices, transform);
+}
+
 void CityObjectUtils::ApplyGeometryEncoding(std::vector<Column> &columns, GeometryEncoding encoding) {
 	if (encoding == GeometryEncoding::Wkb) {
 		return;

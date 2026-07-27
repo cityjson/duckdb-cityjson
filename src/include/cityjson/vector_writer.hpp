@@ -2,6 +2,7 @@
 
 #include "cityjson/types.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/arrow_native_encoder.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb.hpp"
 #include <vector>
@@ -224,6 +225,35 @@ void WriteJsonText(Vector *vec, const json &value, size_t row);
  * @param row Row index in vector
  */
 void WriteGeometryProperties(Vector *vec, const json &properties, size_t row);
+
+/**
+ * Write one arrow-native geometry cell: five nested LIST levels of vertex-pool
+ * indices, solid -> shell -> face -> ring -> index.
+ *
+ * A geometry with no solids writes a null cell, which is how absent geometry is
+ * represented under this encoding just as it is for the WKB column.
+ *
+ * Assumes rows are written in increasing order within a chunk: each LIST child's
+ * offset for this row is that child's current size.
+ *
+ * @param vec Pointer to the LIST vector
+ * @param geometry Compacted geometry produced by ArrowNativeEncoder
+ * @param row Row index in vector
+ */
+void WriteGeometryArrowNative(Vector *vec, const CompactedGeometry &geometry, size_t row);
+
+/**
+ * Write one arrow-native vertex-pool cell: LIST<STRUCT(x, y, z DOUBLE)> holding
+ * this row's compacted pool, which the geometry cell's indices reference.
+ *
+ * Paired with its geometry sibling: both are null or both are non-null, never one
+ * of the two (design doc, "Pairing invariant").
+ *
+ * @param vec Pointer to the LIST vector
+ * @param geometry Compacted geometry whose vertex pool is written
+ * @param row Row index in vector
+ */
+void WriteGeometryVertices(Vector *vec, const CompactedGeometry &geometry, size_t row);
 
 } // namespace cityjson
 } // namespace duckdb

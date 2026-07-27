@@ -673,7 +673,7 @@ git commit -m "feat(arrow-geom): ArrowNativeEncoder — distinct-index vertex po
 - Consumes: `CompactedGeometry` (Task 4).
 - Produces: `void WriteGeometryArrowNative(Vector *list_vec, const CompactedGeometry &geom, size_t row)`, `void WriteGeometryVertices(Vector *list_vec, const CompactedGeometry &geom, size_t row)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Given this repo's DuckDB `Vector` types need a running DuckDB context to construct
 meaningfully, this is most naturally a `test/sql/` test (Task 1's likely finding). Write
@@ -684,9 +684,9 @@ via Task 6's SQL-level round-trip test (this is a deliberate, justified deviatio
 strict one-test-per-function granularity — note it, don't silently skip TDD elsewhere in
 this plan).
 
-- [ ] **Step 2: (see Step 1 — no isolated test for this task)**
+- [x] **Step 2: (see Step 1 — no isolated test for this task)**
 
-- [ ] **Step 3: Implement the writers, extending the existing `AppendIntList`/`AppendIntListList` idiom**
+- [x] **Step 3: Implement the writers, extending the existing `AppendIntList`/`AppendIntListList` idiom**
 
 Add to `src/cityjson/vector_writer.cpp`, next to the existing `AppendIntList`/`AppendIntListList` (confirmed real code at lines ~377-420):
 
@@ -794,7 +794,7 @@ up-front batch reserve for efficiency, once correctness is established; not requ
 correctness, only performance, so treat as a refactor-while-green candidate, not a
 blocker to passing tests first).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/include/cityjson/vector_writer.hpp src/cityjson/vector_writer.cpp
@@ -813,7 +813,7 @@ git commit -m "feat(arrow-geom): WriteGeometryArrowNative/WriteGeometryVertices"
 - Consumes: `ArrowNativeEncoder::Encode` (Task 4), `WriteGeometryArrowNative`/`WriteGeometryVertices` (Task 5).
 - Produces: end-to-end `read_cityjson(..., geometry_encoding := 'arrow-native')` writes real, non-empty data.
 
-- [ ] **Step 1: Write the failing end-to-end test**
+- [x] **Step 1: Write the failing end-to-end test**
 
 ```sql
 # name: test/sql/arrow_native_geometry_roundtrip.test
@@ -843,7 +843,7 @@ true
 SQL test suite — grep an existing `.test` file exercising `ST_3DNumFaces`-equivalent or
 similar for the real function name.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — `WriteCityObjectRow` doesn't know how to handle
 `ColumnType::GeometryArrowNative`/`GeometryVerticesArrowNative` yet (falls through to the
@@ -851,7 +851,7 @@ Expected: FAIL — `WriteCityObjectRow` doesn't know how to handle
 `WriteCityObjectRow`'s own `if (col.kind == ...)` chain, not `WriteToVector` — simply
 produces null/wrong columns silently; confirm which failure mode you actually see).
 
-- [ ] **Step 3: Add `CityObjectUtils::GetGeometryArrowNative`**
+- [x] **Step 3: Add `CityObjectUtils::GetGeometryArrowNative`**
 
 In `city_object_utils.hpp`/`.cpp`, mirroring `GetGeometryWKB` (confirmed signature at
 `city_object_utils.hpp:101-103`):
@@ -870,7 +870,7 @@ CompactedGeometry CityObjectUtils::GetGeometryArrowNative(const Geometry &geomet
 }
 ```
 
-- [ ] **Step 4: Add the `WriteCityObjectRow` branches**
+- [x] **Step 4: Add the `WriteCityObjectRow` branches**
 
 In `src/cityjson/scan_function.cpp` (confirmed structure at lines 1-90), add alongside
 the existing `if (col.kind == ColumnType::GeometryWKB) { ... continue; }` block:
@@ -916,7 +916,7 @@ Also update `CreateVectors` (`vector_writer.cpp`, confirmed structure at lines 3
 map `ColumnType::GeometryArrowNative`/`GeometryVerticesArrowNative` to `VectorType::List`
 in its `if (col.kind == ColumnType::VarcharArray) { ... } else if (...)` chain.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Expected: PASS. If the double-encode inefficiency noted in Step 4 turns out to matter for
 correctness (e.g. if `ArrowNativeEncoder::Encode` isn't perfectly deterministic — it
@@ -924,13 +924,13 @@ should be, given no randomness, but confirm) rather than just performance, fix i
 instead of deferring — recompute-per-column is only acceptable if genuinely
 side-effect-free and deterministic.
 
-- [ ] **Step 6: Run the FULL existing SQL test suite**
+- [x] **Step 6: Run the FULL existing SQL test suite**
 
 Run this repo's real test command (`make test` or whatever `justfile`/CI actually runs —
 confirm rather than guess). Expected: PASS — confirms zero regression to the default WKB
 path.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/include/cityjson/city_object_utils.hpp src/cityjson/city_object_utils.cpp src/cityjson/scan_function.cpp src/cityjson/vector_writer.cpp test/
