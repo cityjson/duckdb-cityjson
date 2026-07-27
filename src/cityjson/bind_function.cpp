@@ -87,23 +87,26 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 	}
 }
 
-CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options) {
-	// A probe bind_data, populated in the same order BindCityJSONReadRaw populates the
-	// real one, so InferCityJSONColumns sees the state it expects. `streaming` stays
-	// false deliberately: the streaming path infers from a sample, and a sample cannot
-	// answer "which object types are in this file".
+CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options, bool streaming) {
+	// A probe bind_data, populated exactly as BindCityJSONReadRaw populates the real one,
+	// so InferCityJSONColumns produces the column list that read really will emit. That
+	// equality is the whole point of routing through this rather than re-deriving.
 	CityJSONBindData probe;
-	probe.streaming = false;
+	probe.streaming = streaming;
 	probe.target_lod = options.target_lod;
 	probe.use_wkb_encoding = options.use_wkb_encoding;
 
+	CityJSONFeatureChunk all;
 	try {
 		probe.metadata = reader.ReadMetadata();
-		probe.chunks = reader.ReadAllChunks();
+		if (!streaming) {
+			probe.chunks = reader.ReadAllChunks();
+		}
+		InferCityJSONColumns(probe, reader, options.sample_lines);
+		all = streaming ? reader.ReadAllChunks() : probe.chunks;
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to read source file: " + std::string(e.what()));
 	}
-	InferCityJSONColumns(probe, reader, options.sample_lines);
 
 	CityJSONSourceFacts facts;
 	facts.columns = probe.columns;
@@ -111,21 +114,24 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 		facts.reference_system = probe.metadata.metadata.value().reference_system;
 	}
 
+	// The complete set, from every feature: routing sends each type to its module table,
+	// so a type appearing only in the tail would otherwise land in no table at all.
 	std::set<std::string> types;
-	for (const auto &feature : probe.chunks.records) {
+	for (const auto &feature : all.records) {
 		for (const auto &entry : feature.city_objects) {
 			types.insert(entry.second.type);
 		}
 	}
 	facts.object_types.assign(types.begin(), types.end());
 
-	// Interned, not counted from the header: a CityJSONSeq feature may carry definitions
+	// Interned, not counted off the header: a CityJSONSeq feature may carry definitions
 	// the header never declared, and those need a sidecar just as much.
-	const auto index = AppearanceIndex::Build(probe.metadata, probe.chunks.records);
+	const auto index = AppearanceIndex::Build(probe.metadata, all.records);
 	facts.has_materials = !index.materials.empty();
 	facts.has_textures = !index.textures.empty();
-	facts.has_geometry_templates =
-	    probe.metadata.geometry_templates.has_value() && !probe.metadata.geometry_templates.value().Empty();
+	if (probe.metadata.geometry_templates.has_value()) {
+		facts.geometry_templates = probe.metadata.geometry_templates.value();
+	}
 	return facts;
 }
 

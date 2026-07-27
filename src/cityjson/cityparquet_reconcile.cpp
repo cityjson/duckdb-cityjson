@@ -1,6 +1,8 @@
 #include "cityjson/cityparquet_reconcile.hpp"
 
 #include "cityjson/cityparquet_package.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/function/pragma_function.hpp"
@@ -95,10 +97,22 @@ std::string HierarchyPhase(const std::string &schema, const std::vector<std::str
 	return sql;
 }
 
+bool HasBboxColumn(ClientContext &context, const std::string &schema, const std::string &table) {
+	// The non-templated GetEntry: Catalog::GetEntry<TableCatalogEntry> ODR-uses
+	// TableCatalogEntry::Name and collides with DuckDB's own definition at link time.
+	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
+		if (StringUtil::Lower(column.Name()) == "bbox") {
+			return true;
+		}
+	}
+	return false;
+}
+
 //! bbox = the object's own geometry extent, unioned across every stored LoD *and*
 //! across all of its descendants.
 std::string BboxPhase(ClientContext &context, const std::string &schema,
-                      const std::vector<std::string> &object_tables) {
+                      const std::vector<std::string> &object_tables, const PendingTables &pending) {
 	std::string sql;
 
 	// Own extent, per row: LEAST/GREATEST across every geometry_lod* column the table
@@ -107,7 +121,11 @@ std::string BboxPhase(ClientContext &context, const std::string &schema,
 	// NULL throughout.
 	std::vector<std::string> own_parts;
 	for (const auto &table : object_tables) {
-		auto geometry_columns = GeometryLodColumns(context, schema, table);
+		// A pending table is not in the catalog yet, so its geometry columns are the ones
+		// the caller is about to create it with rather than ones to look up.
+		auto found = pending.find(table);
+		auto geometry_columns =
+		    found == pending.end() ? GeometryLodColumns(context, schema, table) : found->second.geometry_columns;
 		if (geometry_columns.empty()) {
 			// A table with no analysis geometry contributes ids but no extents, so its
 			// rows can still receive a bbox unioned from descendants elsewhere.
@@ -150,6 +168,15 @@ std::string BboxPhase(ClientContext &context, const std::string &schema,
 	       "FROM __cp_anc a JOIN __cp_own o ON o.id = a.node GROUP BY a.ancestor;\n";
 
 	for (const auto &table : object_tables) {
+		// `bbox` is an optional column, and a table whose objects have no analysis
+		// geometry at all carries neither geometry columns nor a bbox. There is nothing
+		// to write there, and writing anyway is a binder error.
+		auto pending_entry = pending.find(table);
+		const bool has_bbox = pending_entry == pending.end() ? HasBboxColumn(context, schema, table)
+		                                                     : pending_entry->second.has_bbox;
+		if (!has_bbox) {
+			continue;
+		}
 		// An object with neither geometry of its own nor any descendant carrying
 		// geometry gets NULL, not a degenerate zero box.
 		sql += "UPDATE " + QualifiedName(schema, table) +
@@ -201,8 +228,14 @@ std::string BuildReconcilePrelude(ClientContext &context, const std::string &sch
 }
 
 std::string BuildReconcileSQL(ClientContext &context, const std::string &schema,
-                              const std::vector<std::string> &checks) {
+                              const std::vector<std::string> &checks, const PendingTables &pending) {
 	auto object_tables = ObjectTablesInSchema(context, schema);
+	for (const auto &entry : pending) {
+		if (std::find(object_tables.begin(), object_tables.end(), entry.first) == object_tables.end()) {
+			object_tables.push_back(entry.first);
+		}
+	}
+	std::sort(object_tables.begin(), object_tables.end());
 
 	static const std::set<std::string> known = {"feature_id", "hierarchy", "bbox"};
 	for (const auto &check : checks) {
@@ -223,7 +256,7 @@ std::string BuildReconcileSQL(ClientContext &context, const std::string &schema,
 		sql += FeatureIdPhase(schema, object_tables);
 	}
 	if (Wants(checks, "bbox")) {
-		sql += BboxPhase(context, schema, object_tables);
+		sql += BboxPhase(context, schema, object_tables, pending);
 	}
 	sql += DropTemps();
 	return sql;

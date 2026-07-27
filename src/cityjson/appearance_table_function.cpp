@@ -131,44 +131,12 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 		                LogicalType(LogicalTypeId::BOOLEAN),
 		                varchar};
 	} else if (kind == SidecarKind::TEMPLATES) {
-		std::set<std::string> lods;
-		for (idx_t i = 0; i < result->templates.templates.size(); i++) {
-			const auto &geometry = result->templates.templates[i];
-			// A template's LoD becomes part of its column names, so it must satisfy the
-			// LoD suffix grammar. An absent or non-numeric lod would yield `geometry_lod`
-			// or `geometry_lodfoo`, which no conforming reader -- including this
-			// extension's own appearance-column discovery -- will recognise.
-			if (geometry.lod.empty()) {
-				throw BinderException("cityjson_geometry_templates: template %llu has no lod; a template's LoD names "
-				                      "its columns, so it cannot be omitted",
-				                      static_cast<uint64_t>(i));
-			}
-			try {
-				std::stod(geometry.lod);
-			} catch (const std::exception &) {
-				throw BinderException("cityjson_geometry_templates: template %llu has a non-numeric lod '%s'; a "
-				                      "template's LoD names its columns and must follow the LoD suffix grammar",
-				                      static_cast<uint64_t>(i), geometry.lod);
-			}
-			lods.insert(LODTableUtils::NormalizeLOD(geometry.lod));
-		}
-		result->template_lods.assign(lods.begin(), lods.end());
-
-		// id is BIGINT so templates remap like the other sidecars when packages are
-		// merged; `name` holds the source identifier, which CityJSON templates do not
-		// have (they are array entries) but other sources may.
-		names = {"id", "name"};
-		return_types = {LogicalType(LogicalTypeId::BIGINT), varchar};
-		for (const auto &lod : result->template_lods) {
-			const auto suffix = LODTableUtils::FormatLODAsColumnSuffix(lod);
-			names.push_back("geometry_" + suffix);
-			return_types.push_back(LogicalType(LogicalTypeId::BLOB));
-			names.push_back("geometry_properties_" + suffix);
-			return_types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::GeometryPropertiesStruct));
-			names.push_back("material_" + suffix);
-			return_types.push_back(varchar);
-			names.push_back("texture_" + suffix);
-			return_types.push_back(varchar);
+		std::vector<std::string> template_names;
+		std::vector<LogicalType> template_types;
+		GeometryTemplateColumns(result->templates, template_names, template_types, result->template_lods);
+		for (idx_t i = 0; i < template_names.size(); i++) {
+			names.push_back(template_names[i]);
+			return_types.push_back(template_types[i]);
 		}
 	} else {
 		names = {"id", "image_uri", "image_data", "image_type", "wrapMode", "textureType", "borderColor", "other"};
@@ -300,6 +268,51 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 }
 
 } // namespace
+
+void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std::string> &names,
+                             std::vector<LogicalType> &types, std::vector<std::string> &lods) {
+	std::set<std::string> distinct_lods;
+	for (idx_t i = 0; i < templates.templates.size(); i++) {
+		const auto &geometry = templates.templates[i];
+		// A template's LoD becomes part of its column names, so it must satisfy the LoD
+		// suffix grammar. An absent or non-numeric lod would yield `geometry_lod` or
+		// `geometry_lodfoo`, which no conforming reader -- including this extension's own
+		// appearance-column discovery -- will recognise.
+		if (geometry.lod.empty()) {
+			throw BinderException("cityjson_geometry_templates: template %llu has no lod; a template's LoD names "
+			                      "its columns, so it cannot be omitted",
+			                      static_cast<uint64_t>(i));
+		}
+		try {
+			std::stod(geometry.lod);
+		} catch (const std::exception &) {
+			throw BinderException("cityjson_geometry_templates: template %llu has a non-numeric lod '%s'; a "
+			                      "template's LoD names its columns and must follow the LoD suffix grammar",
+			                      static_cast<uint64_t>(i), geometry.lod);
+		}
+		distinct_lods.insert(LODTableUtils::NormalizeLOD(geometry.lod));
+	}
+	lods.assign(distinct_lods.begin(), distinct_lods.end());
+
+	const auto varchar = LogicalType(LogicalTypeId::VARCHAR);
+
+	// id is BIGINT so templates remap like the other sidecars when packages are merged;
+	// `name` holds the source identifier, which CityJSON templates do not have (they are
+	// array entries) but other sources may.
+	names = {"id", "name"};
+	types = {LogicalType(LogicalTypeId::BIGINT), varchar};
+	for (const auto &lod : lods) {
+		const auto suffix = LODTableUtils::FormatLODAsColumnSuffix(lod);
+		names.push_back("geometry_" + suffix);
+		types.push_back(LogicalType(LogicalTypeId::BLOB));
+		names.push_back("geometry_properties_" + suffix);
+		types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::GeometryPropertiesStruct));
+		names.push_back("material_" + suffix);
+		types.push_back(varchar);
+		names.push_back("texture_" + suffix);
+		types.push_back(varchar);
+	}
+}
 
 void RegisterAppearanceTableFunctions(ExtensionLoader &loader) {
 	TableFunction materials("cityjson_materials", {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, MaterialsBind);

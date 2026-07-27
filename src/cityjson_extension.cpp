@@ -9,6 +9,7 @@
 #include "cityjson/cityparquet_validate.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_delete.hpp"
+#include "cityjson/cityparquet_insert.hpp"
 #include "cityjson/cityparquet_merge.hpp"
 #include "cityjson/cityparquet_write.hpp"
 #include "cityjson/cityparquet_appearance.hpp"
@@ -55,6 +56,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register CityParquet package-to-package merge (cityparquet_merge)
 	cityjson::RegisterCityParquetMergeFunctions(loader);
+
+	// Register CityParquet CityJSON insert (insert_cityjson and siblings)
+	cityjson::RegisterCityParquetInsertFunctions(loader);
 
 	// Register CityParquet package writer (cityparquet_write)
 	cityjson::RegisterCityParquetWriteFunction(loader);

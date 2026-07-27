@@ -93,15 +93,21 @@ struct CityJSONSourceFacts {
 	//! table must not be created for a file that has none.
 	bool has_materials = false;
 	bool has_textures = false;
-	bool has_geometry_templates = false;
+	//! The document's templates, kept whole rather than reduced to a flag: the
+	//! geometry_templates sidecar's columns depend on which LoDs they use, and a caller
+	//! evolving a destination sidecar has to know them.
+	GeometryTemplates geometry_templates;
 };
 
 /**
- * Read `reader` far enough to answer everything in CityJSONSourceFacts. Always reads the
- * whole file, whatever the reader's streaming mode: a sample cannot give a complete
- * object-type set.
+ * Read `reader` far enough to answer everything in CityJSONSourceFacts.
+ *
+ * `streaming` must match the read function whose output is being described —
+ * read_cityjsonseq binds in streaming mode and read_cityjson does not, and with `lod =`
+ * the two infer from different amounts of the file. The object types and the appearance
+ * are always taken from the whole file regardless, because a sample cannot answer either.
  */
-CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options);
+CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options, bool streaming);
 
 /**
  * Shared bind implementation for CityJSON readers

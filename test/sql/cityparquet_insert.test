@@ -1,0 +1,213 @@
+# name: test/sql/cityparquet_insert.test
+# description: insert_cityjson / insert_cityjsonseq — one call, transactional, consistent
+# group: [sql]
+
+require cityjson
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+20
+
+# --- the headline case -------------------------------------------------------
+
+# A CityJSON file goes in with one call. Its Building lands in the module table
+# that already holds buildings; no new table, no sidecars, nothing to route.
+statement ok
+PRAGMA insert_cityjson('ams', 'test/data/minimal.city.json');
+
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+21
+
+query T
+SELECT object_type FROM ams.building WHERE id = 'building1';
+----
+Building
+
+# The reader's derived state survives the insert: a row arrives with its own
+# feature_id and a bbox, not with NULLs waiting for a later reconcile.
+query I
+SELECT COUNT(*) FROM ams.building WHERE feature_id IS NULL;
+----
+0
+
+# --- routing -----------------------------------------------------------------
+
+# This file holds a Bridge and a CityFurniture, which belong to two different
+# CityGML modules, so one insert creates two tables. Routing is by module, not by
+# type: the whole Bridge module shares one file.
+statement ok
+PRAGMA insert_cityjsonseq('ams', 'test/data/railway_appearance.city.jsonl');
+
+# The sidecars the source needs are created alongside: this file carries materials,
+# textures and geometry templates, and each gets its bookkeeping row too.
+query TT
+SELECT table_name, role FROM ams.__cityparquet ORDER BY table_name;
+----
+bridge	object
+building	object
+city_furniture	object
+geometry_templates	sidecar
+materials	sidecar
+textures	sidecar
+
+query T
+SELECT object_type FROM ams.bridge;
+----
+Bridge
+
+query T
+SELECT object_type FROM ams.city_furniture;
+----
+CityFurniture
+
+# Rows must not be duplicated across module tables -- each goes to exactly one.
+query I
+SELECT COUNT(*) FROM ams.bridge WHERE object_type <> 'Bridge';
+----
+0
+
+# --- appearance --------------------------------------------------------------
+
+# The sidecars were created and filled from the same interned index the object
+# rows' ids were drawn from, so every reference resolves.
+query I
+SELECT COUNT(*) FROM ams.materials;
+----
+4
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM ams.bridge WHERE material_lod3_0 IS NOT NULL
+  UNION ALL
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM ams.city_furniture WHERE material_lod3_0 IS NOT NULL
+) r WHERE r.ref NOT IN (SELECT id FROM ams.materials);
+----
+0
+
+# --- sidecar id offsetting ---------------------------------------------------
+
+# A second file with its own appearance cannot reuse ids 0..3. Its single
+# material becomes id 4, and the inserted row's reference is rewritten to match
+# -- if the shift were applied to only one of the two, the row would silently
+# point at another file's material.
+statement ok
+PRAGMA insert_cityjson('ams', 'test/data/insert_appearance.city.json');
+
+query I
+SELECT COUNT(*) FROM ams.materials;
+----
+5
+
+query T
+SELECT name FROM ams.materials WHERE id = 4;
+----
+kiosk-paint
+
+query T
+SELECT material_lod2_0 FROM ams.city_furniture WHERE id = 'kiosk-1';
+----
+{"visual":{"values":[4]}}
+
+# Texture ids shift the same way, and the inlined UV pairs must not be touched by
+# the shift -- they are coordinates, not ids.
+query T
+SELECT texture_lod2_0 FROM ams.city_furniture WHERE id = 'kiosk-1';
+----
+{"visual":{"values":[[[4,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]]]}}
+
+# --- geometry templates ------------------------------------------------------
+
+statement ok
+PRAGMA insert_cityjson('ams', 'test/data/geometry_templates.city.json');
+
+query I
+SELECT COUNT(*) > 0 FROM ams.geometry_templates;
+----
+true
+
+query I
+SELECT COUNT(*) FROM ams.vegetation WHERE object_type = 'SolitaryVegetationObject';
+----
+2
+
+# These objects have template geometry only, so the reader emits no geometry_lod*
+# columns and no bbox for them. Reconcile must leave such a table alone rather than
+# trying to write a bbox column that does not exist.
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM ams.vegetation) WHERE column_name = 'bbox';
+----
+0
+
+# --- the package stays consistent throughout ---------------------------------
+
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# --- refusals ----------------------------------------------------------------
+
+# Ids are identity. Re-inserting the same file would give two rows claiming to be
+# the same object, so the whole insert is refused rather than renaming silently.
+statement error
+PRAGMA insert_cityjson('ams', 'test/data/minimal.city.json');
+----
+duplicate id
+
+statement ok
+CREATE SCHEMA solo;
+
+statement ok
+CREATE TABLE solo.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+statement ok
+PRAGMA cityparquet_init('solo');
+
+# create_tables := false means the caller has decided which files this package
+# holds; a source needing a new one is an error, not a silent extension.
+statement error
+PRAGMA insert_cityjson('solo', 'test/data/geometry_templates.city.json', create_tables = false);
+----
+create_tables
+
+# One CRS per package, with no per-row escape hatch, so a mismatch is refused
+# rather than silently producing a mis-georeferenced package.
+statement ok
+UPDATE solo.__cityparquet SET city = '{"crs": "https://www.opengis.net/def/crs/EPSG/0/28992"}';
+
+statement error
+PRAGMA insert_cityjson('solo', 'test/data/insert_appearance.city.json');
+----
+CRS mismatch
+
+# --- the SQL twin ------------------------------------------------------------
+
+# Every mutating pragma has a scalar returning the same text without running it,
+# so a script can be reviewed before it touches anything.
+query I
+SELECT insert_cityjson_sql('solo', 'test/data/minimal.city.json') LIKE '%INSERT INTO%';
+----
+true
+
+query I
+SELECT COUNT(*) FROM solo.building;
+----
+1
