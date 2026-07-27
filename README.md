@@ -627,6 +627,14 @@ writes a `metadata.json` STAC Item. Three things worth knowing:
   running on an internal connection, because `KV_METADATA` cannot omit a key and the
   `geo`-or-no-`geo` decision depends on the data. Mutate, commit, then write.
 
+`metadata.json` is the **dataset-level** view, where the footers are per-file. So every
+`city3d:*` field in it is a union or a sum across the package — `city3d:lods` is the union
+over all tables, `city3d:city_objects` the sum over the object tables — and none of them
+is a copy of any single footer. It also carries the Projection extension (`proj:projjson`,
+`proj:bbox`), and each asset its `file:size` and `table:row_count`. `geometry` stays null:
+STAC wants EPSG:4326 there and a package's coordinates are not, so `proj:bbox` carries the
+real extent.
+
 Atomicity is **per file only**. Each file flips whole via temp-file + rename, but the
 package as a whole has a window during a write in which it is inconsistent, and
 concurrent readers are unsupported. CityParquet mandates stable basenames, so a write

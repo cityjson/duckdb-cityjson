@@ -10,17 +10,18 @@
 
 ## Status
 
-**Tasks 1-5 and 7 are done.** 811 assertions across 32 test files pass.
+**All seven tasks are done.** 854 assertions across 32 test files pass.
 
 Shipped: the supporting scalars, `cityparquet_merge`, `insert_cityjson` (with
 `insert_cityjsonseq`, `insert_flatcitybuf` and `insert_cityjson_sql`),
-`cityparquet_read`, `cityparquet_write` (data files, `city`/`geo` footers, a minimal
-`metadata.json`), and the README/CLAUDE.md/AGENTS.md documentation.
+`cityparquet_read`, `cityparquet_write` (data files, `city`/`geo` footers, and a
+`metadata.json` STAC Item carrying the aggregate `city3d:*` inventory plus the
+Projection, File and Table extension fields), and the documentation.
 
-**Remaining: the rest of Task 6.** `metadata.json` is written but minimal — assets and
-`file:size` only, not the aggregate `city3d:*` inventory (`city3d:lods` as the union
-across files, `city3d:co_types`, `city3d:city_objects`, and the Projection/Statistics
-extension fields).
+Two open spec questions came out of Task 6 and are recorded in
+`docs/CITYPARQUET_SPEC_QUESTIONS.md`: which STAC extension "Statistics" means, and
+whether `city3d:lods` is defined in the normalised LoD spelling (the only one a written
+package can recover).
 
 ### What Task 3 turned up
 
