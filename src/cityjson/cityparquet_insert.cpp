@@ -112,36 +112,6 @@ LogicalType WidenedType(const LogicalType &destination, const LogicalType &sourc
 	return LogicalType(LogicalTypeId::VARCHAR);
 }
 
-//! True when `name` is exactly `prefix` followed by the LoD suffix grammar. A bare
-//! prefix test would swallow `material_lodging`, an ordinary source attribute.
-bool MatchesLodSuffix(const std::string &name, const std::string &prefix) {
-	if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) {
-		return false;
-	}
-	const auto rest = name.substr(prefix.size());
-	size_t i = 0;
-	auto digits = [&]() {
-		const auto start = i;
-		while (i < rest.size() && rest[i] >= '0' && rest[i] <= '9') {
-			i++;
-		}
-		return i > start;
-	};
-	if (!digits()) {
-		return false;
-	}
-	if (i < rest.size()) {
-		if (rest[i] != '_') {
-			return false;
-		}
-		i++;
-		if (!digits()) {
-			return false;
-		}
-	}
-	return i == rest.size();
-}
-
 //! Open the source with the same factory the named read function uses, so the schema
 //! this derives is the schema that read will produce. Auto-detection is not a detail
 //! that can be approximated here: read_cityjson and read_cityjsonseq disagree about a

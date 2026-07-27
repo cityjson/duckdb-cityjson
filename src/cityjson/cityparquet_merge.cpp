@@ -157,6 +157,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 
 	// ---- Phase 2: schema evolution, before any INSERT ----------------------
 	std::map<std::string, std::vector<ColumnInfo>> destination_columns;
+	PendingTables pending;
 	for (const auto &table : source_tables) {
 		const auto exists =
 		    std::find(destination_tables.begin(), destination_tables.end(), table) != destination_tables.end();
@@ -175,7 +176,22 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			       Literal(table + ".parquet") + ", 'object', ANY_VALUE(city) FROM " +
 			       QualifiedName(destination, "__cityparquet") + " WHERE NOT EXISTS (SELECT 1 FROM " +
 			       QualifiedName(destination, "__cityparquet") + " WHERE table_name = " + Literal(table) + ");\n";
-			destination_columns[table] = TableColumns(context, source, table);
+			auto created = TableColumns(context, source, table);
+			// It does not exist for the reconcile at the end of this script either -- a
+			// generator sees the pre-batch catalog -- so its columns are handed over
+			// rather than looked up. Without this a destination row that has just become
+			// the parent of an incoming one never gets the reciprocal children entry.
+			PendingTable entry;
+			for (const auto &column : created) {
+				const auto lowered = StringUtil::Lower(column.name);
+				if (MatchesLodSuffix(lowered, "geometry_lod")) {
+					entry.geometry_columns.push_back(column.name);
+				} else if (lowered == "bbox") {
+					entry.has_bbox = true;
+				}
+			}
+			pending[table] = std::move(entry);
+			destination_columns[table] = std::move(created);
 			continue;
 		}
 
@@ -211,6 +227,18 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			       " (table_name, file_name, role, city) SELECT " + Literal(sidecar) + ", " +
 			       Literal(sidecar + ".parquet") + ", 'sidecar', NULL WHERE NOT EXISTS (SELECT 1 FROM " +
 			       QualifiedName(destination, "__cityparquet") + " WHERE table_name = " + Literal(sidecar) + ");\n";
+		} else {
+			// A sidecar needs schema evolution just as a module table does. The
+			// geometry_templates sidecar carries per-LoD columns, so two packages whose
+			// templates use different LoDs have genuinely different sidecar schemas and
+			// the INSERT below would name a column the destination has never had.
+			auto existing = TableColumns(context, destination, sidecar);
+			for (const auto &column : TableColumns(context, source, sidecar)) {
+				if (FindColumn(existing, column.name) == nullptr) {
+					sql += "ALTER TABLE " + QualifiedName(destination, sidecar) + " ADD COLUMN IF NOT EXISTS " +
+					       Quoted(column.name) + " " + column.type.ToString() + ";\n";
+				}
+			}
 		}
 		// The offset depends on row data, so it is computed here rather than at plan
 		// time -- a generator's view of the data is the state before the batch began.
@@ -233,11 +261,14 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				continue;
 			}
 			const auto lowered = StringUtil::Lower(column.name);
+			// The anchored LoD grammar, not a bare prefix: `material_lodging` is an
+			// ordinary source attribute and handing it to cityjson_shift_appearance_ids
+			// would abort the merge.
 			const bool is_material =
-			    lowered.rfind("material_lod", 0) == 0 &&
+			    MatchesLodSuffix(lowered, "material_lod") &&
 			    std::find(source_sidecars.begin(), source_sidecars.end(), "materials") != source_sidecars.end();
 			const bool is_texture =
-			    lowered.rfind("texture_lod", 0) == 0 &&
+			    MatchesLodSuffix(lowered, "texture_lod") &&
 			    std::find(source_sidecars.begin(), source_sidecars.end(), "textures") != source_sidecars.end();
 			if (is_material) {
 				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", 'material', " +
@@ -255,15 +286,37 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 
 	// Sidecar rows go in after the object rows so the offsets above are still valid
 	// while the references are rewritten.
+	const bool has_materials =
+	    std::find(source_sidecars.begin(), source_sidecars.end(), "materials") != source_sidecars.end();
+	const bool has_textures =
+	    std::find(source_sidecars.begin(), source_sidecars.end(), "textures") != source_sidecars.end();
 	for (const auto &sidecar : source_sidecars) {
 		auto columns = TableColumns(context, source, sidecar);
 		std::vector<std::string> names;
 		std::vector<std::string> values;
 		for (const auto &column : columns) {
 			names.push_back(Quoted(column.name));
-			values.push_back(StringUtil::Lower(column.name) == "id"
-			                     ? "id + " + OffsetExpr(sidecar)
-			                     : Quoted(column.name));
+			const auto lowered = StringUtil::Lower(column.name);
+			if (lowered == "id") {
+				values.push_back("id + " + OffsetExpr(sidecar));
+				continue;
+			}
+			// A geometry template holds appearance of its own, so its material and
+			// texture references need the same shift the object rows got. Moving the
+			// sidecar rows while leaving their references behind would repoint every
+			// template at whichever definition already occupied that id.
+			const char *kind = nullptr;
+			if (has_materials && MatchesLodSuffix(lowered, "material_lod")) {
+				kind = "material";
+			} else if (has_textures && MatchesLodSuffix(lowered, "texture_lod")) {
+				kind = "texture";
+			}
+			if (kind == nullptr) {
+				values.push_back(Quoted(column.name));
+				continue;
+			}
+			values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", '" + kind + "', " +
+			                 OffsetExpr(std::string(kind) == "material" ? "materials" : "textures") + ")");
 		}
 		sql += "INSERT INTO " + QualifiedName(destination, sidecar) + " (" + Join(names, ", ") + ") SELECT " +
 		       Join(values, ", ") + " FROM " + QualifiedName(source, sidecar) + ";\n";
@@ -271,7 +324,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 	}
 
 	// ---- Phase 5: derived state --------------------------------------------
-	sql += BuildReconcileSQL(context, destination, {});
+	sql += BuildReconcileSQL(context, destination, {}, pending);
 	return sql;
 }
 

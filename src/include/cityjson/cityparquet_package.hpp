@@ -61,6 +61,16 @@ std::vector<std::string> GeometryLodColumns(ClientContext &context, const std::s
 std::vector<std::string> AppearanceLodColumns(ClientContext &context, const std::string &schema,
                                               const std::string &table, const std::string &prefix);
 
+//! True when `name` is exactly `prefix` followed by the LoD suffix grammar: digits,
+//! optionally `_` and more digits, and nothing else.
+//!
+//! A bare prefix test is not enough. `material_lodging` is a perfectly ordinary source
+//! attribute, and the reader already takes care not to swallow it as an appearance
+//! column (test/sql/cityjson_appearance.test). Misclassifying it hands arbitrary
+//! attribute text to cityjson_appearance_ids or cityjson_shift_appearance_ids, neither
+//! of which can parse it.
+bool MatchesLodSuffix(const std::string &name, const std::string &prefix);
+
 //! The `all_objects AS (...)` CTE body: every object table's identity and hierarchy
 //! columns, unioned. Those columns are common to every module — only attribute columns
 //! differ — so consistency checks and re-derivations are written once rather than once

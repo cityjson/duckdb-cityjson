@@ -117,14 +117,8 @@ std::vector<std::string> Intersect(const std::set<std::string> &present, const s
 	return found;
 }
 
-//! True when `name` is exactly `prefix` followed by the LoD suffix grammar: digits,
-//! optionally `_` and more digits, and nothing else.
-//!
-//! A bare prefix test is not enough. `material_lodging` is a perfectly ordinary source
-//! attribute, and the reader already takes care not to swallow it as an appearance
-//! column (test/sql/cityjson_appearance.test). Misclassifying it here would hand
-//! arbitrary attribute text to cityjson_appearance_ids, which cannot parse it and would
-//! abort the whole orphan scan.
+} // namespace
+
 bool MatchesLodSuffix(const std::string &name, const std::string &prefix) {
 	if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) {
 		return false;
@@ -152,6 +146,8 @@ bool MatchesLodSuffix(const std::string &name, const std::string &prefix) {
 	}
 	return i == rest.size();
 }
+
+namespace {
 
 //! Column names of `schema.table` matching `prefix` + the LoD suffix grammar.
 std::vector<std::string> ColumnsWithPrefix(ClientContext &context, const std::string &schema, const std::string &table,
