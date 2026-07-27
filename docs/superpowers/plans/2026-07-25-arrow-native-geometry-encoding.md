@@ -442,7 +442,7 @@ git commit -m "feat(schema): geometry_vertices_lod* sibling column, arrow-native
   };
   ```
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 If this repo has `test/cpp/` (Task 1's finding), add there; otherwise write this as a
 temporary standalone test binary/scratch harness during development and translate the
@@ -481,11 +481,11 @@ TEST_CASE("ArrowNativeEncoder never merges distinct indices with equal coordinat
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — `ArrowNativeEncoder` doesn't exist.
 
-- [ ] **Step 3: Implement, reusing `WKBEncoder`'s structural helpers where possible**
+- [x] **Step 3: Implement, reusing `WKBEncoder`'s structural helpers where possible**
 
 Check first whether `WKBEncoder`'s private `ApplyTransform`/`GetVertex`/`ReverseRing`
 helpers (confirmed present, `wkb_encoder.hpp` private section) are reusable as-is (they're
@@ -622,11 +622,11 @@ boundaries differently than assumed (verify against `cityjson_types.hpp`'s real
 `wkb_encoder.hpp`'s comments describing the boundary shapes per type but not
 `cityjson_types.hpp`'s `Geometry` struct itself in full).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Expected: PASS for both Step-1 tests.
 
-- [ ] **Step 5: Add a `Solid`-with-two-shells test (parity with the Rust plan's equivalent test)**
+- [x] **Step 5: Add a `Solid`-with-two-shells test (parity with the Rust plan's equivalent test)**
 
 ```cpp
 TEST_CASE("ArrowNativeEncoder preserves shell structure for a two-shell Solid", "[arrow_native_encoder]") {
@@ -655,7 +655,7 @@ is consistent with the design doc (the padding-dimension rule applies only to su
 types, which have no shell concept at all) but worth flagging explicitly here since it's
 easy to conflate "padding" with "always length 1".
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/include/cityjson/arrow_native_encoder.hpp src/cityjson/arrow_native_encoder.cpp test/

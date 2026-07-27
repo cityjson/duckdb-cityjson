@@ -40,6 +40,7 @@ set(EXTENSION_SOURCES
     # Geometry encoding layer
     src/cityjson/wkb_encoder.cpp
     src/cityjson/wkb_decoder.cpp
+    src/cityjson/arrow_native_encoder.cpp
     src/cityjson/wkb_extent.cpp
     src/cityjson/geometry_properties.cpp
     src/cityjson/lod_table.cpp
