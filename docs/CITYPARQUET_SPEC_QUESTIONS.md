@@ -121,3 +121,35 @@ order.
 
 **Still to do:** state the first-parent rule explicitly in the object-table-schema page's
 `feature_id` note.
+
+## 5. "the Statistics extension" — which STAC extension is meant?
+
+**Status:** open, raised 2026-07-27 while writing `metadata.json`.
+
+The metadata page says the Item **SHOULD** use "the standard **Projection** (CRS),
+**File** (checksums/sizes), and **Statistics** extensions". Projection and File are
+unambiguous — `proj:projjson` / `proj:bbox` and `file:size` — but there is no STAC
+extension named "Statistics" that defines what one would want here, namely a row count
+per asset. The extension that does define it for a tabular asset is **Table**
+(`table:row_count`).
+
+`cityparquet_write` currently declares the Table extension and writes
+`table:row_count` per asset. Either the spec means Table and should say so, or it means
+something else and should name the fields.
+
+## 6. `city3d:lods` uses the normalised LoD, not the source spelling
+
+**Status:** open, raised 2026-07-27.
+
+CityParquet stores an LoD only in a column name, via the suffix grammar, and the reader
+normalises on ingest: a source LoD of `"0"` becomes the column `geometry_lod0_0`. There
+is no other record of what the source wrote.
+
+So `city3d:lods` recovered from the package reads `"0.0"` where the source said `"0"`.
+That is not a CityJSON LoD spelling. The spec is explicit that `city3d:co_types` uses
+the **source** vocabulary; it says nothing about `city3d:lods`, and for LoDs the source
+spelling is not recoverable from a written package at all.
+
+Either `city3d:lods` is defined as the normalised form — in which case say so, since it
+differs visibly from what a CityJSON file contains — or the normalisation itself needs
+revisiting.
