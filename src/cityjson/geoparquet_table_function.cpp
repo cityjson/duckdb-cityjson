@@ -1,4 +1,5 @@
 #include "cityjson/geoparquet_table_function.hpp"
+#include "cityjson/table_function.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/crs_projjson.hpp"
@@ -22,7 +23,14 @@ namespace {
 // MultiPoint→MultiPointZ, MultiLineString→MultiLineStringZ,
 // MultiSurface/CompositeSurface→MultiPolygonZ. Solid-family types map to
 // PolyhedralSurfaceZ / GeometryCollectionZ and are excluded.
-std::string GeoParquetTypeName(const std::string &cj_type) {
+std::string GeoParquetTypeName(const std::string &cj_type, GeometryEncoding encoding) {
+	// `geo` describes WKB columns. Legality is a property of the physical encoding
+	// first and the CityJSON type second: a MultiSurface is legal as WKB but the
+	// same type encoded arrow-native is a nested LIST of indices no GeoParquet
+	// reader can decode, so no column using it may be declared here.
+	if (encoding != GeometryEncoding::Wkb) {
+		return "";
+	}
 	if (cj_type == "MultiSurface" || cj_type == "CompositeSurface") {
 		return "MultiPolygon Z";
 	}
@@ -50,7 +58,8 @@ double LodValue(const std::string &normalised_lod) {
 // `lod_types` maps a normalised LoD string to the set of CityJSON geometry types
 // seen at that LoD. Throws when a present CRS cannot be resolved to PROJJSON.
 std::optional<std::string> BuildGeoMetadata(const std::optional<std::string> &reference_system,
-                                            const std::map<std::string, std::set<std::string>> &lod_types) {
+                                            const std::map<std::string, std::set<std::string>> &lod_types,
+                                            GeometryEncoding encoding) {
 	// Determine the GeoParquet-legal columns first. A column is legal only if
 	// every type seen at its LoD maps to a GeoParquet-legal WKB type.
 	json columns = json::object();
@@ -60,7 +69,7 @@ std::optional<std::string> BuildGeoMetadata(const std::optional<std::string> &re
 		std::set<std::string> geometry_types;
 		bool all_legal = !types.empty();
 		for (const auto &t : types) {
-			std::string name = GeoParquetTypeName(t);
+			std::string name = GeoParquetTypeName(t, encoding);
 			if (name.empty()) {
 				all_legal = false;
 				break;
@@ -140,6 +149,10 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
 	auto result = make_uniq<GeoBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 
+	// Routed through the shared parser so the accepted spellings and the rejection
+	// message stay identical to read_cityjson's.
+	const auto encoding = ParseCityJSONReadOptions(input, "cityjson_geoparquet_geo").geometry_encoding;
+
 	std::unique_ptr<CityJSONReader> reader;
 	try {
 		reader = OpenAnyCityJSONFile(context, result->file_name);
@@ -177,7 +190,7 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
 		throw BinderException("cityjson_geoparquet_geo: failed to read geometries: " + std::string(e.what()));
 	}
 
-	result->geo = BuildGeoMetadata(reference_system, lod_types);
+	result->geo = BuildGeoMetadata(reference_system, lod_types, encoding);
 
 	return_types = {LogicalType::VARCHAR};
 	names = {"geo"};
@@ -208,6 +221,8 @@ void GeoScan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
 
 void RegisterGeoParquetTableFunctions(ExtensionLoader &loader) {
 	TableFunction func("cityjson_geoparquet_geo", {LogicalType::VARCHAR}, GeoScan, GeoBind);
+	// 'wkb' (default) or 'arrow-native': an arrow-native column is never declared.
+	func.named_parameters["geometry_encoding"] = LogicalType::VARCHAR;
 	func.init_global = GeoInitGlobal;
 	loader.RegisterFunction(func);
 }

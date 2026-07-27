@@ -948,7 +948,7 @@ git commit -m "feat(scan): wire arrow-native geometry writer into WriteCityObjec
 - Consumes: `GeometryEncoding` (Task 2).
 - Produces: `GeoParquetTypeName`-equivalent logic (confirmed at lines ~21-35 of this file, per the design doc's round-2 research) returns GeoParquet-illegal for any column not using WKB, regardless of CM type.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```sql
 statement ok
@@ -962,11 +962,11 @@ Confirm the real function name/signature by reading `geoparquet_table_function.c
 full (this plan's research only confirmed `GeoParquetTypeName`'s body, not the
 table-function wrapper's exact call convention) before writing this test for real.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — an arrow-native `MultiSurface` column is currently declared GeoParquet-legal (design doc round-2 finding, confirmed by reading `GeoParquetTypeName`'s current unconditional `if (cj_type == "MultiSurface" || cj_type == "CompositeSurface") return "MultiPolygon Z";`).
 
-- [ ] **Step 3: Make it encoding-aware**
+- [x] **Step 3: Make it encoding-aware**
 
 In `geoparquet_table_function.cpp`'s `GeoParquetTypeName` (confirmed body, lines ~21-35), thread the column's `GeometryEncoding` in and short-circuit:
 
@@ -991,11 +991,11 @@ std::string GeoParquetTypeName(const std::string &cj_type, GeometryEncoding enco
 Update every call site to pass the column's actual encoding (grep `GeoParquetTypeName(`
 — trace back to wherever the bind data's `geometry_encoding` is in scope).
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run the test, expect PASS. Run the full existing test suite for regression.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/cityjson/geoparquet_table_function.cpp test/
@@ -1019,7 +1019,7 @@ end-to-end (a synthetic hand-built `Vector` could be spiked even earlier, standa
 the team wants the earliest possible go/no-go — consider doing exactly that as a Task 0
 before committing to Tasks 2-7's full implementation, if schedule allows).
 
-- [ ] **Step 1: Round-trip a real arrow-native table through Parquet**
+- [x] **Step 1: Round-trip a real arrow-native table through Parquet**
 
 ```sql
 COPY (SELECT * FROM read_cityjson('test/fixtures/PLACEHOLDER.city.json', geometry_encoding := 'arrow-native')) TO '/tmp/arrow_native_test.parquet' (FORMAT PARQUET);
@@ -1032,7 +1032,7 @@ SELECT typeof(geometry_lod2_2) FROM reloaded LIMIT 0;
 INTEGER[][][][][]
 ```
 
-- [ ] **Step 2: Verify field names survive, not just types**
+- [x] **Step 2: Verify field names survive, not just types**
 
 `INTEGER[][][][][]`'s `typeof()` output won't reveal whether the intermediate `LIST`
 levels kept sensible child field names (`"item"` at each level, matching Arrow/Parquet
@@ -1044,7 +1044,7 @@ whoever's running the `cityparquet-rs` plan for a sample file, or generate one y
 from that plan's Task 1 test fixtures once merged) — this is the actual cross-repo
 compatibility check, not just "does DuckDB not crash."
 
-- [ ] **Step 3: Record the result**
+- [x] **Step 3: Record the result**
 
 If this passes cleanly: no further action, the whole approach is validated at the
 Parquet-writer level. If it doesn't: **stop and escalate** — this is exactly the

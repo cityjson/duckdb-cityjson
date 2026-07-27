@@ -181,3 +181,35 @@ SELECT count(*) FROM (DESCRIBE d) WHERE column_name LIKE 'geometry_vertices%';
 
 statement ok
 DROP TABLE d;
+
+# ============================================================
+# `geo` emission is encoding-aware
+# ============================================================
+#
+# GeoParquet's `geo` declares WKB columns. A MultiSurface is GeoParquet-legal
+# *when encoded as WKB* -- but the same CityJSON type encoded arrow-native is a
+# nested LIST no GeoParquet reader can decode, so it must not be declared at all.
+# Legality is a property of the physical encoding, not of the CityJSON type.
+
+# Default: delft's LoD0.0 MultiSurface is legal WKB, so it is declared.
+query I
+SELECT geo IS NOT NULL FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl');
+----
+true
+
+# Arrow-native: nothing is declared, even though the CM types are unchanged.
+query I
+SELECT geo IS NULL FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl', geometry_encoding := 'arrow-native');
+----
+true
+
+# 'wkb' spelled out explicitly matches the default.
+query I
+SELECT geo IS NOT NULL FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl', geometry_encoding := 'wkb');
+----
+true
+
+statement error
+SELECT geo FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl', geometry_encoding := 'nonsense');
+----
+geometry_encoding must be 'wkb' or 'arrow-native'
