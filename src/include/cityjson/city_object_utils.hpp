@@ -2,6 +2,7 @@
 
 #include "cityjson/types.hpp"
 #include "cityjson/cityjson_types.hpp"
+#include "cityjson/arrow_native_encoder.hpp"
 #include "cityjson/json_utils.hpp"
 #include <vector>
 #include <string>
@@ -89,6 +90,38 @@ public:
 	 */
 	static std::vector<Column> InferGeometryColumns(const std::vector<CityJSONFeature> &features,
 	                                                size_t sample_size = 100);
+
+	/**
+	 * Rewrite an inferred column list for the chosen geometry encoding.
+	 *
+	 * Applied to a column list that was built for the default WKB encoding: each
+	 * `geometry_lod*` BLOB becomes the nested-LIST arrow-native shape and gains a
+	 * `geometry_vertices_lod*` sibling immediately after it. `GeometryEncoding::Wkb`
+	 * leaves the list untouched.
+	 *
+	 * This transforms the inferred list rather than re-deriving it, so the set of
+	 * LoDs still comes from whichever inference produced the input -- the wide
+	 * layout's InferGeometryColumns or the `lod=` path's GetGeometryColumns. Those
+	 * two build the same list independently, so branching inside both would be two
+	 * places to keep in step; there is exactly one point where either result becomes
+	 * bind_data.columns, and that is where this runs.
+	 *
+	 * @param columns Column list to rewrite in place
+	 * @param encoding Physical geometry encoding the read was asked for
+	 */
+	static void ApplyGeometryEncoding(std::vector<Column> &columns, GeometryEncoding encoding);
+
+	/**
+	 * Encode geometry in the arrow-native form, mirroring GetGeometryWKB
+	 *
+	 * @param geometry Geometry object to encode
+	 * @param vertices Shared vertex array from CityJSON
+	 * @param transform Optional transform to apply to vertices
+	 * @return The compacted geometry: row-local vertex pool plus nested indices
+	 */
+	static CompactedGeometry GetGeometryArrowNative(const Geometry &geometry,
+	                                                const std::vector<std::array<double, 3>> &vertices,
+	                                                const std::optional<Transform> &transform);
 
 	/**
 	 * Encode geometry to WKB format

@@ -52,7 +52,8 @@ std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Co
 		// Determine vector type based on column type
 		VectorType vec_type;
 
-		if (col.kind == ColumnType::VarcharArray) {
+		if (col.kind == ColumnType::VarcharArray || col.kind == ColumnType::GeometryArrowNative ||
+		    col.kind == ColumnType::GeometryVerticesArrowNative) {
 			vec_type = VectorType::List;
 		} else if (col.kind == ColumnType::Geometry || col.kind == ColumnType::GeographicalExtent ||
 		           col.kind == ColumnType::GeometryPropertiesStruct) {
@@ -437,6 +438,121 @@ static void AppendIntListList(Vector &list_vec, const json &arr, size_t row) {
 
 	ListVector::SetListSize(solid_vec, inner_pos);
 	ListVector::SetListSize(list_vec, outer_size + n_solids);
+}
+
+// ============================================================
+// Arrow-native geometry writers
+// ============================================================
+//
+// The geometry column is five LIST levels deep -- solid, shell, face, ring, then
+// the INTEGER vertex-pool index. Each level follows the same idiom the two
+// writers above already use: stamp this row's list_entry_t, reserve the child for
+// everything this row will add, then fill.
+//
+// The ordering rule the shells writer records applies at every level here: a
+// child's data pointer is only valid after the Reserve that sizes it, because
+// reserving can reallocate. So each helper takes its child pointer fresh rather
+// than receiving one from its caller, and a level is fully reserved before its
+// children are visited.
+
+//! One ring: LIST<INTEGER> of vertex-pool indices.
+static void AppendIndexRing(Vector &ring_vec, const std::vector<uint32_t> &ring, size_t row) {
+	auto list_size = ListVector::GetListSize(ring_vec);
+	FlatVector::GetData<list_entry_t>(ring_vec)[row] = list_entry_t(list_size, ring.size());
+	ListVector::Reserve(ring_vec, list_size + ring.size());
+
+	auto &index_vec = ListVector::GetEntry(ring_vec);
+	auto index_data = FlatVector::GetData<int32_t>(index_vec);
+	for (size_t i = 0; i < ring.size(); i++) {
+		// Indices are Int32 by schema. The encoder has already bounds-checked each
+		// one against the row's pool, which is far below the Int32 ceiling for any
+		// real geometry (design doc, "Nullability & validity invariants").
+		index_data[list_size + i] = static_cast<int32_t>(ring[i]);
+	}
+	ListVector::SetListSize(ring_vec, list_size + ring.size());
+}
+
+//! One face: LIST<LIST<INTEGER>>, exterior ring first then any holes.
+static void AppendFace(Vector &face_vec, const CompactedFace &face, size_t row) {
+	auto list_size = ListVector::GetListSize(face_vec);
+	FlatVector::GetData<list_entry_t>(face_vec)[row] = list_entry_t(list_size, face.rings.size());
+	ListVector::Reserve(face_vec, list_size + face.rings.size());
+
+	auto &ring_vec = ListVector::GetEntry(face_vec);
+	for (size_t i = 0; i < face.rings.size(); i++) {
+		AppendIndexRing(ring_vec, face.rings[i], list_size + i);
+	}
+	ListVector::SetListSize(face_vec, list_size + face.rings.size());
+}
+
+//! One shell: LIST<LIST<LIST<INTEGER>>> of faces.
+static void AppendShell(Vector &shell_vec, const CompactedShell &shell, size_t row) {
+	auto list_size = ListVector::GetListSize(shell_vec);
+	FlatVector::GetData<list_entry_t>(shell_vec)[row] = list_entry_t(list_size, shell.faces.size());
+	ListVector::Reserve(shell_vec, list_size + shell.faces.size());
+
+	auto &face_vec = ListVector::GetEntry(shell_vec);
+	for (size_t i = 0; i < shell.faces.size(); i++) {
+		AppendFace(face_vec, shell.faces[i], list_size + i);
+	}
+	ListVector::SetListSize(shell_vec, list_size + shell.faces.size());
+}
+
+//! One solid: LIST<LIST<LIST<LIST<INTEGER>>>> of shells.
+static void AppendSolid(Vector &solid_vec, const CompactedSolid &solid, size_t row) {
+	auto list_size = ListVector::GetListSize(solid_vec);
+	FlatVector::GetData<list_entry_t>(solid_vec)[row] = list_entry_t(list_size, solid.shells.size());
+	ListVector::Reserve(solid_vec, list_size + solid.shells.size());
+
+	auto &shell_vec = ListVector::GetEntry(solid_vec);
+	for (size_t i = 0; i < solid.shells.size(); i++) {
+		AppendShell(shell_vec, solid.shells[i], list_size + i);
+	}
+	ListVector::SetListSize(solid_vec, list_size + solid.shells.size());
+}
+
+void WriteGeometryArrowNative(Vector *vec, const CompactedGeometry &geometry, size_t row) {
+	if (geometry.solids.empty()) {
+		FlatVector::SetNull(*vec, row, true);
+		return;
+	}
+
+	auto list_size = ListVector::GetListSize(*vec);
+	FlatVector::GetData<list_entry_t>(*vec)[row] = list_entry_t(list_size, geometry.solids.size());
+	ListVector::Reserve(*vec, list_size + geometry.solids.size());
+
+	auto &solid_vec = ListVector::GetEntry(*vec);
+	for (size_t i = 0; i < geometry.solids.size(); i++) {
+		AppendSolid(solid_vec, geometry.solids[i], list_size + i);
+	}
+	ListVector::SetListSize(*vec, list_size + geometry.solids.size());
+}
+
+void WriteGeometryVertices(Vector *vec, const CompactedGeometry &geometry, size_t row) {
+	if (geometry.vertices.empty()) {
+		FlatVector::SetNull(*vec, row, true);
+		return;
+	}
+
+	const size_t n = geometry.vertices.size();
+	auto list_size = ListVector::GetListSize(*vec);
+	FlatVector::GetData<list_entry_t>(*vec)[row] = list_entry_t(list_size, n);
+	ListVector::Reserve(*vec, list_size + n);
+
+	// STRUCT(x DOUBLE, y DOUBLE, z DOUBLE) child, taken after the Reserve above:
+	// reserving resizes the struct and its own children, so entries fetched before
+	// it would point at the old buffers.
+	auto &struct_vec = ListVector::GetEntry(*vec);
+	auto &coords = StructVector::GetEntries(struct_vec);
+	auto x_data = FlatVector::GetData<double>(*coords[0]);
+	auto y_data = FlatVector::GetData<double>(*coords[1]);
+	auto z_data = FlatVector::GetData<double>(*coords[2]);
+	for (size_t i = 0; i < n; i++) {
+		x_data[list_size + i] = geometry.vertices[i][0];
+		y_data[list_size + i] = geometry.vertices[i][1];
+		z_data[list_size + i] = geometry.vertices[i][2];
+	}
+	ListVector::SetListSize(*vec, list_size + n);
 }
 
 void WriteJsonText(Vector *vec, const json &value, size_t row) {

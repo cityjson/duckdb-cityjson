@@ -33,6 +33,7 @@ struct CityJSONBindData : public TableFunctionData {
 	std::vector<Column> columns;           // Complete column schema
 	std::optional<std::string> target_lod; // Optional: filter to specific LOD
 	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
+	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb; // Physical geometry encoding
 	bool streaming = false;                // True when data is loaded during scan init instead of bind
 	// Set only when appearance := 'sidecar'. Holds the dataset-global material/texture
 	// sets and the per-feature index maps that reach them.
@@ -55,6 +56,7 @@ struct CityJSONReadOptions {
 	bool sidecar_appearance = false;
 	std::optional<std::string> target_lod;
 	bool use_wkb_encoding = false;
+	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb;
 	size_t sample_lines = 100;
 };
 

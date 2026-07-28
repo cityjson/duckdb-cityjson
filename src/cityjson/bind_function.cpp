@@ -4,6 +4,7 @@
 #include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/city_object_utils.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -30,6 +31,16 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
 				options.sidecar_appearance = false;
 			} else {
 				throw BinderException(function_name + ": appearance must be 'local' or 'sidecar', got '" + mode + "'");
+			}
+		} else if (kv.first == "geometry_encoding") {
+			auto encoding = StringUtil::Lower(StringValue::Get(kv.second));
+			if (encoding == "wkb") {
+				options.geometry_encoding = GeometryEncoding::Wkb;
+			} else if (encoding == "arrow-native") {
+				options.geometry_encoding = GeometryEncoding::ArrowNative;
+			} else {
+				throw BinderException(function_name + ": geometry_encoding must be 'wkb' or 'arrow-native', got '" +
+				                      encoding + "'");
 			}
 		} else if (kv.first == "sample_lines") {
 			auto sample_lines = BigIntValue::Get(kv.second);
@@ -85,6 +96,11 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 			throw BinderException("Failed to infer schema: " + std::string(e.what()));
 		}
 	}
+
+	// Both branches above build their column list for the default WKB encoding, in two
+	// independent derivations. Rewriting here -- the one point where either becomes
+	// bind_data.columns -- keeps them from having to agree about a second encoding too.
+	CityObjectUtils::ApplyGeometryEncoding(bind_data.columns, bind_data.geometry_encoding);
 }
 
 CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options, bool streaming) {
@@ -95,6 +111,7 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 	probe.streaming = streaming;
 	probe.target_lod = options.target_lod;
 	probe.use_wkb_encoding = options.use_wkb_encoding;
+	probe.geometry_encoding = options.geometry_encoding;
 
 	CityJSONFeatureChunk all;
 	try {
@@ -149,6 +166,7 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 	auto options = ParseCityJSONReadOptions(input, function_name);
 	result.target_lod = options.target_lod;
 	result.use_wkb_encoding = options.use_wkb_encoding;
+	result.geometry_encoding = options.geometry_encoding;
 
 	try {
 		result.metadata = reader.ReadMetadata();

@@ -357,6 +357,22 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	bind_data->column_types.assign(sql_types.begin(), sql_types.end());
 
 	for (idx_t i = 0; i < names.size(); i++) {
+		// Reject arrow-native geometry before anything is written. Decoding it back to
+		// CityJSON is out of scope for phase 1, and both of its columns fail quietly
+		// otherwise: geometry_lod* is a nested LIST this writer cannot decode, so the
+		// object would come out with an empty "geometry", and geometry_vertices_lod*
+		// shares the "geometry_" prefix without matching any geometry rule, so it would
+		// be emitted as an ordinary attribute holding a rendered struct string.
+		const bool is_vertices_column = names[i].rfind("geometry_vertices", 0) == 0;
+		const bool is_arrow_native_geometry =
+		    DetectColumnRole(names[i]) == CopyColumnRole::GeometryWKB && sql_types[i].id() == LogicalTypeId::LIST;
+		if (is_vertices_column || is_arrow_native_geometry) {
+			throw BinderException(
+			    "COPY ... TO (FORMAT cityjson): column '" + names[i] +
+			    "' uses the arrow-native geometry encoding, which this writer cannot decode. Re-read the source "
+			    "without geometry_encoding := 'arrow-native' to write CityJSON.");
+		}
+
 		auto role = DetectColumnRole(names[i]);
 		bind_data->column_roles.push_back(role);
 

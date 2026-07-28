@@ -9,6 +9,7 @@
 #include <set>
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 
 namespace duckdb {
 namespace cityjson {
@@ -207,6 +208,43 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	}
 
 	return result;
+}
+
+CompactedGeometry CityObjectUtils::GetGeometryArrowNative(const Geometry &geometry,
+                                                          const std::vector<std::array<double, 3>> &vertices,
+                                                          const std::optional<Transform> &transform) {
+	return ArrowNativeEncoder::Encode(geometry, vertices, transform);
+}
+
+void CityObjectUtils::ApplyGeometryEncoding(std::vector<Column> &columns, GeometryEncoding encoding) {
+	if (encoding == GeometryEncoding::Wkb) {
+		return;
+	}
+
+	// The vertex-pool column is linked to its geometry column purely by name, the
+	// same way geometry_properties_lod*/material_lod*/texture_lod* already are --
+	// no metadata field cross-references them (design doc, "File-level provenance").
+	std::vector<Column> result;
+	result.reserve(columns.size());
+	for (auto &column : columns) {
+		if (column.kind != ColumnType::GeometryWKB) {
+			result.push_back(std::move(column));
+			continue;
+		}
+		static constexpr const char *PREFIX = "geometry_";
+		const size_t prefix_len = std::strlen(PREFIX);
+		if (column.name.compare(0, prefix_len, PREFIX) != 0) {
+			// Both derivations name every WKB geometry column "geometry_<suffix>", and
+			// the sibling's name is derived from that suffix. If the convention ever
+			// breaks, say so here rather than emit a sibling nothing can pair up.
+			throw CityJSONError::Other("arrow-native encoding: geometry column '" + column.name +
+			                           "' does not start with '" + PREFIX + "'");
+		}
+		std::string suffix = column.name.substr(prefix_len);
+		result.emplace_back(column.name, ColumnType::GeometryArrowNative);
+		result.emplace_back("geometry_vertices_" + suffix, ColumnType::GeometryVerticesArrowNative);
+	}
+	columns = std::move(result);
 }
 
 // ============================================================

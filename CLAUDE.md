@@ -30,6 +30,7 @@ Key entry points:
 | `cityjson_materials(path)`   | `appearance_table_function.cpp`          | materials.parquet rows, ids interned across the file |
 | `cityjson_textures(path)`    | `appearance_table_function.cpp`          | textures.parquet rows |
 | `cityjson_geometry_templates(path)` | `appearance_table_function.cpp`   | geometry_templates.parquet rows, local coordinates |
+| `cityjson_geoparquet_geo(path [, geometry_encoding =])` | `geoparquet_table_function.cpp` | GeoParquet `geo` footer JSON, or NULL when no column qualifies |
 
 ### CityParquet package mutation
 
@@ -142,6 +143,49 @@ When `lod='X'` is passed:
 - Per-feature vertex pool is used for CityJSONSeq; global metadata vertices used for regular CityJSON
 - `GetGeometryAtLOD()` finds the geometry matching the requested LOD string
 - `lod` field in geometry objects is optional (not all features declare it)
+
+### Arrow-native geometry encoding (experimental, `arrow-native-type` branch)
+
+`read_cityjson[seq](..., geometry_encoding := 'wkb' | 'arrow-native')` selects the
+physical geometry encoding; `'wkb'` is the default and is untouched. Design:
+`docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md` in the parent
+workspace repo. Under `'arrow-native'`:
+
+- `geometry_lod*` becomes `INTEGER[][][][][]` — five LIST levels, solid → shell →
+  face → ring → vertex-pool index — and gains a sibling
+  `geometry_vertices_lod*` of `STRUCT(x, y, z DOUBLE)[]` holding that row's pool.
+  The sibling is paired by name only, as `geometry_properties_lod*` already is.
+- `geometry_properties_lod*` is **unchanged**. It stays the only thing that says
+  whether a row is a `Solid` or a `MultiSurface`: the physical nesting is uniform
+  across both families, so **never infer the CityJSON type from the shape**. A
+  surface type pads the outer two levels to length 1; for a real `Solid` the shell
+  level is genuine structure.
+- The pool compacts **distinct source indices**, never coordinate values —
+  CityJSON permits two indices to carry identical coordinates and they must stay
+  two entries. `ArrowNativeEncoder` (`arrow_native_encoder.cpp`) does this; phase 1
+  covers `MultiSurface`/`CompositeSurface`/`Solid`/`MultiSolid`/`CompositeSolid`
+  and rejects anything else.
+- Rings keep CityJSON's winding and do **not** repeat the closing vertex, unlike
+  the WKB path, which reverses and closes them.
+- `cityjson_geoparquet_geo` takes the same parameter and declares **no** column
+  under `arrow-native`: legality is a property of the encoding, not the CM type.
+
+Two traps specific to this layer:
+
+- **The geometry column list is derived twice.** `LODTableUtils::GetGeometryColumns`
+  serves only the `lod=` path; the wide layout goes through
+  `CityObjectUtils::InferGeometryColumns`. The encoding is applied by rewriting the
+  finished list in `InferCityJSONColumns` (`CityObjectUtils::ApplyGeometryEncoding`),
+  which is the single point where either derivation becomes `bind_data.columns` —
+  so neither derivation has to know about encodings.
+- **A nested `ListVector` child's data pointer is only valid after the `Reserve`
+  that sizes it.** Each level's writer therefore fetches its own child pointer
+  rather than receiving one, and is fully reserved before its children are
+  visited. Same rule for the vertex pool's `STRUCT` children.
+
+Encoder assertions live in `test/cpp/` (not in `make test` — it needs a built
+`build/release` and the flatcitybuf prefix):
+`FCB_PREFIX=/path/to/prefix test/cpp/run_encoder_tests.sh`.
 
 ## Build & Tooling
 

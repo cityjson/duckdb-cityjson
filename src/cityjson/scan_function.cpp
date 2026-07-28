@@ -25,6 +25,31 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		vertex_pool = &bind_data.metadata.vertices.value();
 	}
 
+	// A geometry_lod* cell and its geometry_vertices_lod* sibling are two columns
+	// built from one CompactedGeometry, and they sit next to each other in the
+	// schema. Encoding is deterministic and side-effect free, so doing it twice
+	// would be correct -- just wasted, on a branch whose whole point is measuring
+	// this encoding. One entry is enough because the pair is adjacent; projection
+	// pushdown may drop either one, which this handles by keying on the suffix.
+	std::string encoded_lod;
+	bool encoded_valid = false; // distinguishes "not computed yet" from "computed, absent"
+	std::optional<CompactedGeometry> encoded_geometry;
+	auto encode_for = [&](const std::string &column_name) -> const std::optional<CompactedGeometry> & {
+		std::string lod = ParseLODFromGeometryColumn(column_name);
+		if (!encoded_valid || encoded_lod != lod) {
+			encoded_lod = lod;
+			encoded_valid = true;
+			encoded_geometry.reset();
+			std::optional<Geometry> geom =
+			    bind_data.target_lod.has_value() ? target_geom : city_obj.GetGeometryAtLOD(lod);
+			if (geom.has_value() && vertex_pool != nullptr) {
+				encoded_geometry =
+				    CityObjectUtils::GetGeometryArrowNative(geom.value(), *vertex_pool, bind_data.metadata.transform);
+			}
+		}
+		return encoded_geometry;
+	};
+
 	// Write data for each projected column
 	for (size_t col_idx = 0; col_idx < projected_cols.size(); col_idx++) {
 		size_t schema_idx = projected_cols[col_idx];
@@ -41,6 +66,29 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				auto wkb_data =
 				    CityObjectUtils::GetGeometryWKB(geom.value(), *vertex_pool, bind_data.metadata.transform);
 				WriteGeometryWKB(wrappers[col_idx].AsFlatMut(), wkb_data, output_row);
+			} else {
+				wrappers[col_idx].SetNull(output_row);
+			}
+			continue;
+		}
+
+		// Arrow-native geometry, and its vertex-pool sibling. Both come from the same
+		// CompactedGeometry, so they are null together and their indices are in range
+		// for the pool written beside them (design doc, "Pairing invariant").
+		if (col.kind == ColumnType::GeometryArrowNative) {
+			const auto &compacted = encode_for(col.name);
+			if (compacted.has_value()) {
+				WriteGeometryArrowNative(wrappers[col_idx].AsListMut(), compacted.value(), output_row);
+			} else {
+				wrappers[col_idx].SetNull(output_row);
+			}
+			continue;
+		}
+
+		if (col.kind == ColumnType::GeometryVerticesArrowNative) {
+			const auto &compacted = encode_for(col.name);
+			if (compacted.has_value()) {
+				WriteGeometryVertices(wrappers[col_idx].AsListMut(), compacted.value(), output_row);
 			} else {
 				wrappers[col_idx].SetNull(output_row);
 			}

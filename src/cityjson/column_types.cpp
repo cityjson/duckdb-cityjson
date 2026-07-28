@@ -43,6 +43,10 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 		return "STRUCT(\"type\" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])";
 	case ColumnType::AppearanceJson:
 		return "JSON";
+	case ColumnType::GeometryArrowNative:
+		return "INTEGER[][][][][]";
+	case ColumnType::GeometryVerticesArrowNative:
+		return "STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]";
 	default:
 		return "UNKNOWN";
 	}
@@ -78,6 +82,10 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 		return LogicalTypeId::STRUCT;
 	case ColumnType::AppearanceJson:
 		return LogicalTypeId::VARCHAR; // JSON stored as VARCHAR
+	case ColumnType::GeometryArrowNative:
+		return LogicalTypeId::LIST;
+	case ColumnType::GeometryVerticesArrowNative:
+		return LogicalTypeId::LIST;
 	default:
 		return LogicalTypeId::INVALID;
 	}
@@ -161,6 +169,38 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 
 	case ColumnType::AppearanceJson:
 		return LogicalType::VARCHAR; // JSON stored as VARCHAR
+
+	case ColumnType::GeometryArrowNative: {
+		// solid -> shell -> face -> ring -> vertex-pool index: five LIST levels,
+		// matching cityparquet-rs's arrow_native_geometry_data_type().
+		//
+		// The outer two levels are PHYSICAL ONLY for the surface families: a
+		// MultiSurface/CompositeSurface pads them both to length 1, and they carry no
+		// solid/shell/cavity meaning there. They are real structure for the solid
+		// families. Nothing may infer the CityJSON type from this nesting -- that is
+		// what geometry_properties_lod*.type is for (design doc, "Critical invariant").
+		auto ring = LogicalType::LIST(LogicalType::INTEGER);
+		auto face = LogicalType::LIST(ring);
+		auto shell = LogicalType::LIST(face);
+		auto solid = LogicalType::LIST(shell);
+		return LogicalType::LIST(solid);
+	}
+
+	case ColumnType::GeometryVerticesArrowNative: {
+		// This row's vertex pool, built by compacting the DISTINCT SOURCE INDICES the
+		// object's geometry references into a dense local range -- never by comparing
+		// coordinate values. CityJSON permits two distinct indices to carry identical
+		// coordinates, and those stay two entries (design doc, round-2 review item 1).
+		//
+		// STRUCT(x, y, z) rather than a fixed-size list of 3: Parquet shreds struct
+		// fields into independent leaf columns, giving per-axis statistics and letting
+		// homogeneous per-axis doubles compress on their own.
+		child_list_t<LogicalType> children;
+		children.push_back(std::make_pair("x", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("y", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("z", LogicalType::DOUBLE));
+		return LogicalType::LIST(LogicalType::STRUCT(children));
+	}
 
 	default:
 		return LogicalType::INVALID;
@@ -418,8 +458,12 @@ bool IsReservedColumnName(const std::string &name) {
 	}
 	// Wide-layout per-LOD structural columns: geometry_lod*, geometry_properties*,
 	// and the paired appearance columns material_lod* / texture_lod* (§11).
+	// geometry_vertices* is reserved too: the arrow-native encoding generates one
+	// per geometry column, and an attribute of that name would collide with it.
+	// Reserved under either encoding, so a file does not change which of its
+	// attributes get columns depending on how it is read.
 	return lowered.rfind("geometry_lod", 0) == 0 || lowered.rfind("geometry_properties", 0) == 0 ||
-	       IsAppearanceColumnName(lowered);
+	       lowered.rfind("geometry_vertices", 0) == 0 || IsAppearanceColumnName(lowered);
 }
 
 bool IsAppearanceColumnName(const std::string &name) {
