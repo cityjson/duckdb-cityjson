@@ -103,6 +103,14 @@ void FlatCityBufReader::SetAttrQueryFilter(fcb::AttrQuery query, bool exact_inde
 }
 
 // ============================================================
+// SetFieldMask
+// ============================================================
+
+void FlatCityBufReader::SetFieldMask(FcbFieldMask mask) {
+	field_mask_ = std::move(mask);
+}
+
+// ============================================================
 // SelectIterator
 // ============================================================
 
@@ -196,14 +204,41 @@ bool FlatCityBufReader::MatchesAttrQueryPostFilter(const CityJSONFeature &featur
 // ============================================================
 
 std::vector<CityJSONFeature> FlatCityBufReader::ParseFeatures(std::optional<size_t> limit) const {
+	return ParseFeaturesWithMask(limit, field_mask_);
+}
+
+std::vector<CityJSONFeature> FlatCityBufReader::ParseFeaturesWithMask(std::optional<size_t> limit,
+                                                                     const FcbFieldMask &mask) const {
 	auto fcb_reader = OpenFcbReader();
 	auto it = SelectIterator(fcb_reader);
 	bool need_post_filter = bbox_.has_value() && attr_query_.has_value();
+
+	// The post-filter reads its operands off the DECODED feature, so a caller's
+	// mask must never be allowed to starve it. Union them in here rather than in
+	// the caller's mask computation, where a future caller could forget.
+	FcbFieldMask effective = mask;
+	if (attr_query_.has_value() && effective.attributes.has_value()) {
+		for (const auto &cond : attr_query_.value()) {
+			effective.attributes->insert(cond.field);
+		}
+	}
 
 	std::vector<CityJSONFeature> features;
 	while (it.next()) {
 		if (limit.has_value() && features.size() >= limit.value()) {
 			break;
+		}
+		if (!effective.geometry) {
+			// Light path: no geometry is decoded, and only the masked-in
+			// attributes are. A malformed attribute blob throws out of here, the
+			// same way fcb::decode_attributes's own fcb::Error escapes the full
+			// path below -- the try/catch there only covers FromJson.
+			CityJSONFeature feature = ConvertFeatureLight(it.current(), fcb_reader.header(), effective);
+			if (need_post_filter && !MatchesAttrQueryPostFilter(feature)) {
+				continue;
+			}
+			features.push_back(std::move(feature));
+			continue;
 		}
 		json feature_json = fcb::to_cityjson_feature(it.current(), fcb_reader.header());
 		try {
@@ -284,7 +319,12 @@ std::vector<Column> FlatCityBufReader::Columns() const {
 	}
 
 	std::vector<Column> columns = GetDefinedColumns();
-	std::vector<CityJSONFeature> sample_features = ReadNFeatures(sample_lines_);
+	// Explicitly FULL-mask, not field_mask_: this list is the table's schema, and
+	// it is inferred by sampling decoded features. Sampling under a narrowed mask
+	// would drop the very geometry/attribute columns the mask was computed from
+	// -- and the mask is computed from projection, which is only known after this
+	// has run. Cheap: Columns() is cached, so the full-mask sample happens once.
+	std::vector<CityJSONFeature> sample_features = ParseFeaturesWithMask(sample_lines_, FcbFieldMask {});
 	std::vector<Column> attr_columns = CityObjectUtils::InferAttributeColumns(sample_features, sample_lines_);
 	std::vector<Column> geom_columns = CityObjectUtils::InferGeometryColumns(sample_features, sample_lines_);
 

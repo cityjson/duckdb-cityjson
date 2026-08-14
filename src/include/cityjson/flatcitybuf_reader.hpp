@@ -2,6 +2,7 @@
 
 #ifdef CITYJSON_HAS_FCB
 
+#include "cityjson/fcb_selective_convert.hpp"
 #include "cityjson/reader.hpp"
 #include <fcb/header.hpp>
 #include <fcb/key.hpp>
@@ -42,6 +43,17 @@ public:
 	/** Restrict reads to features matching every AND-combined condition. */
 	void SetAttrQueryFilter(fcb::AttrQuery query, bool exact_index_only = false);
 
+	/**
+	 * Restrict how much of each feature is decoded.
+	 *
+	 * Defaults to the full mask, so a caller that never calls this gets exactly
+	 * the pre-existing behaviour. `mask.attributes` is honoured only on the
+	 * light path (`geometry == false`) -- see spec 4.2: the full path decodes
+	 * every attribute regardless, because the blob is small next to geometry and
+	 * hand-rolling geometry conversion would duplicate upstream logic.
+	 */
+	void SetFieldMask(FcbFieldMask mask);
+
 	/** Column names that have a B+tree attribute index, for pushdown eligibility checks. */
 	std::vector<std::string> IndexedAttributeColumns() const;
 
@@ -60,6 +72,7 @@ private:
 	std::optional<std::array<double, 4>> bbox_;
 	std::optional<fcb::AttrQuery> attr_query_;
 	bool attr_query_exact_index_only_ = false;
+	FcbFieldMask field_mask_;
 
 	mutable std::optional<CityJSON> cached_metadata_;
 	mutable std::optional<std::vector<Column>> cached_columns_;
@@ -68,6 +81,7 @@ private:
 	fcb::FeatureIterator SelectIterator(fcb::FcbReader &reader) const;
 	bool MatchesAttrQueryPostFilter(const CityJSONFeature &feature) const;
 	std::vector<CityJSONFeature> ParseFeatures(std::optional<size_t> limit) const;
+	std::vector<CityJSONFeature> ParseFeaturesWithMask(std::optional<size_t> limit, const FcbFieldMask &mask) const;
 };
 
 } // namespace cityjson
