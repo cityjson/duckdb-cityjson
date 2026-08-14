@@ -132,11 +132,17 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
  * Same as BindCityJSONRead, but takes the reader by reference instead of by
  * unique_ptr, for callers (read_flatcitybuf) that need to keep their own
  * ownership handle to the reader after bind completes.
+ *
+ * `materialise = false` binds the schema without the bind-time `ReadAllChunks()`.
+ * It is meaningful only for a non-streaming caller that materialises later itself
+ * (read_flatcitybuf, in its init_global, once the projection is known); such a
+ * caller MUST supply the chunks and the scan plan through CityJSONGlobalState and
+ * set `use_global_chunks`, or the scan will find nothing to read.
  */
 CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
                                      vector<LogicalType> &return_types, vector<string> &names,
                                      const std::string &function_name, CityJSONReader &reader,
-                                     bool streaming = false);
+                                     bool streaming = false, bool materialise = true);
 
 // ============================================================
 // Global State
@@ -150,6 +156,10 @@ struct CityJSONGlobalState : public GlobalTableFunctionState {
 	std::atomic<size_t> batch_index;                 // Current batch index for parallel scanning
 	CityJSONFeatureChunk chunks;                     // Materialized chunks (non-streaming)
 	CityJSONScanPlan scan_plan;                      // Scan plan for materialized chunks
+	// When true the scan reads `chunks`/`scan_plan` above instead of the bind data's.
+	// Set by read_flatcitybuf's init_global, which is the only place the projection --
+	// and therefore how much of each feature needs decoding -- is known.
+	bool use_global_chunks = false;
 	std::unique_ptr<CityJSONReader> streaming_reader; // Incremental reader (streaming only)
 	std::optional<CityJSONFeature> streaming_feature; // Current feature being processed (streaming only)
 	std::map<std::string, CityObject>::const_iterator streaming_obj_it; // Position in current feature

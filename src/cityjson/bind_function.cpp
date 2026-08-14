@@ -69,7 +69,14 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 	if (bind_data.target_lod.has_value()) {
 		std::vector<CityJSONFeature> features;
 		try {
-			features = bind_data.streaming ? reader.ReadNFeatures(sample_lines) : FlattenChunks(bind_data.chunks);
+			// Sample the reader whenever there are no materialised chunks to sample from:
+			// that is the streaming binds, and also a non-streaming caller that has
+			// deferred its materialise (read_flatcitybuf -- see BindCityJSONReadRaw's
+			// `materialise` parameter). Reading the chunks when we have them keeps the
+			// pre-existing behaviour exactly, including for a genuinely empty file, where
+			// both branches yield an empty feature list anyway.
+			features = bind_data.chunks.records.empty() ? reader.ReadNFeatures(sample_lines)
+			                                            : FlattenChunks(bind_data.chunks);
 		} catch (const CityJSONError &e) {
 			throw BinderException("Failed to infer LOD schema: " + std::string(e.what()));
 		}
@@ -154,7 +161,8 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 
 CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
                                      vector<LogicalType> &return_types, vector<string> &names,
-                                     const std::string &function_name, CityJSONReader &reader, bool streaming) {
+                                     const std::string &function_name, CityJSONReader &reader, bool streaming,
+                                     bool materialise) {
 	CityJSONBindData result;
 
 	if (input.inputs.empty()) {
@@ -174,7 +182,10 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 		throw BinderException("Failed to read metadata: " + std::string(e.what()));
 	}
 
-	if (!streaming) {
+	// `!materialise` leaves `chunks`/`scan_plan` empty on purpose; the caller materialises
+	// into the global state once the projection is known. Schema inference below still runs
+	// and, with no chunks to flatten, samples the reader directly.
+	if (!streaming && materialise) {
 		try {
 			result.chunks = reader.ReadAllChunks();
 		} catch (const CityJSONError &e) {

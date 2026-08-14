@@ -501,6 +501,129 @@ static void T7_PerObjectColumnSchema() {
 }
 
 // ---------------------------------------------------------------------------
+// T8: the projection -> field mask rule (Task 5).
+//
+// Not SQL-observable: two masks that differ only in how much they decode produce
+// identical query results, which is exactly what test/sql/cityjson_fcb_projection.test
+// pins. That the narrow case really IS narrow can only be asserted here.
+// ---------------------------------------------------------------------------
+
+using duckdb::cityjson::ComputeFcbFieldMask;
+// NOT `using duckdb::cityjson::Column/ColumnType;` -- flatbuffers' generated
+// header_generated.h declares ::Column and ::ColumnType in the global namespace,
+// so an unqualified name here binds to the wrong one (and fails to compile).
+using CjColumn = duckdb::cityjson::Column;
+using CjColumnType = duckdb::cityjson::ColumnType;
+
+// The wide schema read_flatcitybuf infers for test/data/fcb_bbox_attr.city.jsonl.
+static std::vector<CjColumn> WideSchema() {
+	return {
+	    CjColumn("id", CjColumnType::Varchar),
+	    CjColumn("feature_id", CjColumnType::Varchar),
+	    CjColumn("object_type", CjColumnType::Varchar),
+	    CjColumn("children", CjColumnType::VarcharArray),
+	    CjColumn("children_roles", CjColumnType::VarcharArray),
+	    CjColumn("parents", CjColumnType::VarcharArray),
+	    CjColumn("other", CjColumnType::Json),
+	    CjColumn("category", CjColumnType::Varchar),
+	    CjColumn("height", CjColumnType::Double),
+	    CjColumn("geometry_lod2_2", CjColumnType::GeometryWKB),
+	    CjColumn("geometry_properties_lod2_2", CjColumnType::GeometryPropertiesStruct),
+	    CjColumn("material_lod2_2", CjColumnType::AppearanceJson),
+	    CjColumn("texture_lod2_2", CjColumnType::AppearanceJson),
+	    CjColumn("bbox", CjColumnType::GeographicalExtent),
+	};
+}
+
+static void T8_ProjectionToFieldMask() {
+	std::printf("T8: projected column ids narrow the field mask\n");
+	const auto schema = WideSchema();
+
+	// COUNT(*) -- no columns at all: nothing to decode.
+	{
+		auto mask = ComputeFcbFieldMask(schema, {});
+		CHECK(!mask.geometry);
+		CHECK(mask.attributes.has_value());
+		CHECK(mask.attributes->empty());
+	}
+
+	// Structural columns only: still no attribute and no geometry.
+	{
+		auto mask = ComputeFcbFieldMask(schema, {0, 1, 2, 3, 4, 5}); // id..parents
+		CHECK(!mask.geometry);
+		CHECK(mask.attributes.has_value());
+		CHECK(mask.attributes->empty());
+	}
+
+	// One attribute: exactly that one.
+	{
+		auto mask = ComputeFcbFieldMask(schema, {1, 8}); // feature_id, height
+		CHECK(!mask.geometry);
+		CHECK(mask.attributes.has_value());
+		CHECK(mask.attributes->size() == 1);
+		CHECK(mask.attributes->count("height") == 1);
+		CHECK(mask.attributes->count("category") == 0);
+	}
+
+	// Two attributes.
+	{
+		auto mask = ComputeFcbFieldMask(schema, {7, 8}); // category, height
+		CHECK(!mask.geometry);
+		CHECK(mask.attributes.has_value());
+		CHECK(mask.attributes->size() == 2);
+	}
+
+	// `other` is a GetDefinedColumns() name, but it is built from EVERY attribute,
+	// so it must widen the mask to "all", not be skipped as structural.
+	{
+		auto mask = ComputeFcbFieldMask(schema, {6}); // other
+		CHECK(!mask.geometry);
+		CHECK(!mask.attributes.has_value());
+	}
+
+	// Any geometry-derived column selects the full path, which decodes everything.
+	for (uint64_t geom_id : {9ull, 10ull, 11ull, 12ull, 13ull}) {
+		auto mask = ComputeFcbFieldMask(schema, {1, geom_id});
+		CHECK(mask.geometry);
+		CHECK(!mask.attributes.has_value());
+	}
+
+	// bbox alone is enough -- it is computed from geometry, not stored.
+	{
+		auto mask = ComputeFcbFieldMask(schema, {13});
+		CHECK(mask.geometry);
+	}
+
+	// An attribute alongside geometry does not leave a narrowed set behind.
+	{
+		auto mask = ComputeFcbFieldMask(schema, {8, 9}); // height, geometry_lod2_2
+		CHECK(mask.geometry);
+		CHECK(!mask.attributes.has_value());
+	}
+
+	// COLUMN_IDENTIFIER_ROW_ID (and any other out-of-range id) is ignored, not
+	// dereferenced and not turned into an attribute name.
+	{
+		auto mask = ComputeFcbFieldMask(schema, {UINT64_MAX, 8});
+		CHECK(!mask.geometry);
+		CHECK(mask.attributes.has_value());
+		CHECK(mask.attributes->size() == 1);
+		CHECK(mask.attributes->count("height") == 1);
+	}
+
+	// Arrow-native geometry columns are geometry-derived too, by kind: their names
+	// (geometry_vertices_lod*) are not covered by the WKB grammar's other prefixes.
+	{
+		std::vector<CjColumn> arrow = {
+		    CjColumn("feature_id", CjColumnType::Varchar),
+		    CjColumn("geometry_vertices_lod2_2", CjColumnType::GeometryVerticesArrowNative),
+		};
+		auto mask = ComputeFcbFieldMask(arrow, {1});
+		CHECK(mask.geometry);
+	}
+}
+
+// ---------------------------------------------------------------------------
 
 int main() {
 	T1_LightPathHasNoGeometrySameIdsAndTypes();
@@ -510,6 +633,7 @@ int main() {
 	T5_FilteredWalkOverEveryColumnType();
 	T6_MalformedBlobThrows();
 	T7_PerObjectColumnSchema();
+	T8_ProjectionToFieldMask();
 
 	if (failures == 0) {
 		std::printf("\nAll fcb selective-deserialisation assertions passed.\n");

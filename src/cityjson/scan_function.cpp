@@ -224,8 +224,11 @@ static bool MatchesFilters(const CityJSONBindData &bind_data, const CityJSONFeat
 
 static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalState &global_state,
                              CityJSONLocalState &local_state, DataChunk &output) {
-	const auto &active_chunks = bind_data.chunks;
-	const auto &active_plan = bind_data.scan_plan;
+	// read_flatcitybuf materialises in its own init_global, not at bind, so that the
+	// decode can be masked by the projection -- its chunks live in the global state and
+	// the bind data's are empty. Every other reader still materialises at bind.
+	const auto &active_chunks = global_state.use_global_chunks ? global_state.chunks : bind_data.chunks;
+	const auto &active_plan = global_state.use_global_chunks ? global_state.scan_plan : bind_data.scan_plan;
 
 	const auto &projected_cols =
 	    local_state.projection_ids.empty() ? local_state.column_ids : local_state.projection_ids;

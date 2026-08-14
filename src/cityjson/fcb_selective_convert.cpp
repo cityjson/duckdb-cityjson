@@ -2,6 +2,7 @@
 
 #include "cityjson/fcb_selective_convert.hpp"
 
+#include "cityjson/column_types.hpp"
 #include "cityjson/error.hpp"
 
 #include <fcb/cityjson.hpp>
@@ -298,6 +299,84 @@ CityJSONFeature ConvertFeatureLight(const fcb::Feature &feature, const fcb::Head
 	}
 
 	return result;
+}
+
+// ---------------------------------------------------------------------------
+// Projection -> field mask
+// ---------------------------------------------------------------------------
+
+bool IsGeometryDerivedColumn(const Column &column) {
+	switch (column.kind) {
+	case ColumnType::Geometry:
+	case ColumnType::GeographicalExtent:
+	case ColumnType::GeometryWKB:
+	case ColumnType::GeometryPropertiesStruct:
+	case ColumnType::AppearanceJson:
+	case ColumnType::GeometryArrowNative:
+	case ColumnType::GeometryVerticesArrowNative:
+		return true;
+	default:
+		break;
+	}
+	const auto &name = column.name;
+	return name == "bbox" || name.rfind("geometry_lod", 0) == 0 || name.rfind("geometry_vertices_lod", 0) == 0 ||
+	       name.rfind("geometry_properties_lod", 0) == 0 || name.rfind("material_lod", 0) == 0 ||
+	       name.rfind("texture_lod", 0) == 0;
+}
+
+namespace {
+
+// Structural columns the light path fills from FlatCityBuf table fields rather than
+// from the attribute blob. Derived from GetDefinedColumns() so the list cannot drift,
+// minus `other` -- which is a defined column but is assembled from every attribute
+// the object has (CityObjectUtils::GetAttributeValue), so it is handled separately.
+const std::set<std::string> &StructuralColumnNames() {
+	static const std::set<std::string> structural = [] {
+		std::set<std::string> s;
+		for (const auto &col : GetDefinedColumns()) {
+			if (col.name == "other") {
+				continue;
+			}
+			s.insert(col.name);
+		}
+		return s;
+	}();
+	return structural;
+}
+
+} // namespace
+
+FcbFieldMask ComputeFcbFieldMask(const std::vector<Column> &columns, const std::vector<uint64_t> &column_ids) {
+	FcbFieldMask mask;
+	mask.geometry = false;
+	mask.attributes = std::set<std::string> {};
+
+	for (auto col_id : column_ids) {
+		// Covers DuckDB's COLUMN_IDENTIFIER_ROW_ID sentinel (UINT64_MAX) as well as any
+		// other id that does not name a column of this schema.
+		if (col_id >= columns.size()) {
+			continue;
+		}
+		const auto &column = columns[col_id];
+		if (IsGeometryDerivedColumn(column)) {
+			mask.geometry = true;
+			continue;
+		}
+		if (column.name == "other") {
+			mask.attributes.reset();
+			continue;
+		}
+		if (mask.attributes.has_value() && StructuralColumnNames().count(column.name) == 0) {
+			mask.attributes->insert(column.name);
+		}
+	}
+
+	if (mask.geometry) {
+		// The full path decodes every attribute regardless (design doc 4.2); keeping a
+		// narrowed set here would only misdescribe what the scan actually gets.
+		mask.attributes.reset();
+	}
+	return mask;
 }
 
 } // namespace cityjson

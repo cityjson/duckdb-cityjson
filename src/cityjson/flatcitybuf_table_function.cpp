@@ -16,6 +16,7 @@
 #include <fcb/generated/header_generated.h>
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <type_traits>
 
 namespace duckdb {
@@ -183,14 +184,10 @@ void FlatCityBufPushdownComplexFilter(ClientContext &context, LogicalGet &get, F
 		return;
 	}
 
+	// Only the filter is recorded here. The one real read happens later, in
+	// FlatCityBufInitGlobal, which runs after every pushdown callback and is the first
+	// point where the projection (and therefore the field mask) is known.
 	bind_data.reader->SetAttrQueryFilter(conditions, false);
-	try {
-		bind_data.chunks = bind_data.reader->ReadAllChunks();
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to re-read FlatCityBuf with pushed-down attribute filter: " +
-		                      std::string(e.what()));
-	}
-	bind_data.scan_plan = bind_data.chunks.BuildScanPlan();
 }
 
 // ============================================================
@@ -250,7 +247,12 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 		reader->SetBBoxFilter(bbox.value());
 	}
 
-	auto generic = BindCityJSONReadRaw(context, input, return_types, names, "read_flatcitybuf", *reader, false);
+	// materialise = false: schema inference still samples the file, but the full read is
+	// deferred to FlatCityBufInitGlobal, where the projection is known and can narrow the
+	// decode (design doc 4.3). Everything the bind sets on the reader -- the bbox filter
+	// above, the attr query a later pushdown adds -- is still in force when that read runs,
+	// because the reader outlives the bind.
+	auto generic = BindCityJSONReadRaw(context, input, return_types, names, "read_flatcitybuf", *reader, false, false);
 
 	// Field-by-field, matching CityJSONBindData::Copy()'s own pattern (bind_data.cpp) --
 	// deliberately not a whole-object copy-assignment through a CityJSONBindData&
@@ -271,6 +273,55 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 }
 
 // ============================================================
+// read_flatcitybuf InitGlobal -- the one real read
+// ============================================================
+
+static unique_ptr<GlobalTableFunctionState> FlatCityBufInitGlobal(ClientContext &context,
+                                                                  TableFunctionInitInput &input) {
+	auto result_holder = CityJSONInitGlobal(context, input);
+	auto &state = result_holder->Cast<CityJSONGlobalState>();
+	auto &bind_data = input.bind_data->Cast<FlatCityBufBindData>();
+
+	// The projection decides how much of each feature has to be decoded. `column_ids` is
+	// what DuckDB will actually ask the scan for -- it already includes any column a
+	// surviving WHERE needs, because FlatCityBufPushdownComplexFilter never erases filters.
+	// The attr-query's own operands are unioned in further down, inside
+	// FlatCityBufReader::ParseFeaturesWithMask, so the post-filter cannot be starved.
+	const auto mask = ComputeFcbFieldMask(bind_data.columns, input.column_ids);
+
+	// `bind_data` is const (TableFunctionInitInput holds optional_ptr<const FunctionData>),
+	// but `reader` is a shared_ptr and dereferencing it through a const handle yields a
+	// non-const reader -- no const_cast needed. Mutating the reader here is safe for the
+	// same reason FlatCityBufPushdownComplexFilter's SetAttrQueryFilter is: init_global
+	// runs exactly once per query, on one thread, before any scan thread exists. The one
+	// state that must NOT be narrowed is the reader's cached column list, and
+	// FlatCityBufReader::Columns() pins its own full mask internally for that reason.
+	bind_data.reader->SetFieldMask(mask);
+	try {
+		state.chunks = bind_data.reader->ReadAllChunks();
+	} catch (const CityJSONError &e) {
+		throw InvalidInputException("Failed to read FlatCityBuf: %s", e.what());
+	}
+	state.scan_plan = state.chunks.BuildScanPlan();
+	state.use_global_chunks = true;
+	return result_holder;
+}
+
+// CityJSONCardinality counts materialised bind-time chunks, of which read_flatcitybuf now
+// has none. The header's feature count is the available answer; it counts FEATURES while
+// rows are CityObjects, so this is an estimate and is advertised as one (no max_cardinality).
+static unique_ptr<NodeStatistics> FlatCityBufCardinality(ClientContext &context, const FunctionData *bind_data_p) {
+	auto &bind_data = bind_data_p->Cast<FlatCityBufBindData>();
+	if (!bind_data.reader) {
+		return nullptr;
+	}
+	auto stats = make_uniq<NodeStatistics>();
+	stats->has_estimated_cardinality = true;
+	stats->estimated_cardinality = bind_data.reader->Header().info().features_count;
+	return stats;
+}
+
+// ============================================================
 // read_flatcitybuf Registration
 // ============================================================
 
@@ -284,9 +335,9 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 	func.named_parameters["max_x"] = LogicalType::DOUBLE;
 	func.named_parameters["max_y"] = LogicalType::DOUBLE;
 
-	func.init_global = CityJSONInitGlobal;
+	func.init_global = FlatCityBufInitGlobal;
 	func.init_local = CityJSONInitLocal;
-	func.cardinality = CityJSONCardinality;
+	func.cardinality = FlatCityBufCardinality;
 	func.statistics = CityJSONStatistics;
 	func.projection_pushdown = true;
 	func.pushdown_complex_filter = FlatCityBufPushdownComplexFilter;

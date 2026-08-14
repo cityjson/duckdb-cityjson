@@ -65,6 +65,34 @@ nlohmann::json DecodeAttributesFiltered(const uint8_t *data, size_t size,
                                         const std::vector<fcb::ColumnInfo> &schema,
                                         const std::optional<std::set<std::string>> &wanted);
 
+/**
+ * True for columns whose value the row writer derives from decoded geometry --
+ * every `geometry_lod*` / `geometry_vertices_lod*` / `geometry_properties_lod*` /
+ * `material_lod*` / `texture_lod*` column, and `bbox`, which is computed from the
+ * geometry's vertices rather than read from a stored field.
+ *
+ * Classified by ColumnType first, because that is what WriteCityObjectRow actually
+ * switches on and because an inferred attribute column can never carry one of these
+ * kinds (ColumnTypeUtils::InferFromJson yields only primitive / Json / VarcharArray).
+ * The spec's name grammar is a fallback, so a column that looks geometric but is typed
+ * otherwise still errs towards decoding MORE: over-decoding is a lost saving,
+ * under-decoding is a wrong answer.
+ */
+bool IsGeometryDerivedColumn(const Column &column);
+
+/**
+ * Which parts of a feature the projected column ids `column_ids` (indices into
+ * `columns`; DuckDB's COLUMN_IDENTIFIER_ROW_ID sentinel and anything else out of
+ * range is ignored) actually require.
+ *
+ * Any geometry-derived column selects the full path, which decodes every attribute
+ * anyway (design doc 4.2), so `attributes` is cleared to nullopt in that case rather
+ * than left as a misleading subset. `other` also forces nullopt: GetAttributeValue
+ * builds it from EVERY non-predefined, non-geometry attribute, so projecting it needs
+ * the whole blob even though it is one of GetDefinedColumns()'s structural names.
+ */
+FcbFieldMask ComputeFcbFieldMask(const std::vector<Column> &columns, const std::vector<uint64_t> &column_ids);
+
 } // namespace cityjson
 } // namespace duckdb
 

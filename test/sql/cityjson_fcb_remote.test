@@ -7,7 +7,8 @@
 # overridable through a `--test-config <json>` file, so point FCB_REMOTE_TEST_URL at a
 # different dataset only together with such a file -- never run this against a
 # multi-gigabyte file without a bbox that lands inside it, because the reader still
-# materialises every matching feature at bind time.
+# materialises every matching feature in one go (at scan init since Task 5, at bind
+# before it -- either way, all of them).
 # group: [sql]
 
 require cityjson
