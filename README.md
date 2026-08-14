@@ -764,8 +764,8 @@ GEN=ninja make
 # Build with httpfs support (for remote files in the statically linked binary)
 CORE_EXTENSIONS="httpfs" GEN=ninja make
 
-# Incremental rebuild
-cmake --build build/release --target cityjson_extension cityjson_loadable_extension duckdb
+# Incremental rebuild (include `unittest`, or `make test` runs a stale test binary)
+cmake --build build/release --target cityjson_extension cityjson_loadable_extension duckdb unittest
 ```
 
 ### FlatCityBuf Support
@@ -785,13 +785,27 @@ The following functions are registered:
 - `flatcitybuf_metadata(path)` — read `.fcb` file metadata
 - `COPY ... TO ... (FORMAT flatcitybuf, [attr_index, branching_factor, index_node_size])` — write `.fcb` files
 
+### DuckDB-Wasm
+
+The release pipeline builds the extension for DuckDB-Wasm (`wasm_mvp`, `wasm_eh`, `wasm_threads`) alongside the native platforms. To reproduce the `wasm_mvp` build locally:
+
+```sh
+just wasm-setup   # once: installs the pinned emsdk + a vcpkg checkout into .vendor/ (~2 GB)
+just wasm         # -> build/wasm_mvp/extension/cityjson/cityjson.duckdb_extension.wasm
+just test-wasm    # optional smoke test: loads the artefact under Node + @duckdb/duckdb-wasm
+```
+
+`just wasm` deliberately omits `GEN=ninja`, unlike the native recipes: the wasm targets hardcode a `make` build step and fail against a Ninja-generated tree. The native `build/release` tree is left untouched.
+
+Loading the artefact needs `allow_unsigned_extensions` unless you sign it yourself. Remote reads (`https://`, `s3://`) work in **browser** runtimes, which implement HTTP range requests; DuckDB-Wasm's Node runtime only implements a local-file VFS, so remote reads fail there whatever `httpfs` does.
+
 ### Running Tests
 
 ```sh
 make test
 ```
 
-SQL tests live in `test/sql/`.
+SQL tests live in `test/sql/`. The wasm smoke test (`just test-wasm`) and the C++ harnesses under `test/cpp/` are opt-in and are not run by `make test`.
 
 ## References
 

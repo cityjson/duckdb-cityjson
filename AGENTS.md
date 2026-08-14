@@ -229,6 +229,95 @@ path alone. A real fixture would have to come from upstream.
   different URL needs a matching bbox — the reader still materialises every matching
   feature in one go.
 
+### DuckDB-Wasm target
+
+**CI has always built wasm.** `_extension_distribution.yml`'s wasm job builds
+`wasm_mvp`, `wasm_eh` and `wasm_threads`
+(`extension-ci-tools/config/distribution_matrix.json`) under emsdk 3.1.71 and the
+`wasm32-emscripten` triplet, with a plain `make <arch>`. What was missing was a way to
+reproduce it locally.
+
+**Local flow.** `just wasm-setup` once — installs the pinned emsdk and a vcpkg checkout
+into the gitignored `.vendor/` (~2 GB, ~10 min), including an explicit `git fetch` of
+`vcpkg.json`'s `builtin-baseline` commit, which a plain shallow clone does not contain
+and without which manifest resolution fails. Then `just wasm` sources
+`.vendor/emsdk/emsdk_env.sh` and runs `make wasm_mvp` with `VCPKG_TOOLCHAIN_PATH`
+pointing into `.vendor/vcpkg`. The artefact lands at
+`build/wasm_mvp/extension/cityjson/cityjson.duckdb_extension.wasm` (with a
+repository-layout copy under `build/wasm_mvp/repository/v1.5.4/wasm_mvp/`); the native
+`build/release` tree is untouched. Budget ~4 min for a clean build. Both pins live in
+justfile variables (`emsdk_version`, `vcpkg_baseline`) with their CI provenance in
+comments. Only `wasm_mvp` is wired up so far.
+
+- **No `GEN=ninja` here, unlike every other build recipe.** The wasm targets in
+  `extension-ci-tools/makefiles/duckdb_extension.Makefile` hardcode the build step as
+  `emmake make -j8 -Cbuild/wasm_mvp`, so a Ninja-generated tree dies with "No targets
+  specified and no makefile found"; CI sets no generator for wasm either. Recovering
+  from that mistake also needs `rm -rf build/wasm_mvp`, since CMake refuses to switch
+  generator in an existing cache.
+
+**The side-module linking trap.** `build_loadable_extension()` behaves differently under
+Emscripten: the target is a **static library**, for which the `LINK_LIBRARIES` property
+is inert, and the real artefact comes from a separate post-build
+`emcc … -sSIDE_MODULE=2 … ${TO_BE_LINKED}` command. `-sSIDE_MODULE` leaves unresolved
+symbols as *imports* rather than erroring, so the build reports success and the `.wasm`
+is rejected only at `LOAD` time (`bad export type for '…fcb::RangeReader::read_batch…':
+undefined`). The knob is `DUCKDB_EXTENSION_CITYJSON_LINKED_LIBS`, set in `CMakeLists.txt`
+immediately before the `build_loadable_extension()` call that consumes it,
+space-separated because the function runs `separate_arguments()` on it. Generator
+expressions are fine there — they resolve at generate time, so naming targets that
+`find_package(flatcitybuf)` only creates further down the file works. **Any future
+native dependency has to be added there too, along with its own transitive
+dependencies**: `flatbuffers` is listed explicitly beside `flatcitybuf` because nothing
+transitive survives a plain `emcc` invocation.
+
+**`just test-wasm`** runs `test/wasm/run_wasm_smoke.sh`, a Node harness against
+`@duckdb/duckdb-wasm` (pinned `1.33.1-dev57.0`, which carries DuckDB `v1.5.4` — the same
+version as the submodule). Opt-in like `test/cpp/*`: `make test` never runs it, and it
+needs `just wasm` to have produced the artefact (override with `CITYJSON_WASM_EXT`). It
+asserts `pragma_platform()` is `wasm_mvp`, that the extension loads, and that
+`read_cityjson('test/data/minimal.city.json')` and
+`read_flatcitybuf('test/data/fcb_bbox_attr.fcb')` return the **native build's oracle
+values** (1 row; 3 rows with `min(height) = 10.0`) — each oracle sits beside the command
+that produced it in `smoke.mjs`.
+
+The loading incantation is not guessable, and every part of it is load-bearing:
+
+- **Offer the `mvp` bundle only.** Given a choice, `selectBundle()` picks `eh` under
+  Node, `pragma_platform()` then reports `wasm_eh`, and a `wasm_mvp` extension cannot
+  load into it.
+- **`allowUnsignedExtensions: true`** in `db.open()` — the artefact is not signed by
+  DuckDB Labs.
+- **`LOAD '<path>'` does not go through DuckDB's filesystem**, so `registerFileBuffer()`
+  is useless for it. Under Node the loader treats the argument as a URL and looks for a
+  cached copy under `os.homedir()/.duckdb/extensions/<last four path segments>`; on a
+  **miss** it spawns a worker and blocks on an `Atomics.wait` that a rejected fetch never
+  notifies, so it hangs forever instead of erroring. The harness points `HOME` at
+  `test/wasm/.cache-home` and seeds that slot, so no fetch is ever attempted.
+- **The `wasm_mvp` bundle cannot report errors unshimmed.** It references `_setThrew` /
+  `___cxa_can_catch` without ever defining them, so the first C++ exception surfaces as
+  `ReferenceError: _setThrew is not defined` rather than the real message — reproducible
+  on a stock instance with no extension loaded, and absent from the `eh` bundle. The
+  harness wraps `WebAssembly.instantiate` / `WebAssembly.Instance` and binds the missing
+  globals from the module's own exports, and keeps a standing assertion that a bad table
+  name yields a `Catalog Error` and not a `ReferenceError`. Without it every failure the
+  harness printed would be a lie: the side-module diagnosis above was invisible until the
+  shim was in place.
+
+Both of those last two are upstream duckdb-wasm defects, neither reported yet.
+
+**Remote reads are XFAIL under Node, and `httpfs` is not the reason.**
+`AutoLoadExtension` does not throw; DuckDB-Wasm's *Node* runtime simply implements one
+data protocol — its `openFile()` handles `NODE_FS` and answers `HTTP` / `S3` / the
+browser protocols with "Unsupported data protocol", which reaches SQL as an opaque
+`error: 4061000` (verified on a stock instance with no extension loaded). The **browser**
+runtime does do HTTP, via synchronous `XMLHttpRequest` range requests, so the same
+artefact may well read remotely there; Node just cannot be where we prove it. The harness
+therefore classifies rather than skips: only a failure matching that precise signature is
+reported XFAIL, anything else is a hard failure, and the day the Node runtime learns HTTP
+the assertion turns green on its own. `src/` carries no wasm-specific guard for any of
+this.
+
 ## Build & Tooling
 
 1. Run `make` once to prepare the DuckDB build environment. To make use of cache, try to use `GEN=ninja make` instead.

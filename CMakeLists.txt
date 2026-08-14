@@ -140,7 +140,7 @@ if(EXISTS ${CJSEQ_CPP_DIR})
 endif()
 
 # Optional: FlatCityBuf support (native C++ library). In CI it is resolved from the
-# HideBa/vcpkg git registry (flatcitybuf@0.8.1, upstream tag cpp-v0.8.1) — see the
+# HideBa/vcpkg git registry (flatcitybuf@0.9.0, upstream tag cpp-v0.9.0) — see the
 # `registries` entry in vcpkg.json; local dev uses `just vendor-fcb`'s .vendor/prefix.
 # Portable C++ source, so no platform/arch restrictions. The option itself is declared
 # further up, next to build_loadable_extension, which needs to branch on it.
