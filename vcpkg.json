@@ -11,7 +11,7 @@
                         {
                                 "kind": "git",
                                 "repository": "https://github.com/HideBa/vcpkg",
-                                "baseline": "40c2bbe2b6735f6ac01babfe0b6c13317c5c44e5",
+                                "baseline": "c2db56ac6e28cdb52dc5ade8a29c347b17442221",
                                 "packages": ["flatcitybuf"]
                         }
                 ],

@@ -770,7 +770,7 @@ cmake --build build/release --target cityjson_extension cityjson_loadable_extens
 
 ### FlatCityBuf Support
 
-FlatCityBuf (`.fcb`) support is built on the native C++ [flatcitybuf](https://github.com/cityjson/flatcitybuf) library, resolved as a released vcpkg port (`flatcitybuf@0.8.1`, from the C++ release tag `cpp-v0.8.1` — the bare `v*` tags are the Rust crate). Until the port lands in microsoft/vcpkg, `vcpkg.json` declares a git registry scoped to that one package (`https://github.com/HideBa/vcpkg`, pinned by baseline); everything else comes from the builtin baseline. It's portable C++ source, so there's no platform/architecture restriction and no separate download step: it builds like any other vcpkg dependency this extension already has (`nlohmann-json`, `openssl`).
+FlatCityBuf (`.fcb`) support is built on the native C++ [flatcitybuf](https://github.com/cityjson/flatcitybuf) library, resolved as a released vcpkg port (`flatcitybuf@0.9.0`, from the C++ release tag `cpp-v0.9.0` — the bare `v*` tags are the Rust crate). Until the port lands in microsoft/vcpkg, `vcpkg.json` declares a git registry scoped to that one package (`https://github.com/HideBa/vcpkg`, pinned by baseline); everything else comes from the builtin baseline. It's portable C++ source, so there's no platform/architecture restriction and no separate download step: it builds like any other vcpkg dependency this extension already has (`nlohmann-json`, `openssl`).
 
 For a local development build without vcpkg, `just vendor-fcb` builds flatbuffers and flatcitybuf into a gitignored `.vendor/prefix` (position-independent, as the loadable extension is a shared object); point CMake at it with `-Dflatcitybuf_DIR` / `-Dflatbuffers_DIR` or `CMAKE_PREFIX_PATH`.
 

@@ -114,14 +114,23 @@ merges, the entry is deleted and the dependency resolves from upstream unchanged
 
 - **`cpp-v<version>` tags are the C++ releases.** The bare `v<version>` tags in
   `cityjson/flatcitybuf` are the Rust crate cut from the same train, so `v0.7.7` and
-  `cpp-v0.7.7` are *not* the same code. The port is at `cpp-v0.8.1`.
+  `cpp-v0.7.7` are *not* the same code. The port is at `cpp-v0.9.0`.
 - **Local dev builds use `just vendor-fcb`**, which builds flatbuffers v25.9.23 and
-  flatcitybuf `cpp-v0.8.1` into the gitignored `.vendor/prefix` with
+  flatcitybuf `cpp-v0.9.0` into the gitignored `.vendor/prefix` with
   `-DCMAKE_POSITION_INDEPENDENT_CODE=ON` (the loadable extension is a shared object,
   so both static libs need PIC). Point CMake at it with `-Dflatcitybuf_DIR` /
   `-Dflatbuffers_DIR` or `CMAKE_PREFIX_PATH`; the `test/cpp` harnesses want
   `FCB_PREFIX="$(pwd)/.vendor/prefix"`. Never a session scratchpad — a
-  garbage-collected prefix breaks every relink.
+  garbage-collected prefix breaks every relink. The recipe re-checks out the pinned
+  tag on every run, so a bump upgrades an existing `.vendor/src` clone instead of
+  silently reusing the old one.
+- **`FileInfo`'s schema-optional strings are `std::optional<std::string>` as of
+  `cpp-v0.9.0`** (`identifier`, `title`, `reference_date`, and every `poc_*` bar the
+  address members), because the Rust oracle distinguishes absent from
+  present-but-empty: `Some("")` emits the key with an empty value, only `None` omits
+  it. Gate on `.has_value()`, never on `.empty()`. We consume none of these directly —
+  FCB metadata flows through upstream's `to_cityjson_metadata` — so the change was a
+  no-op for us; `Header().info()` is read only for `.columns` and `.features_count`.
 - **`FCB_WITH_CURL` stays off.** The HTTP transport is DuckDB's FileSystem/httpfs
   through `DuckDBRangeReader` (`duckdb_fs_range_reader.cpp`), so there is one HTTP
   stack and one credentials/secrets/proxy story.
@@ -175,24 +184,26 @@ Traps in this layer:
   counting bind-time chunks would return zero. `FlatCityBufPushdownComplexFilter` only
   records filters on the reader; it no longer re-reads.
 
-**Known upstream divergence (fixed upstream, not yet released).** `cpp-v0.8.1`'s
-`fcb/attribute.hpp` documents `Byte` / `UByte` / `Binary` as decoded, but the pinned
-`attribute.cpp`'s `decode_attributes` still throws `UnsupportedColumnType` for all
-three. Upstream `main` has since landed the decode arms **and** settled the semantics:
-**`Byte` is UNSIGNED `u8`** — the writer stores a raw `u8`, and both the value path
-(`reader/deserializer.rs`) and the index path (`reader/attr_query.rs`,
-`key.cpp`'s `key_kind_for_column` → `KeyKind::UInt8`) read it back as `u8`; decoding
-it as `i8` turned a stored 200 into -56. `UByte` (`u8`) and `Binary` (u32 LE length +
-raw bytes → JSON byte array) match what we already do.
+**`Byte` / `UByte` / `Binary`: divergence resolved in `cpp-v0.9.0`.** Up to
+`cpp-v0.8.1` the full path threw `UnsupportedColumnType` on all three while our light
+path already decoded them. `cpp-v0.9.0` lands the decode arms and settles the
+semantics the way we did in `58ddbe4`: **`Byte` is UNSIGNED `u8`** — the writer stores
+a raw `u8`, and both the value path (`reader/deserializer.rs`) and the index path
+(`reader/attr_query.rs`, `key.cpp`'s `key_kind_for_column` → `KeyKind::UInt8`) read it
+back as `u8`; decoding it as `i8` turned a stored 200 into -56. `UByte` is `u8`, and
+`Binary` is a u32 LE length plus raw bytes. Our light path
+(`fcb_selective_convert.cpp`) and the pushdown's `BuildKeyValue`
+(`flatcitybuf_table_function.cpp`, `KeyValue::from_u8` for `Byte`, because
+`compare_keys` *throws* when the supplied key's kind differs from the one
+`select_attr` derives from the column) already agree, so both paths now match
+everywhere.
 
-Our light path decodes all three and now follows that unsigned rule
-(`fcb_selective_convert.cpp`), as does the pushdown's `BuildKeyValue`
-(`flatcitybuf_table_function.cpp`), which builds a `KeyValue::from_u8` for `Byte`
-because `compare_keys` *throws* when the supplied key's kind differs from the one
-`select_attr` derives from the column. The release is not consumed yet — we are still
-pinned to `cpp-v0.8.1` — so our **full** path still aborts on a file carrying such a
-column, while a light-path scan of the same file succeeds. Revisit this note when the
-next cpp release is vendored.
+**That parity is unverified by fixture, though.** `guess_type`
+(`writer/attribute.cpp`) only ever emits `Bool`/`Long`/`ULong`/`Double`/`String`/
+`DateTime`/`Json`, so nothing this stack writes can carry a `Byte`/`UByte`/`Binary`
+column and `test_fcb_selective.cpp`'s T3 light-vs-full comparison never sees one.
+Those three types are covered only by T5's synthetic blobs, which exercise the light
+path alone. A real fixture would have to come from upstream.
 
 ### FCB test harnesses
 
