@@ -1,0 +1,69 @@
+# name: test/sql/cityjson_fcb_remote.test
+# description: HTTP range-request reads via DuckDBRangeReader + httpfs. Network test:
+# runs only when FCB_REMOTE_TEST_URL is set, e.g.
+#   FCB_REMOTE_TEST_URL=https://flatcitybuf.open3d.city/data/3dbag_subset.city.fcb
+# The bbox below defaults to a 500 m square inside the hosted 3DBAG subset's extent
+# (RD New / EPSG:7415, x 68484..117369, y 421373..459946). test-env defaults are only
+# overridable through a `--test-config <json>` file, so point FCB_REMOTE_TEST_URL at a
+# different dataset only together with such a file -- never run this against a
+# multi-gigabyte file without a bbox that lands inside it, because the reader still
+# materialises every matching feature at bind time.
+# group: [sql]
+
+require cityjson
+
+require-env FCB_REMOTE_TEST_URL
+
+test-env FCB_REMOTE_MIN_X 84000
+
+test-env FCB_REMOTE_MIN_Y 444000
+
+test-env FCB_REMOTE_MAX_X 84500
+
+test-env FCB_REMOTE_MAX_Y 444500
+
+# The runner's default ignore_error_messages list is {"HTTP", "Unable to connect"}
+# (TestConfiguration::ErrorMessagesToBeSkipped), so a failed range read would report
+# as a *skip* rather than a failure -- the exact outcome this test exists to catch.
+# `set` with no values clears the list, making transport errors fail loudly.
+set ignore_error_messages
+
+# The sqllogictest runner turns extension autoloading off by default (autoloading
+# mode NONE in SQLLogicTestRunner's constructor), so DuckDBRangeReader's own
+# AutoLoadExtension(context, "httpfs") cannot pull httpfs in here -- load it
+# explicitly. `require httpfs` would instead skip the whole file, which would make a
+# run you deliberately opted into by setting FCB_REMOTE_TEST_URL silently do nothing.
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+# Header-only fetch: the header lives in the first few KB of the file, so this is a
+# range read, not a download. One row, and a positive object count proves the header
+# actually parsed rather than the reader silently yielding an empty struct.
+query II
+SELECT count(*), bool_and(city_objects_count > 0) FROM flatcitybuf_metadata('${FCB_REMOTE_TEST_URL}');
+----
+1	true
+
+# R-tree-guided fetch: a tiny bbox reads the index, then only the matching feature
+# ranges. The exact row count is data-dependent, so assert the shape instead: some
+# rows came back, and every one of them has an id -- an id can only come from
+# decoding the feature payload, so the feature-range reads worked, not just the
+# index read.
+query I
+SELECT count(*) > 0 AND count(*) = count(id)
+FROM read_flatcitybuf('${FCB_REMOTE_TEST_URL}',
+    min_x := ${FCB_REMOTE_MIN_X}, min_y := ${FCB_REMOTE_MIN_Y},
+    max_x := ${FCB_REMOTE_MAX_X}, max_y := ${FCB_REMOTE_MAX_Y});
+----
+true
+
+# A bbox outside the file's extent reads the index and nothing else.
+query I
+SELECT count(*)
+FROM read_flatcitybuf('${FCB_REMOTE_TEST_URL}',
+    min_x := -1000000, min_y := -1000000, max_x := -999000, max_y := -999000);
+----
+0

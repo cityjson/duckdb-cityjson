@@ -68,6 +68,13 @@ t: rebuild test
 test-file FILE:
     ./build/release/test/unittest "{{FILE}}"
 
+# Network-gated FlatCityBuf remote-read tests (HTTP range requests). Skipped by the
+# plain `just test` run because FCB_REMOTE_TEST_URL is unset there. The default URL is
+# a 2.3 GB file: the test only reads its header and a 500 m bbox, so pass a different
+# url= only with a bbox that lands inside it (see the test file's header comment).
+test-fcb-remote url="https://flatcitybuf.open3d.city/data/3dbag_subset.city.fcb":
+    FCB_REMOTE_TEST_URL={{url}} ./build/release/test/unittest "test/sql/cityjson_fcb_remote.test"
+
 # Run the extension's canonical test target the same way CI does (builds if needed).
 test-ci:
     make test
