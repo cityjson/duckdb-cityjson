@@ -1,0 +1,16 @@
+{
+  "name": "cityjson-wasm-smoke",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Node runtime smoke test for the DuckDB-Wasm build of the cityjson extension.",
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  },
+  "comments": {
+    "@duckdb/duckdb-wasm": "Pinned exactly. 1.33.1-dev57.0 is the `latest` dist-tag and embeds DuckDB v1.5.4 (source_id 08e34c447b) -- byte-identical to what `just build` produces here, so the wasm_mvp extension's footer matches. A different duckdb-wasm release means a different DuckDB, and the extension is rejected on its version footer; re-pin only together with the extension's DuckDB version."
+  },
+  "dependencies": {
+    "@duckdb/duckdb-wasm": "1.33.1-dev57.0"
+  }
+}

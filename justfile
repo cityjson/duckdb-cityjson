@@ -130,6 +130,13 @@ test-file FILE:
 test-fcb-remote url="https://flatcitybuf.open3d.city/data/3dbag_subset.city.fcb":
     FCB_REMOTE_TEST_URL={{url}} ./build/release/test/unittest "test/sql/cityjson_fcb_remote.test"
 
+# Runtime smoke test of the wasm build under Node + @duckdb/duckdb-wasm. Opt-in like
+# the other extra harnesses (`make test` never runs it); needs `just wasm` first, and
+# network access on the first run to populate test/wasm/node_modules. Set
+# FCB_REMOTE_TEST_URL to additionally exercise a bbox-filtered HTTP range read.
+test-wasm:
+    test/wasm/run_wasm_smoke.sh
+
 # Run the extension's canonical test target the same way CI does (builds if needed).
 test-ci:
     make test
