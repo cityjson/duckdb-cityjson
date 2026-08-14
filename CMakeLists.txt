@@ -108,8 +108,10 @@ if(EXISTS ${CJSEQ_CPP_DIR})
   endif()
 endif()
 
-# Optional: FlatCityBuf support (native C++ library, vendored via vcpkg overlay port —
-# see vcpkg_ports/flatcitybuf/). Portable C++ source, so no platform/arch restrictions.
+# Optional: FlatCityBuf support (native C++ library). In CI it is resolved from the
+# HideBa/vcpkg git registry (flatcitybuf@0.8.1, upstream tag cpp-v0.8.1) — see the
+# `registries` entry in vcpkg.json; local dev uses `just vendor-fcb`'s .vendor/prefix.
+# Portable C++ source, so no platform/arch restrictions.
 option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
 
 if(CITYJSON_ENABLE_FCB)

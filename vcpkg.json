@@ -6,13 +6,17 @@
                 "flatbuffers",
                 "flatcitybuf"
         ],
-        "overrides": [
-                { "name": "flatbuffers", "version": "25.9.23" }
-        ],
         "vcpkg-configuration": {
+                "registries": [
+                        {
+                                "kind": "git",
+                                "repository": "https://github.com/HideBa/vcpkg",
+                                "baseline": "40c2bbe2b6735f6ac01babfe0b6c13317c5c44e5",
+                                "packages": ["flatcitybuf"]
+                        }
+                ],
                 "overlay-ports": [
-                        "./extension-ci-tools/vcpkg_ports",
-                        "./vcpkg_ports"
+                        "./extension-ci-tools/vcpkg_ports"
                 ],
                 "overlay-triplets": [
                         "./extension-ci-tools/toolchains"
