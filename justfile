@@ -30,6 +30,33 @@ rebuild:
 build-fcb:
     EXT_FLAGS="-DCITYJSON_ENABLE_FCB=ON" GEN=ninja make release
 
+# Build flatbuffers + flatcitybuf (tag cpp-v0.8.1) into .vendor/prefix.
+# The loadable extension is a shared object, so both static libs need PIC.
+# Point CMake at the result with -Dflatcitybuf_DIR / -Dflatbuffers_DIR (or export
+# CMAKE_PREFIX_PATH="$(pwd)/.vendor/prefix"); test/cpp/run_encoder_tests.sh wants
+# FCB_PREFIX="$(pwd)/.vendor/prefix".
+vendor-fcb:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PREFIX="$(pwd)/.vendor/prefix"
+    SRC="$(pwd)/.vendor/src"
+    mkdir -p "$SRC"
+    if [ ! -d "$SRC/flatbuffers" ]; then
+        git clone --depth 1 --branch v25.9.23 https://github.com/google/flatbuffers "$SRC/flatbuffers"
+    fi
+    cmake -S "$SRC/flatbuffers" -B "$SRC/flatbuffers/build" -DCMAKE_BUILD_TYPE=Release \
+        -DFLATBUFFERS_BUILD_TESTS=OFF -DFLATBUFFERS_BUILD_FLATC=OFF -DFLATBUFFERS_BUILD_FLATHASH=OFF \
+        -DFLATBUFFERS_BUILD_FLATLIB=ON -DFLATBUFFERS_BUILD_SHAREDLIB=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX="$PREFIX"
+    cmake --build "$SRC/flatbuffers/build" -j && cmake --install "$SRC/flatbuffers/build"
+    if [ ! -d "$SRC/flatcitybuf" ]; then
+        git clone --depth 1 --branch cpp-v0.8.1 https://github.com/cityjson/flatcitybuf "$SRC/flatcitybuf"
+    fi
+    cmake -S "$SRC/flatcitybuf/src/cpp" -B "$SRC/flatcitybuf/build" -DCMAKE_BUILD_TYPE=Release \
+        -DFCB_WITH_JSON=ON -DFCB_WITH_CURL=OFF -DFCB_BUILD_TESTS=OFF -DFCB_BUILD_EXAMPLES=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_PREFIX="$PREFIX"
+    cmake --build "$SRC/flatcitybuf/build" -j && cmake --install "$SRC/flatcitybuf/build"
+
 # Run the full SQL test suite (assumes a build exists; run `just rebuild` first).
 test:
     ./build/release/test/unittest "test/sql/*"

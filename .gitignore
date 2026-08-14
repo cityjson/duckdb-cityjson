@@ -16,3 +16,5 @@ Note.md
 .cache/
 # vcpkg manifest-mode local install output (build artifact)
 /vcpkg_installed/
+# Vendored flatbuffers + flatcitybuf sources and install prefix (`just vendor-fcb`)
+.vendor/
