@@ -80,6 +80,36 @@ set(EXTENSION_SOURCES
     src/cityjson/appearance_table_function.cpp
 )
 
+# Declared here rather than next to the find_package below, because the wasm block
+# immediately after this needs to test it and runs earlier than that.
+option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
+
+# Wasm: hand flatcitybuf's archives to the side-module link.
+#
+# On every other platform the loadable extension is a real shared library, so the
+# LINK_LIBRARIES property set further down (flatcitybuf::flatcitybuf) is what pulls
+# fcb:: in. Under Emscripten it is not: build_loadable_extension() makes the target a
+# *static library*, for which LINK_LIBRARIES is inert, and then post-builds the real
+# artifact with a separate command --
+#   emcc <the archive> -o <name>.wasm -O3 -sSIDE_MODULE=2 -sEXPORTED_FUNCTIONS=... ${TO_BE_LINKED}
+# (duckdb/extension/extension_build_tools.cmake:186-198). Only our own objects are on
+# that line, and -sSIDE_MODULE leaves unresolved symbols as *imports* rather than
+# erroring -- so the build succeeded while emitting a .wasm with 50 undefined fcb::
+# imports, which dlopen then rejected at LOAD time with
+#   bad export type for '_ZN3fcb11RangeReader10read_batch...': undefined
+#
+# TO_BE_LINKED is read from DUCKDB_EXTENSION_<NAME>_LINKED_LIBS, DuckDB's sanctioned
+# knob for exactly this. It is consumed inside build_loadable_extension(), hence set
+# here, before the call. The generator expressions are fine to reference targets that
+# find_package(flatcitybuf) only creates further down: they resolve at generate time,
+# not at this line. Space-separated, because the function runs separate_arguments() on
+# it. flatbuffers is flatcitybuf's own dependency and needs listing explicitly for the
+# same reason -- nothing transitive survives the trip through a plain emcc invocation.
+if(EMSCRIPTEN AND CITYJSON_ENABLE_FCB)
+  set(DUCKDB_EXTENSION_CITYJSON_LINKED_LIBS
+      "$<TARGET_FILE:flatcitybuf::flatcitybuf> $<TARGET_FILE:flatbuffers::flatbuffers>")
+endif()
+
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
@@ -112,9 +142,8 @@ endif()
 # Optional: FlatCityBuf support (native C++ library). In CI it is resolved from the
 # HideBa/vcpkg git registry (flatcitybuf@0.8.1, upstream tag cpp-v0.8.1) — see the
 # `registries` entry in vcpkg.json; local dev uses `just vendor-fcb`'s .vendor/prefix.
-# Portable C++ source, so no platform/arch restrictions.
-option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
-
+# Portable C++ source, so no platform/arch restrictions. The option itself is declared
+# further up, next to build_loadable_extension, which needs to branch on it.
 if(CITYJSON_ENABLE_FCB)
   # GLOBAL (CMake 3.24+): promotes the imported flatcitybuf::flatcitybuf target (and
   # its own transitive flatbuffers::flatbuffers dependency) to global visibility.

@@ -256,6 +256,26 @@ async function main() {
   // Network-gated, same opt-in as test/sql/cityjson_fcb_remote.test. The bbox is the
   // 500 m square that test uses, valid only for the default hosted 3DBAG subset
   // (RD New / EPSG:7415) -- a different URL needs a bbox inside its own extent.
+  //
+  // Expected to XFAIL under Node, and the reason is worth stating precisely because
+  // it is *not* our code and *not* the httpfs autoload. DuckDB-Wasm's Node runtime
+  // implements exactly one data protocol -- NODE_FS. Its openFile() switch answers
+  // BROWSER_FILEREADER / BROWSER_FSACCESS / HTTP / S3 with failWith("Unsupported
+  // data protocol"), which reaches SQL as an opaque numeric error code. Verified
+  // independently of this extension: plain `read_text('https://...')` on a stock
+  // duckdb-wasm instance returns zero rows rather than the file.
+  //
+  // DuckDBRangeReader's own AutoLoadExtension(context, "httpfs") is NOT the cause and
+  // needs no guard: httpfs stays loaded = false, installed = false across the call, no
+  // AutoloadException is raised, and the failure arrives from the FileSystem::OpenFile
+  // that follows. The browser runtime does implement HTTP (synchronous XHR range
+  // requests), so the same artifact may well do remote reads in a browser -- Node just
+  // cannot be the place we prove it.
+  //
+  // Classified rather than skipped, so that the day duckdb-wasm's Node runtime learns
+  // HTTP this turns into a PASS on its own, and so that any *other* failure is still a
+  // hard failure.
+  const NODE_VFS_NO_HTTP = /Opening file '.*' failed with error: \d+/;
   const remoteUrl = process.env.FCB_REMOTE_TEST_URL;
   if (!remoteUrl) {
     console.log('SKIP  remote bbox read (set FCB_REMOTE_TEST_URL to enable)');
@@ -270,7 +290,16 @@ async function main() {
         [{ ok: true }]
       );
     } catch (e) {
-      fail('remote bbox read returns identified rows', e);
+      const message = e && e.message ? e.message : String(e);
+      if (NODE_VFS_NO_HTTP.test(message)) {
+        console.log(
+          'XFAIL remote bbox read returns identified rows\n' +
+            '        duckdb-wasm\'s Node runtime has no HTTP VFS (openFile supports NODE_FS only)\n' +
+            `        ${message.split('\n')[0]}`
+        );
+      } else {
+        fail('remote bbox read returns identified rows', e);
+      }
     }
   }
 
