@@ -175,11 +175,24 @@ Traps in this layer:
   counting bind-time chunks would return zero. `FlatCityBufPushdownComplexFilter` only
   records filters on the reader; it no longer re-reads.
 
-**Known upstream divergence (candidate bug report).** `cpp-v0.8.1`'s
-`fcb/attribute.hpp` documents `Byte` / `UByte` / `Binary` as decoded ("that has been
-fixed upstream"), but `attribute.cpp`'s `decode_attributes` still throws
-`UnsupportedColumnType` for all three. Our light path *does* decode them, so a
-light-path scan of a file carrying such a column succeeds where the full path aborts.
+**Known upstream divergence (fixed upstream, not yet released).** `cpp-v0.8.1`'s
+`fcb/attribute.hpp` documents `Byte` / `UByte` / `Binary` as decoded, but the pinned
+`attribute.cpp`'s `decode_attributes` still throws `UnsupportedColumnType` for all
+three. Upstream `main` has since landed the decode arms **and** settled the semantics:
+**`Byte` is UNSIGNED `u8`** — the writer stores a raw `u8`, and both the value path
+(`reader/deserializer.rs`) and the index path (`reader/attr_query.rs`,
+`key.cpp`'s `key_kind_for_column` → `KeyKind::UInt8`) read it back as `u8`; decoding
+it as `i8` turned a stored 200 into -56. `UByte` (`u8`) and `Binary` (u32 LE length +
+raw bytes → JSON byte array) match what we already do.
+
+Our light path decodes all three and now follows that unsigned rule
+(`fcb_selective_convert.cpp`), as does the pushdown's `BuildKeyValue`
+(`flatcitybuf_table_function.cpp`), which builds a `KeyValue::from_u8` for `Byte`
+because `compare_keys` *throws* when the supplied key's kind differs from the one
+`select_attr` derives from the column. The release is not consumed yet — we are still
+pinned to `cpp-v0.8.1` — so our **full** path still aborts on a file carrying such a
+column, while a light-path scan of the same file succeeds. Revisit this note when the
+next cpp release is vendored.
 
 ### FCB test harnesses
 

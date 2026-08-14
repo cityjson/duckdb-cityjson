@@ -177,7 +177,13 @@ nlohmann::json DecodeAttributesFiltered(const uint8_t *data, size_t size,
 				out[col.name] = data[pos] != 0;
 				break;
 			case ::ColumnType::Byte:
-				out[col.name] = static_cast<int64_t>(GetLE<int8_t>(data, pos));
+				// Byte is UNSIGNED on the wire, exactly like UByte: upstream's
+				// writer stores it as a raw u8 (writer/attribute.rs) and the
+				// index path reads it back as u8 (reader/attr_query.rs,
+				// key.cpp's key_kind_for_column -> KeyKind::UInt8). Decoding it
+				// as i8 turned a stored 200 into -56 and disagreed with the
+				// very index used to find the row.
+				out[col.name] = static_cast<uint64_t>(GetLE<uint8_t>(data, pos));
 				break;
 			case ::ColumnType::UByte:
 				out[col.name] = static_cast<uint64_t>(GetLE<uint8_t>(data, pos));

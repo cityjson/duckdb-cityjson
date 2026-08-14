@@ -125,7 +125,10 @@ static AllTypesBlob MakeAllTypesBlob() {
 	PushRecordHeader(o, 0);
 	o.push_back(1); // Bool true
 	PushRecordHeader(o, 1);
-	PushLE(o, static_cast<uint64_t>(static_cast<uint8_t>(-7)), 1); // Byte -7
+	// Byte is UNSIGNED on the wire (upstream key.cpp / deserializer.rs: the
+	// writer stores it as a raw u8 and the index path reads it back as u8), so
+	// this 0xF9 is the value 249, NOT -7.
+	PushLE(o, 0xF9, 1); // Byte 0xF9 -> 249
 	PushRecordHeader(o, 2);
 	PushLE(o, 200, 1); // UByte 200
 	PushRecordHeader(o, 3);
@@ -292,7 +295,10 @@ static void T5_FilteredWalkOverEveryColumnType() {
 	json all = DecodeAttributesFiltered(b.bytes.data(), b.bytes.size(), b.schema, std::nullopt);
 	CHECK(all.size() == 15);
 	CHECK(all["c_bool"] == true);
-	CHECK(all["c_byte"] == -7);
+	// Byte decodes UNSIGNED: the writer stores a raw u8 and the index path reads
+	// u8 back, so 0xF9 is 249. Decoding it as i8 would say -7 and disagree with
+	// both the on-disk index and every other FlatCityBuf implementation.
+	CHECK(all["c_byte"] == 249);
 	CHECK(all["c_ubyte"] == 200);
 	CHECK(all["c_short"] == -300);
 	CHECK(all["c_ushort"] == 60000);
@@ -330,6 +336,21 @@ static void T5_FilteredWalkOverEveryColumnType() {
 	json empty = DecodeAttributesFiltered(nullptr, 0, b.schema, std::nullopt);
 	CHECK(empty.is_object());
 	CHECK(empty.empty());
+
+	// The regression this pins: a Byte holding 200 must come back as 200, not as
+	// the -56 an i8 read would produce. Both Byte and UByte are u8 on the wire,
+	// so the two columns must agree byte for byte.
+	std::vector<fcb::ColumnInfo> two = {Col(0, "b", ::ColumnType::Byte), Col(1, "u", ::ColumnType::UByte)};
+	std::vector<uint8_t> bytes;
+	PushRecordHeader(bytes, 0);
+	PushLE(bytes, 200, 1);
+	PushRecordHeader(bytes, 1);
+	PushLE(bytes, 200, 1);
+	json big = DecodeAttributesFiltered(bytes.data(), bytes.size(), two, std::nullopt);
+	CHECK(big["b"] == 200);
+	CHECK(big["u"] == 200);
+	CHECK(big["b"] == big["u"]);
+	CHECK(big["b"].get<int64_t>() > 0);
 }
 
 // ---------------------------------------------------------------------------

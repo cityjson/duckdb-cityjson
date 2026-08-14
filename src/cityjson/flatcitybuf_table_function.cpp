@@ -79,7 +79,13 @@ std::optional<fcb::KeyValue> NarrowInt(int64_t raw, MakeFn make) {
 std::optional<fcb::KeyValue> BuildKeyValue(const fcb::ColumnInfo &col, const Value &constant) {
 	switch (static_cast<::ColumnType>(col.type)) {
 	case ::ColumnType::Byte:
-		return NarrowInt<int8_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_i8);
+		// Byte keys are UNSIGNED, exactly like UByte: upstream's
+		// key_kind_for_column maps ::ColumnType::Byte to KeyKind::UInt8 because
+		// the writer stores the value as u8 and indexes it as u8. An Int8
+		// KeyValue here is not merely a mis-compare -- select_attr derives the
+		// tree's kind from the column itself, and compare_keys THROWS on two
+		// keys of different kinds.
+		return NarrowInt<uint8_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_u8);
 	case ::ColumnType::UByte:
 		return NarrowInt<uint8_t>(constant.GetValue<int64_t>(), fcb::KeyValue::from_u8);
 	case ::ColumnType::Bool:
