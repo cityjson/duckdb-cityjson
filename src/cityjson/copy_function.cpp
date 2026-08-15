@@ -535,12 +535,22 @@ static json StructPropsToJson(const Value &sval) {
 	return props;
 }
 
-// Helper: parse JSON string array from a DuckDB list/varchar value
+// Helper: turn a children/parents/children_roles cell into a JSON string array.
+// The value arrives as a DuckDB LIST(VARCHAR) from read_cityjson / CityParquet
+// tables; a VARCHAR cell holding JSON text is accepted too for hand-built input.
 static json ParseJsonArrayValue(const Value &val) {
 	if (val.IsNull()) {
 		return json::array();
 	}
-
+	if (val.type().id() == LogicalTypeId::LIST) {
+		json arr = json::array();
+		for (const auto &entry : ListValue::GetChildren(val)) {
+			if (!entry.IsNull()) {
+				arr.push_back(entry.ToString());
+			}
+		}
+		return arr;
+	}
 	auto str = val.ToString();
 	try {
 		auto parsed = json_utils::ParseJson(str);
@@ -549,8 +559,6 @@ static json ParseJsonArrayValue(const Value &val) {
 		}
 	} catch (...) {
 	}
-
-	// Try as DuckDB list
 	return json::array();
 }
 

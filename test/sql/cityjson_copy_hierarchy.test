@@ -1,0 +1,24 @@
+# name: test/sql/cityjson_copy_hierarchy.test
+# description: COPY TO cityjson round-trips children/parents/children_roles (review P1)
+# group: [sql]
+
+require cityjson
+
+# The hierarchy columns are LIST(VARCHAR) cells. The exporter used to stringify
+# the LIST and JSON-parse the result, which always failed, so every hierarchy
+# cell silently became an empty array in the written file.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/hierarchy.city.json'))
+TO '__TEST_DIR__/rt_hier.city.json' (FORMAT cityjson);
+
+query TII
+SELECT id, children = ['storey-1'], children_roles = ['storey']
+FROM read_cityjson('__TEST_DIR__/rt_hier.city.json') WHERE id = 'bldg-1';
+----
+bldg-1	true	true
+
+query TI
+SELECT id, parents = ['bldg-1']
+FROM read_cityjson('__TEST_DIR__/rt_hier.city.json') WHERE id = 'storey-1';
+----
+storey-1	true
