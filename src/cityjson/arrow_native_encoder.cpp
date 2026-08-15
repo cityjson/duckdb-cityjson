@@ -75,8 +75,7 @@ public:
 	}
 
 	//! One face: exterior ring first, then any interior rings. Winding is CityJSON's
-	//! own -- there is no OGC exterior-CCW convention to satisfy here, so unlike the
-	//! WKB path nothing is reversed.
+	//! own -- nothing is reversed, exactly as the WKB path also preserves source order.
 	CompactedFace Face(const json &face_json) {
 		if (!face_json.is_array()) {
 			throw CityJSONError::InvalidGeometry("Face is not an array: " + face_json.dump());

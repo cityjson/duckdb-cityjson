@@ -75,8 +75,9 @@ enum class CityJSONGeometryTypeCode : int {
  * This encoder:
  * - Dereferences CityJSON vertex indices to actual 3D coordinates
  * - Applies transform (scale/translate) if present
- * - Reverses ring orientation for OGC compatibility
- *   (CityJSON: exterior CW, interior CCW; OGC: exterior CCW, interior CW)
+ * - Preserves the source ring order (CityJSON/CityGML wind exterior rings so the
+ *   right-hand rule gives the outward normal, i.e. right-handed orientation)
+ * - Closes each ring (OGC repeats the first vertex; CityJSON does not)
  * - Outputs WKB in little-endian format (NDR)
  *
  * Supported CityJSON to OGC mappings:
@@ -146,9 +147,6 @@ private:
 	// Helper: Get vertex from index with optional transform
 	static std::array<double, 3> GetVertex(const std::vector<std::array<double, 3>> &vertices, uint32_t index,
 	                                       const std::optional<Transform> &transform);
-
-	// Helper: Reverse ring orientation (CityJSON to OGC)
-	static void ReverseRing(std::vector<uint32_t> &ring);
 
 	// Write primitives to WKB buffer
 	static void WriteByte(std::vector<uint8_t> &out, uint8_t value);

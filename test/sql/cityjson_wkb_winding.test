@@ -1,0 +1,39 @@
+# name: test/sql/cityjson_wkb_winding.test
+# description: WKB rings keep CityJSON source order, no reversal (review P4; spec 03-geometry-semantics.mdx)
+# group: [sql]
+
+require cityjson
+
+# The fixture's ring is [v0, v1, v2] with v0=(0,0,0), v1=(1,0,0), v2=(0,1,0).
+# MultiPolygon Z layout: 1B order + 4B type + 4B numPolygons (9 bytes), then per
+# polygon 1B order + 4B type + 4B numRings + 4B numPoints (13 bytes), so the
+# first vertex's x,y,z doubles are bytes 23..46 (1-based inclusive slice --
+# substring() does not accept BLOB in DuckDB v1.5.4, bracket slicing does).
+# Source order means those 24 bytes are v0 = (0,0,0), i.e. all zeros; the old
+# encoder reversed the ring and put v2=(0,1,0) there (y = 1.0, non-zero bytes).
+
+# 9 + 13 + 4 closed-ring points x 24 bytes = 118
+query I
+SELECT octet_length(geometry_lod1_0) FROM read_cityjson('test/data/wkb_winding.city.json');
+----
+118
+
+query I
+SELECT geometry_lod1_0[23:46] =
+       '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'::BLOB
+FROM read_cityjson('test/data/wkb_winding.city.json');
+----
+true
+
+# The decoder no longer un-reverses either: a COPY round-trip re-encodes to the
+# same source-ordered bytes.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/wkb_winding.city.json'))
+TO '__TEST_DIR__/winding_rt.city.json' (FORMAT cityjson);
+
+query I
+SELECT geometry_lod1_0[23:46] =
+       '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'::BLOB
+FROM read_cityjson('__TEST_DIR__/winding_rt.city.json');
+----
+true
