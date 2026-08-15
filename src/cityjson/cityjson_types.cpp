@@ -310,11 +310,18 @@ CityObject CityObject::FromJson(const json &obj) {
 		}
 	}
 
-	// Parse children roles
+	// Parse children roles. A `null` entry is a real value here, not an absent one --
+	// it marks a child with no role while keeping its position aligned with `children`.
 	if (obj.contains("children_roles") && obj["children_roles"].is_array()) {
-		std::vector<std::string> roles;
+		std::vector<std::optional<std::string>> roles;
 		for (const auto &role : obj["children_roles"]) {
-			roles.push_back(role.get<std::string>());
+			if (role.is_null()) {
+				roles.push_back(std::nullopt);
+			} else if (role.is_string()) {
+				roles.push_back(role.get<std::string>());
+			} else {
+				throw CityJSONError::InvalidSchema("children_roles entries must be strings or null");
+			}
 		}
 		result.children_roles = roles;
 	}
@@ -354,9 +361,13 @@ json CityObject::ToJson() const {
 		result["parents"] = parents;
 	}
 
-	// Add children roles
+	// Add children roles, preserving null slots for children with no role.
 	if (children_roles.has_value()) {
-		result["children_roles"] = children_roles.value();
+		json roles = json::array();
+		for (const auto &role : children_roles.value()) {
+			roles.push_back(role.has_value() ? json(role.value()) : json(nullptr));
+		}
+		result["children_roles"] = std::move(roles);
 	}
 
 	return result;

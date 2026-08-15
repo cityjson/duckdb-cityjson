@@ -11,8 +11,11 @@ statement ok
 COPY (SELECT * FROM read_cityjson('test/data/hierarchy.city.json'))
 TO '__TEST_DIR__/rt_hier.city.json' (FORMAT cityjson);
 
+# bldg-1's second child (storey-2) has no role: children_roles is positionally
+# aligned with children, so element 2 must stay NULL rather than being dropped
+# (which would shift "storey" onto storey-2) or shifted in the exported file.
 query TII
-SELECT id, children = ['storey-1'], children_roles = ['storey']
+SELECT id, children = ['storey-1', 'storey-2'], children_roles = ['storey', NULL]
 FROM read_cityjson('__TEST_DIR__/rt_hier.city.json') WHERE id = 'bldg-1';
 ----
 bldg-1	true	true
@@ -22,3 +25,9 @@ SELECT id, parents = ['bldg-1']
 FROM read_cityjson('__TEST_DIR__/rt_hier.city.json') WHERE id = 'storey-1';
 ----
 storey-1	true
+
+query TI
+SELECT id, parents = ['bldg-1']
+FROM read_cityjson('__TEST_DIR__/rt_hier.city.json') WHERE id = 'storey-2';
+----
+storey-2	true

@@ -167,7 +167,10 @@ struct CityObject {
 	std::optional<GeographicalExtent> geographical_extent;  // 3D bounding box
 	std::vector<std::string> children;                      // Child CityObject IDs
 	std::vector<std::string> parents;                       // Parent CityObject IDs
-	std::optional<std::vector<std::string>> children_roles; // Roles of children
+	// Roles of children, positionally aligned with `children` (CityParquet spec
+	// §object-table-schema: length MUST equal children, with null for a child that
+	// has no role) -- so an unset entry has to be representable, not just absent.
+	std::optional<std::vector<std::optional<std::string>>> children_roles;
 
 	CityObject() = default;
 	explicit CityObject(std::string type);

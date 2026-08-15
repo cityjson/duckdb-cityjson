@@ -42,7 +42,13 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		if (!obj.children_roles.has_value() || obj.children_roles->empty()) {
 			return json(nullptr);
 		}
-		return json(obj.children_roles.value());
+		// Preserve null slots positionally -- WriteVarcharArray already writes a
+		// non-string array element as a SQL NULL list entry.
+		json roles = json::array();
+		for (const auto &role : obj.children_roles.value()) {
+			roles.push_back(role.has_value() ? json(role.value()) : json(nullptr));
+		}
+		return roles;
 	}
 
 	if (col.name == "geographical_extent") {

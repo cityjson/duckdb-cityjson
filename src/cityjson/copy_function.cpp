@@ -545,7 +545,13 @@ static json ParseJsonArrayValue(const Value &val) {
 	if (val.type().id() == LogicalTypeId::LIST) {
 		json arr = json::array();
 		for (const auto &entry : ListValue::GetChildren(val)) {
-			if (!entry.IsNull()) {
+			// children_roles is positionally aligned with children (CityParquet
+			// spec §object-table-schema: "length MUST equal children, with null
+			// for a child that has no role"); dropping a null here would shift
+			// every later role onto the wrong child, so keep the slot.
+			if (entry.IsNull()) {
+				arr.push_back(nullptr);
+			} else {
 				arr.push_back(entry.ToString());
 			}
 		}

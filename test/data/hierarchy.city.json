@@ -8,8 +8,8 @@
   "CityObjects": {
     "bldg-1": {
       "type": "Building",
-      "children": ["storey-1"],
-      "children_roles": ["storey"],
+      "children": ["storey-1", "storey-2"],
+      "children_roles": ["storey", null],
       "geometry": [
         {
           "type": "Solid",
@@ -19,6 +19,10 @@
       ]
     },
     "storey-1": {
+      "type": "BuildingStorey",
+      "parents": ["bldg-1"]
+    },
+    "storey-2": {
       "type": "BuildingStorey",
       "parents": ["bldg-1"]
     }
