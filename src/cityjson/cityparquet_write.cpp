@@ -5,6 +5,10 @@
 #include "cityjson/crs_projjson.hpp"
 #include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
+#include "cityjson/wkb_encoder.hpp"
+#include "cityjson/wkb_extent.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -22,25 +26,31 @@ namespace {
 
 constexpr const char *CITYPARQUET_VERSION = "0.1.0-draft";
 
-//! WKB type names GeoParquet 1.1 permits (codes 1001-1007). A column carrying anything
-//! else -- any solid-family geometry -- MUST NOT be declared in `geo`: a strict reader
-//! that eagerly decodes every declared column rejects the WHOLE file on one it cannot
-//! parse, taking a perfectly good footprint column down with it.
+//! WKB type names GeoParquet 1.1 permits (codes 1001-1007, GeometryCollection Z of
+//! PolyhedralSurface excluded -- spec 05-metadata.mdx "The geo object"). A column
+//! carrying anything else -- any solid-family geometry -- MUST NOT be declared in
+//! `geo`: a strict reader that eagerly decodes every declared column rejects the
+//! WHOLE file on one it cannot parse, taking a perfectly good footprint column down
+//! with it. Matches GeoParquetTypeName in geoparquet_table_function.cpp.
 bool GeoParquetLegal(const std::string &type_name) {
-	static const std::set<std::string> legal = {"Point Z",      "LineString Z",   "Polygon Z",
-	                                            "MultiPoint Z", "MultiLineString Z", "MultiPolygon Z",
-	                                            "GeometryCollection Z"};
+	static const std::set<std::string> legal = {"Point Z",      "LineString Z",      "Polygon Z",
+	                                            "MultiPoint Z", "MultiLineString Z", "MultiPolygon Z"};
 	return legal.count(type_name) > 0;
 }
 
 struct ColumnFacts {
 	std::string name;
+	//! Real physical encoding of the column: "WKB" for a BLOB column,
+	//! "CityParquetArrowNative-v1" for the arrow-native nested-LIST one
+	//! (spec 05-metadata.mdx; token vocabulary shared with cityparquet-rs
+	//! GeometryEncoding::footer_token).
+	std::string encoding = "WKB";
 	std::set<std::string> geometry_types;
 	bool has_extent = false;
 	double min_x = 0, min_y = 0, min_z = 0, max_x = 0, max_y = 0, max_z = 0;
 
 	bool Legal() const {
-		if (geometry_types.empty()) {
+		if (encoding != "WKB" || geometry_types.empty()) {
 			return false;
 		}
 		for (const auto &type : geometry_types) {
@@ -132,6 +142,20 @@ std::string Literal(const std::string &text) {
 	return KeywordHelper::WriteQuoted(text, '\'');
 }
 
+//! DuckDB type of one column, for telling a WKB BLOB geometry column from an
+//! arrow-native LIST one. Non-templated GetEntry: the templated form ODR-uses
+//! TableCatalogEntry::Name (see cityparquet_package.cpp).
+LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, const std::string &table,
+                           const std::string &column) {
+	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	for (auto &existing : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
+		if (StringUtil::Lower(existing.Name()) == StringUtil::Lower(column)) {
+			return existing.Type();
+		}
+	}
+	return LogicalType(LogicalTypeId::INVALID);
+}
+
 //! Run a query on the internal connection, throwing its error rather than swallowing it.
 unique_ptr<MaterializedQueryResult> Run(Connection &connection, const std::string &sql) {
 	auto result = connection.Query(sql);
@@ -219,6 +243,36 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		ColumnFacts entry;
 		entry.name = column;
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column);
+		if (ColumnDuckType(context, schema, table, column).id() == LogicalTypeId::LIST) {
+			// Arrow-native column (INTEGER[][][][][]). The WKB probes below cannot
+			// run on it; the logical shape comes from the paired geometry_properties
+			// type instead -- the geometry_types vocabulary is encoding-independent
+			// (spec 05-metadata.mdx "city.columns entries"). No extent probe: the
+			// bbox entry is optional, and cityjson_wkb_extent is WKB-only.
+			entry.encoding = "CityParquetArrowNative-v1";
+			const auto props = KeywordHelper::WriteOptionallyQuoted(
+			    "geometry_properties_" + column.substr(std::string("geometry_").size()));
+			auto result = Run(connection, "SELECT DISTINCT " + props + ".\"type\" FROM " +
+			                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
+			for (idx_t row = 0; row < result->RowCount(); row++) {
+				auto value = result->GetValue(0, row);
+				if (value.IsNull()) {
+					continue;
+				}
+				try {
+					const auto *name = WKBTypeName(static_cast<uint32_t>(WKBEncoder::GetOGCType(value.ToString())));
+					if (name != nullptr) {
+						entry.geometry_types.insert(name);
+					}
+				} catch (const CityJSONError &) {
+					// A type WKB has no name for contributes nothing rather than aborting the write.
+				}
+			}
+			if (!entry.geometry_types.empty()) {
+				facts.push_back(std::move(entry));
+			}
+			continue;
+		}
 		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + quoted + ") FROM " +
 		                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
 		for (idx_t row = 0; row < result->RowCount(); row++) {
@@ -250,11 +304,15 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 
 json ColumnEntry(const ColumnFacts &facts, const json &crs, bool for_geo) {
 	json entry;
-	entry["encoding"] = "WKB";
+	entry["encoding"] = facts.encoding;
 	entry["geometry_types"] = json(facts.geometry_types);
 	entry["crs"] = crs;
 	entry["edges"] = "planar";
 	if (!for_geo) {
+		// city.columns is a LIST of entries, so each one must carry its column's
+		// name (spec 05-metadata.mdx; required by cityparquet-rs CityColumnEntry).
+		// geo.columns is a MAP keyed by name and takes no name field.
+		entry["name"] = facts.name;
 		// GeoParquet's planar `orientation` cannot express 3D winding, so CityParquet
 		// states it in `city` instead. A writer must always be explicit, including for
 		// the common right-handed case.

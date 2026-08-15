@@ -18,6 +18,14 @@ namespace cityjson {
 LogicalType ExtentType();
 
 /**
+ * WKB type name for an ISO 3D type code ("MultiPolygon Z", "PolyhedralSurface Z",
+ * ...), or nullptr for a code this extension does not carry. Defined in
+ * wkb_extent.cpp; shared by the cityjson_wkb_geometry_type scalar and the footer
+ * writers.
+ */
+const char *WKBTypeName(uint32_t code);
+
+/**
  * Registers cityjson_wkb_extent(BLOB) -> STRUCT(min_x, ..., max_z).
  *
  * DuckDB spatial cannot serve this purpose: it rejects PolyhedralSurfaceZ, which is

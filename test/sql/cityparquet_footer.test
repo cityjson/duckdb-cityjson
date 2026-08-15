@@ -1,0 +1,76 @@
+# name: test/sql/cityparquet_footer.test
+# description: city.columns[] carries name + real encoding; GeometryCollection Z is not geo-legal (review P3)
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+statement ok
+CREATE SCHEMA ms;
+
+statement ok
+CREATE TABLE ms.building AS SELECT * FROM read_cityjson('test/data/multisolid.city.json');
+
+statement ok
+PRAGMA cityparquet_init('ms');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('ms', '__TEST_DIR__/msolid', crs => 'EPSG:7415');
+
+# A MultiSolid encodes as GeometryCollection Z (of PolyhedralSurface Z), which is
+# NOT GeoParquet-legal (spec 05-metadata.mdx): no geo key may be written at all.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/msolid/building.parquet')
+WHERE decode(key) = 'geo';
+----
+0
+
+# city.columns[] entries REQUIRE a name key (cityparquet-rs CityColumnEntry), and
+# declare the solid-family type geo may not.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/msolid/building.parquet')
+WHERE decode(key) = 'city'
+  AND decode(value) LIKE '%"name":"geometry_lod2_2"%'
+  AND decode(value) LIKE '%GeometryCollection Z%'
+  AND decode(value) LIKE '%"encoding":"WKB"%'
+  AND decode(value) LIKE '%"orientation_3d":"right-handed"%';
+----
+1
+
+# An arrow-native package declares the REAL encoding token, not "WKB". delft_subset
+# carries a MultiSurface at LoD0 -- a GeoParquet-legal *type* -- so this also pins
+# that legality is a property of the physical encoding first: the nested-LIST column
+# no GeoParquet reader can decode must keep the file out of `geo` entirely.
+statement ok
+CREATE SCHEMA an;
+
+statement ok
+CREATE TABLE an.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', geometry_encoding := 'arrow-native');
+
+statement ok
+PRAGMA cityparquet_init('an');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('an', '__TEST_DIR__/arrow_native', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/arrow_native/building.parquet')
+WHERE decode(key) = 'geo';
+----
+0
+
+# geometry_types stays the encoding-independent WKB vocabulary (spec 05-metadata.mdx),
+# so the arrow-native MultiSurface column still reads "MultiPolygon Z" -- never a
+# CityJSON type name such as "Solid".
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/arrow_native/building.parquet')
+WHERE decode(key) = 'city'
+  AND decode(value) LIKE '%"encoding":"CityParquetArrowNative-v1"%'
+  AND decode(value) NOT LIKE '%"encoding":"WKB"%'
+  AND decode(value) LIKE '%"name":"geometry_lod0_0"%'
+  AND decode(value) LIKE '%MultiPolygon Z%'
+  AND decode(value) LIKE '%PolyhedralSurface Z%';
+----
+1
