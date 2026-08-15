@@ -20,6 +20,11 @@ TableFunction CreateReadCityJSONTableFunction() {
 	func.init_local = CityJSONInitLocal;
 	func.cardinality = CityJSONCardinality;
 	func.statistics = CityJSONStatistics;
+	// Progress for the DuckDB progress bar. Materialised scans report
+	// batches-done / total; streaming reports -1 (unknown). Not registered for
+	// read_flatcitybuf: its chunks live in the global state, where this callback
+	// would divide by an empty bind-data chunk count and claim 100%.
+	func.table_scan_progress = CityJSONProgress;
 
 	// Enable projection pushdown and complex-filter pushdown.
 	// filter_pushdown is intentionally disabled; our scan callback does not
@@ -52,6 +57,9 @@ TableFunction CreateReadCityJSONSeqTableFunction() {
 	func.init_local = CityJSONInitLocal;
 	func.cardinality = CityJSONCardinality;
 	func.statistics = CityJSONStatistics;
+	// See CreateReadCityJSONTableFunction for why this is registered here but not
+	// on read_flatcitybuf.
+	func.table_scan_progress = CityJSONProgress;
 
 	// Enable projection pushdown and complex-filter pushdown.
 	func.projection_pushdown = true;

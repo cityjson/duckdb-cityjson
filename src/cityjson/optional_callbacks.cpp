@@ -37,6 +37,14 @@ double CityJSONProgress(ClientContext &context, const FunctionData *bind_data_p,
 		return -1.0;
 	}
 
+	// With pushed-down equality filters the scan walks the shared, non-atomic cursor
+	// (filter_chunk_idx / filter_feature_idx) rather than the batch plan, so batch_index
+	// never advances and this would report a frozen 0%. Reading the cursor instead would
+	// race with the scan threads, so report unknown, as the streaming path does.
+	if (!bind_data.equality_filters.empty()) {
+		return -1.0;
+	}
+
 	size_t total = bind_data.chunks.TotalCityObjectCount();
 	if (total == 0) {
 		return 1.0;
