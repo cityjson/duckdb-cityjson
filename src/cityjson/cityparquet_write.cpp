@@ -24,8 +24,6 @@ namespace cityjson {
 
 namespace {
 
-constexpr const char *CITYPARQUET_VERSION = "0.1.0-draft";
-
 //! WKB type names GeoParquet 1.1 permits (codes 1001-1007, GeometryCollection Z of
 //! PolyhedralSurface excluded -- spec 05-metadata.mdx "The geo object"). A column
 //! carrying anything else -- any solid-family geometry -- MUST NOT be declared in

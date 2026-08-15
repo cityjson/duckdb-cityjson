@@ -11,6 +11,11 @@
 namespace duckdb {
 namespace cityjson {
 
+//! The CityParquet format version this extension writes (footer `city.version`,
+//! STAC `cityparquet:version`). One definition, shared by the package writer and
+//! the COPY-path footer builder.
+inline constexpr const char *CITYPARQUET_VERSION = "0.1.0-draft";
+
 /**
  * A CityParquet package, as held in DuckDB, is a **schema** whose tables are named
  * exactly as the specification names the package's files: `building`,

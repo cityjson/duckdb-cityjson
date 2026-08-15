@@ -30,7 +30,7 @@ Key entry points:
 | `cityjson_materials(path)`   | `appearance_table_function.cpp`          | materials.parquet rows, ids interned across the file |
 | `cityjson_textures(path)`    | `appearance_table_function.cpp`          | textures.parquet rows |
 | `cityjson_geometry_templates(path)` | `appearance_table_function.cpp`   | geometry_templates.parquet rows, local coordinates |
-| `cityjson_geoparquet_geo(path [, geometry_encoding =])` | `geoparquet_table_function.cpp` | GeoParquet `geo` footer JSON, or NULL when no column qualifies |
+| `cityjson_geoparquet_geo(path [, geometry_encoding =])` | `geoparquet_table_function.cpp` | The two COPY-path footer keys: `geo` (GeoParquet, NULL when no column qualifies) and the required `city` object |
 
 ### CityParquet package mutation
 
@@ -168,7 +168,9 @@ workspace repo. Under `'arrow-native'`:
 - Rings keep CityJSON's winding and do **not** repeat the closing vertex, unlike
   the WKB path, which reverses and closes them.
 - `cityjson_geoparquet_geo` takes the same parameter and declares **no** column
-  under `arrow-native`: legality is a property of the encoding, not the CM type.
+  in `geo` under `arrow-native`: legality is a property of the encoding, not the
+  CM type. Its `city` column still declares every geometry column, with
+  `encoding` set to `CityParquetArrowNative-v1`.
 
 Two traps specific to this layer:
 

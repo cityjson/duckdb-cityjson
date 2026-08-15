@@ -5,6 +5,10 @@
 #include "cityjson/crs_projjson.hpp"
 #include "cityjson/json_utils.hpp"
 #include "cityjson/error.hpp"
+#include "cityjson/column_types.hpp"
+#include "cityjson/cityparquet_package.hpp"
+#include "cityjson/wkb_encoder.hpp"
+#include "cityjson/wkb_extent.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 #include <limits>
@@ -84,7 +88,6 @@ std::optional<std::string> BuildGeoMetadata(const std::optional<std::string> &re
 		col["encoding"] = "WKB";
 		col["geometry_types"] = json(geometry_types); // sorted, deduplicated
 		col["edges"] = "planar";
-		col["cityparquet:orientation"] = "right-handed";
 		columns[col_name] = std::move(col);
 		if (LodValue(lod) >= primary_lod) {
 			primary_lod = LodValue(lod);
@@ -122,14 +125,83 @@ std::optional<std::string> BuildGeoMetadata(const std::optional<std::string> &re
 	return geo.dump();
 }
 
+// WKB type name for a CityJSON geometry type, solids included -- the city.columns
+// geometry_types vocabulary, which is encoding-independent (spec 05-metadata.mdx).
+// nullptr for a type WKB has no name for.
+const char *CityColumnTypeName(const std::string &cj_type) {
+	try {
+		return WKBTypeName(static_cast<uint32_t>(WKBEncoder::GetOGCType(cj_type)));
+	} catch (const CityJSONError &) {
+		return nullptr;
+	}
+}
+
+// Build the `city` footer JSON for the COPY path (spec 05-metadata.mdx, "The city
+// object"). Unlike `geo`, EVERY LoD column is declared, Solid-family included, and
+// `encoding` records the real physical encoding. An unresolvable CRS leaves `crs`
+// null here; when any column is GeoParquet-legal BuildGeoMetadata has already
+// thrown for it, so this lenience only ever applies to solid-only files.
+std::string BuildCityMetadata(const std::optional<std::string> &reference_system,
+                              const std::map<std::string, std::set<std::string>> &lod_types,
+                              GeometryEncoding encoding, const std::vector<std::string> &attributes) {
+	json crs_value = nullptr;
+	if (reference_system.has_value() && !reference_system->empty()) {
+		auto projjson = ProjjsonForReferenceSystem(reference_system.value());
+		if (projjson.has_value()) {
+			crs_value = json_utils::ParseJson(projjson.value());
+		}
+	}
+	json columns = json::array();
+	std::string primary;
+	double primary_lod = -1.0;
+	for (const auto &[lod, types] : lod_types) {
+		std::set<std::string> geometry_types;
+		for (const auto &t : types) {
+			const auto *name = CityColumnTypeName(t);
+			if (name != nullptr) {
+				geometry_types.insert(name);
+			}
+		}
+		if (geometry_types.empty()) {
+			continue;
+		}
+		std::string col_name = "geometry_" + LODTableUtils::FormatLODAsColumnSuffix(lod);
+		json col;
+		col["name"] = col_name;
+		col["encoding"] = encoding == GeometryEncoding::ArrowNative ? "CityParquetArrowNative-v1" : "WKB";
+		col["geometry_types"] = json(geometry_types);
+		col["crs"] = crs_value;
+		col["orientation_3d"] = "right-handed";
+		col["edges"] = "planar";
+		columns.push_back(std::move(col));
+		if (LodValue(lod) >= primary_lod) {
+			primary_lod = LodValue(lod);
+			primary = col_name;
+		}
+	}
+	json city;
+	city["version"] = CITYPARQUET_VERSION;
+	city["crs"] = crs_value;
+	if (!columns.empty()) {
+		city["columns"] = std::move(columns);
+		city["primary_column"] = primary;
+	}
+	city["attributes"] = json(attributes);
+	return city.dump();
+}
+
 struct GeoBindData : public TableFunctionData {
 	std::string file_name;
 	std::optional<std::string> geo; // nullopt -> emit SQL NULL
+	//! The `city` object is REQUIRED on every CityParquet file, so unlike `geo` it is
+	//! always non-empty.
+	std::string city;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<GeoBindData>();
 		result->file_name = file_name;
 		result->geo = geo;
+		result->city = city;
 		return result;
 	}
 	bool Equals(const FunctionData &other) const override {
@@ -192,8 +264,16 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
 
 	result->geo = BuildGeoMetadata(reference_system, lod_types, encoding);
 
-	return_types = {LogicalType::VARCHAR};
-	names = {"geo"};
+	std::vector<std::string> attributes;
+	for (const auto &col : reader->Columns()) {
+		if (!IsReservedColumnName(col.name)) {
+			attributes.push_back(col.name);
+		}
+	}
+	result->city = BuildCityMetadata(reference_system, lod_types, encoding, attributes);
+
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+	names = {"geo", "city"};
 	return std::move(result);
 }
 
@@ -214,6 +294,7 @@ void GeoScan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
 	} else {
 		output.data[0].SetValue(0, Value(LogicalType::VARCHAR)); // NULL
 	}
+	output.data[1].SetValue(0, Value(bind_data.city));
 	global_state.done = true;
 }
 
