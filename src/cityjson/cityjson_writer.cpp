@@ -246,7 +246,7 @@ void CityJSONWriter::WriteCityJSON(
 	// Write to file
 	std::ofstream out(file_path);
 	if (!out.is_open()) {
-		throw CityJSONError::FileRead("Failed to open output file: " + file_path);
+		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
 	}
 	out << root.dump();
 }
@@ -262,7 +262,7 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 	std::ofstream out(file_path);
 	if (!out.is_open()) {
-		throw CityJSONError::FileRead("Failed to open output file: " + file_path);
+		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
 	}
 
 	// Line 1: metadata header
