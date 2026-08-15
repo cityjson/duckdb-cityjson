@@ -5,7 +5,7 @@ This document provides guidance to coding agents working in the DuckDB CityJSON 
 ## Repository Context
 
 This is a **C++ DuckDB extension** that registers SQL table functions for reading CityJSON and CityJSONSeq files.
-It is **not Rust** — the entire extension is written in C++17.
+It is **not Rust** — the entire extension is written in C++20 (pinned via target_compile_features; std::span requires it).
 
 Key entry points:
 
