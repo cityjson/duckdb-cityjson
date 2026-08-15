@@ -39,21 +39,6 @@ public:
 	static json GetAttributeValue(const CityObject &obj, const Column &col);
 
 	/**
-	 * Get geometry value from CityObject for a geometry column
-	 * Geometry column name format: "geom_lod{X}_{Y}" → LOD "X.Y"
-	 *
-	 * Example:
-	 * - "geom_lod2_1" → looks for geometry with LOD "2.1"
-	 * - "geom_lod1_0" → looks for geometry with LOD "1.0"
-	 *
-	 * @param obj CityObject to extract from
-	 * @param col Geometry column definition
-	 * @return JSON representation of geometry (or null if not found)
-	 * @throws CityJSONError::InvalidSchema if column name is invalid
-	 */
-	static json GetGeometryValue(const CityObject &obj, const Column &col);
-
-	/**
 	 * Infer attribute columns from sample features
 	 * Scans CityObjects in features to discover all attribute keys and infer types
 	 *

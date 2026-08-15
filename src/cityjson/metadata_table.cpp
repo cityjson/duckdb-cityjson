@@ -289,25 +289,5 @@ unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &ci
 	return chunk;
 }
 
-string MetadataTableUtils::GetCreateTableSQL(const string &table_name) {
-	return "CREATE TABLE IF NOT EXISTS " + table_name +
-	       " ("
-	       "id INTEGER PRIMARY KEY, "
-	       "version VARCHAR NOT NULL, "
-	       "identifier VARCHAR, "
-	       "title VARCHAR, "
-	       "reference_date DATE, "
-	       "transform_scale STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), "
-	       "transform_translate STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), "
-	       "geographical_extent STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z "
-	       "DOUBLE), "
-	       "reference_system STRUCT(base_url VARCHAR, authority VARCHAR, version VARCHAR, code VARCHAR), "
-	       "point_of_contact STRUCT(contact_name VARCHAR, email_address VARCHAR, contact_type VARCHAR, role VARCHAR, "
-	       "phone VARCHAR, website VARCHAR, address STRUCT(thoroughfare_number BIGINT, thoroughfare_name VARCHAR, "
-	       "locality VARCHAR, postal_code VARCHAR, country VARCHAR)), "
-	       "city_objects_count BIGINT"
-	       ")";
-}
-
 } // namespace cityjson
 } // namespace duckdb

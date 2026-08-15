@@ -1,0 +1,29 @@
+{
+  "type": "CityJSON",
+  "version": "2.0",
+  "transform": {
+    "scale": [1.0, 1.0, 1.0],
+    "translate": [0.0, 0.0, 0.0]
+  },
+  "CityObjects": {
+    "ms-1": {
+      "type": "Building",
+      "geometry": [
+        {
+          "type": "MultiSolid",
+          "lod": "2.2",
+          "boundaries": [
+            [[[[0, 1, 2, 3]]]],
+            [[[[0, 3, 2, 1]]]]
+          ]
+        }
+      ]
+    }
+  },
+  "vertices": [
+    [0.0, 0.0, 0.0],
+    [10.0, 0.0, 0.0],
+    [10.0, 10.0, 0.0],
+    [0.0, 10.0, 0.0]
+  ]
+}

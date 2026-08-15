@@ -1,0 +1,34 @@
+# name: test/sql/cityparquet_type_remap.test
+# description: the 4 CityJSON->CityGML object_type remaps on import, reversed on export (review P5)
+# group: [sql]
+
+require cityjson
+
+statement ok
+CREATE SCHEMA st;
+
+statement ok
+CREATE TABLE st.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+statement ok
+PRAGMA cityparquet_init('st');
+
+statement ok
+PRAGMA insert_cityjson('st', 'test/data/hierarchy.city.json');
+
+# object_type stores the CityGML 3.0 class name (spec 02-object-table-schema.mdx),
+# so the CityJSON spelling BuildingStorey lands as Storey.
+query T
+SELECT object_type FROM st.building WHERE id = 'storey-1';
+----
+Storey
+
+# ... and export restores the CityJSON spelling.
+statement ok
+COPY (SELECT * FROM st.building WHERE id IN ('bldg-1', 'storey-1'))
+TO '__TEST_DIR__/storey_rt.city.json' (FORMAT cityjson);
+
+query T
+SELECT object_type FROM read_cityjson('__TEST_DIR__/storey_rt.city.json') WHERE id = 'storey-1';
+----
+BuildingStorey

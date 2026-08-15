@@ -4,15 +4,13 @@
 #include "cityjson/column_types.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
+#include "cityjson/cityparquet_sql_common.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/table_function.hpp"
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
 
 #include <algorithm>
 #include <map>
@@ -22,26 +20,6 @@ namespace duckdb {
 namespace cityjson {
 
 namespace {
-
-//! StringUtil::Join takes duckdb::vector, which std::vector does not convert to.
-std::string Join(const std::vector<std::string> &parts, const std::string &separator) {
-	std::string out;
-	for (idx_t i = 0; i < parts.size(); i++) {
-		if (i > 0) {
-			out += separator;
-		}
-		out += parts[i];
-	}
-	return out;
-}
-
-std::string Literal(const std::string &text) {
-	return KeywordHelper::WriteQuoted(text, '\'');
-}
-
-std::string Quoted(const std::string &name) {
-	return KeywordHelper::WriteOptionallyQuoted(name);
-}
 
 //! The staged relation, and one temp table per sidecar the source turns out to have.
 const char *const kStage = "__cp_ins_src";
@@ -67,50 +45,6 @@ std::string SidecarFunction(const std::string &sidecar) {
 		return "cityjson_textures";
 	}
 	return "cityjson_geometry_templates";
-}
-
-struct ColumnInfo {
-	std::string name;
-	LogicalType type;
-};
-
-std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &schema, const std::string &table) {
-	std::vector<ColumnInfo> columns;
-	// The non-templated GetEntry: Catalog::GetEntry<TableCatalogEntry> ODR-uses
-	// TableCatalogEntry::Name and collides with DuckDB's own definition at link time.
-	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
-	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		columns.push_back({column.Name(), column.Type()});
-	}
-	return columns;
-}
-
-const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::string &name) {
-	for (const auto &column : columns) {
-		if (StringUtil::Lower(column.name) == StringUtil::Lower(name)) {
-			return &column;
-		}
-	}
-	return nullptr;
-}
-
-//! BIGINT -> DOUBLE is a safe widening; anything else that disagrees falls back to
-//! VARCHAR. An empty type means the destination already accommodates the source.
-LogicalType WidenedType(const LogicalType &destination, const LogicalType &source) {
-	if (destination == source) {
-		return LogicalType(LogicalTypeId::INVALID);
-	}
-	const auto d = destination.id();
-	const auto s = source.id();
-	const bool d_int = d == LogicalTypeId::BIGINT || d == LogicalTypeId::INTEGER;
-	const bool s_double = s == LogicalTypeId::DOUBLE || s == LogicalTypeId::FLOAT;
-	if (d_int && s_double) {
-		return LogicalType(LogicalTypeId::DOUBLE);
-	}
-	if (d == LogicalTypeId::DOUBLE && (s == LogicalTypeId::BIGINT || s == LogicalTypeId::INTEGER)) {
-		return LogicalType(LogicalTypeId::INVALID);
-	}
-	return LogicalType(LogicalTypeId::VARCHAR);
 }
 
 //! Open the source with the same factory the named read function uses, so the schema
@@ -171,7 +105,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			                      "load the file with read_cityjson and insert the rows explicitly",
 			                      object_type, path);
 		}
-		types_by_module[module].push_back(object_type);
+		types_by_module[module].push_back(CityGMLClassForCityJSONType(object_type));
 	}
 	if (!options.tables.empty()) {
 		for (auto it = types_by_module.begin(); it != types_by_module.end();) {
@@ -232,9 +166,18 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 
 	// ---- Phase 1: staging ---------------------------------------------------
 	// The read runs once, into a temp table, rather than once per module table: a scan
-	// per module would re-parse the whole file for each one.
-	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * FROM " +
-	       ReadCall(reader_function, path, options, sidecar_appearance) + ";\n";
+	// per module would re-parse the whole file for each one. object_type is rewritten
+	// to the CityGML 3.0 class name here, at the boundary (spec
+	// 02-object-table-schema.mdx), so every routed literal below matches the staged
+	// value and the package stores the spec vocabulary.
+	const std::string remap_expr = "CASE object_type"
+	                               " WHEN 'TransportSquare' THEN 'Square'"
+	                               " WHEN 'GenericCityObject' THEN 'GenericOccupiedSpace'"
+	                               " WHEN 'BuildingStorey' THEN 'Storey'"
+	                               " WHEN 'TunnelHollowSpace' THEN 'HollowSpace'"
+	                               " ELSE object_type END";
+	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * REPLACE (" + remap_expr +
+	       " AS object_type) FROM " + ReadCall(reader_function, path, options, sidecar_appearance) + ";\n";
 	for (const auto &sidecar : source_sidecars) {
 		sql += "CREATE OR REPLACE TEMP TABLE " + StageTable(sidecar) + " AS SELECT * FROM " +
 		       SidecarFunction(sidecar) + "(" + Literal(path) + ");\n";

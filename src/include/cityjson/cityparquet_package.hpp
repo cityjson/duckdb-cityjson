@@ -11,6 +11,11 @@
 namespace duckdb {
 namespace cityjson {
 
+//! The CityParquet format version this extension writes (footer `city.version`,
+//! STAC `cityparquet:version`). One definition, shared by the package writer and
+//! the COPY-path footer builder.
+inline constexpr const char *CITYPARQUET_VERSION = "0.1.0-draft";
+
 /**
  * A CityParquet package, as held in DuckDB, is a **schema** whose tables are named
  * exactly as the specification names the package's files: `building`,
@@ -42,6 +47,18 @@ const std::vector<std::string> &SidecarTableNames();
 //! specification, so callers must treat that as an error rather than dropping the rows.
 std::string ModuleForObjectType(const std::string &object_type);
 
+//! CityGML 3.0 class name for a CityJSON type. Exactly four spellings differ
+//! (TransportSquare->Square, GenericCityObject->GenericOccupiedSpace,
+//! BuildingStorey->Storey, TunnelHollowSpace->HollowSpace); everything else --
+//! including extension types -- is returned unchanged. Spec
+//! 02-object-table-schema.mdx "object_type vocabulary"; mirrors cityparquet-rs
+//! encode.rs.
+std::string CityGMLClassForCityJSONType(const std::string &cityjson_type);
+
+//! The inverse, for export back to CityJSON. Identity for everything but the four
+//! remapped classes; mirrors cityparquet-rs decode.rs.
+std::string CityJSONTypeForCityGMLClass(const std::string &citygml_class);
+
 //! Object tables actually present in `schema`, sorted. Throws BinderException when the
 //! schema contains none — that is not a CityParquet package.
 std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema);
@@ -52,6 +69,10 @@ std::vector<std::string> SidecarTablesInSchema(ClientContext &context, const std
 
 //! Quoted "schema"."table", safe to concatenate into generated SQL.
 std::string QualifiedName(const std::string &schema, const std::string &table);
+
+//! Single-quoted SQL string literal (KeywordHelper::WriteQuoted). SQLString is a
+//! formatting wrapper, not a quoting function -- never use it for this.
+std::string Literal(const std::string &text);
 
 //! geometry_lod* column names of one table, in catalog order. Never hard-code an LoD
 //! set: which LoDs exist is a property of the dataset, not of the format.

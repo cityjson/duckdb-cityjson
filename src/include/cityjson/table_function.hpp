@@ -35,6 +35,12 @@ struct CityJSONBindData : public TableFunctionData {
 	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
 	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb; // Physical geometry encoding
 	bool streaming = false;                // True when data is loaded during scan init instead of bind
+	// The factory this bind opened its reader with, and the sampling depth it opened it
+	// at. A streaming scan re-opens the file in init_global and must reproduce both, or
+	// it can end up reading the same path through a different reader than the one whose
+	// schema it was bound against. See ReaderKind (reader.hpp).
+	ReaderKind reader_kind = ReaderKind::Auto;
+	size_t sample_lines = 100;
 	// Set only when appearance := 'sidecar'. Holds the dataset-global material/texture
 	// sets and the per-feature index maps that reach them.
 	std::optional<AppearanceIndex> appearance_index;
@@ -121,12 +127,15 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
  * @param function_name Function name for error messages
  * @param reader Opened reader (ownership transferred)
  * @param streaming When true, data is loaded during scan init instead of bind
+ * @param reader_kind Which factory produced `reader`; recorded so a streaming scan can
+ *                    re-open the file the same way instead of re-detecting the format
  * @return Populated CityJSONBindData
  */
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names,
                                           const std::string &function_name,
-                                          std::unique_ptr<CityJSONReader> reader, bool streaming = false);
+                                          std::unique_ptr<CityJSONReader> reader, bool streaming = false,
+                                          ReaderKind reader_kind = ReaderKind::Auto);
 
 /**
  * Same as BindCityJSONRead, but takes the reader by reference instead of by

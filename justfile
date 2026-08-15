@@ -95,7 +95,7 @@ wasm-setup:
     git -C .vendor/vcpkg fetch --depth 1 origin {{vcpkg_baseline}}
 
 # The local equivalent of CI's wasm_mvp distribution job. Run `just wasm-setup` once
-# first. The first build is slow (vcpkg compiles openssl and friends for
+# first. The first build is slow (vcpkg compiles flatcitybuf and friends for
 # wasm32-emscripten); later builds reuse those binaries. The output lands in
 # build/wasm_mvp/extension/cityjson/cityjson.duckdb_extension.wasm and the native
 # build/release tree is untouched.
@@ -141,7 +141,7 @@ test-wasm:
 test-ci:
     make test
 
-# clang-format check — matches the CI "Format Check" job (scans src incl. cjseq submodule).
+# clang-format check — matches the CI "Format Check" job (scans src and test).
 format-check:
     make format-check
 

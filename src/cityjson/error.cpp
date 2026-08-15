@@ -99,76 +99,12 @@ CityJSONError CityJSONError::Conversion(const std::string &msg, const std::strin
 	return CityJSONError(CityJSONErrorKind::ConversionError, msg, context);
 }
 
-CityJSONError CityJSONError::DuckDB(const std::string &msg) {
-	return CityJSONError(CityJSONErrorKind::DuckDBError, msg);
-}
-
-CityJSONError CityJSONError::DuckDB(const std::string &msg, const std::string &context) {
-	return CityJSONError(CityJSONErrorKind::DuckDBError, msg, context);
-}
-
 CityJSONError CityJSONError::Sequence(const std::string &msg) {
 	return CityJSONError(CityJSONErrorKind::SequenceError, msg);
 }
 
 CityJSONError CityJSONError::Sequence(const std::string &msg, const std::string &context) {
 	return CityJSONError(CityJSONErrorKind::SequenceError, msg, context);
-}
-
-CityJSONError CityJSONError::Validation(const std::string &msg) {
-	return CityJSONError(CityJSONErrorKind::ValidationError, msg);
-}
-
-CityJSONError CityJSONError::Validation(const std::string &msg, const std::string &context) {
-	return CityJSONError(CityJSONErrorKind::ValidationError, msg, context);
-}
-
-CityJSONError CityJSONError::UnsupportedVersion(const std::string &msg) {
-	return CityJSONError(CityJSONErrorKind::UnsupportedVersion, msg);
-}
-
-CityJSONError CityJSONError::UnsupportedVersion(const std::string &msg, const std::string &context) {
-	return CityJSONError(CityJSONErrorKind::UnsupportedVersion, msg, context);
-}
-
-CityJSONError CityJSONError::UnsupportedFeature(const std::string &msg) {
-	return CityJSONError(CityJSONErrorKind::UnsupportedFeature, msg);
-}
-
-CityJSONError CityJSONError::UnsupportedFeature(const std::string &msg, const std::string &context) {
-	return CityJSONError(CityJSONErrorKind::UnsupportedFeature, msg, context);
-}
-
-CityJSONError CityJSONError::Io(const std::string &msg) {
-	return CityJSONError(CityJSONErrorKind::IoError, msg);
-}
-
-CityJSONError CityJSONError::Io(const std::string &msg, const std::string &context) {
-	return CityJSONError(CityJSONErrorKind::IoError, msg, context);
-}
-
-CityJSONError CityJSONError::Utf8(const std::string &msg) {
-	return CityJSONError(CityJSONErrorKind::Utf8Error, msg);
-}
-
-CityJSONError CityJSONError::Utf8(const std::string &msg, const std::string &context) {
-	return CityJSONError(CityJSONErrorKind::Utf8Error, msg, context);
-}
-
-CityJSONError CityJSONError::Ffi(const std::string &msg) {
-	return CityJSONError(CityJSONErrorKind::FfiError, msg);
-}
-
-CityJSONError CityJSONError::Ffi(const std::string &msg, const std::string &context) {
-	return CityJSONError(CityJSONErrorKind::FfiError, msg, context);
-}
-
-CityJSONError CityJSONError::ParameterBind(const std::string &msg) {
-	return CityJSONError(CityJSONErrorKind::ParameterBindError, msg);
-}
-
-CityJSONError CityJSONError::ParameterBind(const std::string &msg, const std::string &context) {
-	return CityJSONError(CityJSONErrorKind::ParameterBindError, msg, context);
 }
 
 CityJSONError CityJSONError::ColumnTypeMismatch(const std::string &column_type, const std::string &value) {

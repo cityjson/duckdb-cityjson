@@ -15,8 +15,6 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 project(${TARGET_NAME})
 include_directories(src/include)
 
-set(CJSEQ_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/external/cjseq)
-
 set(EXTENSION_SOURCES
     src/cityjson_extension.cpp
     # Foundation layer
@@ -68,6 +66,7 @@ set(EXTENSION_SOURCES
     src/cityjson/copy_function.cpp
     src/cityjson/cityjson_writer.cpp
     # CityParquet package layer
+    src/cityjson/cityparquet_sql_common.cpp
     src/cityjson/cityparquet_package.cpp
     src/cityjson/cityparquet_validate.cpp
     src/cityjson/cityparquet_reconcile.cpp
@@ -113,31 +112,23 @@ endif()
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-# Optionally add cjseq C++ sources if available
-set(CJSEQ_CPP_DIR ${CJSEQ_DIR}/cpp)
-if(EXISTS ${CJSEQ_CPP_DIR})
-  # If cjseq/cpp provides its own CMakeLists.txt, prefer that
-  if(EXISTS ${CJSEQ_CPP_DIR}/CMakeLists.txt)
-    add_subdirectory(${CJSEQ_CPP_DIR} cjseq_cpp_build)
-  else()
-    file(GLOB_RECURSE CJSEQ_CPP_SOURCES CONFIGURE_DEPENDS
-      ${CJSEQ_CPP_DIR}/*.cc
-      ${CJSEQ_CPP_DIR}/*.cpp
-      ${CJSEQ_CPP_DIR}/src/*.cc
-      ${CJSEQ_CPP_DIR}/src/*.cpp)
-    add_library(cjseq STATIC ${CJSEQ_CPP_SOURCES})
-    # Common include locations (adjust if cjseq/cpp uses different layout)
-    target_include_directories(cjseq PUBLIC
-      ${CJSEQ_CPP_DIR}
-      ${CJSEQ_CPP_DIR}/include
-      ${CJSEQ_CPP_DIR}/src)
-  endif()
-  # Link cjseq C++ library into both DuckDB extension targets if the target exists
-  if(TARGET cjseq)
-    set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES cjseq)
-    set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES cjseq)
-  endif()
-endif()
+# C++20, explicitly. std::span (src/include/cityjson/cityjson_types.hpp) requires it,
+# and nothing else guarantees it: DuckDB's default is CMAKE_CXX_STANDARD 11, and the
+# c++20 flag previously leaked in transitively from the (now removed) vendored cjseq
+# target's PUBLIC compile feature.
+#
+# PRIVATE, emphatically not PUBLIC. DuckDB's link_extension_libraries()
+# (extension/extension_build_tools.cmake:55-65) links ${EXTENSION_NAME} into duckdb,
+# unittest, the shell and tools/plan_serializer as a *target*, so a PUBLIC feature
+# would raise DuckDB's own translation units from C++11 to C++20 -- at which point
+# BufferedFileWriter::DEFAULT_OPEN_FLAGS becomes an inline variable, plan_serializer.cpp
+# emits its own comdat copy, and the link dies on "multiple definition" against the
+# strong one already in libduckdb_static.a. Nothing outside this extension compiles our
+# headers, so the requirement belongs to our own sources only. (The old cjseq route was
+# accidentally private in the same way: it arrived through LINK_LIBRARIES, which does
+# not feed INTERFACE_COMPILE_FEATURES.)
+target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_20)
+target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_20)
 
 # Optional: FlatCityBuf support (native C++ library). In CI it is resolved from the
 # HideBa/vcpkg git registry (flatcitybuf@0.9.0, upstream tag cpp-v0.9.0) — see the
@@ -155,7 +146,7 @@ if(CITYJSON_ENABLE_FCB)
   # Plain (non-keyword) set_property, not target_link_libraries(... PRIVATE ...): both
   # targets already receive plain-signature target_link_libraries calls elsewhere in
   # DuckDB's own extension_build_tools.cmake, and CMake forbids mixing plain and keyword
-  # signatures for the same target (matches the existing cjseq linking above).
+  # signatures for the same target.
   set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
   set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
 
@@ -167,10 +158,10 @@ if(CITYJSON_ENABLE_FCB)
   # final link step. DUCKDB_EXTRA_LINK_FLAGS is DuckDB's own sanctioned mechanism for
   # exactly this case (see its uses in extension_build_tools.cmake and tools/
   # CMakeLists.txt): unlike the old code's use of it (which stuffed literal
-  # "OpenSSL::SSL"/"OpenSSL::Crypto" strings in here, referencing a target that this
-  # file's own find_package(OpenSSL REQUIRED) below hadn't created yet on a fresh
-  # configure -- see git history), this references flatcitybuf::flatcitybuf directly,
-  # a target that already exists by this point, so there's no such ordering hazard.
+  # "OpenSSL::SSL"/"OpenSSL::Crypto" strings in here, naming targets that the
+  # find_package creating them had not yet run for on a fresh configure -- see git
+  # history), this references flatcitybuf::flatcitybuf directly, a target that already
+  # exists by this point, so there's no such ordering hazard.
   #
   # DUCKDB_EXTRA_LINK_FLAGS gets inserted BEFORE extension/cityjson/libcityjson_extension.a
   # in these binaries' link lines (its insertion point is controlled by tools/CMakeLists.txt
@@ -218,20 +209,13 @@ if(CITYJSON_ENABLE_FCB)
   message(STATUS "FlatCityBuf support enabled (native C++, vendored)")
 endif()
 
-# Find OpenSSL after DuckDB targets are set up
-find_package(OpenSSL REQUIRED)
-
-# Link OpenSSL and nlohmann_json in both the static library and the loadable extension
-# Use imported targets if available, fall back to raw variables otherwise
-if(TARGET OpenSSL::SSL)
-  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
-  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
-else()
-  target_include_directories(${EXTENSION_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
-  target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
-  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json)
-  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES ${OPENSSL_LIBRARIES} nlohmann_json::nlohmann_json)
-endif()
+# nlohmann_json is the extension's one true library dependency besides flatcitybuf:
+# every JSON path (readers, writers, footer metadata) goes through it. Plain
+# set_property for the same reason as the flatcitybuf linking above -- these targets
+# already receive plain-signature target_link_libraries calls from DuckDB's own
+# extension_build_tools.cmake, and the two signatures cannot be mixed.
+set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES nlohmann_json::nlohmann_json)
+set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES nlohmann_json::nlohmann_json)
 
 install(
   TARGETS ${EXTENSION_NAME}

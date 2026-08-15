@@ -6,7 +6,3 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = main
-[submodule "src/external/cjseq"]
-	path = src/external/cjseq
-	url = https://github.com/cityjson/cjseq
-	branch = Cpp_support

@@ -192,6 +192,10 @@ bool HasKey(const json &obj, const std::string &key);
  */
 std::string ReadFileContent(duckdb::ClientContext &context, const std::string &file_path);
 
+//! True for a path DuckDB's FileSystem reaches over the network (http/s3/gcs/r2/hf),
+//! which is when httpfs must be autoloaded before opening it.
+bool IsRemoteFile(const std::string &path);
+
 /**
  * Validate JSON has required keys
  *

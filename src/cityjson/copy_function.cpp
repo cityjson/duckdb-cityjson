@@ -1,5 +1,6 @@
 #include "cityjson/copy_function.hpp"
 #include "cityjson/cityjson_writer.hpp"
+#include "cityjson/cityparquet_package.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -535,12 +536,28 @@ static json StructPropsToJson(const Value &sval) {
 	return props;
 }
 
-// Helper: parse JSON string array from a DuckDB list/varchar value
+// Helper: turn a children/parents/children_roles cell into a JSON string array.
+// The value arrives as a DuckDB LIST(VARCHAR) from read_cityjson / CityParquet
+// tables; a VARCHAR cell holding JSON text is accepted too for hand-built input.
 static json ParseJsonArrayValue(const Value &val) {
 	if (val.IsNull()) {
 		return json::array();
 	}
-
+	if (val.type().id() == LogicalTypeId::LIST) {
+		json arr = json::array();
+		for (const auto &entry : ListValue::GetChildren(val)) {
+			// children_roles is positionally aligned with children (CityParquet
+			// spec §object-table-schema: "length MUST equal children, with null
+			// for a child that has no role"); dropping a null here would shift
+			// every later role onto the wrong child, so keep the slot.
+			if (entry.IsNull()) {
+				arr.push_back(nullptr);
+			} else {
+				arr.push_back(entry.ToString());
+			}
+		}
+		return arr;
+	}
 	auto str = val.ToString();
 	try {
 		auto parsed = json_utils::ParseJson(str);
@@ -549,8 +566,6 @@ static json ParseJsonArrayValue(const Value &val) {
 		}
 	} catch (...) {
 	}
-
-	// Try as DuckDB list
 	return json::array();
 }
 
@@ -746,7 +761,9 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 
 		std::string city_obj_id = id_val.ToString();
 		std::string feature_id = feature_id_val.ToString();
-		std::string object_type = object_type_val.ToString();
+		// The stored vocabulary is the CityGML class name; restore the CityJSON
+		// spelling for the four classes that differ (identity for everything else).
+		std::string object_type = CityJSONTypeForCityGMLClass(object_type_val.ToString());
 
 		// Build CityObject JSON
 		json city_obj;

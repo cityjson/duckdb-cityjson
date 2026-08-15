@@ -474,8 +474,9 @@ bool IsAppearanceColumnName(const std::string &name) {
 }
 
 bool IsGeometryColumn(const std::string &name) {
-	// Pattern: geom_lod{X} or geom_lod{X}_{Y}
-	std::regex geom_pattern(R"(geom_lod\d+(_\d+)?)");
+	// Pattern: geom_lod{X} or geom_lod{X}_{Y}. static: regex construction compiles
+	// the pattern, and this runs per column in hot paths.
+	static const std::regex geom_pattern(R"(geom_lod\d+(_\d+)?)");
 	return std::regex_match(name, geom_pattern);
 }
 

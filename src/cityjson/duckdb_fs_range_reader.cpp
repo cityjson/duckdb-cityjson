@@ -1,6 +1,7 @@
 #ifdef CITYJSON_HAS_FCB
 
 #include "cityjson/duckdb_fs_range_reader.hpp"
+#include "cityjson/json_utils.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -8,14 +9,8 @@
 namespace duckdb {
 namespace cityjson {
 
-static bool IsRemotePath(const std::string &path) {
-	return path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 || path.rfind("s3://", 0) == 0 ||
-	       path.rfind("s3a://", 0) == 0 || path.rfind("s3n://", 0) == 0 || path.rfind("gcs://", 0) == 0 ||
-	       path.rfind("gs://", 0) == 0 || path.rfind("r2://", 0) == 0 || path.rfind("hf://", 0) == 0;
-}
-
 DuckDBRangeReader::DuckDBRangeReader(duckdb::ClientContext &context, const std::string &path) : path_(path) {
-	if (IsRemotePath(path_)) {
+	if (json_utils::IsRemoteFile(path_)) {
 		duckdb::ExtensionHelper::AutoLoadExtension(context, "httpfs");
 	}
 	auto &fs = duckdb::FileSystem::GetFileSystem(context);

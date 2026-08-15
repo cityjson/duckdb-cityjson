@@ -10,6 +10,40 @@
 namespace duckdb {
 namespace cityjson {
 
+//! The WKB type name with the CityParquet " Z" suffix, e.g. "PolyhedralSurface Z".
+//! Feeds the footer's `city.columns[].geometry_types`, which is also what decides
+//! whether a column may legally be declared in the GeoParquet `geo` object.
+//!
+//! Deliberately OUTSIDE the anonymous namespace below: the footer writers
+//! (cityparquet_write.cpp) call it through the declaration in wkb_extent.hpp, and
+//! internal linkage here would leave that declaration unresolved at link time.
+const char *WKBTypeName(uint32_t code) {
+	switch (code) {
+	case 1001:
+		return "Point Z";
+	case 1002:
+		return "LineString Z";
+	case 1003:
+		return "Polygon Z";
+	case 1004:
+		return "MultiPoint Z";
+	case 1005:
+		return "MultiLineString Z";
+	case 1006:
+		return "MultiPolygon Z";
+	case 1007:
+		return "GeometryCollection Z";
+	case 1015:
+		return "PolyhedralSurface Z";
+	case 1016:
+		return "TIN Z";
+	case 1017:
+		return "Triangle Z";
+	default:
+		return nullptr;
+	}
+}
+
 namespace {
 
 struct Extent3D {
@@ -51,36 +85,6 @@ void Accumulate(const json &node, Extent3D &extent) {
 	}
 	for (const auto &child : node) {
 		Accumulate(child, extent);
-	}
-}
-
-//! The WKB type name with the CityParquet " Z" suffix, e.g. "PolyhedralSurface Z".
-//! Feeds the footer's `city.columns[].geometry_types`, which is also what decides
-//! whether a column may legally be declared in the GeoParquet `geo` object.
-const char *WKBTypeName(uint32_t code) {
-	switch (code) {
-	case 1001:
-		return "Point Z";
-	case 1002:
-		return "LineString Z";
-	case 1003:
-		return "Polygon Z";
-	case 1004:
-		return "MultiPoint Z";
-	case 1005:
-		return "MultiLineString Z";
-	case 1006:
-		return "MultiPolygon Z";
-	case 1007:
-		return "GeometryCollection Z";
-	case 1015:
-		return "PolyhedralSurface Z";
-	case 1016:
-		return "TIN Z";
-	case 1017:
-		return "Triangle Z";
-	default:
-		return nullptr;
 	}
 }
 

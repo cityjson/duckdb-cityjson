@@ -1,6 +1,5 @@
 #include "cityjson/wkb_encoder.hpp"
 #include "cityjson/error.hpp"
-#include <algorithm>
 #include <cstring>
 #include <unordered_map>
 
@@ -19,19 +18,6 @@ static const std::unordered_map<std::string, WKBGeometryType> CITYJSON_TO_OGC_TY
     {"Solid", WKBGeometryType::PolyhedralSurfaceZ},
     {"MultiSolid", WKBGeometryType::GeometryCollectionZ},
     {"CompositeSolid", WKBGeometryType::GeometryCollectionZ}};
-
-static const std::unordered_map<std::string, CityJSONGeometryTypeCode> CITYJSON_TYPE_CODES = {
-    {"Point", CityJSONGeometryTypeCode::Point},
-    {"MultiPoint", CityJSONGeometryTypeCode::MultiPoint},
-    {"LineString", CityJSONGeometryTypeCode::LineString},
-    {"MultiLineString", CityJSONGeometryTypeCode::MultiLineString},
-    {"Surface", CityJSONGeometryTypeCode::Surface},
-    {"CompositeSurface", CityJSONGeometryTypeCode::CompositeSurface},
-    {"TIN", CityJSONGeometryTypeCode::TIN},
-    {"MultiSurface", CityJSONGeometryTypeCode::MultiSurface},
-    {"Solid", CityJSONGeometryTypeCode::Solid},
-    {"CompositeSolid", CityJSONGeometryTypeCode::CompositeSolid},
-    {"MultiSolid", CityJSONGeometryTypeCode::MultiSolid}};
 
 // =============================================================================
 // Public methods
@@ -92,19 +78,6 @@ WKBGeometryType WKBEncoder::GetOGCType(const std::string &cityjson_type) {
 	throw CityJSONError::InvalidGeometry("Unknown CityJSON geometry type: " + cityjson_type);
 }
 
-CityJSONGeometryTypeCode WKBEncoder::GetTypeCode(const std::string &cityjson_type) {
-	auto it = CITYJSON_TYPE_CODES.find(cityjson_type);
-	if (it != CITYJSON_TYPE_CODES.end()) {
-		return it->second;
-	}
-	// Return a default or throw
-	throw CityJSONError::InvalidGeometry("Unknown CityJSON geometry type for type code: " + cityjson_type);
-}
-
-bool WKBEncoder::IsSupported(const std::string &cityjson_type) {
-	return CITYJSON_TO_OGC_TYPE.find(cityjson_type) != CITYJSON_TO_OGC_TYPE.end();
-}
-
 // =============================================================================
 // Helper methods
 // =============================================================================
@@ -127,10 +100,6 @@ std::array<double, 3> WKBEncoder::GetVertex(const std::vector<std::array<double,
 	}
 
 	return vertex;
-}
-
-void WKBEncoder::ReverseRing(std::vector<uint32_t> &ring) {
-	std::reverse(ring.begin(), ring.end());
 }
 
 // =============================================================================
@@ -241,10 +210,12 @@ void WKBEncoder::EncodePolygon(std::vector<uint8_t> &out, const json &surface,
 	// Each ring is an array of vertex indices
 	// WKB POLYGON Z: header + numRings + [numPoints + [x, y, z ...] ...]
 	//
-	// NOTE: Ring orientation conversion:
-	// CityJSON/CityGML: exterior rings are clockwise, holes are counterclockwise
-	// OGC/PostGIS: exterior rings are counterclockwise, holes are clockwise
-	// We need to reverse ring orientation for OGC compatibility
+	// Ring order is preserved exactly as the source stores it. CityJSON/CityGML
+	// wind exterior rings so the right-hand rule gives the outward normal (spec
+	// 03-geometry-semantics.mdx, "Surface winding"), which is the right-handed
+	// orientation the footer declares in city.columns[].orientation_3d --
+	// reversing here would flip every surface while the footer still said
+	// right-handed. cityparquet-rs preserves source order the same way.
 
 	if (!surface.is_array()) {
 		throw CityJSONError::InvalidGeometry("Polygon surface must be an array of rings");
@@ -253,21 +224,16 @@ void WKBEncoder::EncodePolygon(std::vector<uint8_t> &out, const json &surface,
 	WriteHeader(out, WKBGeometryType::PolygonZ);
 	WriteUInt32(out, static_cast<uint32_t>(surface.size()));
 
-	bool is_exterior_ring = true;
 	for (const auto &ring_json : surface) {
 		if (!ring_json.is_array()) {
 			throw CityJSONError::InvalidGeometry("Polygon ring must be an array");
 		}
 
-		// Convert to vector of indices for reversal
 		std::vector<uint32_t> ring;
 		ring.reserve(ring_json.size());
 		for (const auto &idx_json : ring_json) {
 			ring.push_back(idx_json.get<uint32_t>());
 		}
-
-		// Reverse ring orientation for OGC compatibility
-		ReverseRing(ring);
 
 		// For a closed ring, OGC requires first == last point
 		// CityJSON does NOT repeat the first vertex, so we need to close it
@@ -282,12 +248,10 @@ void WKBEncoder::EncodePolygon(std::vector<uint8_t> &out, const json &surface,
 		}
 
 		// Close the ring if needed
-		if (needs_closing && !ring.empty()) {
+		if (needs_closing) {
 			auto vertex = GetVertex(vertices, ring.front(), transform);
 			WritePoint3D(out, vertex);
 		}
-
-		is_exterior_ring = false;
 	}
 }
 
@@ -374,12 +338,6 @@ void WKBEncoder::EncodeMultiSolid(std::vector<uint8_t> &out, const json &boundar
 	WriteUInt32(out, static_cast<uint32_t>(boundaries.size()));
 
 	for (const auto &solid : boundaries) {
-		// Create a temporary Geometry object for the solid
-		// and encode it as a PolyhedralSurface
-		Geometry solid_geom;
-		solid_geom.type = "Solid";
-		solid_geom.boundaries = solid;
-
 		EncodeSolid(out, solid, vertices, transform);
 	}
 }

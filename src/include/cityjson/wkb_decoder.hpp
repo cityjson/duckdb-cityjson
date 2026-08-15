@@ -23,7 +23,7 @@ struct WKBDecodeResult {
  * This decoder reverses the WKBEncoder transformations:
  * - Parses WKB binary → extracts 3D coordinates
  * - Maps OGC types back to CityJSON types
- * - Reverses ring orientation (OGC CCW → CityJSON CW)
+ * - Preserves the stored ring order (the encoder writes CityJSON's own winding)
  * - Removes ring closure (OGC repeats first vertex; CityJSON does not)
  * - Outputs boundaries with [x,y,z] coordinate arrays
  */

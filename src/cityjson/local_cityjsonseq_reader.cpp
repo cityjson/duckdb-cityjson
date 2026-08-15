@@ -10,16 +10,6 @@ namespace cityjson {
 using namespace json_utils; // NOLINT(google-build-using-namespace)
 
 // ============================================================
-// Helpers
-// ============================================================
-
-static bool IsRemoteFile(const std::string &path) {
-	return path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 || path.rfind("s3://", 0) == 0 ||
-	       path.rfind("s3a://", 0) == 0 || path.rfind("s3n://", 0) == 0 || path.rfind("gcs://", 0) == 0 ||
-	       path.rfind("gs://", 0) == 0 || path.rfind("r2://", 0) == 0 || path.rfind("hf://", 0) == 0;
-}
-
-// ============================================================
 // Constructors
 // ============================================================
 
@@ -199,28 +189,6 @@ CityJSONFeatureChunk LocalCityJSONSeqReader::ReadAllChunks() const {
 	}
 
 	return CityJSONFeatureChunk::CreateChunks(std::move(features), STANDARD_VECTOR_SIZE);
-}
-
-// ============================================================
-// ReadNthChunk
-// ============================================================
-
-CityJSONFeatureChunk LocalCityJSONSeqReader::ReadNthChunk(size_t n) const {
-	CityJSONFeatureChunk all_chunks = ReadAllChunks();
-
-	if (n >= all_chunks.ChunkCount()) {
-		return CityJSONFeatureChunk();
-	}
-
-	auto chunk_opt = all_chunks.GetChunk(n);
-	if (!chunk_opt.has_value()) {
-		return CityJSONFeatureChunk();
-	}
-
-	CityJSONFeatureChunk result;
-	result.records = std::vector<CityJSONFeature>(chunk_opt->begin(), chunk_opt->end());
-	result.chunks = {Range(0, result.records.size())};
-	return result;
 }
 
 // ============================================================

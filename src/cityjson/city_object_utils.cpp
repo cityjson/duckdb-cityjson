@@ -42,7 +42,13 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		if (!obj.children_roles.has_value() || obj.children_roles->empty()) {
 			return json(nullptr);
 		}
-		return json(obj.children_roles.value());
+		// Preserve null slots positionally -- WriteVarcharArray already writes a
+		// non-string array element as a SQL NULL list entry.
+		json roles = json::array();
+		for (const auto &role : obj.children_roles.value()) {
+			roles.push_back(role.has_value() ? json(role.value()) : json(nullptr));
+		}
+		return roles;
 	}
 
 	if (col.name == "geographical_extent") {
@@ -74,28 +80,6 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 
 	// Attribute not found
 	return json(nullptr);
-}
-
-// ============================================================
-// CityObjectUtils - Geometry Extraction
-// ============================================================
-
-json CityObjectUtils::GetGeometryValue(const CityObject &obj, const Column &col) {
-	// Parse LOD from column name (e.g., "geom_lod2_1" -> "2.1")
-	if (!IsGeometryColumn(col.name)) {
-		throw CityJSONError::InvalidSchema("Not a geometry column: " + col.name);
-	}
-
-	std::string lod = ParseLODFromColumnName(col.name);
-
-	// Find geometry with matching LOD
-	auto geom_opt = obj.GetGeometryAtLOD(lod);
-	if (!geom_opt.has_value()) {
-		return json(nullptr);
-	}
-
-	// Return geometry as JSON object
-	return geom_opt->ToJson();
 }
 
 // ============================================================

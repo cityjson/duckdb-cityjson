@@ -167,7 +167,15 @@ struct CityObject {
 	std::optional<GeographicalExtent> geographical_extent;  // 3D bounding box
 	std::vector<std::string> children;                      // Child CityObject IDs
 	std::vector<std::string> parents;                       // Parent CityObject IDs
-	std::optional<std::vector<std::string>> children_roles; // Roles of children
+	// Roles of children, positionally aligned with `children` (CityParquet spec
+	// §object-table-schema: length MUST equal children, with null for a child that
+	// has no role) -- so an unset entry has to be representable, not just absent.
+	std::optional<std::vector<std::optional<std::string>>> children_roles;
+	// Root-family id per the CityParquet feature_id rule (spec
+	// 02-object-table-schema.mdx): filled by the whole-CityJSON reader, where no
+	// real CityJSONFeature exists to take it from. Empty means "use the containing
+	// feature's id" -- the CityJSONSeq / FlatCityBuf case, whose features carry it.
+	std::string feature_id;
 
 	CityObject() = default;
 	explicit CityObject(std::string type);
@@ -183,16 +191,11 @@ struct CityObject {
 	json ToJson() const;
 
 	/**
-	 * Get geometry at specific LOD
+	 * Geometry at a specific LOD, or nullptr when the object has none there.
+	 * A pointer, not optional<Geometry>: the by-value form copied the whole
+	 * boundaries JSON once per geometry column per row.
 	 */
-	std::optional<Geometry> GetGeometryAtLOD(const std::string &lod) const;
-
-	/**
-	 * Get the geometry with the highest LOD (by numeric value).
-	 * Used to compute the per-row bbox in default (wide) mode. Geometries with an
-	 * empty LOD are skipped; if none have a usable LOD the first geometry is returned.
-	 */
-	std::optional<Geometry> GetHighestLODGeometry() const;
+	const Geometry *GetGeometryAtLOD(const std::string &lod) const;
 };
 
 /**

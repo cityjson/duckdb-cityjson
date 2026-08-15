@@ -1,7 +1,6 @@
 #include "cityjson/wkb_decoder.hpp"
 #include "cityjson/wkb_encoder.hpp" // for WKBGeometryType, WKB_NDR, WKB_XDR
 #include "cityjson/error.hpp"
-#include <algorithm>
 #include <cstring>
 
 namespace duckdb {
@@ -90,9 +89,6 @@ json WKBDecoder::DecodePolygonRings(const uint8_t *data, size_t &offset, size_t 
 				points.pop_back();
 			}
 		}
-
-		// Reverse ring orientation (OGC → CityJSON)
-		std::reverse(points.begin(), points.end());
 
 		// Convert to JSON array of [x,y,z]
 		json ring = json::array();

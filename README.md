@@ -102,13 +102,21 @@ FROM cityjsonseq_metadata('delft.city.jsonl');
 
 ### `cityjson_geoparquet_geo(path)`
 
-Returns a single `geo` VARCHAR: the [GeoParquet 1.1](https://geoparquet.org/)
-`geo` metadata JSON for the dataset, ready to write into a Parquet footer so
-GeoParquet-aware tools (GeoPandas, DuckDB `spatial`, GDAL/OGR) recognise the
-geometry columns. DuckDB core writes the object-table Parquet; this supplies the
-geospatial metadata it cannot infer from a plain `BLOB` column.
+Returns one row of two VARCHARs — the two Parquet footer keys a CityParquet
+object table carries. DuckDB core writes the object-table Parquet; this supplies
+the metadata it cannot infer from a plain `BLOB` column.
 
-It declares **only GeoParquet-legal geometry columns** (CityParquet spec §13.3):
+- `geo` — the [GeoParquet 1.1](https://geoparquet.org/) `geo` metadata JSON, so
+  GeoParquet-aware tools (GeoPandas, DuckDB `spatial`, GDAL/OGR) recognise the
+  geometry columns. `NULL` when no column qualifies.
+- `city` — the CityParquet `city` object, which is **required** on every
+  CityParquet file and is therefore never `NULL`. Unlike `geo` it declares
+  *every* `geometry_lod*` column, `Solid` family included, each entry carrying
+  its `name`, physical `encoding` (`WKB` or `CityParquetArrowNative-v1`),
+  `geometry_types`, `crs`, `edges` and an explicit `orientation_3d`. Winding
+  lives here rather than in `geo`, whose planar `orientation` cannot express it.
+
+`geo` declares **only GeoParquet-legal geometry columns** (CityParquet spec §13.3):
 a `geometry_lod*` column qualifies only when every CityJSON geometry at that LoD
 is a `MultiPoint` / `MultiLineString` / `MultiSurface` / `CompositeSurface` (WKB
 types 1001–1007). A LoD containing any `Solid`-family geometry
@@ -119,19 +127,26 @@ The CRS is resolved from the CityJSON `referenceSystem` to PROJJSON via an
 embedded EPSG table; an unknown code is an error, and a dataset with no CRS gets
 `"crs": null`.
 
-`KV_METADATA` cannot contain a subquery, so pass the value via a variable:
+`KV_METADATA` cannot contain a subquery, so pass the values via variables:
 
 ```sql
 SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('delft.city.jsonl'));
+SET VARIABLE city = (SELECT city FROM cityjson_geoparquet_geo('delft.city.jsonl'));
 
 COPY (SELECT * FROM read_cityjsonseq('delft.city.jsonl'))
 TO 'delft.parquet'
-(FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
+(FORMAT PARQUET, KV_METADATA {geo: getvariable('geo'), city: getvariable('city')});
 ```
 
-The resulting `delft.parquet` opens as a GeoParquet file: its LoD0 footprint
-column is read by GeoPandas/DuckDB `spatial` with the correct CRS, while the
-`Solid` columns remain opaque blobs those readers ignore.
+The resulting `delft.parquet` is a CityParquet object table that also opens as a
+GeoParquet file: its LoD0 footprint column is read by GeoPandas/DuckDB `spatial`
+with the correct CRS, while the `Solid` columns remain opaque blobs those
+readers ignore but `city` still declares.
+
+`KV_METADATA` cannot omit a key — a NULL value writes the literal string
+`"NULL"` — so a solid-only dataset (`geo IS NULL`) must write the `city` key
+alone. For whole packages use `cityparquet_write`, which branches the footer
+shape in C++ for exactly this reason.
 
 ### `read_flatcitybuf(path [, lod => 'X.Y'] [, min_x => .., min_y => .., max_x => .., max_y => ..])` (optional)
 
@@ -631,9 +646,13 @@ writes a `metadata.json` STAC Item. Three things worth knowing:
 `city3d:*` field in it is a union or a sum across the package — `city3d:lods` is the union
 over all tables, `city3d:city_objects` the sum over the object tables — and none of them
 is a copy of any single footer. It also carries the Projection extension (`proj:projjson`,
-`proj:bbox`), and each asset its `file:size` and `table:row_count`. `geometry` stays null:
-STAC wants EPSG:4326 there and a package's coordinates are not, so `proj:bbox` carries the
-real extent.
+`proj:bbox`) and each asset its `file:size` — but **no per-asset row count**: the spec says
+a writer SHOULD NOT declare the Table extension merely to publish one, and
+`city3d:city_objects` already carries the package count. The CityParquet format version is
+`cityparquet:version`; `city3d:version` is the **source** CityJSON version, written only
+when a carried footer recorded a `source_version`. `geometry` stays null: STAC wants
+EPSG:4326 there and a package's coordinates are not, so `proj:bbox` carries the real
+extent.
 
 Atomicity is **per file only**. Each file flips whole via temp-file + rename, but the
 package as a whole has a window during a write in which it is inconsistent, and
@@ -646,6 +665,29 @@ atomicity matters, that is DuckLake's job.
 `insert_cityjson` is designed but not built — they depend on appearance normalisation (dataset-global sidecar ids, inlined texture UVs) and on package I/O (`cityparquet_read` / `cityparquet_write`, including footer and STAC Item regeneration). See `docs/superpowers/specs/2026-07-25-cityparquet-mutation-functions-design.md`.
 
 Two specification divergences found while building this are recorded in `docs/CITYPARQUET_SPEC_QUESTIONS.md`; one — whether a parent's `bbox` includes its descendants' geometry — is a genuine contradiction in the spec and currently makes `cityparquet_reconcile` disagree with the reader on non-leaf rows.
+
+### Compatibility with previously written packages
+
+Packages written by **older versions of this extension** differ from what the current code
+writes, in three ways. None of them is repaired automatically:
+
+- **Winding.** Pre-fix packages carry rings in reversed (left-handed) vertex order while
+  declaring `orientation_3d: "right-handed"`. They round-trip through the old decoder, but
+  read mirror-wound in any spec-conformant reader. Current code preserves the source order
+  on both sides. There is no migration tooling — **re-convert from source to repair**.
+- **`object_type` vocabulary.** Pre-fix packages store the CityJSON spellings
+  (`BuildingStorey`, `TransportSquare`, `GenericCityObject`, `TunnelHollowSpace`); current
+  packages store the CityGML class names (`Storey`, `Square`, `GenericOccupiedSpace`,
+  `HollowSpace`). Reads and module routing tolerate both, and the reverse map applied on
+  export is the identity on the old spellings, so an old package still exports correct
+  CityJSON. Predicates are what does not carry over: `object_type = 'Storey'` matches
+  new-format rows only, `object_type = 'BuildingStorey'` old-format rows only.
+- **`feature_id`.** Packages exported from a whole CityJSON file (not CityJSONSeq) by a
+  pre-fix version carry the source **file path** as every row's `feature_id`. Current
+  versions derive the root-parent id per object.
+
+The `object_type` reverse map lives in the shared COPY sink, so it applies to all three
+output formats — `cityjson`, `cityjsonseq` and `flatcitybuf`.
 
 ## Appearance normalisation
 
@@ -770,7 +812,7 @@ cmake --build build/release --target cityjson_extension cityjson_loadable_extens
 
 ### FlatCityBuf Support
 
-FlatCityBuf (`.fcb`) support is built on the native C++ [flatcitybuf](https://github.com/cityjson/flatcitybuf) library, resolved as a released vcpkg port (`flatcitybuf@0.9.0`, from the C++ release tag `cpp-v0.9.0` — the bare `v*` tags are the Rust crate). Until the port lands in microsoft/vcpkg, `vcpkg.json` declares a git registry scoped to that one package (`https://github.com/HideBa/vcpkg`, pinned by baseline); everything else comes from the builtin baseline. It's portable C++ source, so there's no platform/architecture restriction and no separate download step: it builds like any other vcpkg dependency this extension already has (`nlohmann-json`, `openssl`).
+FlatCityBuf (`.fcb`) support is built on the native C++ [flatcitybuf](https://github.com/cityjson/flatcitybuf) library, resolved as a released vcpkg port (`flatcitybuf@0.9.0`, from the C++ release tag `cpp-v0.9.0` — the bare `v*` tags are the Rust crate). Until the port lands in microsoft/vcpkg, `vcpkg.json` declares a git registry scoped to that one package (`https://github.com/HideBa/vcpkg`, pinned by baseline); everything else comes from the builtin baseline. It's portable C++ source, so there's no platform/architecture restriction and no separate download step: it builds like any other vcpkg dependency this extension already has (`nlohmann-json`, `flatbuffers`).
 
 For a local development build without vcpkg, `just vendor-fcb` builds flatbuffers and flatcitybuf into a gitignored `.vendor/prefix` (position-independent, as the loadable extension is a shared object); point CMake at it with `-Dflatcitybuf_DIR` / `-Dflatbuffers_DIR` or `CMAKE_PREFIX_PATH`.
 

@@ -103,5 +103,16 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &conte
 	}
 }
 
+std::unique_ptr<CityJSONReader> OpenCityJSONFileOfKind(duckdb::ClientContext &context, ReaderKind kind,
+                                                       const std::string &file_name, size_t sample_lines) {
+	switch (kind) {
+	case ReaderKind::CityJSONSeq:
+		return OpenCityJSONSeqFile(context, file_name, sample_lines);
+	case ReaderKind::Auto:
+	default:
+		return OpenAnyCityJSONFile(context, file_name, sample_lines);
+	}
+}
+
 } // namespace cityjson
 } // namespace duckdb
