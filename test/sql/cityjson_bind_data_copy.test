@@ -1,0 +1,23 @@
+# name: test/sql/cityjson_bind_data_copy.test
+# description: bind data survives plan copies with encoding and appearance intact (review P2)
+# group: [sql]
+
+require cityjson
+
+# Two references to one arrow-native read in a single query. If a plan copy
+# loses geometry_encoding, one side rebinds as WKB and the types disagree.
+query TT
+WITH src AS (SELECT * FROM read_cityjson('test/data/minimal.city.json', geometry_encoding := 'arrow-native'))
+SELECT typeof(a.geometry_lod2_2), typeof(b.geometry_lod2_2)
+FROM src a JOIN src b ON a.id = b.id;
+----
+INTEGER[][][][][]	INTEGER[][][][][]
+
+# Same for the sidecar appearance rewrite: a copy that loses appearance_index
+# would emit feature-local indices on one side and sidecar ids on the other.
+query I
+WITH src AS (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+SELECT COUNT(*) FROM src a JOIN src b ON a.id = b.id
+WHERE a.material_lod3_0 IS DISTINCT FROM b.material_lod3_0;
+----
+0
