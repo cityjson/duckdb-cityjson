@@ -373,13 +373,13 @@ json CityObject::ToJson() const {
 	return result;
 }
 
-std::optional<Geometry> CityObject::GetGeometryAtLOD(const std::string &lod) const {
+const Geometry *CityObject::GetGeometryAtLOD(const std::string &lod) const {
 	for (const auto &geom : geometry) {
 		if (geom.lod == lod) {
-			return geom;
+			return &geom;
 		}
 	}
-	return std::nullopt;
+	return nullptr;
 }
 
 std::optional<Geometry> CityObject::GetHighestLODGeometry() const {

@@ -108,6 +108,31 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 	// independent derivations. Rewriting here -- the one point where either becomes
 	// bind_data.columns -- keeps them from having to agree about a second encoding too.
 	CityObjectUtils::ApplyGeometryEncoding(bind_data.columns, bind_data.geometry_encoding);
+
+	// Resolve each geometry-family column's LoD once. The scan used to run
+	// ParseLODFromGeometryColumn (a regex search) per column per row.
+	for (auto &column : bind_data.columns) {
+		switch (column.kind) {
+		case ColumnType::GeometryWKB:
+		case ColumnType::GeometryArrowNative:
+		case ColumnType::GeometryVerticesArrowNative:
+		case ColumnType::GeometryPropertiesStruct:
+		case ColumnType::AppearanceJson:
+			try {
+				column.lod = ParseLODFromGeometryColumn(column.name);
+			} catch (const CityJSONError &) {
+				column.lod.clear(); // no LoD component in the name
+			}
+			break;
+		case ColumnType::Geometry:
+			if (IsGeometryColumn(column.name)) {
+				column.lod = ParseLODFromColumnName(column.name);
+			}
+			break;
+		default:
+			break;
+		}
+	}
 }
 
 CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options, bool streaming) {

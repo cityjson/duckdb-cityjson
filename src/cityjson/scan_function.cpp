@@ -5,12 +5,21 @@
 namespace duckdb {
 namespace cityjson {
 
+// The emitted feature_id column and the pushdown's own comparison must agree, so both
+// resolve it here: the per-object feature_id the reader derived, falling back to the
+// enclosing feature's id for sources that carry none.
+static const std::string &ResolvedFeatureId(const CityJSONFeature &feature, const CityObject &city_obj) {
+	return city_obj.feature_id.empty() ? feature.id : city_obj.feature_id;
+}
+
 static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSONFeature &feature,
                                const std::string &city_obj_id, const CityObject &city_obj,
                                std::vector<VectorWrapper> &wrappers, const std::vector<idx_t> &projected_cols,
                                size_t output_row) {
-	// For WKB encoding mode, find the geometry matching the target LOD
-	std::optional<Geometry> target_geom;
+	// For WKB encoding mode, find the geometry matching the target LOD. Every geometry
+	// pointer below aims into city_obj.geometry, which this function only reads -- the
+	// vector is never resized or reassigned while a row is being written.
+	const Geometry *target_geom = nullptr;
 	if (bind_data.use_wkb_encoding && bind_data.target_lod.has_value()) {
 		target_geom = city_obj.GetGeometryAtLOD(bind_data.target_lod.value());
 	}
@@ -34,17 +43,15 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 	std::string encoded_lod;
 	bool encoded_valid = false; // distinguishes "not computed yet" from "computed, absent"
 	std::optional<CompactedGeometry> encoded_geometry;
-	auto encode_for = [&](const std::string &column_name) -> const std::optional<CompactedGeometry> & {
-		std::string lod = ParseLODFromGeometryColumn(column_name);
-		if (!encoded_valid || encoded_lod != lod) {
-			encoded_lod = lod;
+	auto encode_for = [&](const Column &col) -> const std::optional<CompactedGeometry> & {
+		if (!encoded_valid || encoded_lod != col.lod) {
+			encoded_lod = col.lod;
 			encoded_valid = true;
 			encoded_geometry.reset();
-			std::optional<Geometry> geom =
-			    bind_data.target_lod.has_value() ? target_geom : city_obj.GetGeometryAtLOD(lod);
-			if (geom.has_value() && vertex_pool != nullptr) {
+			const Geometry *geom = bind_data.target_lod.has_value() ? target_geom : city_obj.GetGeometryAtLOD(col.lod);
+			if (geom != nullptr && vertex_pool != nullptr) {
 				encoded_geometry =
-				    CityObjectUtils::GetGeometryArrowNative(geom.value(), *vertex_pool, bind_data.metadata.transform);
+				    CityObjectUtils::GetGeometryArrowNative(*geom, *vertex_pool, bind_data.metadata.transform);
 			}
 		}
 		return encoded_geometry;
@@ -59,12 +66,9 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		// mode (lod => ...) the one such column uses target_geom, while in default mode
 		// each column resolves its own LOD from the column name.
 		if (col.kind == ColumnType::GeometryWKB) {
-			std::optional<Geometry> geom = bind_data.target_lod.has_value()
-			                                   ? target_geom
-			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
-			if (geom.has_value() && vertex_pool != nullptr) {
-				auto wkb_data =
-				    CityObjectUtils::GetGeometryWKB(geom.value(), *vertex_pool, bind_data.metadata.transform);
+			const Geometry *geom = bind_data.target_lod.has_value() ? target_geom : city_obj.GetGeometryAtLOD(col.lod);
+			if (geom != nullptr && vertex_pool != nullptr) {
+				auto wkb_data = CityObjectUtils::GetGeometryWKB(*geom, *vertex_pool, bind_data.metadata.transform);
 				WriteGeometryWKB(wrappers[col_idx].AsFlatMut(), wkb_data, output_row);
 			} else {
 				wrappers[col_idx].SetNull(output_row);
@@ -76,7 +80,7 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		// CompactedGeometry, so they are null together and their indices are in range
 		// for the pool written beside them (design doc, "Pairing invariant").
 		if (col.kind == ColumnType::GeometryArrowNative) {
-			const auto &compacted = encode_for(col.name);
+			const auto &compacted = encode_for(col);
 			if (compacted.has_value()) {
 				WriteGeometryArrowNative(wrappers[col_idx].AsListMut(), compacted.value(), output_row);
 			} else {
@@ -86,7 +90,7 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		}
 
 		if (col.kind == ColumnType::GeometryVerticesArrowNative) {
-			const auto &compacted = encode_for(col.name);
+			const auto &compacted = encode_for(col);
 			if (compacted.has_value()) {
 				WriteGeometryVertices(wrappers[col_idx].AsListMut(), compacted.value(), output_row);
 			} else {
@@ -98,13 +102,11 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		// Handle the geometry properties column ("geometry_properties_lodX_Y" in both
 		// modes), paired to the geometry column of the same LoD suffix.
 		if (col.kind == ColumnType::GeometryPropertiesStruct) {
-			std::optional<Geometry> geom = bind_data.target_lod.has_value()
-			                                   ? target_geom
-			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
+			const Geometry *geom = bind_data.target_lod.has_value() ? target_geom : city_obj.GetGeometryAtLOD(col.lod);
 			// Always routed through WriteGeometryProperties, including the absent-geometry
 			// case: a null STRUCT still needs its LIST children given a well-formed
 			// list_entry_t, which a bare SetNull on the struct would leave uninitialised.
-			auto props = geom.has_value() ? CityObjectUtils::GetGeometryPropertiesStruct(geom.value()) : json(nullptr);
+			auto props = geom != nullptr ? CityObjectUtils::GetGeometryPropertiesStruct(*geom) : json(nullptr);
 			WriteGeometryProperties(wrappers[col_idx].AsStructMut(), props, output_row);
 			continue;
 		}
@@ -113,12 +115,10 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		// emit the matching geometry's material/texture theme map verbatim, null
 		// when the geometry (or its appearance) is absent.
 		if (col.kind == ColumnType::AppearanceJson) {
-			std::optional<Geometry> geom = bind_data.target_lod.has_value()
-			                                   ? target_geom
-			                                   : city_obj.GetGeometryAtLOD(ParseLODFromGeometryColumn(col.name));
+			const Geometry *geom = bind_data.target_lod.has_value() ? target_geom : city_obj.GetGeometryAtLOD(col.lod);
 			const bool is_material = col.name.rfind("material", 0) == 0;
 			const json *appearance = nullptr;
-			if (geom.has_value()) {
+			if (geom != nullptr) {
 				const auto &opt = is_material ? geom->material : geom->texture;
 				if (opt.has_value()) {
 					appearance = &opt.value();
@@ -159,13 +159,12 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		if (col.name == "id") {
 			value = json(city_obj_id);
 		} else if (col.name == "feature_id") {
-			value = json(city_obj.feature_id.empty() ? feature.id : city_obj.feature_id);
-		} else if (IsGeometryColumn(col.name)) {
+			value = json(ResolvedFeatureId(feature, city_obj));
+		} else if (col.kind == ColumnType::Geometry && !col.lod.empty()) {
 			// Write geometry struct directly without JSON round-trip
-			std::string lod = ParseLODFromColumnName(col.name);
-			auto geom_opt = city_obj.GetGeometryAtLOD(lod);
-			if (geom_opt.has_value()) {
-				WriteGeometry(wrappers[col_idx].AsStructMut(), geom_opt.value(), output_row);
+			const Geometry *geom = city_obj.GetGeometryAtLOD(col.lod);
+			if (geom != nullptr) {
+				WriteGeometry(wrappers[col_idx].AsStructMut(), *geom, output_row);
 			} else {
 				wrappers[col_idx].SetNull(output_row);
 			}
@@ -177,10 +176,9 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				// Per-LOD mode restricts the table to one LoD, so the bbox describes that
 				// geometry alone -- there is no other LoD in the table to union with, and
 				// a descendant's bbox at this LoD is its own row's business.
-				auto extent = target_geom.has_value() ? CityObjectUtils::GetGeometryExtent(
-				                                            target_geom.value(), *vertex_pool,
-				                                            bind_data.metadata.transform)
-				                                      : std::nullopt;
+				auto extent = target_geom != nullptr ? CityObjectUtils::GetGeometryExtent(
+				                                           *target_geom, *vertex_pool, bind_data.metadata.transform)
+				                                     : std::nullopt;
 				value = extent.has_value() ? extent->ToJson() : json(nullptr);
 			} else {
 				// Wide mode: the specification defines bbox as unioned across every stored
@@ -213,8 +211,7 @@ static bool MatchesFilters(const CityJSONBindData &bind_data, const CityJSONFeat
 			return false;
 		}
 		if (column == "feature_id") {
-			const std::string &actual = city_obj.feature_id.empty() ? feature.id : city_obj.feature_id;
-			if (actual != expected) {
+			if (ResolvedFeatureId(feature, city_obj) != expected) {
 				return false;
 			}
 		}

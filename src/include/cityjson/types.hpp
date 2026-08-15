@@ -104,6 +104,11 @@ struct Column {
 	std::string name; // Column name
 	ColumnType kind;  // Column data type
 
+	// Normalised LoD parsed from the name at bind time ("2.2"); empty when the name
+	// carries no LoD component. Filled by InferCityJSONColumns so the scan does not
+	// run a regex per column per row.
+	std::string lod;
+
 	Column() = default;
 	Column(std::string name, ColumnType kind) : name(std::move(name)), kind(kind) {
 	}

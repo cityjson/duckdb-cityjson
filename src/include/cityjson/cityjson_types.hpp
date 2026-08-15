@@ -191,9 +191,11 @@ struct CityObject {
 	json ToJson() const;
 
 	/**
-	 * Get geometry at specific LOD
+	 * Geometry at a specific LOD, or nullptr when the object has none there.
+	 * A pointer, not optional<Geometry>: the by-value form copied the whole
+	 * boundaries JSON once per geometry column per row.
 	 */
-	std::optional<Geometry> GetGeometryAtLOD(const std::string &lod) const;
+	const Geometry *GetGeometryAtLOD(const std::string &lod) const;
 
 	/**
 	 * Get the geometry with the highest LOD (by numeric value).

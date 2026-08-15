@@ -95,8 +95,8 @@ json CityObjectUtils::GetGeometryValue(const CityObject &obj, const Column &col)
 	std::string lod = ParseLODFromColumnName(col.name);
 
 	// Find geometry with matching LOD
-	auto geom_opt = obj.GetGeometryAtLOD(lod);
-	if (!geom_opt.has_value()) {
+	const auto *geom_opt = obj.GetGeometryAtLOD(lod);
+	if (geom_opt == nullptr) {
 		return json(nullptr);
 	}
 

@@ -32,11 +32,11 @@ std::string LocalCityJSONReader::Name() const {
 // LoadJson (internal helper)
 // ============================================================
 
-json LocalCityJSONReader::LoadJson() const {
-	if (content_.has_value()) {
-		return ParseJson(content_.value());
+const json &LocalCityJSONReader::LoadJson() const {
+	if (!cached_json_.has_value()) {
+		cached_json_ = content_.has_value() ? ParseJson(content_.value()) : ParseJsonFile(file_path_);
 	}
-	return ParseJsonFile(file_path_);
+	return cached_json_.value();
 }
 
 // ============================================================
@@ -49,7 +49,7 @@ CityJSON LocalCityJSONReader::ReadMetadata() const {
 		return cached_metadata_.value();
 	}
 
-	json obj = LoadJson();
+	const json &obj = LoadJson();
 	CityJSON metadata = CityJSON::FromJson(obj);
 
 	// Cache the result
@@ -84,7 +84,7 @@ static std::string ResolveRootId(const std::map<std::string, CityObject> &object
 }
 
 std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const {
-	json obj = LoadJson();
+	const json &obj = LoadJson();
 
 	// Validate structure
 	if (!obj.contains("CityObjects") || !obj["CityObjects"].is_object()) {
@@ -120,7 +120,7 @@ std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const 
 // ============================================================
 
 CityJSONFeatureChunk LocalCityJSONReader::ReadAllChunks() const {
-	json obj = LoadJson();
+	const json &obj = LoadJson();
 
 	// Validate structure
 	if (!obj.contains("CityObjects") || !obj["CityObjects"].is_object()) {

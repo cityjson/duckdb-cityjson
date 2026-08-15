@@ -137,8 +137,14 @@ private:
 	mutable std::optional<CityJSON> cached_metadata_;
 	mutable std::optional<std::vector<Column>> cached_columns_;
 
-	// Internal helper: get JSON object (from content_ or file)
-	json LoadJson() const;
+	// Parse-once cache. ReadMetadata / ReadNFeatures / ReadAllChunks / Columns all
+	// need the document, and each used to re-parse the file (a bind alone parsed it
+	// 3-4 times, insert_cityjson 6-9). A reader instance is tied to one file, so
+	// there is nothing to invalidate.
+	mutable std::optional<json> cached_json_;
+
+	// Internal helper: the parsed document (parsed on first use, then cached)
+	const json &LoadJson() const;
 };
 
 /**
