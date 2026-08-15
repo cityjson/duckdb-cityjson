@@ -4,8 +4,10 @@
 
 require cityjson
 
-# Two references to one arrow-native read in a single query. If a plan copy
-# loses geometry_encoding, one side rebinds as WKB and the types disagree.
+# Two references to one arrow-native read in a single query. typeof() reports the
+# statically bound column type, so this pins the encoding the bind settled on: a plan
+# copy that lost geometry_encoding would have the scan emit WKB blobs into a column
+# still typed INTEGER[][][][][], which fails at run time rather than as a type clash.
 query TT
 WITH src AS (SELECT * FROM read_cityjson('test/data/minimal.city.json', geometry_encoding := 'arrow-native'))
 SELECT typeof(a.geometry_lod2_2), typeof(b.geometry_lod2_2)

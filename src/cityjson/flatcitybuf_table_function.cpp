@@ -220,9 +220,12 @@ unique_ptr<FunctionData> FlatCityBufBindData::Copy() const {
 
 bool FlatCityBufBindData::Equals(const FunctionData &other_p) const {
 	auto &other = other_p.Cast<FlatCityBufBindData>();
+	// appearance_index is compared by presence only, for the reason given in
+	// CityJSONBindData::Equals (bind_data.cpp).
 	return file_name == other.file_name && target_lod == other.target_lod &&
 	       use_wkb_encoding == other.use_wkb_encoding && geometry_encoding == other.geometry_encoding &&
-	       streaming == other.streaming && equality_filters == other.equality_filters && bbox == other.bbox;
+	       streaming == other.streaming && appearance_index.has_value() == other.appearance_index.has_value() &&
+	       equality_filters == other.equality_filters && bbox == other.bbox;
 }
 
 // ============================================================
