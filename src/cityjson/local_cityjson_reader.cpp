@@ -62,6 +62,27 @@ CityJSON LocalCityJSONReader::ReadMetadata() const {
 // ReadNFeatures
 // ============================================================
 
+// The spec feature_id rule (02-object-table-schema.mdx): a root object's feature_id
+// is its own id; a child's is the id of the root reached by following the FIRST
+// entry of `parents`. The walk stops at the deepest resolvable object when a parent
+// reference dangles, and is bounded by the object count so a malformed cycle
+// terminates.
+static std::string ResolveRootId(const std::map<std::string, CityObject> &objects, const std::string &id) {
+	std::string current = id;
+	for (size_t step = 0; step < objects.size(); step++) {
+		auto found = objects.find(current);
+		if (found == objects.end() || found->second.parents.empty()) {
+			return current;
+		}
+		const auto &parent = found->second.parents.front();
+		if (objects.find(parent) == objects.end()) {
+			return current;
+		}
+		current = parent;
+	}
+	return current;
+}
+
 std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const {
 	json obj = LoadJson();
 
@@ -87,6 +108,10 @@ std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const 
 		count++;
 	}
 
+	for (auto &[obj_id, obj] : feature.city_objects) {
+		obj.feature_id = ResolveRootId(feature.city_objects, obj_id);
+	}
+
 	return {feature};
 }
 
@@ -110,6 +135,10 @@ CityJSONFeatureChunk LocalCityJSONReader::ReadAllChunks() const {
 	const auto &city_objects = obj["CityObjects"];
 	for (auto &[obj_id, obj_data] : city_objects.items()) {
 		feature.city_objects[obj_id] = CityObject::FromJson(obj_data);
+	}
+
+	for (auto &[obj_id, obj] : feature.city_objects) {
+		obj.feature_id = ResolveRootId(feature.city_objects, obj_id);
 	}
 
 	// Create chunks

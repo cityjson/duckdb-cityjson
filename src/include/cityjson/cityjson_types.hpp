@@ -171,6 +171,11 @@ struct CityObject {
 	// §object-table-schema: length MUST equal children, with null for a child that
 	// has no role) -- so an unset entry has to be representable, not just absent.
 	std::optional<std::vector<std::optional<std::string>>> children_roles;
+	// Root-family id per the CityParquet feature_id rule (spec
+	// 02-object-table-schema.mdx): filled by the whole-CityJSON reader, where no
+	// real CityJSONFeature exists to take it from. Empty means "use the containing
+	// feature's id" -- the CityJSONSeq / FlatCityBuf case, whose features carry it.
+	std::string feature_id;
 
 	CityObject() = default;
 	explicit CityObject(std::string type);

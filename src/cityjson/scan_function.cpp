@@ -159,7 +159,7 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		if (col.name == "id") {
 			value = json(city_obj_id);
 		} else if (col.name == "feature_id") {
-			value = json(feature.id);
+			value = json(city_obj.feature_id.empty() ? feature.id : city_obj.feature_id);
 		} else if (IsGeometryColumn(col.name)) {
 			// Write geometry struct directly without JSON round-trip
 			std::string lod = ParseLODFromColumnName(col.name);
@@ -212,8 +212,11 @@ static bool MatchesFilters(const CityJSONBindData &bind_data, const CityJSONFeat
 		if (column == "id" && city_obj_id != expected) {
 			return false;
 		}
-		if (column == "feature_id" && feature.id != expected) {
-			return false;
+		if (column == "feature_id") {
+			const std::string &actual = city_obj.feature_id.empty() ? feature.id : city_obj.feature_id;
+			if (actual != expected) {
+				return false;
+			}
 		}
 		if (column == "object_type" && city_obj.type != expected) {
 			return false;
