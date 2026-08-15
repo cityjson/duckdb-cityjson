@@ -45,13 +45,18 @@ double CityJSONProgress(ClientContext &context, const FunctionData *bind_data_p,
 		return -1.0;
 	}
 
+	// The contract is a percentage, not a fraction: PhysicalTableScan::GetProgress takes
+	// this straight as `res.done` against a fixed `res.total = 100.0`
+	// (duckdb/src/execution/operator/scan/physical_table_scan.cpp:238-243), and DuckDB's
+	// own table scan returns 100 * scanned/total clamped to 100
+	// (duckdb/src/function/table/table_scan.cpp:242-249).
 	size_t total = bind_data.chunks.TotalCityObjectCount();
 	if (total == 0) {
-		return 1.0;
+		return 100.0;
 	}
 
 	size_t processed = global_state.batch_index.load() * STANDARD_VECTOR_SIZE;
-	return std::min(1.0, static_cast<double>(processed) / static_cast<double>(total));
+	return std::min(100.0, 100.0 * static_cast<double>(processed) / static_cast<double>(total));
 }
 
 unique_ptr<BaseStatistics> CityJSONStatistics(ClientContext &context, const FunctionData *bind_data_p,
