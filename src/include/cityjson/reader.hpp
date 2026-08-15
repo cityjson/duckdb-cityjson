@@ -225,5 +225,33 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &conte
 std::unique_ptr<CityJSONReader> OpenCityJSONSeqFile(duckdb::ClientContext &context, const std::string &file_name,
                                                     size_t sample_lines = 100);
 
+/**
+ * Which factory a bind opened its reader with.
+ *
+ * The streaming scan cannot inherit the bind's reader — schema inference has already
+ * driven that one past the point a scan needs to start from — so it constructs a second
+ * reader over the same path in init_global. Recording the choice here is what keeps the
+ * two in agreement: auto-detection is not idempotent with respect to the caller. The
+ * CityJSONSeq header cjseq actually writes carries an empty `"CityObjects"` key, which
+ * makes OpenAnyCityJSONFile's content sniff classify the file as full CityJSON whenever
+ * the name does not end in `.jsonl` — so `read_cityjsonseq('x.city.json')` bound a
+ * sequence reader and then scanned with a document reader, which fails on line 2.
+ */
+enum class ReaderKind : uint8_t {
+	//! OpenAnyCityJSONFile — detect the format from the extension, then from the content.
+	Auto,
+	//! OpenCityJSONSeqFile — CityJSONSeq only, never auto-detected.
+	CityJSONSeq,
+};
+
+/**
+ * Open `file_name` with the factory `kind` names.
+ *
+ * The kind → factory mapping lives here, beside the factories themselves, so a caller
+ * replaying a recorded choice never has to restate it.
+ */
+std::unique_ptr<CityJSONReader> OpenCityJSONFileOfKind(duckdb::ClientContext &context, ReaderKind kind,
+                                                       const std::string &file_name, size_t sample_lines = 100);
+
 } // namespace cityjson
 } // namespace duckdb

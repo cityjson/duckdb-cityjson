@@ -200,6 +200,7 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 	result.target_lod = options.target_lod;
 	result.use_wkb_encoding = options.use_wkb_encoding;
 	result.geometry_encoding = options.geometry_encoding;
+	result.sample_lines = options.sample_lines;
 
 	try {
 		result.metadata = reader.ReadMetadata();
@@ -240,9 +241,13 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names,
                                           const std::string &function_name,
-                                          std::unique_ptr<CityJSONReader> reader, bool streaming) {
+                                          std::unique_ptr<CityJSONReader> reader, bool streaming,
+                                          ReaderKind reader_kind) {
 	auto result = make_uniq<CityJSONBindData>(
 	    BindCityJSONReadRaw(context, input, return_types, names, function_name, *reader, streaming));
+	// BindCityJSONReadRaw takes the reader already opened and so cannot know which factory
+	// made it; the caller that chose it records the choice here.
+	result->reader_kind = reader_kind;
 	return result;
 }
 
@@ -281,7 +286,8 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}
 
-	return BindCityJSONRead(context, input, return_types, names, "read_cityjsonseq", std::move(reader), true);
+	return BindCityJSONRead(context, input, return_types, names, "read_cityjsonseq", std::move(reader), true,
+	                        ReaderKind::CityJSONSeq);
 }
 
 void CityJSONPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,

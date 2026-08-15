@@ -14,6 +14,8 @@ unique_ptr<FunctionData> CityJSONBindData::Copy() const {
 	result->use_wkb_encoding = use_wkb_encoding;
 	result->geometry_encoding = geometry_encoding;
 	result->streaming = streaming;
+	result->reader_kind = reader_kind;
+	result->sample_lines = sample_lines;
 	result->appearance_index = appearance_index;
 	result->equality_filters = equality_filters;
 	return result;
@@ -26,7 +28,8 @@ bool CityJSONBindData::Equals(const FunctionData &other_p) const {
 	// operator==.
 	return file_name == other.file_name && target_lod == other.target_lod &&
 	       use_wkb_encoding == other.use_wkb_encoding && geometry_encoding == other.geometry_encoding &&
-	       streaming == other.streaming &&
+	       streaming == other.streaming && reader_kind == other.reader_kind &&
+	       sample_lines == other.sample_lines &&
 	       appearance_index.has_value() == other.appearance_index.has_value() &&
 	       equality_filters == other.equality_filters;
 }

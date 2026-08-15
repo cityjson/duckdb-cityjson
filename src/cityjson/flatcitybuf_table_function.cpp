@@ -211,6 +211,8 @@ unique_ptr<FunctionData> FlatCityBufBindData::Copy() const {
 	result->use_wkb_encoding = use_wkb_encoding;
 	result->geometry_encoding = geometry_encoding;
 	result->streaming = streaming;
+	result->reader_kind = reader_kind;
+	result->sample_lines = sample_lines;
 	result->appearance_index = appearance_index;
 	result->equality_filters = equality_filters;
 	result->bbox = bbox;
@@ -224,7 +226,8 @@ bool FlatCityBufBindData::Equals(const FunctionData &other_p) const {
 	// CityJSONBindData::Equals (bind_data.cpp).
 	return file_name == other.file_name && target_lod == other.target_lod &&
 	       use_wkb_encoding == other.use_wkb_encoding && geometry_encoding == other.geometry_encoding &&
-	       streaming == other.streaming && appearance_index.has_value() == other.appearance_index.has_value() &&
+	       streaming == other.streaming && reader_kind == other.reader_kind &&
+	       sample_lines == other.sample_lines && appearance_index.has_value() == other.appearance_index.has_value() &&
 	       equality_filters == other.equality_filters && bbox == other.bbox;
 }
 
@@ -278,6 +281,7 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 	result->target_lod = generic.target_lod;
 	result->use_wkb_encoding = generic.use_wkb_encoding;
 	result->streaming = false;
+	result->sample_lines = generic.sample_lines;
 	result->bbox = bbox;
 	result->reader = reader;
 	return result;

@@ -1,6 +1,7 @@
 #include "cityjson/table_function.hpp"
 #include "cityjson/vector_writer.hpp"
 #include "cityjson/city_object_utils.hpp"
+#include "duckdb/common/exception/conversion_exception.hpp"
 
 namespace duckdb {
 namespace cityjson {
@@ -199,7 +200,10 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		try {
 			WriteToVector(col, value, wrappers[col_idx], output_row);
 		} catch (const CityJSONError &e) {
-			throw InternalException("Failed to write value for column '" + col.name + "': " + std::string(e.what()));
+			// A value the source file cannot be turned into the bound column type is bad
+			// input, not a broken invariant: InternalException would both mislabel it as a
+			// bug in the extension and kill the session.
+			throw ConversionException("Failed to write value for column '" + col.name + "': " + std::string(e.what()));
 		}
 	}
 }

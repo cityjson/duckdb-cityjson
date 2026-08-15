@@ -11,11 +11,18 @@ unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(ClientContext &context, 
 
 	if (bind_data.streaming) {
 		try {
-			result->streaming_reader = OpenAnyCityJSONFile(context, bind_data.file_name);
+			// Replay the bind's own choice of factory and sampling depth rather than
+			// auto-detecting afresh: re-detection can pick a different reader for the same
+			// path than the one the schema was bound against. See ReaderKind (reader.hpp).
+			result->streaming_reader = OpenCityJSONFileOfKind(context, bind_data.reader_kind, bind_data.file_name,
+			                                                  bind_data.sample_lines);
 			// Consume metadata so the scan starts at the first feature line.
 			result->streaming_reader->ReadMetadata();
 		} catch (const CityJSONError &e) {
-			throw InternalException("Failed to open streaming CityJSON reader: " + std::string(e.what()));
+			// Opening and parsing a user-supplied file is not an invariant of ours;
+			// InternalException would render this as "please file a bug" and, being
+			// session-fatal, would take the connection down with it.
+			throw IOException("Failed to open streaming CityJSON reader: " + std::string(e.what()));
 		}
 	}
 
