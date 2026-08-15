@@ -192,6 +192,10 @@ std::string BuildCityMetadata(const std::optional<std::string> &reference_system
 
 struct GeoBindData : public TableFunctionData {
 	std::string file_name;
+	//! The encoding the two footer objects below were built for. Both differ by it --
+	//! `geo` declares no column at all under arrow-native -- so it is half of this bind's
+	//! identity, not an incidental parameter.
+	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb;
 	std::optional<std::string> geo; // nullopt -> emit SQL NULL
 	//! The `city` object is REQUIRED on every CityParquet file, so unlike `geo` it is
 	//! always non-empty.
@@ -200,12 +204,18 @@ struct GeoBindData : public TableFunctionData {
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<GeoBindData>();
 		result->file_name = file_name;
+		result->geometry_encoding = geometry_encoding;
 		result->geo = geo;
 		result->city = city;
 		return result;
 	}
-	bool Equals(const FunctionData &other) const override {
-		return file_name == other.Cast<GeoBindData>().file_name;
+	bool Equals(const FunctionData &other_p) const override {
+		auto &other = other_p.Cast<GeoBindData>();
+		// `geo` and `city` are derived deterministically from these two, so comparing the
+		// inputs is sufficient and matches CityJSONBindData::Equals (bind_data.cpp).
+		// file_name alone was not: two binds of one file at different encodings compared
+		// equal, and a plan copy or a cached bind could then serve the wrong footer.
+		return file_name == other.file_name && geometry_encoding == other.geometry_encoding;
 	}
 };
 
@@ -224,6 +234,7 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
 	// Routed through the shared parser so the accepted spellings and the rejection
 	// message stay identical to read_cityjson's.
 	const auto encoding = ParseCityJSONReadOptions(input, "cityjson_geoparquet_geo").geometry_encoding;
+	result->geometry_encoding = encoding;
 
 	std::unique_ptr<CityJSONReader> reader;
 	try {

@@ -54,6 +54,19 @@ FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl', geometry_encod
 ----
 true	true
 
+# One file, two encodings, one query: each scan must keep its own footer. GeoBindData's
+# identity is (file_name, geometry_encoding) — comparing file_name alone made these two
+# binds equal despite producing different `geo` and `city`. Today DuckDB reaches
+# FunctionData::Equals for a table scan from exactly one place (PhysicalTableScan::Equals,
+# itself only called by PhysicalPositionalScan, which this build does not register), so
+# this cannot fail on the unfixed code; it is here to catch the day that changes.
+query II
+SELECT a.city LIKE '%CityParquetArrowNative-v1%', b.city LIKE '%CityParquetArrowNative-v1%'
+FROM cityjson_geoparquet_geo('test/data/minimal.city.json') a,
+     cityjson_geoparquet_geo('test/data/minimal.city.json', geometry_encoding := 'arrow-native') b;
+----
+false	true
+
 # A Solid-only dataset with no GeoParquet-legal column yields NULL geo (it is a
 # valid CityParquet table, simply not a GeoParquet file — §13.3).
 query I
