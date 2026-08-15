@@ -2,6 +2,7 @@
 
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
+#include "cityjson/cityparquet_sql_common.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -18,17 +19,6 @@ namespace duckdb {
 namespace cityjson {
 
 namespace {
-
-std::string Join(const std::vector<std::string> &parts, const std::string &separator) {
-	std::string out;
-	for (idx_t i = 0; i < parts.size(); i++) {
-		if (i > 0) {
-			out += separator;
-		}
-		out += parts[i];
-	}
-	return out;
-}
 
 //! Every column name the predicate mentions, lower-cased.
 std::set<std::string> ReferencedColumns(const std::string &predicate) {

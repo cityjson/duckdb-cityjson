@@ -1,6 +1,7 @@
 #include "cityjson/cityparquet_reconcile.hpp"
 
 #include "cityjson/cityparquet_package.hpp"
+#include "cityjson/cityparquet_sql_common.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -16,18 +17,6 @@ namespace duckdb {
 namespace cityjson {
 
 namespace {
-
-//! StringUtil::Join takes duckdb::vector, which std::vector does not convert to.
-std::string Join(const std::vector<std::string> &parts, const std::string &separator) {
-	std::string out;
-	for (idx_t i = 0; i < parts.size(); i++) {
-		if (i > 0) {
-			out += separator;
-		}
-		out += parts[i];
-	}
-	return out;
-}
 
 bool Wants(const std::vector<std::string> &checks, const char *name) {
 	return checks.empty() || std::find(checks.begin(), checks.end(), std::string(name)) != checks.end();

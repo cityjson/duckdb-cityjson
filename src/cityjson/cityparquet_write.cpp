@@ -136,10 +136,6 @@ struct WriteGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-std::string Literal(const std::string &text) {
-	return KeywordHelper::WriteQuoted(text, '\'');
-}
-
 //! DuckDB type of one column, for telling a WKB BLOB geometry column from an
 //! arrow-native LIST one. Non-templated GetEntry: the templated form ODR-uses
 //! TableCatalogEntry::Name (see cityparquet_package.cpp).

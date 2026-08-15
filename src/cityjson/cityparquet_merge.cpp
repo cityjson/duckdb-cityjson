@@ -2,12 +2,10 @@
 
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "cityjson/cityparquet_sql_common.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
 
 #include <algorithm>
 #include <map>
@@ -17,71 +15,10 @@ namespace cityjson {
 
 namespace {
 
-std::string Join(const std::vector<std::string> &parts, const std::string &separator) {
-	std::string out;
-	for (idx_t i = 0; i < parts.size(); i++) {
-		if (i > 0) {
-			out += separator;
-		}
-		out += parts[i];
-	}
-	return out;
-}
-
-std::string Literal(const std::string &text) {
-	return KeywordHelper::WriteQuoted(text, '\'');
-}
-
-std::string Quoted(const std::string &name) {
-	return KeywordHelper::WriteOptionallyQuoted(name);
-}
-
-struct ColumnInfo {
-	std::string name;
-	LogicalType type;
-};
-
-std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &schema, const std::string &table) {
-	std::vector<ColumnInfo> columns;
-	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
-	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		columns.push_back({column.Name(), column.Type()});
-	}
-	return columns;
-}
-
 bool HasColumn(const std::vector<ColumnInfo> &columns, const std::string &name) {
 	return std::any_of(columns.begin(), columns.end(), [&](const ColumnInfo &c) {
 		return StringUtil::Lower(c.name) == StringUtil::Lower(name);
 	});
-}
-
-const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::string &name) {
-	for (const auto &column : columns) {
-		if (StringUtil::Lower(column.name) == StringUtil::Lower(name)) {
-			return &column;
-		}
-	}
-	return nullptr;
-}
-
-//! The promotion lattice: BIGINT -> DOUBLE is a safe widening; anything else that
-//! disagrees falls back to VARCHAR. Returns an empty type when no widening is needed.
-LogicalType WidenedType(const LogicalType &destination, const LogicalType &source) {
-	if (destination == source) {
-		return LogicalType(LogicalTypeId::INVALID);
-	}
-	const auto d = destination.id();
-	const auto s = source.id();
-	const bool d_int = d == LogicalTypeId::BIGINT || d == LogicalTypeId::INTEGER;
-	const bool s_double = s == LogicalTypeId::DOUBLE || s == LogicalTypeId::FLOAT;
-	if (d_int && s_double) {
-		return LogicalType(LogicalTypeId::DOUBLE);
-	}
-	if (d == LogicalTypeId::DOUBLE && (s == LogicalTypeId::BIGINT || s == LogicalTypeId::INTEGER)) {
-		return LogicalType(LogicalTypeId::INVALID); // destination already wider
-	}
-	return LogicalType(LogicalTypeId::VARCHAR);
 }
 
 //! Offsets are named per sidecar so several can be in flight at once.

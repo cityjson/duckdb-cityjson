@@ -70,6 +70,10 @@ std::vector<std::string> SidecarTablesInSchema(ClientContext &context, const std
 //! Quoted "schema"."table", safe to concatenate into generated SQL.
 std::string QualifiedName(const std::string &schema, const std::string &table);
 
+//! Single-quoted SQL string literal (KeywordHelper::WriteQuoted). SQLString is a
+//! formatting wrapper, not a quoting function -- never use it for this.
+std::string Literal(const std::string &text);
+
 //! geometry_lod* column names of one table, in catalog order. Never hard-code an LoD
 //! set: which LoDs exist is a property of the dataset, not of the format.
 std::vector<std::string> GeometryLodColumns(ClientContext &context, const std::string &schema,
