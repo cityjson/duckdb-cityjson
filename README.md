@@ -646,9 +646,13 @@ writes a `metadata.json` STAC Item. Three things worth knowing:
 `city3d:*` field in it is a union or a sum across the package — `city3d:lods` is the union
 over all tables, `city3d:city_objects` the sum over the object tables — and none of them
 is a copy of any single footer. It also carries the Projection extension (`proj:projjson`,
-`proj:bbox`), and each asset its `file:size` and `table:row_count`. `geometry` stays null:
-STAC wants EPSG:4326 there and a package's coordinates are not, so `proj:bbox` carries the
-real extent.
+`proj:bbox`) and each asset its `file:size` — but **no per-asset row count**: the spec says
+a writer SHOULD NOT declare the Table extension merely to publish one, and
+`city3d:city_objects` already carries the package count. The CityParquet format version is
+`cityparquet:version`; `city3d:version` is the **source** CityJSON version, written only
+when a carried footer recorded a `source_version`. `geometry` stays null: STAC wants
+EPSG:4326 there and a package's coordinates are not, so `proj:bbox` carries the real
+extent.
 
 Atomicity is **per file only**. Each file flips whole via temp-file + rename, but the
 package as a whole has a window during a write in which it is inconsistent, and

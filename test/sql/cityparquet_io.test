@@ -215,9 +215,27 @@ SELECT compact LIKE '%"bbox":%' AND compact NOT LIKE '%"proj:bbox":%' FROM item;
 ----
 false
 
-# Every written file appears as an asset with its size and row count.
+# No per-asset row count, and no Table extension declared for one: the spec says a
+# writer SHOULD NOT declare Table merely to publish a row count (05-metadata.mdx);
+# city3d:city_objects above already carries the package count.
 query I
-SELECT regexp_matches(compact, '"materials\.parquet":\{[^}]*"table:row_count":4') FROM item;
+SELECT compact LIKE '%table:row_count%' OR compact LIKE '%stac-extensions.github.io/table%' FROM item;
+----
+false
+
+# The city3d schema URL is the versioned published one, not raw-github main.
+query I
+SELECT compact LIKE '%cityjson.github.io/stac-city3d/v0.2.0/schema.json%'
+   AND compact NOT LIKE '%raw.githubusercontent.com%' FROM item;
+----
+true
+
+# The CityParquet format version lives in cityparquet:version; city3d:version is
+# the SOURCE CityJSON version, which this package's footers never recorded, so it
+# is honestly absent rather than wrong.
+query I
+SELECT compact LIKE '%"cityparquet:version":"0.1.0-draft"%'
+   AND compact NOT LIKE '%"city3d:version"%' FROM item;
 ----
 true
 

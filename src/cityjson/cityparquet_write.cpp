@@ -559,11 +559,9 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		json item;
 		item["type"] = "Feature";
 		item["stac_version"] = "1.0.0";
-		item["stac_extensions"] = json::array(
-		    {"https://raw.githubusercontent.com/cityjson/stac-city3d/main/json-schema/schema.json",
-		     "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
-		     "https://stac-extensions.github.io/file/v2.1.0/schema.json",
-		     "https://stac-extensions.github.io/table/v1.2.0/schema.json"});
+		item["stac_extensions"] = json::array({"https://cityjson.github.io/stac-city3d/v0.2.0/schema.json",
+		                                       "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
+		                                       "https://stac-extensions.github.io/file/v2.1.0/schema.json"});
 		item["id"] = bind_data.schema;
 		item["links"] = json::array();
 
@@ -578,7 +576,23 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		item["geometry"] = nullptr;
 
 		json properties = json::object();
-		properties["city3d:version"] = CITYPARQUET_VERSION;
+		// The format version is CityParquet's own property; city3d:version is the
+		// SOURCE CityJSON version (stac-city3d), taken from a carried footer's
+		// source_version when one recorded it -- absent otherwise, never wrong.
+		properties["cityparquet:version"] = CITYPARQUET_VERSION;
+		for (const auto &entry : carried) {
+			json parsed;
+			try {
+				parsed = json::parse(entry.second);
+			} catch (const std::exception &) {
+				continue;
+			}
+			auto found = parsed.find("source_version");
+			if (found != parsed.end() && found->is_string()) {
+				properties["city3d:version"] = found->get<std::string>();
+				break;
+			}
+		}
 		// Every one of these is a union or a sum across the package's files. The footer
 		// answers only for the file it lives in.
 		properties["city3d:lods"] = json(inventory.lods);
@@ -602,13 +616,10 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			asset["href"] = written.file;
 			asset["type"] = "application/vnd.apache.parquet";
 			asset["file:size"] = written.bytes;
-			// Row counts per asset. The specification asks for "the Statistics
-			// extension"; for a tabular asset the extension that actually defines a row
-			// count is Table, so that is what is declared -- see
-			// docs/CITYPARQUET_SPEC_QUESTIONS.md. A sidecar's rows are definitions, not
-			// city objects, so they are reported per file rather than folded into
+			// No per-asset row count: the spec forbids declaring the Table extension
+			// merely to publish one (05-metadata.mdx); a sidecar's rows are
+			// definitions, not city objects, and the package count is
 			// city3d:city_objects.
-			asset["table:row_count"] = written.rows;
 			assets[written.file] = std::move(asset);
 		}
 		item["assets"] = std::move(assets);

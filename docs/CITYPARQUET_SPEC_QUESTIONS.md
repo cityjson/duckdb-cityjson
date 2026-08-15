@@ -122,20 +122,22 @@ order.
 **Still to do:** state the first-parent rule explicitly in the object-table-schema page's
 `feature_id` note.
 
-## 5. "the Statistics extension" — which STAC extension is meant?
+## 5. "the Statistics extension" — **resolved: no per-asset row count**
 
-**Status:** open, raised 2026-07-27 while writing `metadata.json`.
+**Status:** decided 2026-08-15. The specification has been amended; the writer follows.
 
-The metadata page says the Item **SHOULD** use "the standard **Projection** (CRS),
+The metadata page used to say the Item **SHOULD** use "the standard **Projection** (CRS),
 **File** (checksums/sizes), and **Statistics** extensions". Projection and File are
 unambiguous — `proj:projjson` / `proj:bbox` and `file:size` — but there is no STAC
 extension named "Statistics" that defines what one would want here, namely a row count
 per asset. The extension that does define it for a tabular asset is **Table**
 (`table:row_count`).
 
-`cityparquet_write` currently declares the Table extension and writes
-`table:row_count` per asset. Either the spec means Table and should say so, or it means
-something else and should name the fields.
+The metadata page now drops the Statistics mention and rules the row count out: a writer
+**SHOULD NOT** declare the Table extension merely to publish one, because
+`city3d:city_objects` already carries the package count and the object tables hold one row
+per city object. `cityparquet_write` therefore declares only city3d, Projection and File,
+and writes no `table:row_count`.
 
 ## 6. `city3d:lods` uses the normalised LoD, not the source spelling
 
