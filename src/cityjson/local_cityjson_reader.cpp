@@ -147,34 +147,6 @@ CityJSONFeatureChunk LocalCityJSONReader::ReadAllChunks() const {
 }
 
 // ============================================================
-// ReadNthChunk
-// ============================================================
-
-CityJSONFeatureChunk LocalCityJSONReader::ReadNthChunk(size_t n) const {
-	// For CityJSON format, we need to load all data first then extract the Nth chunk
-	// This is because CityObjects are stored as a single JSON object, not line-delimited
-	CityJSONFeatureChunk all_chunks = ReadAllChunks();
-
-	if (n >= all_chunks.ChunkCount()) {
-		// Return empty chunk
-		return CityJSONFeatureChunk();
-	}
-
-	// Extract the Nth chunk
-	auto chunk_opt = all_chunks.GetChunk(n);
-	if (!chunk_opt.has_value()) {
-		return CityJSONFeatureChunk();
-	}
-
-	// Create a new chunk containing only the requested chunk
-	CityJSONFeatureChunk result;
-	result.records = std::vector<CityJSONFeature>(chunk_opt->begin(), chunk_opt->end());
-	result.chunks = {Range(0, result.records.size())};
-
-	return result;
-}
-
-// ============================================================
 // Columns
 // ============================================================
 

@@ -279,29 +279,6 @@ CityJSONFeatureChunk FlatCityBufReader::ReadAllChunks() const {
 }
 
 // ============================================================
-// ReadNthChunk
-// ============================================================
-
-CityJSONFeatureChunk FlatCityBufReader::ReadNthChunk(size_t n) const {
-	CityJSONFeatureChunk all_chunks = ReadAllChunks();
-
-	if (n >= all_chunks.ChunkCount()) {
-		return CityJSONFeatureChunk();
-	}
-
-	auto chunk_opt = all_chunks.GetChunk(n);
-	if (!chunk_opt.has_value()) {
-		return CityJSONFeatureChunk();
-	}
-
-	CityJSONFeatureChunk result;
-	result.records = std::vector<CityJSONFeature>(chunk_opt->begin(), chunk_opt->end());
-	result.chunks = {Range(0, result.records.size())};
-
-	return result;
-}
-
-// ============================================================
 // ReadNFeatures
 // ============================================================
 

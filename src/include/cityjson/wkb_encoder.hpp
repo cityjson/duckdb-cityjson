@@ -52,24 +52,6 @@ constexpr uint8_t WKB_XDR = 0; // Big Endian (Network byte order)
 constexpr uint8_t WKB_NDR = 1; // Little Endian (Intel byte order)
 
 /**
- * CityJSON geometry type codes for geometry_properties JSON
- * Based on 3DCityDB geometry module specification
- */
-enum class CityJSONGeometryTypeCode : int {
-	Point = 1,
-	MultiPoint = 2,
-	LineString = 3,
-	MultiLineString = 4,
-	Surface = 5,
-	CompositeSurface = 6,
-	TIN = 7,
-	MultiSurface = 8,
-	Solid = 9,
-	CompositeSolid = 10,
-	MultiSolid = 11
-};
-
-/**
  * WKB Encoder for converting CityJSON geometry to OGC Well-Known Binary format
  *
  * This encoder:
@@ -123,22 +105,6 @@ public:
 	 * @return Corresponding WKB geometry type (with Z dimension)
 	 */
 	static WKBGeometryType GetOGCType(const std::string &cityjson_type);
-
-	/**
-	 * Get CityJSON geometry type code for geometry_properties JSON
-	 *
-	 * @param cityjson_type CityJSON geometry type name
-	 * @return Type code for geometry_properties JSON
-	 */
-	static CityJSONGeometryTypeCode GetTypeCode(const std::string &cityjson_type);
-
-	/**
-	 * Check if a CityJSON geometry type is supported for WKB encoding
-	 *
-	 * @param cityjson_type CityJSON geometry type name
-	 * @return true if the type can be encoded to WKB
-	 */
-	static bool IsSupported(const std::string &cityjson_type);
 
 private:
 	// Helper: Apply transform to a vertex

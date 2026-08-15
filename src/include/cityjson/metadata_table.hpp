@@ -53,11 +53,6 @@ public:
 	 * @param city_objects_count Total count of city objects
 	 */
 	static unique_ptr<DataChunk> CreateMetadataChunk(const CityJSON &cityjson, idx_t city_objects_count);
-
-	/**
-	 * Generate SQL CREATE TABLE statement for metadata
-	 */
-	static string GetCreateTableSQL(const string &table_name = "metadata");
 };
 
 } // namespace cityjson

@@ -196,13 +196,6 @@ struct CityObject {
 	 * boundaries JSON once per geometry column per row.
 	 */
 	const Geometry *GetGeometryAtLOD(const std::string &lod) const;
-
-	/**
-	 * Get the geometry with the highest LOD (by numeric value).
-	 * Used to compute the per-row bbox in default (wide) mode. Geometries with an
-	 * empty LOD are skipped; if none have a usable LOD the first geometry is returned.
-	 */
-	std::optional<Geometry> GetHighestLODGeometry() const;
 };
 
 /**

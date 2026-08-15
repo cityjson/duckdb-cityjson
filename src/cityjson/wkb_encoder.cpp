@@ -19,19 +19,6 @@ static const std::unordered_map<std::string, WKBGeometryType> CITYJSON_TO_OGC_TY
     {"MultiSolid", WKBGeometryType::GeometryCollectionZ},
     {"CompositeSolid", WKBGeometryType::GeometryCollectionZ}};
 
-static const std::unordered_map<std::string, CityJSONGeometryTypeCode> CITYJSON_TYPE_CODES = {
-    {"Point", CityJSONGeometryTypeCode::Point},
-    {"MultiPoint", CityJSONGeometryTypeCode::MultiPoint},
-    {"LineString", CityJSONGeometryTypeCode::LineString},
-    {"MultiLineString", CityJSONGeometryTypeCode::MultiLineString},
-    {"Surface", CityJSONGeometryTypeCode::Surface},
-    {"CompositeSurface", CityJSONGeometryTypeCode::CompositeSurface},
-    {"TIN", CityJSONGeometryTypeCode::TIN},
-    {"MultiSurface", CityJSONGeometryTypeCode::MultiSurface},
-    {"Solid", CityJSONGeometryTypeCode::Solid},
-    {"CompositeSolid", CityJSONGeometryTypeCode::CompositeSolid},
-    {"MultiSolid", CityJSONGeometryTypeCode::MultiSolid}};
-
 // =============================================================================
 // Public methods
 // =============================================================================
@@ -89,19 +76,6 @@ WKBGeometryType WKBEncoder::GetOGCType(const std::string &cityjson_type) {
 		return it->second;
 	}
 	throw CityJSONError::InvalidGeometry("Unknown CityJSON geometry type: " + cityjson_type);
-}
-
-CityJSONGeometryTypeCode WKBEncoder::GetTypeCode(const std::string &cityjson_type) {
-	auto it = CITYJSON_TYPE_CODES.find(cityjson_type);
-	if (it != CITYJSON_TYPE_CODES.end()) {
-		return it->second;
-	}
-	// Return a default or throw
-	throw CityJSONError::InvalidGeometry("Unknown CityJSON geometry type for type code: " + cityjson_type);
-}
-
-bool WKBEncoder::IsSupported(const std::string &cityjson_type) {
-	return CITYJSON_TO_OGC_TYPE.find(cityjson_type) != CITYJSON_TO_OGC_TYPE.end();
 }
 
 // =============================================================================
@@ -364,12 +338,6 @@ void WKBEncoder::EncodeMultiSolid(std::vector<uint8_t> &out, const json &boundar
 	WriteUInt32(out, static_cast<uint32_t>(boundaries.size()));
 
 	for (const auto &solid : boundaries) {
-		// Create a temporary Geometry object for the solid
-		// and encode it as a PolyhedralSurface
-		Geometry solid_geom;
-		solid_geom.type = "Solid";
-		solid_geom.boundaries = solid;
-
 		EncodeSolid(out, solid, vertices, transform);
 	}
 }

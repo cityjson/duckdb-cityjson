@@ -4,7 +4,6 @@
 #include <exception>
 #include <string>
 #include <optional>
-#include <variant>
 
 namespace duckdb {
 namespace cityjson {
@@ -84,70 +83,13 @@ public:
 	static CityJSONError Conversion(const std::string &msg);
 	static CityJSONError Conversion(const std::string &msg, const std::string &context);
 
-	static CityJSONError DuckDB(const std::string &msg);
-	static CityJSONError DuckDB(const std::string &msg, const std::string &context);
-
 	static CityJSONError Sequence(const std::string &msg);
 	static CityJSONError Sequence(const std::string &msg, const std::string &context);
-
-	static CityJSONError Validation(const std::string &msg);
-	static CityJSONError Validation(const std::string &msg, const std::string &context);
-
-	static CityJSONError UnsupportedVersion(const std::string &msg);
-	static CityJSONError UnsupportedVersion(const std::string &msg, const std::string &context);
-
-	static CityJSONError UnsupportedFeature(const std::string &msg);
-	static CityJSONError UnsupportedFeature(const std::string &msg, const std::string &context);
-
-	static CityJSONError Io(const std::string &msg);
-	static CityJSONError Io(const std::string &msg, const std::string &context);
-
-	static CityJSONError Utf8(const std::string &msg);
-	static CityJSONError Utf8(const std::string &msg, const std::string &context);
-
-	static CityJSONError Ffi(const std::string &msg);
-	static CityJSONError Ffi(const std::string &msg, const std::string &context);
-
-	static CityJSONError ParameterBind(const std::string &msg);
-	static CityJSONError ParameterBind(const std::string &msg, const std::string &context);
 
 	static CityJSONError ColumnTypeMismatch(const std::string &column_type, const std::string &value);
 
 	static CityJSONError Other(const std::string &msg);
 	static CityJSONError Other(const std::string &msg, const std::string &context);
-};
-
-/**
- * Result type for error propagation
- * Uses std::variant for C++17 compatibility (alternatively to C++23 std::expected)
- */
-template <typename T>
-class Result {
-private:
-	std::variant<T, CityJSONError> value_;
-
-public:
-	explicit Result(T value) : value_(std::move(value)) {
-	}
-	explicit Result(CityJSONError error) : value_(std::move(error)) {
-	}
-
-	bool HasError() const {
-		return std::holds_alternative<CityJSONError>(value_);
-	}
-	const T &GetValue() const {
-		return std::get<T>(value_);
-	}
-	const CityJSONError &GetError() const {
-		return std::get<CityJSONError>(value_);
-	}
-
-	explicit operator bool() const {
-		return !HasError();
-	}
-	const T &operator*() const {
-		return GetValue();
-	}
 };
 
 } // namespace cityjson

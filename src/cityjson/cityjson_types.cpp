@@ -382,38 +382,6 @@ const Geometry *CityObject::GetGeometryAtLOD(const std::string &lod) const {
 	return nullptr;
 }
 
-std::optional<Geometry> CityObject::GetHighestLODGeometry() const {
-	if (geometry.empty()) {
-		return std::nullopt;
-	}
-	const Geometry *best = nullptr;
-	double best_val = 0.0;
-	for (const auto &geom : geometry) {
-		if (geom.lod.empty()) {
-			continue;
-		}
-		double val = 0.0;
-		try {
-			size_t idx = 0;
-			val = std::stod(geom.lod, &idx);
-			if (idx != geom.lod.size()) {
-				continue; // non-numeric LOD, skip for comparison
-			}
-		} catch (...) {
-			continue;
-		}
-		if (best == nullptr || val > best_val) {
-			best = &geom;
-			best_val = val;
-		}
-	}
-	if (best != nullptr) {
-		return *best;
-	}
-	// No geometry carried a usable numeric LOD; fall back to the first one.
-	return geometry.front();
-}
-
 // ============================================================
 // Extension
 // ============================================================

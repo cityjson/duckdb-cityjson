@@ -32,7 +32,6 @@ public:
 
 	std::string Name() const override;
 	CityJSON ReadMetadata() const override;
-	CityJSONFeatureChunk ReadNthChunk(size_t n) const override;
 	CityJSONFeatureChunk ReadAllChunks() const override;
 	std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
 	std::vector<Column> Columns() const override;

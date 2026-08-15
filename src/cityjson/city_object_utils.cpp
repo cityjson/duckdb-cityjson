@@ -83,28 +83,6 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 }
 
 // ============================================================
-// CityObjectUtils - Geometry Extraction
-// ============================================================
-
-json CityObjectUtils::GetGeometryValue(const CityObject &obj, const Column &col) {
-	// Parse LOD from column name (e.g., "geom_lod2_1" -> "2.1")
-	if (!IsGeometryColumn(col.name)) {
-		throw CityJSONError::InvalidSchema("Not a geometry column: " + col.name);
-	}
-
-	std::string lod = ParseLODFromColumnName(col.name);
-
-	// Find geometry with matching LOD
-	const auto *geom_opt = obj.GetGeometryAtLOD(lod);
-	if (geom_opt == nullptr) {
-		return json(nullptr);
-	}
-
-	// Return geometry as JSON object
-	return geom_opt->ToJson();
-}
-
-// ============================================================
 // CityObjectUtils - Schema Inference
 // ============================================================
 

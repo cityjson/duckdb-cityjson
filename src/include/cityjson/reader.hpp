@@ -42,16 +42,6 @@ public:
 	virtual CityJSON ReadMetadata() const = 0;
 
 	/**
-	 * Read the Nth chunk from the file
-	 * Chunks are divided by STANDARD_VECTOR_SIZE (2048 CityObjects per chunk)
-	 *
-	 * @param n Chunk index (0-based)
-	 * @return CityJSONFeatureChunk containing the Nth chunk
-	 * @throws CityJSONError on read or parse failure
-	 */
-	virtual CityJSONFeatureChunk ReadNthChunk(size_t n) const = 0;
-
-	/**
 	 * Read all chunks from the file
 	 * Loads entire file and divides into chunks
 	 *
@@ -123,7 +113,6 @@ public:
 
 	std::string Name() const override;
 	CityJSON ReadMetadata() const override;
-	CityJSONFeatureChunk ReadNthChunk(size_t n) const override;
 	CityJSONFeatureChunk ReadAllChunks() const override;
 	std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
 	std::vector<Column> Columns() const override;
@@ -167,7 +156,6 @@ public:
 
 	std::string Name() const override;
 	CityJSON ReadMetadata() const override;
-	CityJSONFeatureChunk ReadNthChunk(size_t n) const override;
 	CityJSONFeatureChunk ReadAllChunks() const override;
 	std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
 	std::vector<Column> Columns() const override;
