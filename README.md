@@ -666,6 +666,29 @@ atomicity matters, that is DuckLake's job.
 
 Two specification divergences found while building this are recorded in `docs/CITYPARQUET_SPEC_QUESTIONS.md`; one — whether a parent's `bbox` includes its descendants' geometry — is a genuine contradiction in the spec and currently makes `cityparquet_reconcile` disagree with the reader on non-leaf rows.
 
+### Compatibility with previously written packages
+
+Packages written by **older versions of this extension** differ from what the current code
+writes, in three ways. None of them is repaired automatically:
+
+- **Winding.** Pre-fix packages carry rings in reversed (left-handed) vertex order while
+  declaring `orientation_3d: "right-handed"`. They round-trip through the old decoder, but
+  read mirror-wound in any spec-conformant reader. Current code preserves the source order
+  on both sides. There is no migration tooling — **re-convert from source to repair**.
+- **`object_type` vocabulary.** Pre-fix packages store the CityJSON spellings
+  (`BuildingStorey`, `TransportSquare`, `GenericCityObject`, `TunnelHollowSpace`); current
+  packages store the CityGML class names (`Storey`, `Square`, `GenericOccupiedSpace`,
+  `HollowSpace`). Reads and module routing tolerate both, and the reverse map applied on
+  export is the identity on the old spellings, so an old package still exports correct
+  CityJSON. Predicates are what does not carry over: `object_type = 'Storey'` matches
+  new-format rows only, `object_type = 'BuildingStorey'` old-format rows only.
+- **`feature_id`.** Packages exported from a whole CityJSON file (not CityJSONSeq) by a
+  pre-fix version carry the source **file path** as every row's `feature_id`. Current
+  versions derive the root-parent id per object.
+
+The `object_type` reverse map lives in the shared COPY sink, so it applies to all three
+output formats — `cityjson`, `cityjsonseq` and `flatcitybuf`.
+
 ## Appearance normalisation
 
 CityJSON carries appearance as **feature-local indices** into per-feature arrays.

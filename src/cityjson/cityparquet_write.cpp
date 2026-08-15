@@ -612,10 +612,10 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			asset["href"] = written.file;
 			asset["type"] = "application/vnd.apache.parquet";
 			asset["file:size"] = written.bytes;
-			// No per-asset row count: the spec forbids declaring the Table extension
-			// merely to publish one (05-metadata.mdx); a sidecar's rows are
-			// definitions, not city objects, and the package count is
-			// city3d:city_objects.
+			// No per-asset row count: the spec says a writer SHOULD NOT declare the
+			// Table extension merely to publish a row count (05-metadata.mdx); a
+			// sidecar's rows are definitions, not city objects, and the package
+			// count is city3d:city_objects.
 			assets[written.file] = std::move(asset);
 		}
 		item["assets"] = std::move(assets);

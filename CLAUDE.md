@@ -166,7 +166,7 @@ workspace repo. Under `'arrow-native'`:
   covers `MultiSurface`/`CompositeSurface`/`Solid`/`MultiSolid`/`CompositeSolid`
   and rejects anything else.
 - Rings keep CityJSON's winding and do **not** repeat the closing vertex, unlike
-  the WKB path, which reverses and closes them.
+  the WKB path, which also preserves source order but closes them.
 - `cityjson_geoparquet_geo` takes the same parameter and declares **no** column
   in `geo` under `arrow-native`: legality is a property of the encoding, not the
   CM type. Its `city` column still declares every geometry column, with
