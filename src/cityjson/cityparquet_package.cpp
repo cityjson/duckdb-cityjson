@@ -36,8 +36,9 @@ const std::vector<std::string> &SidecarTableNames() {
 
 std::string ModuleForObjectType(const std::string &object_type) {
 	// The specification's by-module table. Keyed on the CityGML 3.0 class name, but the
-	// four CityJSON spellings that differ are accepted too, because that is what the
-	// reader emits -- it does not currently rewrite the type on import.
+	// four CityJSON spellings that differ are accepted too, because read_cityjson emits
+	// the source spelling; insert_cityjson rewrites it to the CityGML class at the
+	// staging boundary.
 	static const std::map<std::string, std::string> modules = {
 	    {"building", "building"},
 	    {"buildingpart", "building"},
@@ -82,6 +83,28 @@ std::string ModuleForObjectType(const std::string &object_type) {
 	// error, never a silent drop. Extension types are not resolvable here -- doing so
 	// needs the document's `extensions` declarations, which this mapping does not see.
 	return found == modules.end() ? std::string() : found->second;
+}
+
+std::string CityGMLClassForCityJSONType(const std::string &cityjson_type) {
+	static const std::map<std::string, std::string> remapped = {
+	    {"TransportSquare", "Square"},
+	    {"GenericCityObject", "GenericOccupiedSpace"},
+	    {"BuildingStorey", "Storey"},
+	    {"TunnelHollowSpace", "HollowSpace"},
+	};
+	auto found = remapped.find(cityjson_type);
+	return found == remapped.end() ? cityjson_type : found->second;
+}
+
+std::string CityJSONTypeForCityGMLClass(const std::string &citygml_class) {
+	static const std::map<std::string, std::string> remapped = {
+	    {"Square", "TransportSquare"},
+	    {"GenericOccupiedSpace", "GenericCityObject"},
+	    {"Storey", "BuildingStorey"},
+	    {"HollowSpace", "TunnelHollowSpace"},
+	};
+	auto found = remapped.find(citygml_class);
+	return found == remapped.end() ? citygml_class : found->second;
 }
 
 std::string QualifiedName(const std::string &schema, const std::string &table) {

@@ -47,6 +47,18 @@ const std::vector<std::string> &SidecarTableNames();
 //! specification, so callers must treat that as an error rather than dropping the rows.
 std::string ModuleForObjectType(const std::string &object_type);
 
+//! CityGML 3.0 class name for a CityJSON type. Exactly four spellings differ
+//! (TransportSquare->Square, GenericCityObject->GenericOccupiedSpace,
+//! BuildingStorey->Storey, TunnelHollowSpace->HollowSpace); everything else --
+//! including extension types -- is returned unchanged. Spec
+//! 02-object-table-schema.mdx "object_type vocabulary"; mirrors cityparquet-rs
+//! encode.rs.
+std::string CityGMLClassForCityJSONType(const std::string &cityjson_type);
+
+//! The inverse, for export back to CityJSON. Identity for everything but the four
+//! remapped classes; mirrors cityparquet-rs decode.rs.
+std::string CityJSONTypeForCityGMLClass(const std::string &citygml_class);
+
 //! Object tables actually present in `schema`, sorted. Throws BinderException when the
 //! schema contains none — that is not a CityParquet package.
 std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema);

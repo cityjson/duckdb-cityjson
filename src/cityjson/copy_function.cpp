@@ -1,5 +1,6 @@
 #include "cityjson/copy_function.hpp"
 #include "cityjson/cityjson_writer.hpp"
+#include "cityjson/cityparquet_package.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -760,7 +761,9 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 
 		std::string city_obj_id = id_val.ToString();
 		std::string feature_id = feature_id_val.ToString();
-		std::string object_type = object_type_val.ToString();
+		// The stored vocabulary is the CityGML class name; restore the CityJSON
+		// spelling for the four classes that differ (identity for everything else).
+		std::string object_type = CityJSONTypeForCityGMLClass(object_type_val.ToString());
 
 		// Build CityObject JSON
 		json city_obj;

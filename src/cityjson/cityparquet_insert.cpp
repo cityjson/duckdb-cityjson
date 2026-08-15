@@ -171,7 +171,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			                      "load the file with read_cityjson and insert the rows explicitly",
 			                      object_type, path);
 		}
-		types_by_module[module].push_back(object_type);
+		types_by_module[module].push_back(CityGMLClassForCityJSONType(object_type));
 	}
 	if (!options.tables.empty()) {
 		for (auto it = types_by_module.begin(); it != types_by_module.end();) {
@@ -232,9 +232,18 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 
 	// ---- Phase 1: staging ---------------------------------------------------
 	// The read runs once, into a temp table, rather than once per module table: a scan
-	// per module would re-parse the whole file for each one.
-	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * FROM " +
-	       ReadCall(reader_function, path, options, sidecar_appearance) + ";\n";
+	// per module would re-parse the whole file for each one. object_type is rewritten
+	// to the CityGML 3.0 class name here, at the boundary (spec
+	// 02-object-table-schema.mdx), so every routed literal below matches the staged
+	// value and the package stores the spec vocabulary.
+	const std::string remap_expr = "CASE object_type"
+	                               " WHEN 'TransportSquare' THEN 'Square'"
+	                               " WHEN 'GenericCityObject' THEN 'GenericOccupiedSpace'"
+	                               " WHEN 'BuildingStorey' THEN 'Storey'"
+	                               " WHEN 'TunnelHollowSpace' THEN 'HollowSpace'"
+	                               " ELSE object_type END";
+	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * REPLACE (" + remap_expr +
+	       " AS object_type) FROM " + ReadCall(reader_function, path, options, sidecar_appearance) + ";\n";
 	for (const auto &sidecar : source_sidecars) {
 		sql += "CREATE OR REPLACE TEMP TABLE " + StageTable(sidecar) + " AS SELECT * FROM " +
 		       SidecarFunction(sidecar) + "(" + Literal(path) + ");\n";
