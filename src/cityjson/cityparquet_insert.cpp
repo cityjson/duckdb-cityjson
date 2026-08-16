@@ -260,48 +260,20 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			// A referenceSystem this writer cannot resolve leaves the source CRS unknown,
 			// which the rules below handle as an unknown rather than as a value.
 		}
-		// The tri-state `crs` (spec 05-metadata.mdx, "CRS rules") decides the rest:
-		//
-		//   known vs known      -- equal passes, different is a mismatch;
-		//   known vs unknown    -- refused either way round. A package states ONE CRS for
-		//                          all of its rows, and an unknown cannot be shown to be
-		//                          that CRS; inserting would file coordinates under a CRS
-		//                          nobody established, the guess the spec forbids;
-		//   unknown vs unknown  -- allowed. The footer's `crs: null` stays true of every
-		//                          row, so nothing false is recorded, and refusing would
-		//                          make an unknown-CRS package un-insertable for good.
-		//
-		// `d` is read only from OBJECT-table footers that actually declare a CRS: a
-		// sidecar legitimately carries no `crs` key at all, and a DISTINCT spanning both
-		// returns two rows, which as a scalar subquery is an error in its own right.
-		// `stated` separates a destination that declares its CRS unknown from one whose
-		// footer is missing entirely (a hand-rolled load) -- the latter states nothing, so
-		// there is nothing to check against and the insert proceeds.
-		const auto bookkeeping = QualifiedName(schema, "__cityparquet");
-		sql += "SELECT error(CASE\n"
-		       "  WHEN d IS NOT NULL AND s IS NOT NULL THEN\n"
-		       "    'insert_cityjson: CRS mismatch -- the destination is ' || d || ' and the source is ' || s ||\n"
-		       "    '; reprojection is not performed'\n"
-		       "  WHEN d IS NOT NULL THEN\n"
-		       "    'insert_cityjson: the destination is ' || d || ' but the source declares no CRS this writer can '\n"
-		       "    'resolve -- inserting would file coordinates of unknown CRS under the destination CRS; give the '\n"
-		       "    'source a metadata.referenceSystem, or insert into a package whose CRS is unknown too'\n"
-		       "  ELSE\n"
-		       "    'insert_cityjson: the destination package CRS is unknown (its footer declares \"crs\": null) and '\n"
-		       "    'the source is ' || s || ' -- a package states one CRS for every row, so give it that CRS with '\n"
-		       "    'cityparquet_write(..., crs => ...) and reload it before inserting'\n"
-		       "END) FROM (SELECT\n"
-		       "  (SELECT DISTINCT cityparquet_city_field(city, 'crs') FROM " +
-		       bookkeeping +
-		       "\n     WHERE role = 'object' AND city IS NOT NULL AND cityparquet_city_field(city, 'crs') IS NOT NULL)"
-		       " AS d,\n"
-		       "  (SELECT COUNT(*) FROM " +
-		       bookkeeping +
-		       " WHERE role = 'object' AND city IS NOT NULL) AS stated,\n"
-		       "  " +
-		       source_crs +
-		       " AS s\n"
-		       ") WHERE stated > 0 AND d IS DISTINCT FROM s;\n";
+		// The tri-state rule, and the two ways of misreading a package's declared CRS,
+		// live in cityparquet_sql_common alongside cityparquet_merge's use of them.
+		// A CityJSON source always STATES something -- it has CRS-bearing coordinates, and
+		// either a CRS this writer can resolve or an unknown one -- so unlike a package it
+		// is never the "states nothing" case.
+		CrsCheckWording wording;
+		wording.function = "insert_cityjson";
+		wording.source_noun = "the source";
+		wording.source_unknown_hint = "give the source a metadata.referenceSystem, or insert into a "
+		                              "package whose CRS is unknown too";
+		wording.destination_unknown_hint = "give the package that CRS with cityparquet_write(..., crs => ...) "
+		                                   "and reload it before inserting";
+		sql += OneCrsPerPackageSQL(wording.function, schema, "destination");
+		sql += CrsPreconditionSQL(wording, DeclaredCrsExpr(schema), CrsStatedExpr(schema), source_crs, "TRUE");
 	}
 
 	// ---- Phase 3: schema evolution, before any INSERT -----------------------

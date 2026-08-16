@@ -81,25 +81,26 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 		       ");\n";
 	}
 
-	// One CRS per file, with no per-row escape hatch, so a mismatch is a hard error
-	// rather than a silently mis-georeferenced package. Skipped when either side's CRS is
-	// unknown -- a hand-rolled load leaves the footer NULL, and a footer that declares
-	// `"crs": null` is stating a known unknown (spec 05-metadata.mdx, "CRS rules"), which
-	// cityparquet_city_field reports as SQL NULL just the same. Neither is a mismatch:
-	// there is nothing to compare, and refusing the merge would not establish a CRS.
-	//
-	// insert_cityjson is stricter -- it refuses a known CRS on one side and an unknown on
-	// the other, because a package states one CRS for every row it holds. Both sides here
-	// are footers rather than a footer and a source, so this check has never had the
-	// comparison bug that one did; bringing it up to the same tri-state rule is a separate
-	// change, not done here.
-	sql += "SELECT error('cityparquet_merge: CRS mismatch -- the destination is ' || d || ' and the source is ' || s ||\n"
-	       "  '; reprojection is not performed') FROM (SELECT\n"
-	       "  (SELECT DISTINCT cityparquet_city_field(city, 'crs') FROM " +
-	       QualifiedName(destination, "__cityparquet") + " WHERE city IS NOT NULL) AS d,\n"
-	       "  (SELECT DISTINCT cityparquet_city_field(city, 'crs') FROM " +
-	       QualifiedName(source, "__cityparquet") + " WHERE city IS NOT NULL) AS s\n"
-	       ") WHERE d IS NOT NULL AND s IS NOT NULL AND d <> s;\n";
+	// One CRS per package, with no per-row escape hatch, so what comes in has to be in the
+	// CRS the destination already declares; reprojection is not performed. Both sides are
+	// footers here, so neither needs resolving first -- but both are read the same way
+	// insert_cityjson reads its destination, and for the same two reasons: a DISTINCT over
+	// every footer trips over a sidecar's crs-less one, and a stated `crs: null` has to be
+	// told apart from a footer that is simply missing. Same tri-state rule as insert, from
+	// the same builders, so the two cannot drift apart again.
+	sql += OneCrsPerPackageSQL("cityparquet_merge", destination, "destination");
+	sql += OneCrsPerPackageSQL("cityparquet_merge", source, "source");
+	{
+		CrsCheckWording wording;
+		wording.function = "cityparquet_merge";
+		wording.source_noun = "the source package";
+		wording.source_unknown_hint = "give the source package that CRS with cityparquet_write(..., crs => ...) "
+		                              "and reload it before merging";
+		wording.destination_unknown_hint = "give the destination package that CRS with "
+		                                   "cityparquet_write(..., crs => ...) and reload it before merging";
+		sql += CrsPreconditionSQL(wording, DeclaredCrsExpr(destination), CrsStatedExpr(destination),
+		                          DeclaredCrsExpr(source), CrsStatedExpr(source));
+	}
 
 	// ---- Phase 2: schema evolution, before any INSERT ----------------------
 	std::map<std::string, std::vector<ColumnInfo>> destination_columns;

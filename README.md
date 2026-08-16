@@ -616,7 +616,11 @@ PRAGMA cityparquet_merge('ams', 'utrecht');
 Merges one loaded package into another. Object ids must be unique across the **whole**
 destination package, not just the target module — `parents`, `children` and `feature_id`
 all resolve by bare id across files — and a collision refuses the entire merge rather than
-renaming silently.
+renaming silently. **The CRS rule is the one `insert_cityjson` applies**, with both sides
+now footers: equal CRSs merge, different ones are refused, and an unknown on either side
+is refused rather than assumed (a package that declares `"crs": null` and one that
+declares EPSG:7415 cannot become one package that honestly declares either). A package
+whose own object-table footers disagree about the CRS is refused by name.
 
 Sidecar ids are renumbered onto the destination's numbering and every reference in the
 incoming rows is shifted to match, so nothing is left pointing at the destination's own

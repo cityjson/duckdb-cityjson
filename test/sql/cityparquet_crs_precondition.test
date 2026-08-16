@@ -1,5 +1,6 @@
-# name: test/sql/cityparquet_insert_crs.test
-# description: insert_cityjson's one-CRS-per-package check, across the tri-state crs
+# name: test/sql/cityparquet_crs_precondition.test
+# description: the one-CRS-per-package precondition shared by insert_cityjson and
+#              cityparquet_merge, across the tri-state crs
 # group: [sql]
 
 require cityjson
@@ -159,3 +160,175 @@ query I
 SELECT COUNT(*) FROM hand.city_furniture;
 ----
 2
+
+# =============================================================================
+# cityparquet_merge — the same precondition, both sides now footers
+# =============================================================================
+
+# Merge compares two footers rather than a footer and a source file, so it never had
+# insert's URL-versus-PROJJSON bug. It did share the other one: a DISTINCT over EVERY
+# footer, which a package with a sidecar answers with two rows.
+
+statement ok
+CREATE SCHEMA md_src;
+
+statement ok
+CREATE TABLE md_src.building AS SELECT * FROM read_cityjson('test/data/multisolid.city.json');
+
+statement ok
+CREATE TABLE md_src.materials AS
+  SELECT * FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('md_src');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('md_src', '__TEST_DIR__/m_known', crs => 'EPSG:7415');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/m_known', 'm_known');
+
+# The same CRS on both sides, and the destination carries a sidecar whose footer has no
+# `crs` key at all.
+statement ok
+CREATE SCHEMA ms_src;
+
+statement ok
+CREATE TABLE ms_src.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+statement ok
+PRAGMA cityparquet_init('ms_src');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('ms_src', '__TEST_DIR__/m_same', crs => 'EPSG:7415');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/m_same', 'm_same');
+
+statement ok
+PRAGMA cityparquet_merge('m_known', 'm_same');
+
+query I
+SELECT COUNT(*) FROM m_known.building;
+----
+2
+
+# A genuinely different CRS is refused, by name.
+statement ok
+CREATE SCHEMA mo_src;
+
+statement ok
+CREATE TABLE mo_src.city_furniture AS SELECT * FROM read_cityjson('test/data/insert_crs_28992.city.json');
+
+statement ok
+PRAGMA cityparquet_init('mo_src');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('mo_src', '__TEST_DIR__/m_other', crs => 'EPSG:28992');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/m_other', 'm_other');
+
+statement error
+PRAGMA cityparquet_merge('m_known', 'm_other');
+----
+CRS mismatch
+
+# A package that declares its CRS unknown cannot be merged into one that knows its own,
+# and the refusal is the same tri-state rule insert applies.
+statement ok
+CREATE SCHEMA mn_src;
+
+statement ok
+CREATE TABLE mn_src.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+# Its own ids: the duplicate-id precondition runs before the CRS one, so an overlap would
+# refuse these merges for the wrong reason and prove nothing about the CRS rule.
+statement ok
+UPDATE mn_src.building SET id = 'null-1', feature_id = 'null-1';
+
+statement ok
+PRAGMA cityparquet_init('mn_src');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('mn_src', '__TEST_DIR__/m_null');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/m_null', 'm_null');
+
+statement error
+PRAGMA cityparquet_merge('m_known', 'm_null');
+----
+CRS is unknown
+
+# ... and the other way round, into the unknown-CRS package.
+statement error
+PRAGMA cityparquet_merge('m_null', 'm_same');
+----
+CRS is unknown
+
+# Two unknowns merge: the destination footer's `crs: null` stays true of every row.
+statement ok
+CREATE SCHEMA mu_src;
+
+statement ok
+CREATE TABLE mu_src.building AS SELECT * FROM read_cityjson('test/data/multisolid.city.json');
+
+statement ok
+UPDATE mu_src.building SET id = 'unk-1', feature_id = 'unk-1';
+
+statement ok
+PRAGMA cityparquet_init('mu_src');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('mu_src', '__TEST_DIR__/m_unk');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/m_unk', 'm_unk');
+
+statement ok
+PRAGMA cityparquet_merge('m_null', 'm_unk');
+
+query I
+SELECT COUNT(*) FROM m_null.building;
+----
+2
+
+# A hand-rolled destination states no CRS at all, so there is nothing to check.
+statement ok
+CREATE SCHEMA m_hand;
+
+statement ok
+CREATE TABLE m_hand.building AS SELECT * FROM read_cityjson('test/data/multisolid.city.json');
+
+statement ok
+PRAGMA cityparquet_init('m_hand');
+
+statement ok
+PRAGMA cityparquet_merge('m_hand', 'm_same');
+
+query I
+SELECT COUNT(*) FROM m_hand.building;
+----
+2
+
+# A package whose own object footers disagree is refused by name, rather than through the
+# scalar-subquery error a bare DISTINCT would raise.
+statement ok
+CREATE SCHEMA mixed;
+
+statement ok
+CREATE TABLE mixed.building AS SELECT * FROM read_cityjson('test/data/multisolid.city.json');
+
+statement ok
+PRAGMA cityparquet_init('mixed');
+
+statement ok
+INSERT INTO mixed.__cityparquet VALUES
+  ('city_furniture', 'city_furniture.parquet', 'object', '{"version":"0.1.0-draft","crs":{"id":{"authority":"EPSG","code":28992}}}'),
+  ('vegetation', 'vegetation.parquet', 'object', '{"version":"0.1.0-draft","crs":{"id":{"authority":"EPSG","code":7415}}}');
+
+statement error
+PRAGMA cityparquet_merge('mixed', 'm_same');
+----
+declares more than one CRS

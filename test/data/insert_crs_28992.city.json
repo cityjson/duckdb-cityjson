@@ -9,9 +9,9 @@
       "attributes": { "function": "bench" },
       "geometry": [
         {
-          "type": "MultiSurface",
+          "type": "Solid",
           "lod": "1",
-          "boundaries": [[[0, 1, 2, 3]]]
+          "boundaries": [[[[0, 1, 2, 3]]]]
         }
       ]
     }

@@ -125,12 +125,18 @@ cost of running on an internal connection and seeing only committed state.
   CityJSON source holds a `metadata.referenceSystem` URL. `insert_cityjson` resolves the
   source through `ProjjsonForReferenceSystem` and re-dumps it so both sides are the same
   canonical text (nlohmann orders object keys one way). Comparing the two raw made every
-  insert into a known-CRS package a bogus mismatch. Read `d` only from object-table
-  footers that actually declare a CRS: a sidecar carries no `crs` key, and a `DISTINCT`
-  spanning both returns two rows, which a scalar subquery rejects. Insert then applies the
-  tri-state rule — known vs known compares, known vs unknown is refused either way round,
-  unknown vs unknown passes; **`cityparquet_merge` has not been brought in line** and
-  still only refuses two differing known CRSs.
+  insert into a known-CRS package a bogus mismatch.
+- **The one-CRS-per-package precondition is shared** — `DeclaredCrsExpr` /
+  `CrsStatedExpr` / `OneCrsPerPackageSQL` / `CrsPreconditionSQL` in
+  `cityparquet_sql_common`, used by both `insert_cityjson` and `cityparquet_merge`, which
+  had drifted into two subtly different (and both wrong) readings of the same footers.
+  Read the declared CRS **only from object-table footers that declare one**: a sidecar
+  carries no `crs` key, so a `DISTINCT` spanning every footer answers an ordinary package
+  with two rows and the scalar subquery dies with "More than one row returned by a
+  subquery" — a CRS bug that does not mention CRSs. Both then apply the tri-state rule:
+  known vs known compares, known vs unknown is refused **either way round** (an unknown
+  cannot be shown to be the package's one CRS), unknown vs unknown passes, and a side
+  whose footers are missing entirely states nothing and is not checked.
 - **The one diagnostic channel is `DUCKDB_LOG_WARNING(context, …)`** (`duckdb/logging/
   logger.hpp`). The CLI enables logging at `WARNING` with its own storage and prints it;
   a test asserts it with `SET enable_logging = true; SET logging_level = 'WARNING';` and a
