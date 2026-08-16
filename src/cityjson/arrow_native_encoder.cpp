@@ -100,15 +100,28 @@ public:
 		return shell;
 	}
 
-	CompactedSolid Solid(const json &solid_json) {
+	//! One solid holding exactly ONE shell, into which every source shell's faces are
+	//! flattened -- the exterior shell first, then each cavity, in source order.
+	//!
+	//! The shell dimension of the arrow-native geometry column is padding, not
+	//! structure. It is length 1 for every solid, and the real per-shell face counts
+	//! survive in `geometry_properties.shells` (spec §8). This mirrors both the WKB
+	//! path (which flattens a Solid's shells into one PolyhedralSurface) and
+	//! cityparquet-rs's `push_padded_solid`, and duckdb-3d's ST_3DFromArrowNative
+	//! depends on it: given `shells` metadata it requires exactly one padded shell
+	//! per solid, because otherwise the cavity's faces are counted twice.
+	CompactedSolid PaddedSolid(const json &solid_json) {
 		if (!solid_json.is_array()) {
 			throw CityJSONError::InvalidGeometry("Solid is not an array: " + solid_json.dump());
 		}
-		CompactedSolid solid;
-		solid.shells.reserve(solid_json.size());
+		CompactedShell flattened;
 		for (const auto &shell_json : solid_json) {
-			solid.shells.push_back(Shell(shell_json));
+			CompactedShell shell = Shell(shell_json);
+			flattened.faces.insert(flattened.faces.end(), std::make_move_iterator(shell.faces.begin()),
+			                       std::make_move_iterator(shell.faces.end()));
 		}
+		CompactedSolid solid;
+		solid.shells.push_back(std::move(flattened));
 		return solid;
 	}
 
@@ -143,14 +156,18 @@ CompactedGeometry ArrowNativeEncoder::Encode(const Geometry &geometry,
 		solid.shells.push_back(compactor.Shell(geometry.boundaries));
 		result.solids.push_back(std::move(solid));
 	} else if (geometry.type == "Solid") {
-		// boundaries is a list of shells: index 0 exterior, the rest cavities. Only
-		// the solid dimension is padding here -- the shell dimension is real.
-		result.solids.push_back(compactor.Solid(geometry.boundaries));
+		// boundaries is a list of shells: index 0 exterior, the rest cavities. BOTH
+		// the solid and the shell dimension are padding -- every shell's faces are
+		// flattened into one, and the partition stays in geometry_properties.shells.
+		// See PaddedSolid for why.
+		result.solids.push_back(compactor.PaddedSolid(geometry.boundaries));
 	} else if (geometry.type == "MultiSolid" || geometry.type == "CompositeSolid") {
-		// boundaries is a list of solids. No padding at all.
+		// boundaries is a list of solids. The solid dimension is the only real one:
+		// each member keeps its own entry, and each member's shells are flattened
+		// into that member's single padded shell.
 		result.solids.reserve(geometry.boundaries.size());
 		for (const auto &solid_json : geometry.boundaries) {
-			result.solids.push_back(compactor.Solid(solid_json));
+			result.solids.push_back(compactor.PaddedSolid(solid_json));
 		}
 	} else {
 		throw CityJSONError::InvalidGeometry(

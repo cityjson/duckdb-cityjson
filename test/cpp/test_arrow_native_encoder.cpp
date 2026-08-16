@@ -68,12 +68,17 @@ static void TestNeverMergesEqualCoordinates() {
 	CHECK((compacted.solids[0].shells[0].faces[0].rings[0] == std::vector<uint32_t> {0, 1, 2}));
 }
 
-// For a real Solid the shell dimension is not padding -- it carries the exterior
-// shell and any cavities. Unlike the WKB path, which flattens every shell into one
-// face list and recovers the structure only from geometry_properties.shells, the
-// nesting holds it directly.
-static void TestSolidKeepsShellStructure() {
-	std::printf("Solid keeps its shell structure\n");
+// For a Solid the shell dimension is padding too: every shell's faces -- the
+// exterior shell first, then each cavity -- are flattened into ONE shell, exactly
+// as the WKB path flattens them into one PolyhedralSurface, and the partition is
+// recovered only from geometry_properties.shells.
+//
+// This is a cross-producer contract, not an internal detail. cityparquet-rs does
+// the same (push_padded_solid, arrow_geom_write.rs) and duckdb-3d's
+// ST_3DFromArrowNative rejects anything else when shells metadata is present --
+// genuine nesting would count a cavity's faces twice.
+static void TestSolidFlattensShellsIntoOnePaddedShell() {
+	std::printf("Solid flattens its shells into one padded shell\n");
 	std::vector<std::array<double, 3>> vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {0, 1, 1}};
 	auto geom = MakeGeometry("Solid", "[ [[[0,1,2]]], [[[3,4,5]]] ]");
 
@@ -81,10 +86,11 @@ static void TestSolidKeepsShellStructure() {
 
 	CHECK(compacted.vertices.size() == 6);
 	CHECK(compacted.solids.size() == 1);
-	CHECK(compacted.solids[0].shells.size() == 2);
-	CHECK(compacted.solids[0].shells[0].faces.size() == 1);
-	CHECK(compacted.solids[0].shells[1].faces.size() == 1);
-	CHECK((compacted.solids[0].shells[1].faces[0].rings[0] == std::vector<uint32_t> {3, 4, 5}));
+	CHECK(compacted.solids[0].shells.size() == 1); // padding dimension
+	CHECK(compacted.solids[0].shells[0].faces.size() == 2);
+	// Source order is preserved across the flattening: exterior face, then cavity.
+	CHECK((compacted.solids[0].shells[0].faces[0].rings[0] == std::vector<uint32_t> {0, 1, 2}));
+	CHECK((compacted.solids[0].shells[0].faces[1].rings[0] == std::vector<uint32_t> {3, 4, 5}));
 }
 
 // A face's rings beyond the first are interior rings (holes); they share the
@@ -195,7 +201,7 @@ static void TestShortRingSurvivesNormalisation() {
 int main() {
 	TestMultiSurfaceSharedVertices();
 	TestNeverMergesEqualCoordinates();
-	TestSolidKeepsShellStructure();
+	TestSolidFlattensShellsIntoOnePaddedShell();
 	TestFaceWithInteriorRing();
 	TestMultiSolid();
 	TestPoolHoldsOnlyReferencedVertices();

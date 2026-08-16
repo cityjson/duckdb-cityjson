@@ -278,3 +278,55 @@ SELECT count(*) FROM (
 ) WHERE lower(column_name) = 'geometry_vertices_lod2_2';
 ----
 0
+
+# --- shell padding: a Solid's shells are FLATTENED, not nested ------------------
+#
+# This is the cross-producer contract, and it is not intuitive. A CityJSON
+# `Solid` carries a list of shells (index 0 exterior, the rest cavities), but
+# the arrow-native geometry column pads BOTH the solid and the shell level to
+# length 1 for every Solid: all shells' faces go into that one shell, exactly as
+# the WKB path flattens them into one PolyhedralSurface. The real partition
+# survives only in `geometry_properties.shells`.
+#
+# cityparquet-rs does the same (`push_padded_solid` in arrow_geom_write.rs), and
+# duckdb-3d's ST_3DFromArrowNative REQUIRES it -- it raises "expected exactly one
+# padded shell per solid when geometry_properties.shells is present" otherwise.
+# Emitting genuine nesting here would double-count the cavity's faces against the
+# shells metadata, so a hollow solid would not cross to duckdb-3d at all.
+
+statement ok
+CREATE TABLE hollow AS SELECT * FROM read_cityjson(
+  'test/data/hollow_solid.city.json', lod => '2', geometry_encoding := 'arrow-native');
+
+# One solid, and exactly one (padded) shell inside it, holding all 12 faces of
+# both shells -- 6 exterior + 6 cavity.
+query III
+SELECT len(geometry_lod2_0)       AS solids,
+       len(geometry_lod2_0[1])    AS shells,
+       len(geometry_lod2_0[1][1]) AS faces
+FROM hollow;
+----
+1	1	12
+
+# The partition that the padding drops is preserved in the metadata, per spec §8.
+query T
+SELECT geometry_properties_lod2_0.shells::VARCHAR FROM hollow;
+----
+[[6, 6]]
+
+# The vertex pool still compacts the distinct source indices actually referenced.
+query I
+SELECT len(geometry_vertices_lod2_0) FROM hollow;
+----
+16
+
+statement ok
+DROP TABLE hollow;
+
+# A MultiSolid keeps one solid per member, each member's shells likewise padded
+# to a single shell -- the solid dimension is the only real one there.
+query II
+SELECT len(geometry_lod2_2) AS solids, len(geometry_lod2_2[1]) AS shells_in_first
+FROM read_cityjson('test/data/multisolid.city.json', lod => '2.2', geometry_encoding := 'arrow-native');
+----
+2	1
