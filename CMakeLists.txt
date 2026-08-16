@@ -186,23 +186,32 @@ if(CITYJSON_ENABLE_FCB)
 
   # DUCKDB_EXTRA_LINK_FLAGS only reaches the binaries that actually reference it.
   # tools/shell/CMakeLists.txt:32 and tools/CMakeLists.txt:8 do, so the `duckdb`
-  # shell links; duckdb/test/CMakeLists.txt:56 does NOT --
-  #   target_link_libraries(unittest duckdb_static test_helpers)
-  # -- so the test runner links the cityjson archive without flatcitybuf behind it
-  # and fails on undefined fcb:: symbols, i.e. the whole SQL suite is unbuildable
-  # whenever FCB is on (which is the default). The duckdb/ submodule is upstream and
-  # not ours to patch, so fix it up from here instead.
+  # shell links. Two upstream targets do NOT, and both link the cityjson archive:
   #
-  # The `unittest` target does not exist yet at this point -- duckdb/test is added
+  #   duckdb/test/CMakeLists.txt:56  target_link_libraries(unittest duckdb_static test_helpers)
+  #   duckdb/src/CMakeLists.txt:107  add_library(duckdb SHARED ...)
+  #                                  target_link_libraries(duckdb PUBLIC ${DUCKDB_SYSTEM_LIBS})
+  #
+  # Without the fixup below, `unittest` fails on undefined fcb:: symbols (the whole
+  # SQL suite unbuildable) and the `duckdb` SHARED target -- src/libduckdb.{so,dylib}
+  # -- fails the same way, which breaks a plain `make release` even though every
+  # target anyone runs has already been built, and takes the test/cpp/*.sh harnesses
+  # (they link -lduckdb) with it. The duckdb/ submodule is upstream and not ours to
+  # patch, so fix both up from here instead.
+  #
+  # Neither target exists yet at this point -- duckdb/src and duckdb/test are added
   # later in the configure -- so the fixup is deferred to the end of the top-level
-  # directory's processing, by which time it does. Guarded by if(TARGET) because
-  # duckdb builds with tests disabled never create it.
-  function(cityjson_fcb_link_unittest)
-    if(TARGET unittest)
-      set_property(TARGET unittest APPEND PROPERTY LINK_LIBRARIES ${DUCKDB_EXTRA_LINK_FLAGS})
-    endif()
+  # directory's processing, by which time they do. Guarded by if(TARGET) because a
+  # duckdb configured without tests never creates `unittest`, and one built without
+  # BUILD_SHARED_LIBS never creates `duckdb`.
+  function(cityjson_fcb_link_upstream_targets)
+    foreach(_tgt unittest duckdb)
+      if(TARGET ${_tgt})
+        set_property(TARGET ${_tgt} APPEND PROPERTY LINK_LIBRARIES ${DUCKDB_EXTRA_LINK_FLAGS})
+      endif()
+    endforeach()
   endfunction()
-  cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL cityjson_fcb_link_unittest)
+  cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL cityjson_fcb_link_upstream_targets)
 
   target_compile_definitions(${EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
   target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
