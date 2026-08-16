@@ -117,8 +117,20 @@ cost of running on an internal connection and seeing only committed state.
   table, mirror the same value onto every `city.columns[]` / `geo.columns[]` entry, and
   never guess. An unresolvable CRS is a warning, not a conversion error; only an
   explicitly supplied `crs =>` that cannot be resolved still throws. On the read side
-  `cityparquet_city_field` maps both absent and null to SQL NULL, which is why the merge
-  and insert CRS-mismatch checks skip rather than fail on an unknown CRS.
+  `cityparquet_city_field` maps both absent and null to SQL NULL, so a footer that is
+  missing and one that declares `"crs": null` look the same through it — `insert_cityjson`
+  tells them apart by counting **object-table** footers separately (`role = 'object' AND
+  city IS NOT NULL`), because only the latter is a stated unknown.
+- **Comparing a CRS means comparing PROJJSON with PROJJSON.** A footer holds PROJJSON; a
+  CityJSON source holds a `metadata.referenceSystem` URL. `insert_cityjson` resolves the
+  source through `ProjjsonForReferenceSystem` and re-dumps it so both sides are the same
+  canonical text (nlohmann orders object keys one way). Comparing the two raw made every
+  insert into a known-CRS package a bogus mismatch. Read `d` only from object-table
+  footers that actually declare a CRS: a sidecar carries no `crs` key, and a `DISTINCT`
+  spanning both returns two rows, which a scalar subquery rejects. Insert then applies the
+  tri-state rule — known vs known compares, known vs unknown is refused either way round,
+  unknown vs unknown passes; **`cityparquet_merge` has not been brought in line** and
+  still only refuses two differing known CRSs.
 - **The one diagnostic channel is `DUCKDB_LOG_WARNING(context, …)`** (`duckdb/logging/
   logger.hpp`). The CLI enables logging at `WARNING` with its own storage and prints it;
   a test asserts it with `SET enable_logging = true; SET logging_level = 'WARNING';` and a

@@ -87,6 +87,12 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 	// `"crs": null` is stating a known unknown (spec 05-metadata.mdx, "CRS rules"), which
 	// cityparquet_city_field reports as SQL NULL just the same. Neither is a mismatch:
 	// there is nothing to compare, and refusing the merge would not establish a CRS.
+	//
+	// insert_cityjson is stricter -- it refuses a known CRS on one side and an unknown on
+	// the other, because a package states one CRS for every row it holds. Both sides here
+	// are footers rather than a footer and a source, so this check has never had the
+	// comparison bug that one did; bringing it up to the same tri-state rule is a separate
+	// change, not done here.
 	sql += "SELECT error('cityparquet_merge: CRS mismatch -- the destination is ' || d || ' and the source is ' || s ||\n"
 	       "  '; reprojection is not performed') FROM (SELECT\n"
 	       "  (SELECT DISTINCT cityparquet_city_field(city, 'crs') FROM " +

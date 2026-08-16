@@ -595,10 +595,16 @@ Worth knowing:
   cannot tell you that a rare type appears only in the tail.
 - **Ids are identity.** An incoming id that already exists in the destination refuses the
   entire insert.
-- **The CRS must match** the destination's, when the destination's footer records a known
-  one. A footer that is missing, or that declares `"crs": null` (the CRS is unknown), has
-  nothing to compare against, so the check is skipped rather than failed. Reprojection is
-  never performed.
+- **The CRS must match** the destination's, and reprojection is never performed. The
+  source's `metadata.referenceSystem` is resolved to PROJJSON first, so it is compared
+  against the footer's PROJJSON like with like. A package states **one** CRS for every row
+  it holds, so an unknown on either side is refused rather than assumed: a source with no
+  resolvable CRS cannot go into a package that declares one, and a source with a known CRS
+  cannot go into a package whose footer declares `"crs": null` (state the package's CRS
+  with `cityparquet_write(..., crs => …)` and reload it first). Two unknowns are fine —
+  the footer's `null` stays true of every row. A destination with **no footer at all**
+  (a hand-rolled load) states nothing, so there is nothing to check and the insert
+  proceeds.
 
 ### Merging packages
 

@@ -5,6 +5,8 @@
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
+#include "cityjson/crs_projjson.hpp"
+#include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/table_function.hpp"
@@ -230,24 +232,76 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		       Join(known, " UNION ALL ") + ");\n";
 	}
 
-	// One CRS per package. Skipped when the destination's CRS is unknown -- either
-	// because a hand-rolled read_parquet load left no footer, or because the footer
-	// declares `"crs": null`, the spec's tri-state way of saying the CRS is unknown
-	// (05-metadata.mdx). cityparquet_city_field reports both as SQL NULL, and neither is
-	// a mismatch to refuse the insert over.
-	if (facts.reference_system.has_value()) {
-		// The CRS goes in as a quoted literal, never spliced into an open string. A
-		// referenceSystem is source metadata, so an apostrophe in it would otherwise end
-		// the literal early and let the file's own text continue the generated script.
-		const auto crs = Literal(facts.reference_system.value());
-		sql += "SELECT error('insert_cityjson: CRS mismatch -- the destination is ' || d || ' and the source is ' || " +
-		       crs +
-		       " || '; reprojection is not performed') FROM (SELECT\n"
+	// One CRS per package: a footer states a single CRS for every row in its file, and
+	// reprojection is never performed, so what goes in has to be in the CRS that is
+	// already declared.
+	//
+	// Both sides must be spelled the same way before they can be compared. The
+	// destination's is PROJJSON, sitting in the footer; the source's is a CityJSON
+	// `metadata.referenceSystem`, which is an OGC URL or an EPSG spelling. This check
+	// used to compare the two directly, which made EVERY insert into a package with a
+	// known CRS a bogus mismatch -- invisible only because a hand-rolled destination
+	// carries no footer to compare against. The source is therefore resolved through the
+	// same ProjjsonForReferenceSystem the writers use, and re-dumped, so both sides are
+	// the same canonical text for the same CRS.
+	{
+		std::string source_crs = "NULL::VARCHAR";
+		if (facts.reference_system.has_value()) {
+			auto projjson = ProjjsonForReferenceSystem(facts.reference_system.value());
+			if (projjson.has_value()) {
+				// Re-dumped rather than passed through: nlohmann orders object keys one
+				// way, which is also how the footer's copy was written and how
+				// cityparquet_city_field hands it back. A referenceSystem is source
+				// metadata, so it goes in as a quoted literal either way -- an apostrophe
+				// in it must not end the literal early and let the file's own text
+				// continue the generated script.
+				source_crs = Literal(json_utils::ParseJson(projjson.value()).dump());
+			}
+			// A referenceSystem this writer cannot resolve leaves the source CRS unknown,
+			// which the rules below handle as an unknown rather than as a value.
+		}
+		// The tri-state `crs` (spec 05-metadata.mdx, "CRS rules") decides the rest:
+		//
+		//   known vs known      -- equal passes, different is a mismatch;
+		//   known vs unknown    -- refused either way round. A package states ONE CRS for
+		//                          all of its rows, and an unknown cannot be shown to be
+		//                          that CRS; inserting would file coordinates under a CRS
+		//                          nobody established, the guess the spec forbids;
+		//   unknown vs unknown  -- allowed. The footer's `crs: null` stays true of every
+		//                          row, so nothing false is recorded, and refusing would
+		//                          make an unknown-CRS package un-insertable for good.
+		//
+		// `d` is read only from OBJECT-table footers that actually declare a CRS: a
+		// sidecar legitimately carries no `crs` key at all, and a DISTINCT spanning both
+		// returns two rows, which as a scalar subquery is an error in its own right.
+		// `stated` separates a destination that declares its CRS unknown from one whose
+		// footer is missing entirely (a hand-rolled load) -- the latter states nothing, so
+		// there is nothing to check against and the insert proceeds.
+		const auto bookkeeping = QualifiedName(schema, "__cityparquet");
+		sql += "SELECT error(CASE\n"
+		       "  WHEN d IS NOT NULL AND s IS NOT NULL THEN\n"
+		       "    'insert_cityjson: CRS mismatch -- the destination is ' || d || ' and the source is ' || s ||\n"
+		       "    '; reprojection is not performed'\n"
+		       "  WHEN d IS NOT NULL THEN\n"
+		       "    'insert_cityjson: the destination is ' || d || ' but the source declares no CRS this writer can '\n"
+		       "    'resolve -- inserting would file coordinates of unknown CRS under the destination CRS; give the '\n"
+		       "    'source a metadata.referenceSystem, or insert into a package whose CRS is unknown too'\n"
+		       "  ELSE\n"
+		       "    'insert_cityjson: the destination package CRS is unknown (its footer declares \"crs\": null) and '\n"
+		       "    'the source is ' || s || ' -- a package states one CRS for every row, so give it that CRS with '\n"
+		       "    'cityparquet_write(..., crs => ...) and reload it before inserting'\n"
+		       "END) FROM (SELECT\n"
 		       "  (SELECT DISTINCT cityparquet_city_field(city, 'crs') FROM " +
-		       QualifiedName(schema, "__cityparquet") +
-		       " WHERE city IS NOT NULL) AS d\n"
-		       ") WHERE d IS NOT NULL AND d <> " +
-		       crs + ";\n";
+		       bookkeeping +
+		       "\n     WHERE role = 'object' AND city IS NOT NULL AND cityparquet_city_field(city, 'crs') IS NOT NULL)"
+		       " AS d,\n"
+		       "  (SELECT COUNT(*) FROM " +
+		       bookkeeping +
+		       " WHERE role = 'object' AND city IS NOT NULL) AS stated,\n"
+		       "  " +
+		       source_crs +
+		       " AS s\n"
+		       ") WHERE stated > 0 AND d IS DISTINCT FROM s;\n";
 	}
 
 	// ---- Phase 3: schema evolution, before any INSERT -----------------------
