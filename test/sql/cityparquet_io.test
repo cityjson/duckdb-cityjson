@@ -167,6 +167,20 @@ CREATE TEMP TABLE item AS
   SELECT regexp_replace(content, '\s+', '', 'g') AS compact
   FROM read_text('__TEST_DIR__/agg/metadata.json');
 
+# Every asset declares STAC roles, and the `cityparquet-` prefixed one is how a
+# reader separates object tables from sidecars without parsing filenames
+# (05-metadata.mdx). Omitting them makes the package unreadable by the reference
+# implementation, which reports "package lists no object tables".
+query I
+SELECT compact LIKE '%"building.parquet":{%"roles":["data","cityparquet-objects"]%' FROM item;
+----
+true
+
+query I
+SELECT compact LIKE '%"materials.parquet":{%"roles":["data","cityparquet-sidecar"]%' FROM item;
+----
+true
+
 # city3d:city_objects sums every object table: 20 buildings and parts, plus the
 # Bridge and the CityFurniture. Sidecar rows are definitions, not city objects,
 # and are reported per asset instead.

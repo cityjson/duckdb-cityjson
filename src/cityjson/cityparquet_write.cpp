@@ -86,6 +86,10 @@ struct WrittenFile {
 	std::string action;
 	int64_t rows = 0;
 	int64_t bytes = 0;
+	//! Object table (a CityGML module) rather than an appearance/template sidecar.
+	//! Decides the asset's STAC roles in metadata.json, which is how a reader tells
+	//! the two apart without parsing filenames.
+	bool is_object = false;
 };
 
 //! The dataset-level view metadata.json carries, accumulated as the files are written.
@@ -574,6 +578,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		written.file = file;
 		written.action = "written";
 		written.rows = rows;
+		written.is_object = is_object;
 		if (fs.FileExists(path)) {
 			auto handle = fs.OpenFile(path, FileOpenFlags::FILE_FLAGS_READ);
 			written.bytes = static_cast<int64_t>(fs.GetFileSize(*handle));
@@ -663,6 +668,12 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			asset["href"] = written.file;
 			asset["type"] = "application/vnd.apache.parquet";
 			asset["file:size"] = written.bytes;
+			// Roles are load-bearing, not decoration: a reader discovers the package's
+			// object tables by the `cityparquet-objects` role and its sidecars by
+			// `cityparquet-sidecar` (spec 05-metadata.mdx). Without them a package is
+			// unreadable by the reference implementation, which reports "package lists
+			// no object tables". `data` is the conventional STAC role alongside.
+			asset["roles"] = json::array({"data", written.is_object ? "cityparquet-objects" : "cityparquet-sidecar"});
 			// No per-asset row count: the spec says a writer SHOULD NOT declare the
 			// Table extension merely to publish a row count (05-metadata.mdx); a
 			// sidecar's rows are definitions, not city objects, and the package
