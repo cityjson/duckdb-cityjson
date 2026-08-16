@@ -82,8 +82,11 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 	}
 
 	// One CRS per file, with no per-row escape hatch, so a mismatch is a hard error
-	// rather than a silently mis-georeferenced package. Skipped when either side's
-	// footer is unknown (a hand-rolled load leaves it NULL).
+	// rather than a silently mis-georeferenced package. Skipped when either side's CRS is
+	// unknown -- a hand-rolled load leaves the footer NULL, and a footer that declares
+	// `"crs": null` is stating a known unknown (spec 05-metadata.mdx, "CRS rules"), which
+	// cityparquet_city_field reports as SQL NULL just the same. Neither is a mismatch:
+	// there is nothing to compare, and refusing the merge would not establish a CRS.
 	sql += "SELECT error('cityparquet_merge: CRS mismatch -- the destination is ' || d || ' and the source is ' || s ||\n"
 	       "  '; reprojection is not performed') FROM (SELECT\n"
 	       "  (SELECT DISTINCT cityparquet_city_field(city, 'crs') FROM " +

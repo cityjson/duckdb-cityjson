@@ -9,6 +9,7 @@
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/wkb_encoder.hpp"
 #include "cityjson/wkb_extent.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 #include <limits>
@@ -58,10 +59,35 @@ double LodValue(const std::string &normalised_lod) {
 	}
 }
 
+// The file CRS both footer objects share, as the tri-state value spec 05-metadata.mdx
+// ("CRS rules") defines -- GeoParquet's own convention: a PROJJSON object when the CRS
+// is known, an explicit JSON `null` when the source declares none or declares one we
+// cannot resolve. Never omitted (an absent key asserts OGC:CRS84, which would silently
+// mis-georeference a projected national CRS) and never guessed. An unresolvable CRS is
+// declared rather than fatal -- the specification amends an earlier draft that made it a
+// hard conversion error -- and SHOULD be surfaced as a diagnostic, which is what the
+// warning below is: the CLI prints it and duckdb_logs records it.
+json ResolveFileCrs(ClientContext &context, const std::optional<std::string> &reference_system) {
+	if (!reference_system.has_value() || reference_system->empty()) {
+		DUCKDB_LOG_WARNING(context, "cityjson_geoparquet_geo: the source declares no referenceSystem, so `crs` is "
+		                            "written as an explicit null (CRS unknown) in both footer objects");
+		return nullptr;
+	}
+	auto projjson = ProjjsonForReferenceSystem(reference_system.value());
+	if (!projjson.has_value()) {
+		DUCKDB_LOG_WARNING(context,
+		                   "cityjson_geoparquet_geo: cannot resolve CRS '%s' to PROJJSON, so `crs` is written as an "
+		                   "explicit null (CRS unknown) in both footer objects rather than guessed",
+		                   reference_system.value());
+		return nullptr;
+	}
+	return json_utils::ParseJson(projjson.value());
+}
+
 // Build the GeoParquet `geo` JSON, or return nullopt when no column qualifies.
 // `lod_types` maps a normalised LoD string to the set of CityJSON geometry types
-// seen at that LoD. Throws when a present CRS cannot be resolved to PROJJSON.
-std::optional<std::string> BuildGeoMetadata(const std::optional<std::string> &reference_system,
+// seen at that LoD. `crs_value` is the resolved tri-state value above.
+std::optional<std::string> BuildGeoMetadata(const json &crs_value,
                                             const std::map<std::string, std::set<std::string>> &lod_types,
                                             GeometryEncoding encoding) {
 	// Determine the GeoParquet-legal columns first. A column is legal only if
@@ -96,24 +122,12 @@ std::optional<std::string> BuildGeoMetadata(const std::optional<std::string> &re
 	}
 
 	if (columns.empty()) {
-		// Solid-only (or geometry-less) dataset — no GeoParquet geo, and no CRS
-		// resolution attempted, so an unknown CRS here does not error.
+		// Solid-only (or geometry-less) dataset — no GeoParquet geo at all.
 		return std::nullopt;
 	}
 
-	// Resolve the CRS once (shared by every column). A referenceSystem that we
-	// cannot resolve is a hard error, never a silent omission (§13.3). Absent CRS
-	// is written as an explicit `null` rather than omitted, so it does not falsely
-	// assert GeoParquet's CRS84 default on a city model of unknown CRS.
-	json crs_value = nullptr;
-	if (reference_system.has_value() && !reference_system->empty()) {
-		auto projjson = ProjjsonForReferenceSystem(reference_system.value());
-		if (!projjson.has_value()) {
-			throw InvalidInputException("cityjson_geoparquet_geo: cannot resolve CRS '" + reference_system.value() +
-			                            "' to PROJJSON (unknown EPSG code)");
-		}
-		crs_value = json_utils::ParseJson(projjson.value());
-	}
+	// One CRS per file, mirrored onto every column -- including when it is null, which
+	// GeoParquet reads exactly as `city` does: CRS unknown (spec 05-metadata.mdx).
 	for (auto &entry : columns.items()) {
 		entry.value()["crs"] = crs_value;
 	}
@@ -138,19 +152,12 @@ const char *CityColumnTypeName(const std::string &cj_type) {
 
 // Build the `city` footer JSON for the COPY path (spec 05-metadata.mdx, "The city
 // object"). Unlike `geo`, EVERY LoD column is declared, Solid-family included, and
-// `encoding` records the real physical encoding. An unresolvable CRS leaves `crs`
-// null here; when any column is GeoParquet-legal BuildGeoMetadata has already
-// thrown for it, so this lenience only ever applies to solid-only files.
-std::string BuildCityMetadata(const std::optional<std::string> &reference_system,
-                              const std::map<std::string, std::set<std::string>> &lod_types,
+// `encoding` records the real physical encoding. `crs_value` is the shared tri-state
+// value: an unknown or unresolvable CRS is written here as an explicit null, which the
+// spec's CRS rules require of a file that holds CRS-bearing coordinates -- omitting the
+// key would instead assert GeoParquet's OGC:CRS84 default over it.
+std::string BuildCityMetadata(const json &crs_value, const std::map<std::string, std::set<std::string>> &lod_types,
                               GeometryEncoding encoding, const std::vector<std::string> &attributes) {
-	json crs_value = nullptr;
-	if (reference_system.has_value() && !reference_system->empty()) {
-		auto projjson = ProjjsonForReferenceSystem(reference_system.value());
-		if (projjson.has_value()) {
-			crs_value = json_utils::ParseJson(projjson.value());
-		}
-	}
 	json columns = json::array();
 	std::string primary;
 	double primary_lod = -1.0;
@@ -273,7 +280,10 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
 		throw BinderException("cityjson_geoparquet_geo: failed to read geometries: " + std::string(e.what()));
 	}
 
-	result->geo = BuildGeoMetadata(reference_system, lod_types, encoding);
+	// Resolved once, for both objects: `city.crs` and every `geo` column's mirror are
+	// the same value, so they cannot drift apart.
+	const auto crs_value = ResolveFileCrs(context, reference_system);
+	result->geo = BuildGeoMetadata(crs_value, lod_types, encoding);
 
 	std::vector<std::string> attributes;
 	for (const auto &col : reader->Columns()) {
@@ -281,7 +291,7 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
 			attributes.push_back(col.name);
 		}
 	}
-	result->city = BuildCityMetadata(reference_system, lod_types, encoding, attributes);
+	result->city = BuildCityMetadata(crs_value, lod_types, encoding, attributes);
 
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
 	names = {"geo", "city"};

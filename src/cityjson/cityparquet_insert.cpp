@@ -230,8 +230,11 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		       Join(known, " UNION ALL ") + ");\n";
 	}
 
-	// One CRS per package. Skipped when the destination's footer is unknown, which is
-	// what a hand-rolled read_parquet load leaves behind.
+	// One CRS per package. Skipped when the destination's CRS is unknown -- either
+	// because a hand-rolled read_parquet load left no footer, or because the footer
+	// declares `"crs": null`, the spec's tri-state way of saying the CRS is unknown
+	// (05-metadata.mdx). cityparquet_city_field reports both as SQL NULL, and neither is
+	// a mismatch to refuse the insert over.
 	if (facts.reference_system.has_value()) {
 		// The CRS goes in as a quoted literal, never spliced into an open string. A
 		// referenceSystem is source metadata, so an apostrophe in it would otherwise end

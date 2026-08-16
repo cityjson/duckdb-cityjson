@@ -1,5 +1,6 @@
 # name: test/sql/cityparquet_footer.test
-# description: city.columns[] carries name + real encoding; GeometryCollection Z is not geo-legal (review P3)
+# description: city.columns[] carries name + real encoding; GeometryCollection Z is not geo-legal (review P3);
+#              the tri-state `crs` (object / explicit null / absent)
 # group: [sql]
 
 require cityjson
@@ -72,5 +73,148 @@ WHERE decode(key) = 'city'
   AND decode(value) LIKE '%"name":"geometry_lod0_0"%'
   AND decode(value) LIKE '%MultiPolygon Z%'
   AND decode(value) LIKE '%PolyhedralSurface Z%';
+----
+1
+
+# ---------------------------------------------------------------------------
+# The tri-state `crs` (spec 05-metadata.mdx, "CRS rules")
+# ---------------------------------------------------------------------------
+#
+# GeoParquet's convention, adopted verbatim: a PROJJSON object when the CRS is
+# known, an explicit `null` when the file holds CRS-bearing coordinates whose CRS
+# is unknown or unresolvable, and the key ABSENT only for a file that holds no
+# CRS-bearing coordinate at all. An unresolvable CRS is declared, not fatal -- the
+# specification amended the earlier hard-error rule, because refusing the write does
+# not make the CRS knowable, while omitting the key would silently assert
+# OGC:CRS84 over coordinates that are almost always in a projected national CRS.
+
+statement ok
+CREATE SCHEMA nocrs;
+
+# railway_appearance declares no referenceSystem, and carries a GeoParquet-legal
+# MultiSurface at LoD3.0 -- so both footer objects have a `crs` to state, and the
+# `geo` mirror is exercised alongside `city`.
+statement ok
+CREATE TABLE nocrs.bridge AS SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('nocrs');
+
+# The write SUCCEEDS with no crs => and no footer to carry one.
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('nocrs', '__TEST_DIR__/nocrs');
+
+# File-level `crs` is an explicit null, and NO crs anywhere in the object is a
+# guessed PROJJSON object.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/nocrs/bridge.parquet')
+WHERE decode(key) = 'city'
+  AND decode(value) LIKE '%"crs":null%'
+  AND decode(value) NOT LIKE '%"crs":{%';
+----
+1
+
+# The per-column mirror carries the same null rather than omitting the key. The
+# entry's keys are alphabetical (nlohmann's default object ordering), so this pins
+# the mirror to the LoD3.0 column itself, not merely to the file-level value.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/nocrs/bridge.parquet')
+WHERE decode(key) = 'city'
+  AND decode(value) LIKE '%"crs":null,"edges":"planar","encoding":"WKB","geometry_types":["MultiPolygon Z"],"name":"geometry_lod3_0"%';
+----
+1
+
+# GeoParquet reads a null `crs` the same way, so the `geo` mirror is legal and
+# consistent with `city` -- one shared convention, not two.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/nocrs/bridge.parquet')
+WHERE decode(key) = 'geo'
+  AND decode(value) LIKE '%"crs":null%'
+  AND decode(value) NOT LIKE '%"crs":{%';
+----
+1
+
+# metadata.json declares no Projection extension at all: there is no PROJJSON to
+# publish, and a proj:bbox in an unnamed CRS is uninterpretable.
+query I
+SELECT regexp_replace(content, '\s+', '', 'g') NOT LIKE '%proj:%'
+   AND regexp_replace(content, '\s+', '', 'g') NOT LIKE '%stac-extensions.github.io/projection%'
+FROM read_text('__TEST_DIR__/nocrs/metadata.json');
+----
+true
+
+# Export: the reconstructed model carries no reference system, matching the source.
+statement ok
+COPY (SELECT * FROM nocrs.bridge) TO '__TEST_DIR__/nocrs_export.city.json' (FORMAT cityjson);
+
+query I
+SELECT content NOT LIKE '%referenceSystem%' FROM read_text('__TEST_DIR__/nocrs_export.city.json');
+----
+true
+
+query I
+SELECT reference_system IS NULL FROM cityjson_metadata('__TEST_DIR__/nocrs_export.city.json');
+----
+true
+
+# The unknown CRS is not silent: the writer surfaces a warning, which the CLI prints
+# and duckdb_logs records. "SHOULD surface a conversion diagnostic" (spec).
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET logging_level = 'WARNING';
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('nocrs', '__TEST_DIR__/nocrs_logged');
+
+query I
+SELECT COUNT(*) > 0 FROM duckdb_logs
+WHERE message LIKE '%cityparquet_write%' AND message LIKE '%crs%';
+----
+true
+
+statement ok
+SET enable_logging = false;
+
+# An explicitly supplied CRS that cannot be resolved stays an ERROR: that is a bad
+# argument, not an unknowable source CRS, and nulling it would defeat the parameter.
+statement error
+SELECT COUNT(*) FROM cityparquet_write('nocrs', '__TEST_DIR__/nocrs_bad', crs => 'EPSG:9999999');
+----
+cannot resolve CRS
+
+# A file with NO CRS-bearing coordinate keeps the key ABSENT, even in a package whose
+# CRS is perfectly well known: geometry templates are stored in local, unplaced
+# coordinates, so they are exempt from the file CRS rather than sharing it.
+statement ok
+CREATE SCHEMA tpl_crs;
+
+statement ok
+CREATE TABLE tpl_crs.vegetation AS
+  SELECT * FROM read_cityjson('test/data/geometry_templates.city.json', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE tpl_crs.geometry_templates AS
+  SELECT * FROM cityjson_geometry_templates('test/data/geometry_templates.city.json');
+
+statement ok
+PRAGMA cityparquet_init('tpl_crs');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('tpl_crs', '__TEST_DIR__/tpl_crs', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/tpl_crs/geometry_templates.parquet')
+WHERE decode(key) = 'city' AND decode(value) NOT LIKE '%crs%';
+----
+1
+
+# ... while the object table beside it states the known CRS as PROJJSON.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/tpl_crs/vegetation.parquet')
+WHERE decode(key) = 'city'
+  AND decode(value) LIKE '%"crs":{%'
+  AND decode(value) LIKE '%Amersfoort%';
 ----
 1
