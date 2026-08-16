@@ -1,2 +1,5 @@
 test_arrow_native_encoder
 test_fcb_selective
+
+# macOS debug-symbol bundles the harnesses emit alongside the binaries (g++ -g)
+*.dSYM/

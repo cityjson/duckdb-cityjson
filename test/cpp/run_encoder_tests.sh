@@ -23,6 +23,7 @@ rm -f "$HERE/test_arrow_native_encoder"
 g++ -std=c++20 -g \
   -I"$REPO/src/include" \
   -I"$REPO/duckdb/src/include" \
+  -I"${FCB_PREFIX:?set FCB_PREFIX to the flatcitybuf install prefix}/include" \
   "$HERE/test_arrow_native_encoder.cpp" \
   "$REPO/src/cityjson/arrow_native_encoder.cpp" \
   "$REPO/src/cityjson/error.cpp" \

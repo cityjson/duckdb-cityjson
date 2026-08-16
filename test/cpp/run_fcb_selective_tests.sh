@@ -8,12 +8,18 @@
 #
 #   FCB_PREFIX="$(pwd)/.vendor/prefix" test/cpp/run_fcb_selective_tests.sh
 #
-# STALE-libduckdb TRAP: this links -lduckdb against build/release/src/libduckdb.so,
+# FCB_PREFIX may equally be the vcpkg prefix the build actually used, which is
+# where both the flatcitybuf and nlohmann headers live when the dependency is
+# resolved through the manifest rather than `just vendor-fcb`:
+#
+#   FCB_PREFIX="$(pwd)/build/release/vcpkg_installed/<triplet>" test/cpp/run_fcb_selective_tests.sh
+#
+# STALE-libduckdb TRAP: this links -lduckdb against build/release/src/libduckdb.<so|dylib>,
 # which the three usual build targets (cityjson_extension, cityjson_loadable_extension,
 # duckdb) do NOT rebuild. If the link fails with undefined fcb::/nlohmann symbols
-# (or json_abi_v3_11_3 mangling mismatches), the .so predates the current sources:
+# (or json_abi_v3_11_3 mangling mismatches), the library predates the current sources:
 #
-#   ninja -C build/release src/libduckdb.so
+#   ninja -C build/release src/libduckdb.<so|dylib>
 #
 # The check below warns when that is the likely cause, rather than leaving you to
 # read a wall of undefined symbols.
@@ -24,12 +30,18 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 : "${FCB_PREFIX:?set FCB_PREFIX to the flatcitybuf install prefix (e.g. \$(pwd)/.vendor/prefix)}"
 
-LIBDUCKDB="$REPO/build/release/src/libduckdb.so"
+# The shared library is .dylib on macOS and .so elsewhere; hardcoding one name
+# made this guard silently never fire on the other platform, which is precisely
+# when a stale library is hardest to diagnose.
+LIBDUCKDB=""
+for _cand in "$REPO/build/release/src/libduckdb.dylib" "$REPO/build/release/src/libduckdb.so"; do
+  if [ -f "$_cand" ]; then LIBDUCKDB="$_cand"; break; fi
+done
 EXT_ARCHIVE="$REPO/build/release/extension/cityjson/libcityjson_extension.a"
-if [ -f "$LIBDUCKDB" ] && [ -f "$EXT_ARCHIVE" ] && [ "$EXT_ARCHIVE" -nt "$LIBDUCKDB" ]; then
+if [ -n "$LIBDUCKDB" ] && [ -f "$EXT_ARCHIVE" ] && [ "$EXT_ARCHIVE" -nt "$LIBDUCKDB" ]; then
   echo "WARNING: $LIBDUCKDB is older than $EXT_ARCHIVE."
   echo "         If the link below fails on undefined fcb::/nlohmann symbols, run:"
-  echo "           ninja -C $REPO/build/release src/libduckdb.so"
+  echo "           ninja -C $REPO/build/release $(basename "$(dirname "$LIBDUCKDB")")/$(basename "$LIBDUCKDB")"
 fi
 
 rm -f "$HERE/test_fcb_selective"
