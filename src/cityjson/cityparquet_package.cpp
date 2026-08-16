@@ -294,6 +294,13 @@ std::string BuildInitSQL(ClientContext &context, const std::string &schema) {
 //! json_extract live in the json extension, which this one does not require, so the
 //! parsing is done here with the vendored nlohmann::json. A nested value is returned as
 //! its compact JSON text, which is enough to compare two CRSs for equality.
+//!
+//! An absent field and an explicit JSON `null` both come back as SQL NULL. For `crs` the
+//! two are formally different -- absent means OGC:CRS84, null means "unknown" (spec
+//! 05-metadata.mdx, "CRS rules") -- but no caller needs to tell them apart, because
+//! nothing in this extension consumes a CRS: it is compared for equality (the merge and
+//! insert mismatch checks, which skip on NULL) and re-emitted, never used to transform a
+//! coordinate. The day something does reproject, it must read the raw footer, not this.
 void CityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::ExecuteWithNulls<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(),

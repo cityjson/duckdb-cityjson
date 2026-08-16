@@ -16,13 +16,18 @@ CREATE TABLE ams.building AS
 statement ok
 PRAGMA cityparquet_init('ams');
 
-# A hand-rolled load discarded the footer, so the writer must be told the CRS.
-# Writing a file with CRS-bearing coordinates and no crs is a conversion error,
-# never a silent omission.
-statement error
+# A hand-rolled load discarded the footer, so nothing tells the writer the CRS.
+# That is declared, not fatal: the file gets an explicit `"crs": null` (unknown),
+# never an omitted key, which would assert OGC:CRS84 over RD New coordinates.
+# The full tri-state is pinned in cityparquet_footer.test.
+statement ok
 SELECT * FROM cityparquet_write('ams', '__TEST_DIR__/pkg_nocrs');
+
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg_nocrs/building.parquet')
+WHERE decode(key) = 'city' AND decode(value) LIKE '%"crs":null%';
 ----
-crs
+1
 
 query I
 SELECT COUNT(*) > 0 FROM cityparquet_write('ams', '__TEST_DIR__/pkg', crs => 'EPSG:7415');

@@ -124,8 +124,14 @@ types 1001–1007). A LoD containing any `Solid`-family geometry
 unreadable to strict GeoParquet readers. A dataset whose geometry is entirely
 solid yields `NULL` (a valid CityParquet table that is simply not GeoParquet).
 The CRS is resolved from the CityJSON `referenceSystem` to PROJJSON via an
-embedded EPSG table; an unknown code is an error, and a dataset with no CRS gets
-`"crs": null`.
+embedded EPSG table. `crs` is **tri-state, exactly as in GeoParquet**: a PROJJSON
+object when the CRS is known, an explicit `null` when the file holds CRS-bearing
+coordinates whose CRS is unknown or unresolvable, and absent only for a file with
+no CRS-bearing coordinate at all. So a dataset with no `referenceSystem` — or one
+naming a code the embedded table does not have — gets `"crs": null` in both
+objects, plus a warning naming what could not be resolved; it is never omitted
+(an absent key would assert GeoParquet's `OGC:CRS84` default over projected
+national coordinates) and never guessed.
 
 `KV_METADATA` cannot contain a subquery, so pass the values via variables:
 
@@ -589,8 +595,16 @@ Worth knowing:
   cannot tell you that a rare type appears only in the tail.
 - **Ids are identity.** An incoming id that already exists in the destination refuses the
   entire insert.
-- **The CRS must match** the destination's, when the destination's footer records one.
-  Reprojection is not performed.
+- **The CRS must match** the destination's, and reprojection is never performed. The
+  source's `metadata.referenceSystem` is resolved to PROJJSON first, so it is compared
+  against the footer's PROJJSON like with like. A package states **one** CRS for every row
+  it holds, so an unknown on either side is refused rather than assumed: a source with no
+  resolvable CRS cannot go into a package that declares one, and a source with a known CRS
+  cannot go into a package whose footer declares `"crs": null` (state the package's CRS
+  with `cityparquet_write(..., crs => …)` and reload it first). Two unknowns are fine —
+  the footer's `null` stays true of every row. A destination with **no footer at all**
+  (a hand-rolled load) states nothing, so there is nothing to check and the insert
+  proceeds.
 
 ### Merging packages
 
@@ -602,7 +616,11 @@ PRAGMA cityparquet_merge('ams', 'utrecht');
 Merges one loaded package into another. Object ids must be unique across the **whole**
 destination package, not just the target module — `parents`, `children` and `feature_id`
 all resolve by bare id across files — and a collision refuses the entire merge rather than
-renaming silently.
+renaming silently. **The CRS rule is the one `insert_cityjson` applies**, with both sides
+now footers: equal CRSs merge, different ones are refused, and an unknown on either side
+is refused rather than assumed (a package that declares `"crs": null` and one that
+declares EPSG:7415 cannot become one package that honestly declares either). A package
+whose own object-table footers disagree about the CRS is refused by name.
 
 Sidecar ids are renumbered onto the destination's numbering and every reference in the
 incoming rows is shifted to match, so nothing is left pointing at the destination's own
@@ -629,9 +647,15 @@ into `__cityparquet` — the one thing a hand-rolled `read_parquet` load throws 
 `cityparquet_write` regenerates each file's `city` and `geo` footers from the data and
 writes a `metadata.json` STAC Item. Three things worth knowing:
 
-- **`crs` is required** when the package's footer does not carry one (as after a
-  hand-rolled load). Writing geometry with no CRS would silently mis-georeference the
-  package, so the write fails instead.
+- **`crs` is how the CRS reaches the writer** when the package's footer does not carry
+  one (as after a hand-rolled load). Give it, and every file's `crs` is that CRS as
+  PROJJSON. Leave it out and the write still succeeds, with every file's `crs` written as
+  an explicit `null` — the CRS is unknown, said out loud — plus a warning, and a
+  `metadata.json` that declares no Projection extension. What the writer never does is
+  omit the key, which would assert `OGC:CRS84` over projected coordinates, or guess.
+  A `crs =>` value that cannot be resolved to PROJJSON is still an error: that is a bad
+  argument rather than an unknowable source CRS. Sidecars keep the key absent — geometry
+  templates are stored in local, unplaced coordinates and have no CRS to state.
 - **`geo` is recomputed, never carried.** GeoParquet legality flips in both directions
   under mutation — inserting one `Solid` makes a previously-clean column illegal to
   declare, deleting the last one makes it newly legal. A stale `geo` declaring a column

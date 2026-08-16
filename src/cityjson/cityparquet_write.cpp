@@ -12,6 +12,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
@@ -336,6 +337,8 @@ std::string BuildCityJson(const std::string &carried, const json &crs, const std
 		}
 	}
 	city["version"] = CITYPARQUET_VERSION;
+	// Always written, never omitted: an object table holds CRS-bearing coordinates, so the
+	// key is either PROJJSON or an explicit null, and each column entry mirrors it.
 	city["crs"] = crs;
 	if (!source_format.empty()) {
 		city["source_format"] = source_format;
@@ -432,10 +435,21 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		}
 	}
 
-	// The CRS. A hand-rolled load leaves the footer NULL, so it must be supplied; writing
-	// a file that carries CRS-bearing coordinates with no `crs` silently mis-georeferences
-	// it, which the specification makes a conversion error rather than an omission.
+	// The CRS, tri-state exactly as GeoParquet (spec 05-metadata.mdx, "CRS rules"): a
+	// PROJJSON object when it is known, an explicit `null` when the package holds
+	// CRS-bearing coordinates whose CRS is unknown or unresolvable, and the key absent
+	// only for a file holding no CRS-bearing coordinate at all (the sidecars below).
+	//
+	// A hand-rolled load leaves the footer NULL, so `crs =>` is how the CRS reaches this
+	// function then. When nothing supplies one, the write proceeds with an explicit null
+	// and a warning rather than failing: refusing the write does not make the CRS
+	// knowable, and the specification amends the earlier hard-error rule. Omitting the
+	// key is the one thing that would be wrong -- an absent `crs` asserts OGC:CRS84, and
+	// a package in RD New would then read as lon/lat degrees.
 	std::string crs_source = bind_data.crs;
+	// An explicitly supplied CRS is the user's own assertion; only a source-derived one
+	// falls back to null, so a typo in `crs =>` is still reported rather than nulled.
+	const bool crs_from_parameter = !crs_source.empty();
 	if (crs_source.empty()) {
 		for (const auto &entry : carried) {
 			json parsed;
@@ -445,30 +459,50 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 				continue;
 			}
 			auto found = parsed.find("crs");
+			// An explicit null in a carried footer is a KNOWN unknown, not a value: it
+			// falls through to the null branch below, exactly as no footer at all does.
 			if (found != parsed.end() && !found->is_null()) {
 				crs_source = found->dump();
 				break;
 			}
 		}
 	}
-	if (crs_source.empty()) {
-		throw InvalidInputException(
-		    "cityparquet_write: no crs. The package's footer carries none (a hand-rolled load discards it), so "
-		    "it must be given explicitly: cityparquet_write('%s', '%s', crs => 'EPSG:7415'). Writing geometry "
-		    "with no CRS would silently mis-georeference the package.",
-		    bind_data.schema, bind_data.directory);
-	}
 	json crs_json = nullptr;
-	{
+	if (crs_source.empty()) {
+		DUCKDB_LOG_WARNING(context,
+		                   "cityparquet_write: no CRS for schema '%s' -- the package's footer carries none and none "
+		                   "was given (crs => 'EPSG:7415'), so every file's `crs` is written as an explicit null "
+		                   "(CRS unknown) and metadata.json declares no projection",
+		                   bind_data.schema);
+	} else {
 		auto projjson = ProjjsonForReferenceSystem(crs_source);
 		if (projjson.has_value()) {
 			crs_json = json_utils::ParseJson(projjson.value());
 		} else {
 			try {
-				crs_json = json::parse(crs_source);
+				// A carried footer already holds PROJJSON, which the resolver above does
+				// not recognise -- it takes referenceSystem spellings, not PROJJSON. Only
+				// an object counts: a bare number or string parses as JSON but is not a
+				// CRS, and writing it would be the guess the specification forbids.
+				auto parsed = json::parse(crs_source);
+				if (parsed.is_object()) {
+					crs_json = std::move(parsed);
+				}
 			} catch (const std::exception &) {
+				// Not JSON either -- handled as unresolvable just below.
+			}
+		}
+		if (crs_json.is_null()) {
+			// A `crs =>` the writer cannot resolve is a bad argument, not an unknowable
+			// source CRS: nulling it would quietly defeat the parameter, so it still
+			// throws. Anything derived from the package itself falls back to null.
+			if (crs_from_parameter) {
 				throw InvalidInputException("cityparquet_write: cannot resolve CRS '%s' to PROJJSON", crs_source);
 			}
+			DUCKDB_LOG_WARNING(context,
+			                   "cityparquet_write: cannot resolve the carried CRS '%s' to PROJJSON, so every file's "
+			                   "`crs` is written as an explicit null (CRS unknown) rather than guessed",
+			                   crs_source);
 		}
 	}
 
@@ -521,6 +555,11 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 				kv += ", geo: " + Literal(geo);
 			}
 		} else {
+			// A sidecar carries `version` plus only what is meaningful to it. None of the
+			// three holds a CRS-bearing coordinate -- geometry templates are stored in
+			// local, unplaced coordinates, exempt from the file CRS -- so `crs` is the one
+			// state where the key is legitimately ABSENT rather than null (spec
+			// 05-metadata.mdx, "CRS rules").
 			json city = json::object();
 			city["version"] = CITYPARQUET_VERSION;
 			kv = "city: " + Literal(city.dump());
@@ -555,9 +594,16 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		json item;
 		item["type"] = "Feature";
 		item["stac_version"] = "1.0.0";
-		item["stac_extensions"] = json::array({"https://cityjson.github.io/stac-city3d/v0.2.0/schema.json",
-		                                       "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
-		                                       "https://stac-extensions.github.io/file/v2.1.0/schema.json"});
+		// The Projection extension is declared only when there is a projection to
+		// declare. With an unknown CRS there is no PROJJSON to publish and a proj:bbox in
+		// an unnamed CRS is uninterpretable, so the Item claims neither rather than
+		// declaring an extension it does not use.
+		json extensions = json::array({"https://cityjson.github.io/stac-city3d/v0.2.0/schema.json"});
+		if (!crs_json.is_null()) {
+			extensions.push_back("https://stac-extensions.github.io/projection/v1.1.0/schema.json");
+		}
+		extensions.push_back("https://stac-extensions.github.io/file/v2.1.0/schema.json");
+		item["stac_extensions"] = std::move(extensions);
 		item["id"] = bind_data.schema;
 		item["links"] = json::array();
 
@@ -599,10 +645,15 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		properties["city3d:materials"] = inventory.materials > 0;
 		properties["city3d:textures"] = inventory.textures > 0;
 		// Projection extension: the CRS every geometry and bbox in the package shares.
-		properties["proj:projjson"] = crs_json;
-		if (inventory.has_extent) {
-			properties["proj:bbox"] = json::array({inventory.min_x, inventory.min_y, inventory.min_z, inventory.max_x,
-			                                       inventory.max_y, inventory.max_z});
+		// Omitted entirely when that CRS is unknown -- the footer states the unknown with
+		// an explicit null, but STAC has no null PROJJSON to state it with, and an extent
+		// whose CRS nobody knows is a set of numbers a consumer cannot place.
+		if (!crs_json.is_null()) {
+			properties["proj:projjson"] = crs_json;
+			if (inventory.has_extent) {
+				properties["proj:bbox"] = json::array({inventory.min_x, inventory.min_y, inventory.min_z,
+				                                       inventory.max_x, inventory.max_y, inventory.max_z});
+			}
 		}
 		item["properties"] = std::move(properties);
 

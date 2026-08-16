@@ -108,6 +108,41 @@ cost of running on an internal connection and seeing only committed state.
   because it is the streaming scan's cursor.
 - **`SQLString` is a formatting wrapper, not a quoting function**; use
   `KeywordHelper::WriteQuoted(text, '\'')` and `WriteOptionallyQuoted` for identifiers.
+- **The footer's `crs` is tri-state, and absent is not "unknown".** GeoParquet's
+  convention, which CityParquet adopts (spec `05-metadata.mdx`, "CRS rules"): a PROJJSON
+  object = known; explicit `null` = the file holds CRS-bearing coordinates whose CRS is
+  unknown or unresolvable; **absent = OGC:CRS84**, so the key may be omitted only by a
+  file with no CRS-bearing coordinate at all (the sidecars — geometry templates are in
+  local, unplaced coordinates). Both writers therefore always emit the key for an object
+  table, mirror the same value onto every `city.columns[]` / `geo.columns[]` entry, and
+  never guess. An unresolvable CRS is a warning, not a conversion error; only an
+  explicitly supplied `crs =>` that cannot be resolved still throws. On the read side
+  `cityparquet_city_field` maps both absent and null to SQL NULL, so a footer that is
+  missing and one that declares `"crs": null` look the same through it — `insert_cityjson`
+  tells them apart by counting **object-table** footers separately (`role = 'object' AND
+  city IS NOT NULL`), because only the latter is a stated unknown.
+- **Comparing a CRS means comparing PROJJSON with PROJJSON.** A footer holds PROJJSON; a
+  CityJSON source holds a `metadata.referenceSystem` URL. `insert_cityjson` resolves the
+  source through `ProjjsonForReferenceSystem` and re-dumps it so both sides are the same
+  canonical text (nlohmann orders object keys one way). Comparing the two raw made every
+  insert into a known-CRS package a bogus mismatch.
+- **The one-CRS-per-package precondition is shared** — `DeclaredCrsExpr` /
+  `CrsStatedExpr` / `OneCrsPerPackageSQL` / `CrsPreconditionSQL` in
+  `cityparquet_sql_common`, used by both `insert_cityjson` and `cityparquet_merge`, which
+  had drifted into two subtly different (and both wrong) readings of the same footers.
+  Read the declared CRS **only from object-table footers that declare one**: a sidecar
+  carries no `crs` key, so a `DISTINCT` spanning every footer answers an ordinary package
+  with two rows and the scalar subquery dies with "More than one row returned by a
+  subquery" — a CRS bug that does not mention CRSs. Both then apply the tri-state rule:
+  known vs known compares, known vs unknown is refused **either way round** (an unknown
+  cannot be shown to be the package's one CRS), unknown vs unknown passes, and a side
+  whose footers are missing entirely states nothing and is not checked.
+- **The one diagnostic channel is `DUCKDB_LOG_WARNING(context, …)`** (`duckdb/logging/
+  logger.hpp`). The CLI enables logging at `WARNING` with its own storage and prints it;
+  a test asserts it with `SET enable_logging = true; SET logging_level = 'WARNING';` and a
+  query on `duckdb_logs` (whose in-memory storage the CLI replaces, so the two views are
+  not interchangeable). There is no other user-visible warning mechanism here — the
+  package writer's result rows are a file inventory, not a report.
 
 ### Key Source Files
 

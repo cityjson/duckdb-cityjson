@@ -5,6 +5,8 @@
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
+#include "cityjson/crs_projjson.hpp"
+#include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/table_function.hpp"
@@ -230,21 +232,48 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		       Join(known, " UNION ALL ") + ");\n";
 	}
 
-	// One CRS per package. Skipped when the destination's footer is unknown, which is
-	// what a hand-rolled read_parquet load leaves behind.
-	if (facts.reference_system.has_value()) {
-		// The CRS goes in as a quoted literal, never spliced into an open string. A
-		// referenceSystem is source metadata, so an apostrophe in it would otherwise end
-		// the literal early and let the file's own text continue the generated script.
-		const auto crs = Literal(facts.reference_system.value());
-		sql += "SELECT error('insert_cityjson: CRS mismatch -- the destination is ' || d || ' and the source is ' || " +
-		       crs +
-		       " || '; reprojection is not performed') FROM (SELECT\n"
-		       "  (SELECT DISTINCT cityparquet_city_field(city, 'crs') FROM " +
-		       QualifiedName(schema, "__cityparquet") +
-		       " WHERE city IS NOT NULL) AS d\n"
-		       ") WHERE d IS NOT NULL AND d <> " +
-		       crs + ";\n";
+	// One CRS per package: a footer states a single CRS for every row in its file, and
+	// reprojection is never performed, so what goes in has to be in the CRS that is
+	// already declared.
+	//
+	// Both sides must be spelled the same way before they can be compared. The
+	// destination's is PROJJSON, sitting in the footer; the source's is a CityJSON
+	// `metadata.referenceSystem`, which is an OGC URL or an EPSG spelling. This check
+	// used to compare the two directly, which made EVERY insert into a package with a
+	// known CRS a bogus mismatch -- invisible only because a hand-rolled destination
+	// carries no footer to compare against. The source is therefore resolved through the
+	// same ProjjsonForReferenceSystem the writers use, and re-dumped, so both sides are
+	// the same canonical text for the same CRS.
+	{
+		std::string source_crs = "NULL::VARCHAR";
+		if (facts.reference_system.has_value()) {
+			auto projjson = ProjjsonForReferenceSystem(facts.reference_system.value());
+			if (projjson.has_value()) {
+				// Re-dumped rather than passed through: nlohmann orders object keys one
+				// way, which is also how the footer's copy was written and how
+				// cityparquet_city_field hands it back. A referenceSystem is source
+				// metadata, so it goes in as a quoted literal either way -- an apostrophe
+				// in it must not end the literal early and let the file's own text
+				// continue the generated script.
+				source_crs = Literal(json_utils::ParseJson(projjson.value()).dump());
+			}
+			// A referenceSystem this writer cannot resolve leaves the source CRS unknown,
+			// which the rules below handle as an unknown rather than as a value.
+		}
+		// The tri-state rule, and the two ways of misreading a package's declared CRS,
+		// live in cityparquet_sql_common alongside cityparquet_merge's use of them.
+		// A CityJSON source always STATES something -- it has CRS-bearing coordinates, and
+		// either a CRS this writer can resolve or an unknown one -- so unlike a package it
+		// is never the "states nothing" case.
+		CrsCheckWording wording;
+		wording.function = "insert_cityjson";
+		wording.source_noun = "the source";
+		wording.source_unknown_hint = "give the source a metadata.referenceSystem, or insert into a "
+		                              "package whose CRS is unknown too";
+		wording.destination_unknown_hint = "give the package that CRS with cityparquet_write(..., crs => ...) "
+		                                   "and reload it before inserting";
+		sql += OneCrsPerPackageSQL(wording.function, schema, "destination");
+		sql += CrsPreconditionSQL(wording, DeclaredCrsExpr(schema), CrsStatedExpr(schema), source_crs, "TRUE");
 	}
 
 	// ---- Phase 3: schema evolution, before any INSERT -----------------------

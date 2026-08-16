@@ -83,11 +83,34 @@ WHERE geo LIKE '%geometry_lod3_0%' AND geo LIKE '%MultiPolygon Z%' AND geo LIKE 
 ----
 1
 
-# An unresolvable CRS is a hard error, never a silent omission (§13.3).
-statement error
-SELECT geo FROM cityjson_geoparquet_geo('test/data/unknown_crs.city.json');
+# An unresolvable CRS is DECLARED, not fatal: both objects carry an explicit null,
+# and neither guesses (spec 05-metadata.mdx, "CRS rules" — this amends an earlier
+# draft in which an unresolvable CRS was a hard conversion error).
+query II
+SELECT geo LIKE '%"crs":null%' AND geo NOT LIKE '%"crs":{%',
+       city LIKE '%"crs":null%' AND city NOT LIKE '%"crs":{%'
+FROM cityjson_geoparquet_geo('test/data/unknown_crs.city.json');
 ----
-cannot resolve CRS
+true	true
+
+# It is not silent either: the writer surfaces a diagnostic naming the CRS it could
+# not resolve, which the CLI prints and duckdb_logs records.
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET logging_level = 'WARNING';
+
+statement ok
+SELECT geo FROM cityjson_geoparquet_geo('test/data/unknown_crs.city.json');
+
+query I
+SELECT COUNT(*) > 0 FROM duckdb_logs WHERE message LIKE '%9999999%' AND message LIKE '%null%';
+----
+true
+
+statement ok
+SET enable_logging = false;
 
 # End-to-end: the geo JSON writes into a real Parquet footer via KV_METADATA,
 # carrying the geometry types and the CRS. `city` is REQUIRED on every CityParquet
