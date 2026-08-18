@@ -64,6 +64,7 @@ set(EXTENSION_SOURCES
     src/cityjson/flatcitybuf_table_function.cpp
     # COPY TO
     src/cityjson/copy_function.cpp
+    src/cityjson/copy_source_ref.cpp
     src/cityjson/cityjson_writer.cpp
     # CityParquet package layer
     src/cityjson/cityparquet_sql_common.cpp

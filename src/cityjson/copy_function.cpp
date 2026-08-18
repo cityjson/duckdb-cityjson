@@ -3,6 +3,9 @@
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/wkb_decoder.hpp"
+#include "duckdb/logging/logger.hpp"
+#include "cityjson/copy_source_ref.hpp"
+#include "cityjson/reader.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -288,6 +291,12 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	bind_data->is_seq = (input.info.format == "cityjsonseq");
 	bind_data->is_fcb = (input.info.format == "flatcitybuf");
 
+	// Explicit metadata wins over anything inherited from the source, so record
+	// which of them the user actually supplied.
+	bool has_explicit_crs = false;
+	bool has_metadata_query = false;
+	std::string explicit_metadata_from;
+
 	// Parse options
 	for (auto &option : input.info.options) {
 		auto loption = StringUtil::Lower(option.first);
@@ -301,8 +310,12 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 			bind_data->version = val.ToString();
 		} else if (loption == "crs") {
 			bind_data->crs = val.ToString();
+			has_explicit_crs = true;
+		} else if (loption == "metadata_from") {
+			explicit_metadata_from = val.ToString();
 		} else if (loption == "metadata_query") {
 			ParseMetadataFromQuery(context, val.ToString(), *bind_data);
+			has_metadata_query = true;
 		} else if (loption == "transform_scale") {
 			auto parsed = ParseDoubleTriple(val.ToString());
 			if (parsed.has_value()) {
@@ -343,6 +356,67 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 		} else if (loption == "index_node_size") {
 			bind_data->fcb_index_node_size = ParseTreeTuningOption(val, "index_node_size");
 		}
+	}
+
+	// Resolve the source file, then inherit its metadata.
+	//
+	// COPY binds a relation, not a file, so nothing the source carries at file level
+	// is reachable from the rows -- which is why a plain
+	//   COPY (SELECT * FROM read_cityjsonseq('delft.city.jsonl')) TO 'out' (FORMAT cityjsonseq)
+	// used to write no `metadata` key at all, silently turning EPSG:7415 data into
+	// unreferenced coordinates. Recover the path from the parsed SELECT, and fall
+	// back to an explicit metadata_from for the shapes that cannot be discovered
+	// (a plain table, a join, a computed path).
+	//
+	// Precedence: crs / metadata_query  >  metadata_from  >  discovered source.
+	if (!explicit_metadata_from.empty()) {
+		CopySourceRef ref;
+		ref.path = explicit_metadata_from;
+		ref.is_seq = bind_data->is_seq;
+		ref.is_fcb = bind_data->is_fcb;
+		bind_data->source_ref = std::move(ref);
+	} else if (input.info.select_statement) {
+		bind_data->source_ref = FindCopySourceRef(*input.info.select_statement);
+	}
+
+	if (bind_data->source_ref.has_value()) {
+		try {
+			auto reader = OpenAnyCityJSONFile(context, bind_data->source_ref->path, 1);
+			auto source_meta = reader->ReadMetadata();
+
+			// Only fill what the user did not state. An explicit crs must win, so it
+			// is checked per-field rather than skipping the whole inheritance.
+			if (!has_explicit_crs && !bind_data->crs.has_value() && source_meta.metadata.has_value() &&
+			    source_meta.metadata->reference_system.has_value()) {
+				bind_data->crs = source_meta.metadata->reference_system.value();
+			}
+			if (source_meta.metadata.has_value()) {
+				if (!bind_data->title.has_value()) {
+					bind_data->title = source_meta.metadata->title;
+				}
+				if (!bind_data->identifier.has_value()) {
+					bind_data->identifier = source_meta.metadata->identifier;
+				}
+				if (!bind_data->reference_date.has_value()) {
+					bind_data->reference_date = source_meta.metadata->reference_date;
+				}
+				if (!bind_data->geographical_extent.has_value()) {
+					bind_data->geographical_extent = source_meta.metadata->geographical_extent;
+				}
+				if (!bind_data->point_of_contact.has_value()) {
+					bind_data->point_of_contact = source_meta.metadata->point_of_contact;
+				}
+			}
+		} catch (const std::exception &e) {
+			// An unreadable source is not fatal -- the rows are what is being copied,
+			// and the metadata is a bonus. Warn rather than fail the whole COPY.
+			DUCKDB_LOG_WARNING(context, "cityjson: could not read metadata from source '" +
+			                                bind_data->source_ref->path + "': " + std::string(e.what()));
+		}
+	} else if (!has_explicit_crs && !has_metadata_query) {
+		DUCKDB_LOG_WARNING(context, "cityjson: could not determine the source file for this COPY, so no metadata "
+		                            "(including the CRS) is carried across; pass metadata_from or crs to set it "
+		                            "explicitly");
 	}
 
 	// Default quantisation: when neither an explicit transform_scale/translate nor a

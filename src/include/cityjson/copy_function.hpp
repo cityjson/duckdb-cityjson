@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cityjson/copy_source_ref.hpp"
+
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb.hpp"
@@ -61,6 +63,12 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::optional<std::string> reference_date;
 	std::optional<GeographicalExtent> geographical_extent;
 	std::optional<PointOfContact> point_of_contact;
+
+	// The source file this COPY reads from, when it is statically discoverable.
+	// COPY binds a relation, not a file, so file-level content -- the metadata
+	// header (CRS above all) and the appearance definitions -- is otherwise out of
+	// reach. Set from the parsed SELECT, or from the explicit metadata_from option.
+	std::optional<CopySourceRef> source_ref;
 
 	// Column mapping
 	std::vector<std::string> column_names;
