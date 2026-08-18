@@ -144,8 +144,9 @@ SQL tests live in `test/sql/`. The wasm smoke test and the C++ harnesses under
 
 - **[docs/FUNCTIONS.md](docs/FUNCTIONS.md)** — every function, with worked examples
 - **[docs/DESIGN_DOC.md](docs/DESIGN_DOC.md)** — architecture overview
+- **[docs/TRAPS.md](docs/TRAPS.md)** — implementation traps, per layer
 - **[docs/UPDATING.md](docs/UPDATING.md)** — bumping the DuckDB target version
-- **[CLAUDE.md](CLAUDE.md)** / **[AGENTS.md](AGENTS.md)** — guidance for coding agents
+- **[CLAUDE.md](CLAUDE.md)** / **[AGENTS.md](AGENTS.md)** — how we work: build, test, review, style
 
 ## Related
 

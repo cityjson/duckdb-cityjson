@@ -1,7 +1,7 @@
-# Extension updating 
-When cloning this template, the target version of DuckDB should be the latest stable release of DuckDB. However, there 
-will inevitably come a time when a new DuckDB is released and the extension repository needs updating. This process goes
-as follows:
+# Extension updating
+
+The extension targets a specific stable DuckDB release. Moving it to a newer one goes as
+follows:
 
 - Bump submodules
   - `./duckdb` should be set to latest tagged release
