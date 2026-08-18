@@ -142,7 +142,7 @@ SQL tests live in `test/sql/`. The wasm smoke test and the C++ harnesses under
 
 ## Documentation
 
-- **[docs/FUNCTIONS.md](docs/FUNCTIONS.md)** — every function, with worked examples
+- **[Document website](https://cityjson.github.io/duckdb-cityjson/#/)** — every function, with worked examples
 - **[docs/DESIGN_DOC.md](docs/DESIGN_DOC.md)** — architecture overview
 - **[docs/UPDATING.md](docs/UPDATING.md)** — bumping the DuckDB target version
 - **[CLAUDE.md](CLAUDE.md)** / **[AGENTS.md](AGENTS.md)** — guidance for coding agents
