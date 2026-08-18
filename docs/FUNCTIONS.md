@@ -668,9 +668,7 @@ parent `Building` sharing its `feature_id`.
 reader and `cityparquet_reconcile` agree on the specification's rule that `bbox`
 is unioned across every stored LoD *and* across the object's descendants, so a
 freshly-read package is already reconciled. `test/sql/cityparquet_reconcile.test`
-asserts exactly that — zero changed rows. (This was not always true: an earlier
-version computed a row's bbox from its own geometry alone, which made every
-non-leaf row change on the first reconcile.)
+asserts exactly that — zero changed rows.
 
 ### Inspection and housekeeping
 
@@ -927,24 +925,3 @@ WHERE object_type = 'Building';
 
 Other predicates still work — DuckDB applies them after the scan. Projection
 pushdown is always on: unprojected columns are never built.
-
----
-
-## Compatibility with older packages
-
-Packages written by **older versions of this extension** differ from current
-output in three ways, none repaired automatically:
-
-- **Winding.** Pre-fix packages carry rings in reversed (left-handed) order while
-  declaring `orientation_3d: "right-handed"`. They round-trip through the old
-  decoder but read mirror-wound in any spec-conformant reader. **Re-convert from
-  source to repair** — there is no migration tooling.
-- **`object_type` vocabulary.** Pre-fix packages store CityJSON spellings
-  (`BuildingStorey`, `TransportSquare`, `GenericCityObject`, `TunnelHollowSpace`);
-  current packages store CityGML class names (`Storey`, `Square`,
-  `GenericOccupiedSpace`, `HollowSpace`). Reads and routing tolerate both, so an
-  old package still exports correct CityJSON — but **predicates do not carry
-  over**: `object_type = 'Storey'` matches new rows only.
-- **`feature_id`.** Packages exported from a whole CityJSON file by a pre-fix
-  version carry the source file path as every row's `feature_id`; current
-  versions derive the root-parent id per object.

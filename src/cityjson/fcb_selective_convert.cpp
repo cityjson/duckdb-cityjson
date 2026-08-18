@@ -281,14 +281,14 @@ CityJSONFeature ConvertFeatureLight(const fcb::Feature &feature, const fcb::Head
 		// Geometry is deliberately never touched -- neither obj->geometry() nor
 		// obj->geometry_instances(), and no feature vertex pool or appearance.
 
-		if (obj->children() != nullptr && obj->children()->size() > 0) {
+		if (obj->children() != nullptr && !obj->children()->empty()) {
 			for (const auto *c : *obj->children()) {
 				if (c != nullptr) {
 					co.children.push_back(c->str());
 				}
 			}
 		}
-		if (obj->parents() != nullptr && obj->parents()->size() > 0) {
+		if (obj->parents() != nullptr && !obj->parents()->empty()) {
 			for (const auto *p : *obj->parents()) {
 				if (p != nullptr) {
 					co.parents.push_back(p->str());

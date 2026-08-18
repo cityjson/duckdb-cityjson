@@ -306,7 +306,7 @@ void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std
 	for (const auto &lod : lods) {
 		const auto suffix = LODTableUtils::FormatLODAsColumnSuffix(lod);
 		names.push_back("geometry_" + suffix);
-		types.push_back(LogicalType(LogicalTypeId::BLOB));
+		types.emplace_back(LogicalTypeId::BLOB);
 		names.push_back("geometry_properties_" + suffix);
 		types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::GeometryPropertiesStruct));
 		names.push_back("material_" + suffix);

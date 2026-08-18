@@ -48,8 +48,7 @@ std::set<std::string> ReferencedColumns(const std::string &predicate) {
 			}
 			columns.insert(chain);
 		}
-		ParsedExpressionIterator::EnumerateChildren(const_cast<ParsedExpression &>(expression),
-		                                            [&](const ParsedExpression &child) { walk(child); });
+		ParsedExpressionIterator::EnumerateChildren(expression, [&](const ParsedExpression &child) { walk(child); });
 	};
 	for (const auto &expression : expressions) {
 		walk(*expression);
@@ -164,6 +163,7 @@ std::string BuildDeleteSQL(ClientContext &context, const std::string &schema, co
 	std::string sql = BuildReconcilePrelude(context, schema);
 
 	std::vector<std::string> seeds;
+	seeds.reserve(matching_tables.size());
 	for (const auto &table : matching_tables) {
 		seeds.push_back("SELECT id FROM " + QualifiedName(schema, table) + " WHERE " + predicate);
 	}

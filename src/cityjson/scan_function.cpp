@@ -282,8 +282,9 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 						continue;
 					}
 
-					if (remaining == 0)
+					if (remaining == 0) {
 						break;
+					}
 
 					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
 

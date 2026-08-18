@@ -123,7 +123,7 @@ void WriteToVector(const Column &col, const json &value, VectorWrapper &wrapper,
  * @param value Value to write
  */
 template <typename T>
-void WritePrimitive(Vector *vec, size_t row, T value);
+void WritePrimitive(Vector *vec, size_t row, const T &value);
 
 /**
  * Write array of strings to list vector

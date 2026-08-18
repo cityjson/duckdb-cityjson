@@ -79,22 +79,24 @@ std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Co
 
 // Template for numeric types
 template <typename T>
-void WritePrimitive(Vector *vec, size_t row, T value) {
+void WritePrimitive(Vector *vec, size_t row, const T &value) {
 	auto data = FlatVector::GetData<T>(*vec);
 	data[row] = value;
 }
 
-// Specialization for VARCHAR
+// Specialization for VARCHAR. By const reference, like the primary template: a
+// specialization has to match its signature, and std::string is the one
+// instantiation here whose copy is worth avoiding.
 template <>
-void WritePrimitive<std::string>(Vector *vec, size_t row, std::string value) {
+void WritePrimitive<std::string>(Vector *vec, size_t row, const std::string &value) {
 	FlatVector::GetData<string_t>(*vec)[row] = StringVector::AddString(*vec, value);
 }
 
 // Explicit instantiations for common types
-template void WritePrimitive<bool>(Vector *vec, size_t row, bool value);
-template void WritePrimitive<int32_t>(Vector *vec, size_t row, int32_t value);
-template void WritePrimitive<int64_t>(Vector *vec, size_t row, int64_t value);
-template void WritePrimitive<double>(Vector *vec, size_t row, double value);
+template void WritePrimitive<bool>(Vector *vec, size_t row, const bool &value);
+template void WritePrimitive<int32_t>(Vector *vec, size_t row, const int32_t &value);
+template void WritePrimitive<int64_t>(Vector *vec, size_t row, const int64_t &value);
+template void WritePrimitive<double>(Vector *vec, size_t row, const double &value);
 
 // ============================================================
 // WriteVarcharArray

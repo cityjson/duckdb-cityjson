@@ -285,7 +285,8 @@ break:
 | -------- | ------- |
 | What does this function do, with examples? | [FUNCTIONS.md](FUNCTIONS.md) |
 | What are the exact types and signatures? | `src/include/cityjson/*.hpp` |
-| What are the known traps in this layer? | [CLAUDE.md](../CLAUDE.md) / [AGENTS.md](../AGENTS.md) |
+| What are the known traps in this layer? | [TRAPS.md](TRAPS.md) |
+| How do we work — build, test, review, style? | [CLAUDE.md](../CLAUDE.md) / [AGENTS.md](../AGENTS.md) |
 | What is the normative encoding? | the parent workspace's `documents/` |
 | How is behaviour pinned? | `test/sql/*.test`, plus opt-in harnesses in `test/cpp/` |
 

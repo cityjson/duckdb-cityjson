@@ -19,7 +19,7 @@ static bool EndsWith(const std::string &str, const std::string &suffix) {
 		return false;
 	}
 
-	auto it1 = str.end() - suffix.length();
+	auto it1 = str.end() - static_cast<std::string::difference_type>(suffix.length());
 	auto it2 = suffix.begin();
 
 	while (it2 != suffix.end()) {

@@ -171,14 +171,25 @@ if(CITYJSON_ENABLE_FCB)
   # is invisible to it. --whole-archive/--no-whole-archive sidesteps that entirely by
   # forcing every object file in flatcitybuf (and its own flatbuffers dependency) into
   # the final binary unconditionally, regardless of position or reference order.
-  # --whole-archive/--no-whole-archive is GNU ld/lld syntax -- Apple's ld64 and MSVC's
-  # linker use different flags (and, unlike GNU's, need the resolved archive file path
-  # rather than a bare target name), hence the three-way branch.
+  # --whole-archive/--no-whole-archive is GNU ld/lld syntax -- Apple's ld64 spells the
+  # same idea -force_load and wants the resolved archive file path rather than a bare
+  # target name, hence the branch.
+  #
+  # MSVC needs no such wrapper: link.exe re-scans the libraries on its command line
+  # until a pass resolves nothing new, so the single-pass ordering hazard that
+  # --whole-archive exists to defeat simply does not arise. It gets the bare target,
+  # which also carries flatcitybuf's own flatbuffers::flatbuffers dependency across
+  # transitively -- a resolved file path would not. And a /-prefixed item cannot go
+  # through here at all: every consumer of DUCKDB_EXTRA_LINK_FLAGS (tools/CMakeLists.txt,
+  # tools/shell/CMakeLists.txt, extension_build_tools.cmake, and the fixup below) passes
+  # it to target_link_libraries, where CMake reads a leading / as an absolute path to a
+  # library and files it in the ninja graph as a build input -- which ninja then fails to
+  # stat, before compiling a single translation unit.
   if(APPLE)
     set(DUCKDB_EXTRA_LINK_FLAGS "-Wl,-force_load,$<TARGET_FILE:flatcitybuf::flatcitybuf>"
         CACHE INTERNAL "Extra link flags" FORCE)
   elseif(MSVC)
-    set(DUCKDB_EXTRA_LINK_FLAGS "/WHOLEARCHIVE:$<TARGET_FILE:flatcitybuf::flatcitybuf>"
+    set(DUCKDB_EXTRA_LINK_FLAGS "flatcitybuf::flatcitybuf"
         CACHE INTERNAL "Extra link flags" FORCE)
   else()
     set(DUCKDB_EXTRA_LINK_FLAGS "-Wl,--whole-archive" "flatcitybuf::flatcitybuf" "-Wl,--no-whole-archive"

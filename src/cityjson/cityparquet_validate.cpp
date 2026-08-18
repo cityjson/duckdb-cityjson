@@ -140,6 +140,10 @@ std::vector<std::string> Checks() {
 	    // NULL in the NOT IN set, so every comparison evaluates to UNKNOWN and all three
 	    // checks silently report nothing -- on precisely the malformed package they
 	    // exist to diagnose.
+	    // Every entry in this list is one SQL statement spread over several adjacent
+	    // literals; the concatenation is deliberate, and the commas that separate the
+	    // entries are the ones ending each statement.
+	    // NOLINTNEXTLINE(bugprone-suspicious-missing-comma)
 	    "SELECT 'feature_id_null' AS check_name, 'error' AS severity, __tbl AS table_name, "
 	    "id AS object_id, 'feature_id is NULL' AS message "
 	    "FROM all_objects WHERE feature_id IS NULL",
