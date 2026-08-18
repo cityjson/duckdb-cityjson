@@ -196,7 +196,7 @@ json CityJSONWriter::BuildMetadataJson(const CityJSONWriteMetadata &metadata) {
 void CityJSONWriter::WriteCityJSON(
     const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
-    const std::vector<std::string> &feature_order) {
+    const std::vector<std::string> &feature_order, const std::optional<json> &appearance) {
 
 	// Build the root CityJSON object
 	json root;
@@ -233,6 +233,13 @@ void CityJSONWriter::WriteCityJSON(
 	auto vertex_pool = BuildVertexPool(all_objects, metadata.transform);
 
 	// CityObjects
+	// Definitions for the per-geometry material/texture refs. A whole-document
+	// CityJSON has exactly one block, so unlike the Seq path there is nothing to
+	// key by feature.
+	if (appearance.has_value() && !appearance->empty()) {
+		root["appearance"] = appearance.value();
+	}
+
 	root["CityObjects"] = json::object();
 	for (const auto &[obj_id, obj_json] : all_objects) {
 		root["CityObjects"][obj_id] = obj_json;
@@ -259,7 +266,8 @@ void CityJSONWriter::WriteCityJSON(
 void CityJSONWriter::WriteCityJSONSeq(
     const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
-    const std::vector<std::string> &feature_order) {
+    const std::vector<std::string> &feature_order, const std::optional<json> &appearance_header,
+    const std::map<std::string, json> &appearance_by_feature) {
 
 	std::ofstream out(file_path);
 	if (!out.is_open()) {
@@ -286,6 +294,12 @@ void CityJSONWriter::WriteCityJSONSeq(
 		    {metadata.transform->translate[0], metadata.transform->translate[1], metadata.transform->translate[2]});
 	}
 
+	// The material/texture definitions the per-geometry refs index into. Without
+	// them the refs dangle and the output is invalid CityJSON.
+	if (appearance_header.has_value() && !appearance_header->empty()) {
+		header["appearance"] = appearance_header.value();
+	}
+
 	out << header.dump() << "\n";
 
 	// Line 2+: one CityJSONFeature per feature_id, with per-feature vertex pool
@@ -307,6 +321,17 @@ void CityJSONWriter::WriteCityJSONSeq(
 		feature["CityObjects"] = json::object();
 		for (const auto &[obj_id, obj_json] : feature_objs) {
 			feature["CityObjects"][obj_id] = obj_json;
+		}
+
+		// This feature's own appearance block. Its refs are LOCAL indices into it,
+		// so it is re-emitted onto the feature it came from and never merged with
+		// another feature's -- merging would preserve every count while silently
+		// re-pointing every reference.
+		{
+			auto appearance_it = appearance_by_feature.find(fid);
+			if (appearance_it != appearance_by_feature.end() && !appearance_it->second.empty()) {
+				feature["appearance"] = appearance_it->second;
+			}
 		}
 
 		feature["vertices"] = json::array();

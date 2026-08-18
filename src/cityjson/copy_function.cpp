@@ -99,6 +99,9 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->geometry_properties_col = geometry_properties_col;
 	result->geometry_properties_by_name = geometry_properties_by_name;
 	result->appearance_by_name = appearance_by_name;
+	result->source_ref = source_ref;
+	result->source_appearance_header = source_appearance_header;
+	result->source_appearance_by_feature = source_appearance_by_feature;
 	return result;
 }
 
@@ -284,6 +287,72 @@ static uint16_t ParseTreeTuningOption(const Value &val, const std::string &optio
 // COPY TO Bind (shared between cityjson and cityjsonseq)
 // ============================================================
 
+
+// ============================================================
+// Helper: carry appearance definitions over from the source file
+// ============================================================
+
+// Read the source's `appearance` objects verbatim.
+//
+// CityJSON has one top-level block. CityJSONSeq has one on the header line and,
+// independently, one per feature -- and a feature's material/texture refs are
+// LOCAL indices into its own block. So they are collected per feature id and
+// re-emitted onto the matching output feature rather than merged.
+static void LoadSourceAppearance(ClientContext &context, CityJSONCopyBindData &bind_data) {
+	const auto &path = bind_data.source_ref->path;
+	auto content = json_utils::ReadFileContent(context, path);
+
+	auto take_appearance = [](const json &doc) -> std::optional<json> {
+		auto it = doc.find("appearance");
+		if (it == doc.end() || !it->is_object() || it->empty()) {
+			return std::nullopt;
+		}
+		// Explicit in_place: nlohmann::json's templated converting constructor makes
+		// a plain `return *it;` ambiguous against optional's own converting ctor.
+		return std::optional<json>(std::in_place, *it);
+	};
+
+	if (!bind_data.source_ref->is_seq) {
+		// Whole-document CityJSON: one block, and no per-feature blocks exist.
+		bind_data.source_appearance_header = take_appearance(json_utils::ParseJson(content));
+		return;
+	}
+
+	size_t line_start = 0;
+	bool first_line = true;
+	while (line_start < content.size()) {
+		auto line_end = content.find('\n', line_start);
+		auto len = (line_end == std::string::npos ? content.size() : line_end) - line_start;
+		auto line = content.substr(line_start, len);
+		line_start = (line_end == std::string::npos ? content.size() : line_end + 1);
+
+		if (line.find_first_not_of(" \t\r") == std::string::npos) {
+			continue;
+		}
+		json doc;
+		try {
+			doc = json_utils::ParseJson(line);
+		} catch (const std::exception &) {
+			continue; // a malformed line is the reader's problem to report, not ours
+		}
+
+		if (first_line) {
+			bind_data.source_appearance_header = take_appearance(doc);
+			first_line = false;
+			continue;
+		}
+		auto appearance = take_appearance(doc);
+		if (!appearance.has_value()) {
+			continue;
+		}
+		auto id_it = doc.find("id");
+		if (id_it == doc.end() || !id_it->is_string()) {
+			continue;
+		}
+		bind_data.source_appearance_by_feature[id_it->get<std::string>()] = std::move(appearance.value());
+	}
+}
+
 static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
                                                    const vector<string> &names, const vector<LogicalType> &sql_types) {
 	auto bind_data = make_uniq<CityJSONCopyBindData>();
@@ -407,6 +476,7 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 					bind_data->point_of_contact = source_meta.metadata->point_of_contact;
 				}
 			}
+			LoadSourceAppearance(context, *bind_data);
 		} catch (const std::exception &e) {
 			// An unreadable source is not fatal -- the rows are what is being copied,
 			// and the metadata is a bonus. Warn rather than fail the whole COPY.
@@ -1189,7 +1259,8 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 	auto &output_path = gstate.temp_file_path;
 
 	if (bind_data.is_seq) {
-		CityJSONWriter::WriteCityJSONSeq(output_path, write_meta, gstate.feature_objects, gstate.feature_order);
+		CityJSONWriter::WriteCityJSONSeq(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
+		                                 bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
 #ifdef CITYJSON_HAS_FCB
 	} else if (bind_data.is_fcb) {
 		// The relation's attribute columns, not the ones that happened to carry a
@@ -1207,7 +1278,8 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 		                                 bind_data.fcb_index_node_size, declared_attr_columns);
 #endif
 	} else {
-		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order);
+		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
+		                              bind_data.source_appearance_header);
 	}
 }
 

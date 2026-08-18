@@ -79,3 +79,17 @@ SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', l
 WHERE id = 'GMLID_BUI100628_817_8083' AND texture_lod3_0 LIKE '%"visual"%';
 ----
 1
+
+# The two assertions above check that the *references* survive. They did -- but
+# the appearance object they index into was not written at all, so this file used
+# to be green over output whose every material ref dangled. A surviving reference
+# only means something if what it points at exists.
+query I
+SELECT COUNT(*) > 0 FROM cityjson_materials('__TEST_DIR__/rt_appearance.city.jsonl');
+----
+true
+
+query I
+SELECT COUNT(*) > 0 FROM cityjson_textures('__TEST_DIR__/rt_appearance.city.jsonl');
+----
+true

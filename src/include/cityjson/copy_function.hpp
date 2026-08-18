@@ -70,6 +70,25 @@ struct CityJSONCopyBindData : public FunctionData {
 	// reach. Set from the parsed SELECT, or from the explicit metadata_from option.
 	std::optional<CopySourceRef> source_ref;
 
+	// Appearance definitions carried verbatim from the source.
+	//
+	// Only the per-geometry *references* (material_lod* / texture_lod*) are columns;
+	// the definitions they index live in the source file's `appearance` object and
+	// are reachable only through source_ref. Writing the refs without them -- which
+	// is what happened until now -- emits indices into an array that does not exist,
+	// i.e. invalid CityJSON that still passes a refs-only test.
+	//
+	// Kept as raw json rather than the parsed Appearance struct so that fields our
+	// Material/Texture models do not know about survive untouched.
+	//
+	// In CityJSONSeq each feature carries its OWN block and its refs are local
+	// indices into it, exactly as its boundary indices are local to its own vertex
+	// pool. So blocks are kept per feature and re-emitted onto the matching output
+	// feature; merging them into one array would keep every count identical while
+	// silently re-pointing every reference.
+	std::optional<json> source_appearance_header;
+	std::map<std::string, json> source_appearance_by_feature;
+
 	// Column mapping
 	std::vector<std::string> column_names;
 	std::vector<LogicalType> column_types;

@@ -40,7 +40,8 @@ public:
 	 */
 	static void WriteCityJSON(const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                          const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
-	                          const std::vector<std::string> &feature_order);
+	                          const std::vector<std::string> &feature_order,
+	                          const std::optional<json> &appearance = std::nullopt);
 
 	/**
 	 * Write a CityJSONSeq file (.city.jsonl)
@@ -55,7 +56,9 @@ public:
 	static void
 	WriteCityJSONSeq(const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                 const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
-	                 const std::vector<std::string> &feature_order);
+	                 const std::vector<std::string> &feature_order,
+	                 const std::optional<json> &appearance_header = std::nullopt,
+	                 const std::map<std::string, json> &appearance_by_feature = {});
 
 #ifdef CITYJSON_HAS_FCB
 	/**

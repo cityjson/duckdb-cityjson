@@ -1,0 +1,77 @@
+# name: test/sql/cityjson_appearance_roundtrip.test
+# description: appearance definitions survive a COPY, so material/texture refs resolve
+# group: [sql]
+
+require cityjson
+
+# Only the per-geometry material/texture *references* are columns; the definitions
+# they index live in the source file's `appearance` object. Writing the refs
+# without the definitions -- which is what happened until now -- emits indices
+# into an array that does not exist: invalid CityJSON that still passes a
+# refs-only test.
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO '__TEST_DIR__/appearance.city.jsonl' (FORMAT cityjsonseq);
+
+# 4 materials in, 4 materials out. Before this fix: 0.
+query II
+SELECT
+  (SELECT COUNT(*) FROM cityjson_materials('test/data/railway_appearance.city.jsonl')),
+  (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/appearance.city.jsonl'));
+----
+4	4
+
+query II
+SELECT
+  (SELECT COUNT(*) FROM cityjson_textures('test/data/railway_appearance.city.jsonl')),
+  (SELECT COUNT(*) FROM cityjson_textures('__TEST_DIR__/appearance.city.jsonl'));
+----
+4	4
+
+# Identity, not just cardinality. Counts alone would survive a merge of the
+# per-feature blocks into one array -- which would also silently re-point every
+# reference, since a feature's refs are LOCAL indices into its own block.
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, name, diffuseColor FROM cityjson_materials('test/data/railway_appearance.city.jsonl')
+  EXCEPT
+  SELECT id, name, diffuseColor FROM cityjson_materials('__TEST_DIR__/appearance.city.jsonl')
+);
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, image_uri, wrapMode FROM cityjson_textures('test/data/railway_appearance.city.jsonl')
+  EXCEPT
+  SELECT id, image_uri, wrapMode FROM cityjson_textures('__TEST_DIR__/appearance.city.jsonl')
+);
+----
+0
+
+# The written file must actually contain an appearance object.
+query I
+SELECT content LIKE '%"appearance"%' FROM read_text('__TEST_DIR__/appearance.city.jsonl');
+----
+true
+
+# No dangling reference: every material index a row carries must be in range of
+# the materials actually written.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/appearance.city.jsonl')
+WHERE material_lod3_0 IS NOT NULL
+  AND list_max(cityjson_appearance_ids(material_lod3_0, 'material'))
+      >= (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/appearance.city.jsonl'));
+----
+0
+
+# Whole-document CityJSON has a single top-level block; it must travel too.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO '__TEST_DIR__/appearance.city.json' (FORMAT cityjson);
+
+query I
+SELECT content LIKE '%"appearance"%' FROM read_text('__TEST_DIR__/appearance.city.json');
+----
+true
