@@ -144,6 +144,57 @@ cost of running on an internal connection and seeing only committed state.
   not interchangeable). There is no other user-visible warning mechanism here — the
   package writer's result rows are a file inventory, not a report.
 
+### COPY TO: what the rows cannot carry
+
+Two kinds of content are **file-level**, not row-level, and were both silently lost
+until the source path was made recoverable: the source's `metadata` header (the CRS
+above all) and its `appearance` object (the material/texture *definitions*; only the
+per-geometry references are columns).
+
+- **`COPY` recovers its source from the parsed SELECT.** `FindCopySourceRef`
+  (`copy_source_ref.cpp`) walks `CopyInfo::select_statement` for exactly one
+  `read_cityjson[seq]` / `read_flatcitybuf` call. It survives to our bind:
+  `bind_copy.cpp:97` takes a `Copy()` of it rather than moving it, and `:118` hands
+  the whole `CopyInfo` to `CopyFunctionBindInput`. **An ambiguous query — no reader
+  call, more than one, or a non-literal path — returns `nullopt`, never a guess**:
+  stamping a wrong CRS onto georeferenced output is worse than stamping none.
+  `COPY my_table TO …` is not discoverable, which is what the `metadata_from` option
+  is for; a `DUCKDB_LOG_WARNING` fires when neither applies. Precedence:
+  `crs` / `metadata_query` > `metadata_from` > discovered source.
+- **Appearance blocks are per-feature and their refs are feature-local.** In
+  CityJSONSeq every feature carries its own `appearance`, and its material/texture
+  indices are local to that block, exactly as its boundary indices are local to its
+  own `vertices` pool. `cityjson_materials`' `id` is a **global interning by
+  concatenation order** across header + features — *not* the index any row's
+  `material_lod*` uses. So the writer re-emits each block onto the feature it came
+  from and never merges them: merging preserves every count and identity a test
+  would assert while silently re-pointing every reference. Blocks are carried as raw
+  `json` so fields our `Material` / `Texture` structs do not model survive untouched.
+- **`ValueToJson`'s default arm is a data-loss trap.** It renders anything without an
+  explicit arm through `Value::ToString()` — DuckDB's *display* form — which rewrote
+  every timestamp attribute from ISO-8601 to `YYYY-MM-DD HH:MM:SS`. **The loss is
+  invisible to any row-level comparison**: the written value re-parses to the same
+  `TIMESTAMP`, so only a `read_text` assertion catches it. Any new type the reader
+  infers needs a matching arm here, not the default.
+- **The COPY sink omits NULL attributes entirely** (`copy_function.cpp`, the
+  `if (!val.IsNull())` guard). Two consequences. A key that is present-but-null in
+  the source is written as absent — irreducible, since the reader surfaces both as
+  SQL NULL, so it is pinned as an accepted loss in `cityjson_equivalence.test`. And
+  an attribute that is null in *every* object is invisible to `fcb::add_attributes`,
+  whose `guess_type` could not have typed a JSON null anyway — so the FCB writer
+  declares attributes from the **source relation's column list** instead, and
+  `FlatCityBufReader` additionally honours the header's own column declarations
+  (appending, so the feature sample stays authoritative on type and valued columns
+  are not downgraded to the header's `String`). Fixing only one of the two leaves a
+  74-column source reading back as 68.
+- **`flatcitybuf_metadata` reports `features_count`, not `city_objects_count`.** The
+  header counts features; a row is a CityObject, and one feature may carry several.
+  Reporting the former as the latter contradicted both other metadata functions and
+  our own reader by ~2x on Delft. `city_objects_count` is SQL NULL for FCB — the true
+  count needs a full decode a metadata call should not pay for, and a NULL is honest
+  where a plausible wrong number is not. All three metadata functions share the
+  schema, which is why the column is NULLed rather than dropped.
+
 ### Key Source Files
 
 | File                           | Purpose                                                                               |
@@ -345,6 +396,13 @@ path alone. A real fixture would have to come from upstream.
   **not** rebuild. Undefined `fcb::` / `nlohmann` symbols (or a `json_abi_v3_11_3`
   mangling mismatch) means the `.so` predates the sources — fix with
   `ninja -C build/release src/libduckdb.so`.
+- `test/sql/cityjson_remote.test` — HTTP reads for `read_cityjson`,
+  `read_cityjsonseq`, all three metadata functions, and a hosted CityParquet
+  package (`read_parquet` + `cityparquet_city_field` on the footer). Gated on
+  `require-env CITYJSON_REMOTE_TEST`, ~25 MB of downloads, run with
+  `just test-remote`. It carries the same three load-bearing incantations as
+  `cityjson_fcb_remote.test` — above all `set ignore_error_messages`, without
+  which a transport failure reports as a **skip** and the test silently passes.
 - `test/sql/cityjson_fcb_remote.test` — HTTP range reads through `DuckDBRangeReader`,
   gated on `require-env FCB_REMOTE_TEST_URL` so a plain `make test` skips it. Run it
   with `just test-fcb-remote` (optionally `url=…`). **Caveat:** the bbox is a 500 m
