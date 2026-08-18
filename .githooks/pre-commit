@@ -1,102 +1,293 @@
 #!/usr/bin/env bash
-# Format staged files with the SAME tools CI uses, then re-stage them.
+# Run the two code-quality gates CI runs, against the staged files.
 #
-# Install with `just hooks` (sets core.hooksPath). Bypass a single commit with
-# SKIP_FORMAT=1 git commit ..., or entirely with git commit --no-verify.
+#   1. Format -- formats and re-stages, with the SAME tools CI uses.
+#   2. Tidy   -- clang-tidy over the staged .cpp; findings BLOCK the commit.
 #
-# Why this exists: `Code Quality Check / Format Check` runs
-# `python3 duckdb/scripts/format.py --all --check --directories src test` in CI,
-# and a red format check blocks a PR long after the commit that caused it.
+# Install with `just hooks` (sets core.hooksPath). Bypass one phase with
+# SKIP_FORMAT=1 / SKIP_TIDY=1 git commit ..., or both with git commit --no-verify.
+#
+# Why this exists: both gates run in CI (`Code Quality Check / Format Check` and
+# `Tidy Check`), and a red one blocks a PR long after the commit that caused it.
+# The tidy job alone takes ~37 minutes, so that feedback is very late.
 set -uo pipefail
-
-if [ "${SKIP_FORMAT:-0}" = "1" ]; then
-	exit 0
-fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root" || exit 1
 
-if [ ! -f duckdb/scripts/format.py ]; then
-	echo "pre-commit: duckdb/scripts/format.py missing (submodule not initialised?) — skipping format" >&2
-	exit 0
-fi
-
-# The version check is the whole game. duckdb/scripts/format.py hard-requires
-# clang-format 11.0.1 and black >=24, and a DIFFERENT clang-format does not merely
-# skip work — it reformats correctly-formatted code its own way, so the hook would
-# fight CI on every commit and the diff would churn forever. CI pins these in
-# extension-ci-tools/.github/workflows/_extension_code_quality.yml.
-missing=""
-command -v clang-format >/dev/null 2>&1 || missing="clang-format"
-command -v black >/dev/null 2>&1 || missing="$missing black"
-if [ -n "$missing" ]; then
-	echo "pre-commit: missing formatter(s):$missing — skipping format." >&2
-	echo "            install with: pip install 'clang_format==11.0.1' 'black==24.*' cmake-format" >&2
-	exit 0
-fi
-
-cf_version="$(clang-format --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-if [ "$cf_version" != "11.0.1" ]; then
-	echo "pre-commit: clang-format is $cf_version but CI pins 11.0.1 — skipping format." >&2
-	echo "            Formatting with another version would churn the diff and still fail CI." >&2
-	echo "            install with: pip install 'clang_format==11.0.1'" >&2
-	exit 0
-fi
-
-formatted=0
-skipped_partial=""
-
-# Only what is staged, and only Added/Copied/Modified/Renamed. Read via a while
-# loop rather than `mapfile`, which is bash 4+ and macOS still ships bash 3.2.
+# Staged, Added/Copied/Modified/Renamed. Both phases read this list, so it is
+# collected once. Via a while loop rather than `mapfile`, which is bash 4+ and
+# macOS still ships bash 3.2.
+staged=""
 while IFS= read -r f; do
 	[ -n "$f" ] || continue
 	[ -f "$f" ] || continue
-
-	case "$f" in
-	# Vendored third-party source. duckdb's format.py has a hardcoded
-	# ignored_directories list we cannot extend without editing the submodule,
-	# so the exclusion lives here.
-	src/external/*) continue ;;
-	# CI only checks these two trees; formatting anything else would produce
-	# diffs no check asks for.
-	src/* | test/*) ;;
-	*) continue ;;
-	esac
-
-	case "$f" in
-	*.cpp | *.hpp | *.c | *.h | *.cc | *.hh | *.py | *.test | *.test_slow | *.test_coverage | *.benchmark) ;;
-	*) continue ;;
-	esac
-
-	# A file with BOTH staged and unstaged changes is left alone: formatting it
-	# and re-adding would sweep the unstaged half into the commit, which is not
-	# what `git add -p` asked for.
-	if ! git diff --quiet -- "$f"; then
-		skipped_partial="$skipped_partial $f"
-		continue
-	fi
-
-	before="$(git hash-object "$f")"
-	if ! python3 duckdb/scripts/format.py "$f" --fix --noconfirm --silent >/dev/null 2>&1; then
-		echo "pre-commit: failed to format $f — commit continues, CI will report it" >&2
-		continue
-	fi
-	after="$(git hash-object "$f")"
-
-	if [ "$before" != "$after" ]; then
-		git add -- "$f"
-		echo "pre-commit: formatted $f"
-		formatted=$((formatted + 1))
-	fi
-# Piping into the loop would run it in a subshell and lose $formatted, so the
-# process substitution keeps it in this shell.
+	staged="$staged$f
+"
 done < <(git diff --cached --name-only --diff-filter=ACMR)
 
-if [ -n "$skipped_partial" ]; then
-	echo "pre-commit: not formatted (has unstaged changes too):$skipped_partial" >&2
-fi
-if [ "$formatted" -gt 0 ]; then
-	echo "pre-commit: $formatted file(s) reformatted and re-staged."
-fi
+# ============================================================
+# Phase 1: format
+# ============================================================
 
-exit 0
+format_phase() {
+	if [ "${SKIP_FORMAT:-0}" = "1" ]; then
+		return 0
+	fi
+
+	if [ ! -f duckdb/scripts/format.py ]; then
+		echo "pre-commit: duckdb/scripts/format.py missing (submodule not initialised?) — skipping format" >&2
+		return 0
+	fi
+
+	# The version check is the whole game. duckdb/scripts/format.py hard-requires
+	# clang-format 11.0.1 and black >=24, and a DIFFERENT clang-format does not merely
+	# skip work — it reformats correctly-formatted code its own way, so the hook would
+	# fight CI on every commit and the diff would churn forever. CI pins these in
+	# extension-ci-tools/.github/workflows/_extension_code_quality.yml.
+	local missing=""
+	command -v clang-format >/dev/null 2>&1 || missing="clang-format"
+	command -v black >/dev/null 2>&1 || missing="$missing black"
+	if [ -n "$missing" ]; then
+		echo "pre-commit: missing formatter(s):$missing — skipping format." >&2
+		echo "            install with: pip install 'clang_format==11.0.1' 'black==24.*' cmake-format" >&2
+		return 0
+	fi
+
+	local cf_version
+	cf_version="$(clang-format --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+	if [ "$cf_version" != "11.0.1" ]; then
+		echo "pre-commit: clang-format is $cf_version but CI pins 11.0.1 — skipping format." >&2
+		echo "            Formatting with another version would churn the diff and still fail CI." >&2
+		echo "            install with: pip install 'clang_format==11.0.1'" >&2
+		return 0
+	fi
+
+	local formatted=0
+	local skipped_partial=""
+	local f before after
+
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+
+		case "$f" in
+		# Vendored third-party source. duckdb's format.py has a hardcoded
+		# ignored_directories list we cannot extend without editing the submodule,
+		# so the exclusion lives here.
+		src/external/*) continue ;;
+		# CI only checks these two trees; formatting anything else would produce
+		# diffs no check asks for.
+		src/* | test/*) ;;
+		*) continue ;;
+		esac
+
+		case "$f" in
+		*.cpp | *.hpp | *.c | *.h | *.cc | *.hh | *.py | *.test | *.test_slow | *.test_coverage | *.benchmark) ;;
+		*) continue ;;
+		esac
+
+		# A file with BOTH staged and unstaged changes is left alone: formatting it
+		# and re-adding would sweep the unstaged half into the commit, which is not
+		# what `git add -p` asked for.
+		if ! git diff --quiet -- "$f"; then
+			skipped_partial="$skipped_partial $f"
+			continue
+		fi
+
+		before="$(git hash-object "$f")"
+		if ! python3 duckdb/scripts/format.py "$f" --fix --noconfirm --silent >/dev/null 2>&1; then
+			echo "pre-commit: failed to format $f — commit continues, CI will report it" >&2
+			continue
+		fi
+		after="$(git hash-object "$f")"
+
+		if [ "$before" != "$after" ]; then
+			git add -- "$f"
+			echo "pre-commit: formatted $f"
+			formatted=$((formatted + 1))
+		fi
+	done <<EOF
+$staged
+EOF
+
+	if [ -n "$skipped_partial" ]; then
+		echo "pre-commit: not formatted (has unstaged changes too):$skipped_partial" >&2
+	fi
+	if [ "$formatted" -gt 0 ]; then
+		echo "pre-commit: $formatted file(s) reformatted and re-staged."
+	fi
+	return 0
+}
+
+# ============================================================
+# Phase 2: tidy
+# ============================================================
+#
+# CI's `Tidy Check` runs `make tidy-check`, which is clang-tidy over every .cpp in
+# src/ with duckdb's .clang-tidy config -- and that config sets warnings-as-errors,
+# so ANY finding fails the job. This phase runs the same analysis over the staged
+# .cpp only.
+#
+# Findings BLOCK the commit, unlike phase 1, which fixes and moves on. clang-tidy's
+# own fixes are not always safe to apply unattended and a wrong one is worse than a
+# red CI, so the decision stays with the author.
+#
+# COST: on the order of ten seconds per staged .cpp, and they run in parallel, so a
+# normal commit adds a few seconds. A commit touching most of src/ costs proportionally
+# more; SKIP_TIDY=1 when that is not a trade you want.
+
+tidy_phase() {
+	if [ "${SKIP_TIDY:-0}" = "1" ]; then
+		return 0
+	fi
+
+	# CI's job runs ubuntu-24.04's clang-tidy 18, and matching it exactly is the ideal:
+	# bugprone-unchecked-optional-access's dataflow model differs between releases, so
+	# a newer binary can pass code CI rejects. 18 is preferred for that reason.
+	#
+	# It is a preference and not a requirement because on macOS it is often impossible.
+	# clang-tidy 18 cannot parse a current macOS SDK's libc++ (which uses __builtin_clzg
+	# and friends, clang 19+), so it fails on the system headers before reaching any of
+	# ours. A newer clang-tidy catches nearly all of the same things; the version note
+	# below says plainly which one ran, and CI remains the authority.
+	local tidy_bin="" tidy_version="" candidate v
+	for candidate in clang-tidy-18 clang-tidy-19 clang-tidy-20 clang-tidy-21 clang-tidy; do
+		command -v "$candidate" >/dev/null 2>&1 || continue
+		v="$("$candidate" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+		[ -n "$v" ] || continue
+		tidy_bin="$candidate"
+		tidy_version="$v"
+		case "$v" in
+		18.*) break ;; # exactly CI's — stop looking
+		esac
+	done
+
+	if [ -z "$tidy_bin" ]; then
+		echo "pre-commit: no clang-tidy on PATH — skipping tidy." >&2
+		echo "            macOS: brew install llvm    Linux: apt install clang-tidy" >&2
+		return 0
+	fi
+
+	# On macOS the compile database records AppleClang's command line, which carries no
+	# -isysroot. A Homebrew clang-tidy then cannot find <string> and reports
+	# clang-diagnostic-error on every file. The SDK path makes it work.
+	local extra_args=""
+	if [ "$(uname -s)" = "Darwin" ]; then
+		local sdk
+		sdk="$(xcrun --show-sdk-path 2>/dev/null)"
+		[ -n "$sdk" ] && extra_args="-extra-arg=-isysroot$sdk"
+	fi
+
+	# clang-tidy needs the compile command for each file. build/tidy is where
+	# `make tidy-check` configures one (DISABLE_UNITY=1, CLANG_TIDY=1); the hook
+	# never configures anything itself, since a cmake run mid-commit is a surprise.
+	local compile_db="build/tidy/compile_commands.json"
+	if [ ! -f "$compile_db" ]; then
+		echo "pre-commit: $compile_db missing — skipping tidy." >&2
+		echo "            create it with: make tidy-check   (the cmake configure it runs" >&2
+		echo "            first is what writes the file; the analysis after it is the slow part)" >&2
+		return 0
+	fi
+
+	# Only .cpp: clang-tidy analyses translation units, and a header reaches it
+	# through one. So a commit touching ONLY headers is not covered here -- CI is
+	# still the backstop for that.
+	local files="" f
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		case "$f" in
+		src/external/*) continue ;;
+		src/*.cpp) ;;
+		*) continue ;;
+		esac
+
+		# A file added in this commit has no entry in a compile database configured
+		# before it existed. Analysing it would fail on "compile command not found",
+		# which reads as a hook bug rather than a stale build dir.
+		if ! grep -q "\"$repo_root/$f\"" "$compile_db" 2>/dev/null; then
+			echo "pre-commit: $f is not in $compile_db — not checked." >&2
+			echo "            re-run make tidy-check to pick up newly added sources." >&2
+			continue
+		fi
+
+		files="$files$f
+"
+	done <<EOF
+$staged
+EOF
+
+	if [ -z "$files" ]; then
+		return 0
+	fi
+
+	local jobs tmpdir rc=0
+	jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+	tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/cityjson-tidy.XXXXXX")" || return 0
+
+	local note=""
+	case "$tidy_version" in
+	18.*) ;;
+	*) note=" [CI runs 18.x — findings may differ]" ;;
+	esac
+	echo "pre-commit: clang-tidy $tidy_version on $(echo "$files" | grep -c .) file(s), -j$jobs$note"
+	echo "            SKIP_TIDY=1 to bypass."
+
+	# A runner script rather than an inline `sh -c`: the quoting of a nested command
+	# substitution through xargs is unreadable and easy to get subtly wrong.
+	#
+	# The exit status is recorded alongside the output, and it is the thing this hook
+	# actually judges on. clang-tidy exits 0 clean and 1 on findings (duckdb's config
+	# sets warnings-as-errors); ANY other status means it died -- and a died-on-startup
+	# clang-tidy writes an empty log, which grepping for findings reads as "clean". An
+	# analyser that never ran must not report a pass.
+	cat >"$tmpdir/run.sh" <<'RUNNER'
+#!/usr/bin/env bash
+# $1 clang-tidy binary, $2 repo root, $3 path relative to it, $4 output dir, $5 extra arg
+out="$4/$(echo "$3" | tr / _)"
+if [ -n "$5" ]; then
+	"$1" -p "$2/build/tidy" -header-filter="$2/src/.*/" --quiet "$5" "$2/$3" >"$out.log" 2>&1
+else
+	"$1" -p "$2/build/tidy" -header-filter="$2/src/.*/" --quiet "$2/$3" >"$out.log" 2>&1
+fi
+echo "$? $3" >"$out.rc"
+RUNNER
+	chmod +x "$tmpdir/run.sh"
+
+	# The working-tree copy is what gets analysed, staged or not. A partially staged
+	# file is therefore judged on its full contents; phase 1 declines to touch those,
+	# but reporting on what is actually on disk is the more useful answer here.
+	printf '%s' "$files" | xargs -P "$jobs" -I{} \
+		"$tmpdir/run.sh" "$tidy_bin" "$repo_root" {} "$tmpdir" "$extra_args"
+
+	local status file crashed=""
+	while read -r status file; do
+		case "$status" in
+		0 | 1) ;;
+		*) crashed="$crashed $file ($status)" ;;
+		esac
+	done <<EOF
+$(cat "$tmpdir"/*.rc 2>/dev/null)
+EOF
+
+	if [ -n "$crashed" ]; then
+		echo "pre-commit: clang-tidy exited abnormally on:$crashed" >&2
+		sed "s|$repo_root/||" "$tmpdir"/*.log 2>/dev/null | tail -20 >&2
+		echo "            The analysis did not run, so nothing was checked. Commit blocked" >&2
+		echo "            rather than passed. On Apple Silicon, install a native build" >&2
+		echo "            (brew install llvm@18) — the pip wheel is x86_64 and dies under Rosetta." >&2
+		rc=1
+	elif grep -hqE ": (error|warning): " "$tmpdir"/*.log 2>/dev/null; then
+		grep -hE ": (error|warning): " "$tmpdir"/*.log 2>/dev/null | sed "s|$repo_root/||" | sort -u >&2
+		echo "pre-commit: clang-tidy findings above — commit blocked." >&2
+		echo "            fix them, or bypass with: SKIP_TIDY=1 git commit ..." >&2
+		rc=1
+	else
+		echo "pre-commit: clang-tidy clean."
+	fi
+
+	rm -rf "$tmpdir"
+	return "$rc"
+}
+
+format_phase
+tidy_phase

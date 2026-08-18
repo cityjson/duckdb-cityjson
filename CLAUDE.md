@@ -18,7 +18,7 @@ A **C++20 DuckDB extension** (not Rust). C++20 is pinned via `target_compile_fea
 | `test/sql/` | sqllogictest suites — how behaviour is pinned |
 | `test/data/` | Fixtures |
 | `test/cpp/`, `test/wasm/` | Opt-in harnesses, outside `make test` |
-| `.githooks/` | `pre-commit` formatter (`just hooks` to install) |
+| `.githooks/` | `pre-commit` format + tidy gates (`just hooks` to install) |
 | `vcpkg.json` | Dependencies, incl. the `flatcitybuf` git registry |
 
 | Document | Answers |
@@ -41,8 +41,22 @@ is the authority on the encoding; this repo implements it.
 - **TDD: red, green, refactor.** Write the failing test, run it and watch it fail for
   the reason you expect, write the minimum to pass, then refactor. A test that has
   never failed has not been shown to test anything.
-- **The pre-commit hook formats every commit.** `just hooks` once per clone
-  (`core.hooksPath` is local config and is not inherited).
+- **The pre-commit hook runs both CI code-quality gates.** `just hooks` once per
+  clone (`core.hooksPath` is local config and is not inherited). It formats and
+  re-stages, then runs clang-tidy over the staged `.cpp` and **blocks the commit on
+  any finding** — CI's `Tidy Check` takes ~37 minutes, so finding out there is late.
+  It needs `build/tidy/compile_commands.json`, which the cmake configure inside
+  `make tidy-check` writes, and costs ~10s per staged file. `SKIP_TIDY=1` (or
+  `SKIP_FORMAT=1`) bypasses one phase, `--no-verify` both.
+- **Version pinning differs between the two phases, deliberately.** Formatting is
+  skipped outright unless clang-format is exactly 11.0.1 — another version reformats
+  conforming code its own way and churns the diff forever. Tidy *prefers* CI's 18.x
+  but accepts newer and says so, because clang-tidy 18 cannot parse a current macOS
+  SDK's libc++ at all (it needs clang 19+ builtins) and would be unusable here. CI
+  stays the authority; `bugprone-unchecked-optional-access` in particular models
+  dataflow differently across releases, so a newer local pass is not a CI pass.
+  On macOS the hook adds `-isysroot`: the compile database records AppleClang's
+  command line, and a Homebrew clang-tidy cannot find `<string>` without it.
 - **Breaking changes are welcome.** Prefer the correct interface over the compatible
   one. Say so in the commit message with a `!` and describe the migration.
 - **Document the present, not the past.** No "fixed", "previously broken", "used to
