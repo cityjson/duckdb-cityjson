@@ -195,6 +195,46 @@ per-geometry references are columns).
   where a plausible wrong number is not. All three metadata functions share the
   schema, which is why the column is NULLed rather than dropped.
 
+### Pre-commit formatting hook
+
+`just hooks` sets `core.hooksPath` to `.githooks`, whose `pre-commit` formats
+**staged** files with `duckdb/scripts/format.py` and re-stages them. One command
+per clone — `core.hooksPath` is local config and is not inherited.
+
+**The version check is the point of the hook, not a nicety.** `format.py`
+hard-requires **clang-format 11.0.1** and **black >= 24** (CI installs exactly
+`clang_format==11.0.1` and `black==24.*` in
+`extension-ci-tools/.github/workflows/_extension_code_quality.yml`). A different
+clang-format does not merely miss work — it reformats correctly-formatted code
+its own way, so the hook would fight CI on every commit and the diff would churn
+forever. A stock macOS Homebrew clang-format is v21 and produces a different
+result on files that already pass CI. So the hook **skips with a warning**
+whenever the tools are missing or mis-versioned, rather than blocking the commit
+or churning the tree:
+
+```sh
+pip install 'clang_format==11.0.1' 'black==24.*' cmake-format
+```
+
+Behaviours worth knowing:
+
+- **A file with both staged and unstaged changes is skipped**, with a warning.
+  Formatting it and re-adding would sweep the unstaged half into the commit,
+  which is precisely what `git add -p` asked not to happen.
+- **`src/external/` is excluded** — vendored third-party source (cjseq).
+  `format.py`'s `ignored_directories` is a hardcoded list inside the duckdb
+  submodule, so the exclusion has to live in the hook.
+- Only `src/` and `test/` are touched, because those are the only trees CI's
+  `--directories src test` checks.
+- Escape hatches: `SKIP_FORMAT=1 git commit …` for one commit, or
+  `git commit --no-verify` to bypass all hooks.
+
+**The `.test` header is load-bearing.** The sqllogictest formatter requires the
+first three lines to be exactly `# name:`, `# description:` and `# group:`, with
+a **single-line** description. A multi-line description makes it hoist
+`# group:` up to line 3 and orphan the continuation into a detached comment
+block. Put long explanations in a comment block *after* the header.
+
 ### Key Source Files
 
 | File                           | Purpose                                                                               |
