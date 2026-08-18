@@ -1,0 +1,67 @@
+# name: test/sql/cityparquet_insert_fcb.test
+# description: insert_flatcitybuf -- the third insert_* pragma, previously untested
+# group: [sql]
+
+require cityjson
+
+# insert_cityjson (19 uses) and insert_cityjsonseq (4) were exercised; this one
+# had no coverage anywhere in test/sql at all.
+#
+# Bootstrap note: cityparquet_init requires the schema to already hold at least
+# one object table, so the CREATE TABLE below is a prerequisite, not decoration.
+# A bare `CREATE SCHEMA` + `cityparquet_init` fails with "schema has no
+# CityParquet object table", and `create_tables = true` does not substitute --
+# pragma expansion happens for the whole script before any of it executes, so the
+# generator sees the catalog as it was before the batch.
+
+statement ok
+CREATE SCHEMA fcbpkg;
+
+statement ok
+CREATE TABLE fcbpkg.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar');
+
+statement ok
+PRAGMA cityparquet_init('fcbpkg');
+
+query I
+SELECT COUNT(*) FROM fcbpkg.building;
+----
+20
+
+# --- the headline case: a .fcb file goes in with one call ---
+statement ok
+PRAGMA insert_flatcitybuf('fcbpkg', 'test/data/fcb_bbox_attr.fcb');
+
+# 20 + 3 Buildings.
+query I
+SELECT COUNT(*) FROM fcbpkg.building;
+----
+23
+
+# The reader's derived state survives the insert, exactly as it does for the
+# CityJSON variants: rows arrive with their own feature_id, not NULLs waiting for
+# a later reconcile.
+query I
+SELECT COUNT(*) FROM fcbpkg.building WHERE feature_id IS NULL;
+----
+0
+
+# A second FCB source appends rather than replacing.
+statement ok
+PRAGMA insert_flatcitybuf('fcbpkg', 'test/data/sample.fcb');
+
+query I
+SELECT COUNT(*) FROM fcbpkg.building;
+----
+25
+
+# The package stays internally consistent afterwards -- an insert that corrupted
+# the bookkeeping would still pass a plain row count.
+statement ok
+PRAGMA cityparquet_validate('fcbpkg');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0

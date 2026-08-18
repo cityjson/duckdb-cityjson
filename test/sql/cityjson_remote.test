@@ -1,0 +1,124 @@
+# name: test/sql/cityjson_remote.test
+# description: HTTP reads for the CityJSON/CityJSONSeq readers, the metadata
+# functions, and a hosted CityParquet package. Network test: runs only when
+# CITYJSON_REMOTE_TEST is set.
+#   CITYJSON_REMOTE_TEST=1 ./build/release/test/unittest test/sql/cityjson_remote.test
+# or `just test-remote`. Downloads ~25 MB, so it is deliberately kept out of
+# `make test`. Every expected value below was verified by hand against the
+# hosted datasets.
+#
+# Until this file, cityjson_fcb_remote.test was the only network test in the
+# suite, covering one reader in one format -- read_cityjson, read_cityjsonseq,
+# all three metadata functions and a hosted CityParquet package had never been
+# exercised over HTTP at all.
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+require-env CITYJSON_REMOTE_TEST
+
+# The runner's default ignore_error_messages list is {"HTTP", "Unable to
+# connect"} (TestConfiguration::ErrorMessagesToBeSkipped), so a failed remote
+# read would report as a *skip* rather than a failure -- the exact outcome this
+# file exists to catch. `set` with no values clears the list, making transport
+# errors fail loudly.
+set ignore_error_messages
+
+# The sqllogictest runner turns extension autoloading off by default, so the
+# readers' own AutoLoadExtension(context, "httpfs") cannot pull httpfs in here.
+# `require httpfs` would instead skip the whole file, which would make a run you
+# deliberately opted into by setting the env var silently do nothing.
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+# --- all three readers agree on row count, over HTTP ---
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+----
+2231
+
+query I
+SELECT COUNT(*) FROM read_cityjson('https://cityjson.open3d.city/cityjson/delft.city.json');
+----
+2231
+
+query I
+SELECT COUNT(*) FROM read_flatcitybuf('https://flatcitybuf.open3d.city/data/delft.fcb');
+----
+2231
+
+# --- metadata must not contradict the readers ---
+query I
+SELECT city_objects_count FROM cityjsonseq_metadata('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+----
+2231
+
+query I
+SELECT city_objects_count FROM cityjson_metadata('https://cityjson.open3d.city/cityjson/delft.city.json');
+----
+2231
+
+# The FCB header counts features, not CityObjects -- 1115 Buildings each
+# carrying a BuildingPart. Reported under its own name, and city_objects_count
+# is not claimed rather than being wrong.
+query II
+SELECT features_count, city_objects_count IS NULL
+FROM flatcitybuf_metadata('https://flatcitybuf.open3d.city/data/delft.fcb');
+----
+1115	true
+
+# --- CRS survives the wire ---
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+----
+EPSG	7415
+
+# --- object_type split matches the published dataset ---
+query II
+SELECT
+  COUNT(*) FILTER (WHERE object_type = 'Building'),
+  COUNT(*) FILTER (WHERE object_type = 'BuildingPart')
+FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+----
+1115	1116
+
+# --- a hosted CityParquet package reads, and its footer parses ---
+query I
+SELECT COUNT(*) FROM read_parquet('https://cityparquet.open3d.city/data/delft/building.parquet');
+----
+2231
+
+query I
+SELECT cityparquet_city_field(decode(value), 'crs') IS NOT NULL
+FROM parquet_kv_metadata('https://cityparquet.open3d.city/data/delft/building.parquet')
+WHERE key = 'city';
+----
+true
+
+# --- a second dataset, so one bad file cannot mask a systematic fault ---
+query I
+SELECT COUNT(*) > 0 FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/Railway.city.jsonl');
+----
+true
+
+query I
+SELECT COUNT(*) > 0 FROM read_flatcitybuf('https://flatcitybuf.open3d.city/data/Railway.city.fcb');
+----
+true
+
+# --- a remote source is a source like any other: its CRS is inherited ---
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl'))
+TO '__TEST_DIR__/remote_rt.city.jsonl' (FORMAT cityjsonseq);
+
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('__TEST_DIR__/remote_rt.city.jsonl');
+----
+EPSG	7415
