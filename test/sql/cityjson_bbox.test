@@ -46,7 +46,7 @@ SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FR
 statement ok
 DROP TABLE bdef;
 
-# CityJSONSeq per-LOD mode also exposes geometry + bbox (streaming bind)
+# CityJSONSeq per-LOD mode also exposes geometry_lod2_2 + bbox (streaming bind)
 statement ok
 CREATE TABLE bseq AS SELECT * FROM read_cityjsonseq('test/data/bbox_seq.city.jsonl', lod => '2.2');
 
@@ -66,9 +66,28 @@ SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FR
 0.0	0.0	0.0	10.0	10.0	0.0
 
 query T
-SELECT typeof(geometry) FROM bseq WHERE geometry IS NOT NULL;
+SELECT typeof(geometry_lod2_2) FROM bseq WHERE geometry_lod2_2 IS NOT NULL;
 ----
 BLOB
 
 statement ok
 DROP TABLE bseq;
+
+# bbox is unioned across every stored LoD *and* across the object's descendants
+# (CityParquet spec). A parent Building carrying only an LoD0 footprint must not
+# report a flat bbox that excludes its BuildingPart's solid, or a query pruning
+# on the parent silently misses the building — the normal 3DBAG shape.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE parents IS NULL AND bbox.max_z <= bbox.min_z;
+----
+0
+
+# Every parent's bbox contains its child's.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') p
+JOIN read_cityjsonseq('test/data/delft_subset.city.jsonl') c ON c.id = p.children[1]
+WHERE p.bbox.max_z < c.bbox.max_z OR p.bbox.min_z > c.bbox.min_z
+   OR p.bbox.min_x > c.bbox.min_x OR p.bbox.max_x < c.bbox.max_x;
+----
+0

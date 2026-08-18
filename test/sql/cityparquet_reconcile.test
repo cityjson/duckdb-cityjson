@@ -1,0 +1,177 @@
+# name: test/sql/cityparquet_reconcile.test
+# description: cityparquet_reconcile — re-derive feature_id, hierarchy, bbox
+# group: [sql]
+
+require cityjson
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+# Reconciling an already-correct package changes nothing at all — including bbox.
+# The reader and reconcile now agree on the specification's rule that bbox is
+# unioned across every stored LoD *and* across the object's descendants, so a
+# freshly-read package is already reconciled.
+statement ok
+CREATE TABLE before AS SELECT id, feature_id, children, children_roles, bbox FROM ams.building;
+
+statement ok
+PRAGMA cityparquet_reconcile('ams');
+
+query I
+SELECT COUNT(*) FROM before b JOIN ams.building a USING (id)
+WHERE a.feature_id IS DISTINCT FROM b.feature_id
+   OR a.children IS DISTINCT FROM b.children
+   OR a.children_roles IS DISTINCT FROM b.children_roles
+   OR a.bbox IS DISTINCT FROM b.bbox;
+----
+0
+
+# The union is real: a parent Building whose 3D detail lives on its BuildingPart
+# has a bbox taller than its own LoD0 footprint. Before the reader was fixed this
+# was flat (zmin == zmax), which made pruning on a parent's bbox silently miss
+# buildings — the normal 3DBAG shape.
+query I
+SELECT COUNT(*) FROM ams.building WHERE parents IS NULL AND bbox.max_z > bbox.min_z;
+----
+10
+
+# feature_id: a child is re-pointed at its root parent.
+statement ok
+UPDATE ams.building SET feature_id = 'wrong'
+  WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+
+statement ok
+PRAGMA cityparquet_reconcile('ams');
+
+query T
+SELECT feature_id FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+NL.IMBAG.Pand.0503100000012869
+
+# Every root object's feature_id equals its own id.
+query I
+SELECT COUNT(*) FROM ams.building WHERE parents IS NULL AND feature_id <> id;
+----
+0
+
+# hierarchy: a cleared children array is rebuilt from the child's parents array.
+statement ok
+UPDATE ams.building SET children = NULL
+  WHERE id = 'NL.IMBAG.Pand.0503100000016459';
+
+statement ok
+PRAGMA cityparquet_reconcile('ams');
+
+query T
+SELECT children FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000016459';
+----
+[NL.IMBAG.Pand.0503100000016459-0]
+
+# hierarchy: a child reference to an object that is not really a child is removed.
+statement ok
+UPDATE ams.building
+  SET children = ['NL.IMBAG.Pand.0503100000012869-0', 'bogus']
+  WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+
+statement ok
+PRAGMA cityparquet_reconcile('ams');
+
+query T
+SELECT children FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+----
+[NL.IMBAG.Pand.0503100000012869-0]
+
+# bbox: a corrupted extent is recomputed from geometry.
+statement ok
+UPDATE ams.building
+  SET bbox = {'min_x': 0.0, 'min_y': 0.0, 'min_z': 0.0, 'max_x': 0.0, 'max_y': 0.0, 'max_z': 0.0}
+  WHERE id = 'NL.IMBAG.Pand.0503100000005156-0';
+
+statement ok
+PRAGMA cityparquet_reconcile('ams');
+
+query I
+SELECT bbox.max_z > 1 FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000005156-0';
+----
+true
+
+# bbox is unioned across descendants: every parent contains its child.
+query I
+SELECT COUNT(*) FROM ams.building p
+JOIN ams.building c ON c.id = p.children[1]
+WHERE p.bbox.max_z < c.bbox.max_z
+   OR p.bbox.min_z > c.bbox.min_z
+   OR p.bbox.min_x > c.bbox.min_x
+   OR p.bbox.max_x < c.bbox.max_x;
+----
+0
+
+# After reconcile the package validates clean.
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# checks = restricts what is re-derived.
+statement ok
+UPDATE ams.building SET feature_id = 'wrong'
+  WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+
+statement ok
+PRAGMA cityparquet_reconcile('ams', checks = ['bbox']);
+
+query T
+SELECT feature_id FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+wrong
+
+# The _sql twin returns text and mutates nothing.
+query I
+SELECT cityparquet_reconcile_sql('ams') LIKE '%UPDATE%';
+----
+true
+
+query T
+SELECT feature_id FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+wrong
+
+# --- regressions from the 2026-07-26 review --------------------------------
+
+# An object with several parents takes the root of its FIRST parent chain.
+# Recursing through every parent reaches several roots and lets the UPDATE pick
+# arbitrarily, making feature_id depend on join order.
+statement ok
+CREATE SCHEMA multi;
+
+statement ok
+CREATE TABLE multi.building (id VARCHAR, feature_id VARCHAR, object_type VARCHAR,
+  parents VARCHAR[], children VARCHAR[], children_roles VARCHAR[],
+  bbox STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE));
+
+statement ok
+INSERT INTO multi.building VALUES
+  ('r1', 'r1', 'Building', NULL, NULL, NULL, NULL),
+  ('r2', 'r2', 'Building', NULL, NULL, NULL, NULL),
+  ('c',  'x',  'BuildingPart', ['r1','r2'], NULL, NULL, NULL);
+
+statement ok
+PRAGMA cityparquet_init('multi');
+
+statement ok
+PRAGMA cityparquet_reconcile('multi', checks = ['feature_id']);
+
+query T
+SELECT feature_id FROM multi.building WHERE id = 'c';
+----
+r1

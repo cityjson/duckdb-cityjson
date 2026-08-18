@@ -167,7 +167,15 @@ struct CityObject {
 	std::optional<GeographicalExtent> geographical_extent;  // 3D bounding box
 	std::vector<std::string> children;                      // Child CityObject IDs
 	std::vector<std::string> parents;                       // Parent CityObject IDs
-	std::optional<std::vector<std::string>> children_roles; // Roles of children
+	// Roles of children, positionally aligned with `children` (CityParquet spec
+	// §object-table-schema: length MUST equal children, with null for a child that
+	// has no role) -- so an unset entry has to be representable, not just absent.
+	std::optional<std::vector<std::optional<std::string>>> children_roles;
+	// Root-family id per the CityParquet feature_id rule (spec
+	// 02-object-table-schema.mdx): filled by the whole-CityJSON reader, where no
+	// real CityJSONFeature exists to take it from. Empty means "use the containing
+	// feature's id" -- the CityJSONSeq / FlatCityBuf case, whose features carry it.
+	std::string feature_id;
 
 	CityObject() = default;
 	explicit CityObject(std::string type);
@@ -183,16 +191,11 @@ struct CityObject {
 	json ToJson() const;
 
 	/**
-	 * Get geometry at specific LOD
+	 * Geometry at a specific LOD, or nullptr when the object has none there.
+	 * A pointer, not optional<Geometry>: the by-value form copied the whole
+	 * boundaries JSON once per geometry column per row.
 	 */
-	std::optional<Geometry> GetGeometryAtLOD(const std::string &lod) const;
-
-	/**
-	 * Get the geometry with the highest LOD (by numeric value).
-	 * Used to compute the per-row bbox in default (wide) mode. Geometries with an
-	 * empty LOD are skipped; if none have a usable LOD the first geometry is returned.
-	 */
-	std::optional<Geometry> GetHighestLODGeometry() const;
+	const Geometry *GetGeometryAtLOD(const std::string &lod) const;
 };
 
 /**
@@ -213,6 +216,85 @@ struct Extension {
 };
 
 /**
+ * A material definition from the CityJSON `appearance.materials` array.
+ *
+ * One row of the CityParquet `materials.parquet` sidecar. The array position is the
+ * dataset-global `id` a geometry's material map references.
+ */
+struct Material {
+	std::optional<std::string> name;
+	std::optional<double> ambient_intensity;
+	std::optional<std::vector<double>> diffuse_color;  // 3 values in [0,1]
+	std::optional<std::vector<double>> specular_color; // 3 values in [0,1]
+	std::optional<std::vector<double>> emissive_color; // 3 values in [0,1]
+	std::optional<double> transparency;
+	std::optional<double> shininess;
+	std::optional<bool> is_smooth;
+	json other; // members this mapping does not cover
+
+	static Material FromJson(const json &obj);
+};
+
+/**
+ * A texture definition from the CityJSON `appearance.textures` array.
+ *
+ * One row of the CityParquet `textures.parquet` sidecar. Two members are renamed on the
+ * way in: CityJSON's `image` is the spec's `image_uri`, and CityJSON's `type` is
+ * `image_type` (a format token such as "PNG", deliberately not a MIME type). The spec's
+ * optional `image_data` has no CityJSON source and is always null here.
+ */
+struct Texture {
+	std::optional<std::string> image_uri;
+	std::optional<std::string> image_type;
+	std::optional<std::string> wrap_mode;
+	std::optional<std::string> texture_type;
+	std::optional<std::vector<double>> border_color; // 4 values in [0,1] (RGBA)
+	json other;
+
+	static Texture FromJson(const json &obj);
+};
+
+/**
+ * The CityJSON `appearance` object.
+ *
+ * Material and texture *definitions* are dataset-global: in CityJSON they sit in the one
+ * top-level appearance object, and in CityJSONSeq they sit in the header line. The UV
+ * pool is not — each CityJSONSeq feature carries its own `vertices-texture`. That
+ * asymmetry is why the CityParquet encoding inlines UV coordinates: a stored UV index
+ * would be meaningless once features are merged into a single table.
+ */
+/**
+ * The CityJSON `geometry-templates` object: reusable geometries plus the vertex pool
+ * they index.
+ *
+ * Template geometry is in **local** coordinates and is exempt from the dataset
+ * transform — an instance's own transformationMatrix and reference point place it into
+ * the world — so `vertices` here are raw doubles, not quantised integers.
+ */
+struct GeometryTemplates {
+	std::vector<Geometry> templates;
+	std::vector<std::array<double, 3>> vertices;
+
+	bool Empty() const {
+		return templates.empty();
+	}
+
+	static GeometryTemplates FromJson(const json &obj);
+};
+
+struct Appearance {
+	std::vector<Material> materials;
+	std::vector<Texture> textures;
+	std::vector<std::array<double, 2>> vertices_texture;
+
+	bool Empty() const {
+		return materials.empty() && textures.empty() && vertices_texture.empty();
+	}
+
+	static Appearance FromJson(const json &obj);
+};
+
+/**
  * CityJSONFeature
  * Represents a feature in CityJSONSeq format
  */
@@ -222,6 +304,10 @@ struct CityJSONFeature {
 	std::map<std::string, CityObject> city_objects; // CityObjects in this feature
 	// Per-feature local vertex pool (CityJSONSeq): geometry boundary indices reference this
 	std::vector<std::array<double, 3>> vertices;
+	// Per-feature appearance. In CityJSONSeq the material/texture *definitions* live in
+	// the header, but each feature carries its own `vertices-texture` UV pool, which the
+	// feature's own texture maps index into.
+	std::optional<Appearance> appearance;
 
 	CityJSONFeature() : type("CityJSONFeature") {
 	}
@@ -256,6 +342,8 @@ struct CityJSON {
 	std::optional<Metadata> metadata;                           // Dataset metadata
 	std::map<std::string, Extension> extensions;                // Active extensions
 	std::optional<std::vector<std::array<double, 3>>> vertices; // Shared vertex pool (optional)
+	std::optional<Appearance> appearance;                       // Material/texture definitions
+	std::optional<GeometryTemplates> geometry_templates;        // Reusable template geometries
 
 	CityJSON() : version("2.0") {
 	}

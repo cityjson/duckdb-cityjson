@@ -32,11 +32,11 @@ std::string LocalCityJSONReader::Name() const {
 // LoadJson (internal helper)
 // ============================================================
 
-json LocalCityJSONReader::LoadJson() const {
-	if (content_.has_value()) {
-		return ParseJson(content_.value());
+const json &LocalCityJSONReader::LoadJson() const {
+	if (!cached_json_.has_value()) {
+		cached_json_ = content_.has_value() ? ParseJson(content_.value()) : ParseJsonFile(file_path_);
 	}
-	return ParseJsonFile(file_path_);
+	return cached_json_.value();
 }
 
 // ============================================================
@@ -49,7 +49,7 @@ CityJSON LocalCityJSONReader::ReadMetadata() const {
 		return cached_metadata_.value();
 	}
 
-	json obj = LoadJson();
+	const json &obj = LoadJson();
 	CityJSON metadata = CityJSON::FromJson(obj);
 
 	// Cache the result
@@ -62,8 +62,29 @@ CityJSON LocalCityJSONReader::ReadMetadata() const {
 // ReadNFeatures
 // ============================================================
 
+// The spec feature_id rule (02-object-table-schema.mdx): a root object's feature_id
+// is its own id; a child's is the id of the root reached by following the FIRST
+// entry of `parents`. The walk stops at the deepest resolvable object when a parent
+// reference dangles, and is bounded by the object count so a malformed cycle
+// terminates.
+static std::string ResolveRootId(const std::map<std::string, CityObject> &objects, const std::string &id) {
+	std::string current = id;
+	for (size_t step = 0; step < objects.size(); step++) {
+		auto found = objects.find(current);
+		if (found == objects.end() || found->second.parents.empty()) {
+			return current;
+		}
+		const auto &parent = found->second.parents.front();
+		if (objects.find(parent) == objects.end()) {
+			return current;
+		}
+		current = parent;
+	}
+	return current;
+}
+
 std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const {
-	json obj = LoadJson();
+	const json &obj = LoadJson();
 
 	// Validate structure
 	if (!obj.contains("CityObjects") || !obj["CityObjects"].is_object()) {
@@ -87,6 +108,10 @@ std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const 
 		count++;
 	}
 
+	for (auto &[obj_id, obj] : feature.city_objects) {
+		obj.feature_id = ResolveRootId(feature.city_objects, obj_id);
+	}
+
 	return {feature};
 }
 
@@ -95,7 +120,7 @@ std::vector<CityJSONFeature> LocalCityJSONReader::ReadNFeatures(size_t n) const 
 // ============================================================
 
 CityJSONFeatureChunk LocalCityJSONReader::ReadAllChunks() const {
-	json obj = LoadJson();
+	const json &obj = LoadJson();
 
 	// Validate structure
 	if (!obj.contains("CityObjects") || !obj["CityObjects"].is_object()) {
@@ -112,37 +137,13 @@ CityJSONFeatureChunk LocalCityJSONReader::ReadAllChunks() const {
 		feature.city_objects[obj_id] = CityObject::FromJson(obj_data);
 	}
 
+	for (auto &[obj_id, obj] : feature.city_objects) {
+		obj.feature_id = ResolveRootId(feature.city_objects, obj_id);
+	}
+
 	// Create chunks
 	std::vector<CityJSONFeature> features = {feature};
 	return CityJSONFeatureChunk::CreateChunks(std::move(features), STANDARD_VECTOR_SIZE);
-}
-
-// ============================================================
-// ReadNthChunk
-// ============================================================
-
-CityJSONFeatureChunk LocalCityJSONReader::ReadNthChunk(size_t n) const {
-	// For CityJSON format, we need to load all data first then extract the Nth chunk
-	// This is because CityObjects are stored as a single JSON object, not line-delimited
-	CityJSONFeatureChunk all_chunks = ReadAllChunks();
-
-	if (n >= all_chunks.ChunkCount()) {
-		// Return empty chunk
-		return CityJSONFeatureChunk();
-	}
-
-	// Extract the Nth chunk
-	auto chunk_opt = all_chunks.GetChunk(n);
-	if (!chunk_opt.has_value()) {
-		return CityJSONFeatureChunk();
-	}
-
-	// Create a new chunk containing only the requested chunk
-	CityJSONFeatureChunk result;
-	result.records = std::vector<CityJSONFeature>(chunk_opt->begin(), chunk_opt->end());
-	result.chunks = {Range(0, result.records.size())};
-
-	return result;
 }
 
 // ============================================================

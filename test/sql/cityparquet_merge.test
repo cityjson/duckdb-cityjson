@@ -1,0 +1,283 @@
+# name: test/sql/cityparquet_merge.test
+# description: cityparquet_merge — sidecar remap, schema evolution, derived state
+# group: [sql]
+
+require cityjson
+
+# --- supporting scalars ------------------------------------------------------
+
+# Shifting material ids moves every integer leaf, at whatever nesting depth.
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"values":[0,1,null]}}', 'material', 10);
+----
+{"visual":{"values":[10,11,null]}}
+
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[0,1],[2]]}}', 'material', 5);
+----
+{"visual":{"values":[[5,6],[7]]}}
+
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"value":3}}', 'material', 2);
+----
+{"visual":{"value":5}}
+
+# For textures only each ring's FIRST element is an id. The [u,v] pairs must not
+# move -- shifting a coordinate would silently distort the texture.
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[[0,[0.5,0.25]]]]}}', 'texture', 4);
+----
+{"visual":{"values":[[[4,[0.5,0.25]]]]}}
+
+# A ring that is still index-based (local mode) shifts only its id.
+query T
+SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[[1,7,8]]]}}', 'texture', 3);
+----
+{"visual":{"values":[[[4,7,8]]]}}
+
+query I
+SELECT cityjson_shift_appearance_ids(NULL, 'material', 1) IS NULL;
+----
+true
+
+# The WKB type name feeds the footer's geometry_types, with the " Z" suffix.
+query T
+SELECT DISTINCT cityjson_wkb_geometry_type(geometry_lod2_2)
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+PolyhedralSurface Z
+
+# A MultiSurface maps to MultiPolygon Z, which is GeoParquet-legal -- the
+# distinction that decides whether a column may be declared in the `geo` object.
+query T
+SELECT DISTINCT cityjson_wkb_geometry_type(geometry_lod1_0)
+FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
+WHERE geometry_lod1_0 IS NOT NULL;
+----
+MultiPolygon Z
+
+query I
+SELECT cityjson_wkb_geometry_type(NULL) IS NULL;
+----
+true
+
+# --- cityparquet_merge -------------------------------------------------------
+
+statement ok
+CREATE SCHEMA ams;
+
+statement ok
+CREATE TABLE ams.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 10;
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+# A second package with disjoint ids, its own sidecar numbered from 0.
+statement ok
+CREATE SCHEMA utr;
+
+statement ok
+CREATE TABLE utr.building AS
+  SELECT 'U-' || id AS id, 'U-' || feature_id AS feature_id, object_type,
+         list_transform(parents, x -> 'U-' || x) AS parents,
+         list_transform(children, x -> 'U-' || x) AS children,
+         children_roles, bbox, geometry_lod2_2, geometry_properties_lod2_2,
+         '{"visual":{"values":[0]}}' AS material_lod2_2, texture_lod2_2
+  FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 10;
+
+statement ok
+CREATE TABLE ams.materials (id BIGINT, name VARCHAR);
+
+statement ok
+INSERT INTO ams.materials VALUES (0, 'ams-zero'), (1, 'ams-one');
+
+statement ok
+CREATE TABLE utr.materials (id BIGINT, name VARCHAR);
+
+statement ok
+INSERT INTO utr.materials VALUES (0, 'utr-zero');
+
+statement ok
+PRAGMA cityparquet_init('ams');
+
+statement ok
+PRAGMA cityparquet_init('utr');
+
+statement ok
+PRAGMA cityparquet_merge('ams', 'utr');
+
+# Both packages' objects are present.
+query I
+SELECT COUNT(*) FROM ams.building;
+----
+20
+
+# The incoming sidecar row did not collide: it was renumbered past the
+# destination's maximum rather than overwriting id 0.
+query IT
+SELECT id, name FROM ams.materials ORDER BY id;
+----
+0	ams-zero
+1	ams-one
+2	utr-zero
+
+# And the merged rows' references were shifted to match, so every id a geometry
+# names still resolves.
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod2_2, 'material')) AS ref FROM ams.building
+  WHERE material_lod2_2 IS NOT NULL
+) r WHERE r.ref NOT IN (SELECT id FROM ams.materials);
+----
+0
+
+# The rows that came from utr point at the renumbered material, not at 0.
+query I
+SELECT COUNT(*) FROM ams.building
+WHERE id LIKE 'U-%' AND material_lod2_2 LIKE '%2%';
+----
+10
+
+# The package validates clean after the merge.
+statement ok
+PRAGMA cityparquet_validate('ams');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# A colliding object id rejects the entire merge.
+statement ok
+CREATE SCHEMA dup;
+
+statement ok
+CREATE TABLE dup.building AS SELECT * FROM ams.building LIMIT 1;
+
+statement ok
+PRAGMA cityparquet_init('dup');
+
+statement error
+PRAGMA cityparquet_merge('ams', 'dup');
+----
+duplicate id
+
+# The _sql twin returns text and mutates nothing.
+query I
+SELECT cityparquet_merge_sql('ams', 'utr') LIKE '%INSERT INTO%';
+----
+true
+
+# --- sidecars are tables too, and evolve like one ----------------------------
+
+# The geometry_templates sidecar carries per-LoD columns, so two packages whose
+# templates use different LoDs have genuinely different sidecar schemas. Merging
+# them has to widen the destination first: without that, the sidecar INSERT names
+# a source column the destination has never had.
+statement ok
+CREATE SCHEMA tpl_dst;
+
+statement ok
+CREATE TABLE tpl_dst.vegetation AS
+  SELECT * FROM read_cityjson('test/data/geometry_templates.city.json', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE tpl_dst.geometry_templates AS
+  SELECT * FROM cityjson_geometry_templates('test/data/geometry_templates.city.json');
+
+statement ok
+PRAGMA cityparquet_init('tpl_dst');
+
+statement ok
+CREATE SCHEMA tpl_src;
+
+statement ok
+CREATE TABLE tpl_src.bridge AS
+  SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE object_type = 'Bridge';
+
+statement ok
+CREATE TABLE tpl_src.materials AS
+  SELECT * FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
+
+statement ok
+CREATE TABLE tpl_src.geometry_templates AS
+  SELECT * FROM cityjson_geometry_templates('test/data/railway_appearance.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('tpl_src');
+
+statement ok
+PRAGMA cityparquet_merge('tpl_dst', 'tpl_src');
+
+# The destination gained the source's LoD-3 template columns alongside its own.
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM tpl_dst.geometry_templates)
+WHERE column_name IN ('geometry_lod1_0', 'geometry_lod3_0');
+----
+2
+
+# A template holds appearance of its own, so its material references are shifted
+# by the same offset the material rows were. The destination had no materials, so
+# the source's 0..3 land unchanged and the template's reference to material 1
+# still names the material it was authored against.
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM tpl_dst.geometry_templates WHERE material_lod3_0 IS NOT NULL
+) r WHERE r.ref NOT IN (SELECT id FROM tpl_dst.materials);
+----
+0
+
+# Now merge a second source whose materials must be renumbered. Every template
+# reference has to move with them: leaving one behind repoints that template at
+# whichever definition already occupied the id.
+statement ok
+CREATE SCHEMA tpl_src2;
+
+statement ok
+CREATE TABLE tpl_src2.city_furniture AS
+  SELECT * FROM read_cityjson('test/data/insert_appearance.city.json', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE tpl_src2.materials AS
+  SELECT * FROM cityjson_materials('test/data/insert_appearance.city.json');
+
+statement ok
+PRAGMA cityparquet_init('tpl_src2');
+
+statement ok
+PRAGMA cityparquet_merge('tpl_dst', 'tpl_src2');
+
+query I
+SELECT COUNT(*) FROM tpl_dst.materials;
+----
+5
+
+query T
+SELECT name FROM tpl_dst.materials WHERE id = 4;
+----
+kiosk-paint
+
+query T
+SELECT material_lod2_0 FROM tpl_dst.city_furniture WHERE id = 'kiosk-1';
+----
+{"visual":{"values":[4]}}
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM tpl_dst.geometry_templates WHERE material_lod3_0 IS NOT NULL
+) r WHERE r.ref NOT IN (SELECT id FROM tpl_dst.materials);
+----
+0
+
+statement ok
+PRAGMA cityparquet_validate('tpl_dst');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0

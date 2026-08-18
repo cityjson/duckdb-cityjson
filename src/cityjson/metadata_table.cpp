@@ -67,6 +67,7 @@ vector<LogicalType> MetadataTableUtils::GetMetadataTableTypes() {
 	types.push_back(GetReferenceSystemStructType());    // reference_system
 	types.push_back(GetPointOfContactStructType());     // point_of_contact
 	types.push_back(LogicalType::BIGINT);               // city_objects_count
+	types.push_back(LogicalType::BIGINT);               // features_count
 	return types;
 }
 
@@ -83,6 +84,7 @@ vector<string> MetadataTableUtils::GetMetadataTableNames() {
 	names.push_back("reference_system");
 	names.push_back("point_of_contact");
 	names.push_back("city_objects_count");
+	names.push_back("features_count");
 	return names;
 }
 
@@ -211,7 +213,9 @@ static Value CreatePointOfContactValue(const std::optional<PointOfContact> &poc)
 	return Value::STRUCT(std::move(children));
 }
 
-unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &cityjson, idx_t city_objects_count) {
+unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &cityjson,
+                                                              optional_idx city_objects_count,
+                                                              optional_idx features_count) {
 	auto types = GetMetadataTableTypes();
 	auto chunk = make_uniq<DataChunk>();
 	chunk->Initialize(Allocator::DefaultAllocator(), types);
@@ -283,30 +287,23 @@ unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &ci
 		chunk->data[9].SetValue(0, Value(GetPointOfContactStructType()));
 	}
 
-	// city_objects_count
-	chunk->data[10].SetValue(0, Value::BIGINT(static_cast<int64_t>(city_objects_count)));
+	// city_objects_count / features_count
+	//
+	// These count different things and a source may be able to report one cheaply
+	// and not the other. A FlatCityBuf header carries features_count; a row is a
+	// CityObject, and one feature may carry several (a Building plus its
+	// BuildingParts), so the CityObject count would need a full decode. Reporting
+	// the feature count as city_objects_count contradicted both other metadata
+	// functions and our own reader by ~2x on Delft, so an unavailable count is now
+	// SQL NULL rather than a plausible wrong number.
+	chunk->data[10].SetValue(0, city_objects_count.IsValid()
+	                                ? Value::BIGINT(NumericCast<int64_t>(city_objects_count.GetIndex()))
+	                                : Value(LogicalType::BIGINT));
+	chunk->data[11].SetValue(0, features_count.IsValid()
+	                                ? Value::BIGINT(NumericCast<int64_t>(features_count.GetIndex()))
+	                                : Value(LogicalType::BIGINT));
 
 	return chunk;
-}
-
-string MetadataTableUtils::GetCreateTableSQL(const string &table_name) {
-	return "CREATE TABLE IF NOT EXISTS " + table_name +
-	       " ("
-	       "id INTEGER PRIMARY KEY, "
-	       "version VARCHAR NOT NULL, "
-	       "identifier VARCHAR, "
-	       "title VARCHAR, "
-	       "reference_date DATE, "
-	       "transform_scale STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), "
-	       "transform_translate STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), "
-	       "geographical_extent STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z "
-	       "DOUBLE), "
-	       "reference_system STRUCT(base_url VARCHAR, authority VARCHAR, version VARCHAR, code VARCHAR), "
-	       "point_of_contact STRUCT(contact_name VARCHAR, email_address VARCHAR, contact_type VARCHAR, role VARCHAR, "
-	       "phone VARCHAR, website VARCHAR, address STRUCT(thoroughfare_number BIGINT, thoroughfare_name VARCHAR, "
-	       "locality VARCHAR, postal_code VARCHAR, country VARCHAR)), "
-	       "city_objects_count BIGINT"
-	       ")";
 }
 
 } // namespace cityjson

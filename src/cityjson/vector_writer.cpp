@@ -52,12 +52,15 @@ std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Co
 		// Determine vector type based on column type
 		VectorType vec_type;
 
-		if (col.kind == ColumnType::VarcharArray) {
+		if (col.kind == ColumnType::VarcharArray || col.kind == ColumnType::GeometryArrowNative ||
+		    col.kind == ColumnType::GeometryVerticesArrowNative) {
 			vec_type = VectorType::List;
-		} else if (col.kind == ColumnType::Geometry || col.kind == ColumnType::GeographicalExtent) {
+		} else if (col.kind == ColumnType::Geometry || col.kind == ColumnType::GeographicalExtent ||
+		           col.kind == ColumnType::GeometryPropertiesStruct) {
 			vec_type = VectorType::Struct;
 		} else {
-			// All primitives and Json (stored as VARCHAR) are Flat
+			// All primitives and Json (stored as VARCHAR) are Flat -- including
+			// AppearanceJson, which stays JSON text unlike GeometryPropertiesStruct.
 			vec_type = VectorType::Flat;
 		}
 
@@ -345,9 +348,8 @@ void WriteToVector(const Column &col, const json &value, VectorWrapper &wrapper,
 		break;
 	}
 
-	case ColumnType::GeometryPropertiesJson: {
-		// Geometry properties stored as JSON string
-		WritePrimitive(wrapper.AsFlatMut(), row, value.dump());
+	case ColumnType::GeometryPropertiesStruct: {
+		WriteGeometryProperties(wrapper.AsStructMut(), value, row);
 		break;
 	}
 
@@ -372,15 +374,248 @@ void WriteGeometryWKB(Vector *blob_vec, const std::vector<uint8_t> &wkb_data, si
 	FlatVector::GetData<string_t>(*blob_vec)[row] = blob;
 }
 
-void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
-	if (properties.is_null()) {
+// Append one LIST<INTEGER> row from a flat json array of ints, honouring per-item
+// nulls (spec: face_semantics items are independently nullable -- a face with no
+// semantics). Returns nothing; the caller has already decided the row is non-null.
+static void AppendIntList(Vector &list_vec, const json &arr, size_t row) {
+	const size_t n = arr.is_array() ? arr.size() : 0;
+	auto list_size = ListVector::GetListSize(list_vec);
+
+	FlatVector::GetData<list_entry_t>(list_vec)[row] = list_entry_t(list_size, n);
+	ListVector::Reserve(list_vec, list_size + n);
+
+	// Fetch the child data pointer only after Reserve -- reserving can reallocate
+	// the child's buffer and invalidate any pointer taken before it.
+	auto &child = ListVector::GetEntry(list_vec);
+	auto child_data = FlatVector::GetData<int32_t>(child);
+	for (size_t i = 0; i < n; i++) {
+		if (arr[i].is_number_integer()) {
+			child_data[list_size + i] = arr[i].get<int32_t>();
+		} else {
+			FlatVector::SetNull(child, list_size + i, true);
+		}
+	}
+	ListVector::SetListSize(list_vec, list_size + n);
+}
+
+// Append one LIST<LIST<INTEGER>> row from a json array of arrays (spec `shells`:
+// per-solid, then per-shell, face counts -- always two levels deep).
+static void AppendIntListList(Vector &list_vec, const json &arr, size_t row) {
+	const size_t n_solids = arr.is_array() ? arr.size() : 0;
+	auto outer_size = ListVector::GetListSize(list_vec);
+
+	FlatVector::GetData<list_entry_t>(list_vec)[row] = list_entry_t(outer_size, n_solids);
+	ListVector::Reserve(list_vec, outer_size + n_solids);
+
+	auto &solid_vec = ListVector::GetEntry(list_vec); // LIST<INTEGER>
+	auto inner_start = ListVector::GetListSize(solid_vec);
+
+	// Reserve the grandchild once for every count across every solid, so the int
+	// buffer cannot move part-way through the fill below.
+	size_t total_counts = 0;
+	for (size_t s = 0; s < n_solids; s++) {
+		total_counts += arr[s].is_array() ? arr[s].size() : 0;
+	}
+	ListVector::Reserve(solid_vec, inner_start + total_counts);
+
+	auto solid_data = FlatVector::GetData<list_entry_t>(solid_vec);
+	auto &count_vec = ListVector::GetEntry(solid_vec); // INTEGER
+	auto count_data = FlatVector::GetData<int32_t>(count_vec);
+
+	size_t inner_pos = inner_start;
+	for (size_t s = 0; s < n_solids; s++) {
+		const auto &shell_counts = arr[s];
+		const size_t n_shells = shell_counts.is_array() ? shell_counts.size() : 0;
+		solid_data[outer_size + s] = list_entry_t(inner_pos, n_shells);
+		for (size_t i = 0; i < n_shells; i++) {
+			// `shells` is non-null all the way down where present, so a non-integer
+			// entry is malformed input rather than a legitimate null; store 0 so the
+			// counts still sum to something the reader can range-check.
+			count_data[inner_pos + i] = shell_counts[i].is_number_integer() ? shell_counts[i].get<int32_t>() : 0;
+		}
+		inner_pos += n_shells;
+	}
+
+	ListVector::SetListSize(solid_vec, inner_pos);
+	ListVector::SetListSize(list_vec, outer_size + n_solids);
+}
+
+// ============================================================
+// Arrow-native geometry writers
+// ============================================================
+//
+// The geometry column is five LIST levels deep -- solid, shell, face, ring, then
+// the INTEGER vertex-pool index. Each level follows the same idiom the two
+// writers above already use: stamp this row's list_entry_t, reserve the child for
+// everything this row will add, then fill.
+//
+// The ordering rule the shells writer records applies at every level here: a
+// child's data pointer is only valid after the Reserve that sizes it, because
+// reserving can reallocate. So each helper takes its child pointer fresh rather
+// than receiving one from its caller, and a level is fully reserved before its
+// children are visited.
+
+//! One ring: LIST<INTEGER> of vertex-pool indices.
+static void AppendIndexRing(Vector &ring_vec, const std::vector<uint32_t> &ring, size_t row) {
+	auto list_size = ListVector::GetListSize(ring_vec);
+	FlatVector::GetData<list_entry_t>(ring_vec)[row] = list_entry_t(list_size, ring.size());
+	ListVector::Reserve(ring_vec, list_size + ring.size());
+
+	auto &index_vec = ListVector::GetEntry(ring_vec);
+	auto index_data = FlatVector::GetData<int32_t>(index_vec);
+	for (size_t i = 0; i < ring.size(); i++) {
+		// Indices are Int32 by schema. The encoder has already bounds-checked each
+		// one against the row's pool, which is far below the Int32 ceiling for any
+		// real geometry (design doc, "Nullability & validity invariants").
+		index_data[list_size + i] = static_cast<int32_t>(ring[i]);
+	}
+	ListVector::SetListSize(ring_vec, list_size + ring.size());
+}
+
+//! One face: LIST<LIST<INTEGER>>, exterior ring first then any holes.
+static void AppendFace(Vector &face_vec, const CompactedFace &face, size_t row) {
+	auto list_size = ListVector::GetListSize(face_vec);
+	FlatVector::GetData<list_entry_t>(face_vec)[row] = list_entry_t(list_size, face.rings.size());
+	ListVector::Reserve(face_vec, list_size + face.rings.size());
+
+	auto &ring_vec = ListVector::GetEntry(face_vec);
+	for (size_t i = 0; i < face.rings.size(); i++) {
+		AppendIndexRing(ring_vec, face.rings[i], list_size + i);
+	}
+	ListVector::SetListSize(face_vec, list_size + face.rings.size());
+}
+
+//! One shell: LIST<LIST<LIST<INTEGER>>> of faces.
+static void AppendShell(Vector &shell_vec, const CompactedShell &shell, size_t row) {
+	auto list_size = ListVector::GetListSize(shell_vec);
+	FlatVector::GetData<list_entry_t>(shell_vec)[row] = list_entry_t(list_size, shell.faces.size());
+	ListVector::Reserve(shell_vec, list_size + shell.faces.size());
+
+	auto &face_vec = ListVector::GetEntry(shell_vec);
+	for (size_t i = 0; i < shell.faces.size(); i++) {
+		AppendFace(face_vec, shell.faces[i], list_size + i);
+	}
+	ListVector::SetListSize(shell_vec, list_size + shell.faces.size());
+}
+
+//! One solid: LIST<LIST<LIST<LIST<INTEGER>>>> of shells.
+static void AppendSolid(Vector &solid_vec, const CompactedSolid &solid, size_t row) {
+	auto list_size = ListVector::GetListSize(solid_vec);
+	FlatVector::GetData<list_entry_t>(solid_vec)[row] = list_entry_t(list_size, solid.shells.size());
+	ListVector::Reserve(solid_vec, list_size + solid.shells.size());
+
+	auto &shell_vec = ListVector::GetEntry(solid_vec);
+	for (size_t i = 0; i < solid.shells.size(); i++) {
+		AppendShell(shell_vec, solid.shells[i], list_size + i);
+	}
+	ListVector::SetListSize(solid_vec, list_size + solid.shells.size());
+}
+
+void WriteGeometryArrowNative(Vector *vec, const CompactedGeometry &geometry, size_t row) {
+	if (geometry.solids.empty()) {
 		FlatVector::SetNull(*vec, row, true);
 		return;
 	}
 
-	// Serialize to JSON string
-	std::string json_str = properties.dump();
+	auto list_size = ListVector::GetListSize(*vec);
+	FlatVector::GetData<list_entry_t>(*vec)[row] = list_entry_t(list_size, geometry.solids.size());
+	ListVector::Reserve(*vec, list_size + geometry.solids.size());
+
+	auto &solid_vec = ListVector::GetEntry(*vec);
+	for (size_t i = 0; i < geometry.solids.size(); i++) {
+		AppendSolid(solid_vec, geometry.solids[i], list_size + i);
+	}
+	ListVector::SetListSize(*vec, list_size + geometry.solids.size());
+}
+
+void WriteGeometryVertices(Vector *vec, const CompactedGeometry &geometry, size_t row) {
+	if (geometry.vertices.empty()) {
+		FlatVector::SetNull(*vec, row, true);
+		return;
+	}
+
+	const size_t n = geometry.vertices.size();
+	auto list_size = ListVector::GetListSize(*vec);
+	FlatVector::GetData<list_entry_t>(*vec)[row] = list_entry_t(list_size, n);
+	ListVector::Reserve(*vec, list_size + n);
+
+	// STRUCT(x DOUBLE, y DOUBLE, z DOUBLE) child, taken after the Reserve above:
+	// reserving resizes the struct and its own children, so entries fetched before
+	// it would point at the old buffers.
+	auto &struct_vec = ListVector::GetEntry(*vec);
+	auto &coords = StructVector::GetEntries(struct_vec);
+	auto x_data = FlatVector::GetData<double>(*coords[0]);
+	auto y_data = FlatVector::GetData<double>(*coords[1]);
+	auto z_data = FlatVector::GetData<double>(*coords[2]);
+	for (size_t i = 0; i < n; i++) {
+		x_data[list_size + i] = geometry.vertices[i][0];
+		y_data[list_size + i] = geometry.vertices[i][1];
+		z_data[list_size + i] = geometry.vertices[i][2];
+	}
+	ListVector::SetListSize(*vec, list_size + n);
+}
+
+void WriteJsonText(Vector *vec, const json &value, size_t row) {
+	if (value.is_null()) {
+		FlatVector::SetNull(*vec, row, true);
+		return;
+	}
+
+	std::string json_str = value.dump();
 	FlatVector::GetData<string_t>(*vec)[row] = StringVector::AddString(*vec, json_str);
+}
+
+void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
+	// STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
+	auto &children = StructVector::GetEntries(*vec);
+	auto &type_vec = *children[0];
+	auto &surfaces_vec = *children[1];
+	auto &face_semantics_vec = *children[2];
+	auto &shells_vec = *children[3];
+
+	// A null struct still needs well-formed children at this row: an uninitialised
+	// list_entry_t carries a garbage offset/length that later flatten/copy passes
+	// would dereference. So null every child (and give the lists an empty entry)
+	// rather than leaving the memory untouched.
+	const bool is_null = properties.is_null() || !properties.is_object();
+	if (is_null) {
+		FlatVector::SetNull(*vec, row, true);
+	}
+
+	// `type` -- non-null for any real geometry.
+	if (!is_null && properties.contains("type") && properties["type"].is_string()) {
+		auto type_str = properties["type"].get<std::string>();
+		FlatVector::GetData<string_t>(type_vec)[row] = StringVector::AddString(type_vec, type_str);
+	} else {
+		FlatVector::SetNull(type_vec, row, true);
+	}
+
+	// `surfaces` -- the semantic surface array, verbatim, as JSON text. Physically a
+	// VARCHAR, so it takes a plain string write.
+	if (!is_null && properties.contains("surfaces") && properties["surfaces"].is_array()) {
+		auto surfaces_str = properties["surfaces"].dump();
+		FlatVector::GetData<string_t>(surfaces_vec)[row] = StringVector::AddString(surfaces_vec, surfaces_str);
+	} else {
+		FlatVector::SetNull(surfaces_vec, row, true);
+	}
+
+	// `face_semantics` -- null together with `surfaces` when the geometry carries no
+	// semantics at all; otherwise one entry per WKB face, items independently nullable.
+	if (!is_null && properties.contains("face_semantics") && properties["face_semantics"].is_array()) {
+		AppendIntList(face_semantics_vec, properties["face_semantics"], row);
+	} else {
+		FlatVector::GetData<list_entry_t>(face_semantics_vec)[row] = list_entry_t(0, 0);
+		FlatVector::SetNull(face_semantics_vec, row, true);
+	}
+
+	// `shells` -- present for solid-family geometry regardless of semantics, absent
+	// for the non-solid types.
+	if (!is_null && properties.contains("shells") && properties["shells"].is_array()) {
+		AppendIntListList(shells_vec, properties["shells"], row);
+	} else {
+		FlatVector::GetData<list_entry_t>(shells_vec)[row] = list_entry_t(0, 0);
+		FlatVector::SetNull(shells_vec, row, true);
+	}
 }
 
 } // namespace cityjson

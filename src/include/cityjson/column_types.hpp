@@ -168,6 +168,17 @@ bool IsPredefinedColumn(const std::string &name);
 bool IsReservedColumnName(const std::string &name);
 
 /**
+ * Check if a column name is a per-LoD appearance column (§11): exactly
+ * `material` / `texture`, or `material_lod{X}` / `texture_lod{X}` /
+ * `..._lod{X}_{Y}`. Matches the reserved suffix grammar precisely so an
+ * attribute like `material_lodging` is NOT misclassified.
+ *
+ * @param name Column name to check
+ * @return true if name is an appearance column
+ */
+bool IsAppearanceColumnName(const std::string &name);
+
+/**
  * Check if column name is a geometry column (pattern: geom_lod{X}_{Y})
  *
  * @param name Column name to check

@@ -1,0 +1,215 @@
+# name: test/sql/cityjson_appearance_sidecar.test
+# description: Dataset-global sidecar ids and inlined texture UVs
+# group: [sql]
+
+require cityjson
+
+# CityJSONSeq spreads appearance definitions across the file: the header line
+# carries some, and each feature carries the ones it uses under its OWN local
+# indices. The sidecar is therefore the interned union, not the header alone --
+# here two materials from the header plus two more contributed by features.
+query IT
+SELECT id, name FROM cityjson_materials('test/data/railway_appearance.city.jsonl') ORDER BY id;
+----
+0	UUID_e58d9d68-2e8c-4b81-bec1-1892e9d71c81
+1	UUID_f55b5612-d5f9-4ef8-842d-ca4849d90b59
+2	UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
+3	UUID_0794715b-1334-4855-83d3-8e8270c11e78
+
+# Header entries are interned first, so their ids stay their ordinal positions.
+# That keeps a plain CityJSON document -- which has only a header appearance --
+# numbered exactly by source array position.
+query I
+SELECT COUNT(*) FROM cityjson_materials('test/data/railway_appearance.city.jsonl') WHERE id < 2;
+----
+2
+
+# Colour columns are typed lists, not JSON: they have a fixed, well-known shape,
+# so a typed column costs nothing and buys pushdown and validation.
+query T
+SELECT typeof(diffuseColor) FROM cityjson_materials('test/data/railway_appearance.city.jsonl') LIMIT 1;
+----
+DOUBLE[]
+
+query I
+SELECT COUNT(*) FROM cityjson_materials('test/data/railway_appearance.city.jsonl')
+WHERE len(diffuseColor) = 3 AND len(specularColor) = 3 AND len(emissiveColor) = 3;
+----
+4
+
+# Ids are contiguous from zero and unique — they are what a geometry references.
+query II
+SELECT COUNT(*), COUNT(DISTINCT id) FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
+----
+4	4
+
+# CityJSON's "image" and "type" members map to the spec's image_uri and
+# image_type; image_type is the source token verbatim, not a MIME type.
+query IT
+SELECT id, image_type FROM cityjson_textures('test/data/railway_appearance.city.jsonl') ORDER BY id;
+----
+0	JPG
+1	PNG
+2	JPG
+3	JPG
+
+query I
+SELECT COUNT(*) FROM cityjson_textures('test/data/railway_appearance.city.jsonl')
+WHERE image_uri IS NOT NULL AND wrapMode = 'wrap' AND len(borderColor) = 4;
+----
+4
+
+# image_data has no CityJSON source — the format references images by URI.
+query I
+SELECT COUNT(*) FROM cityjson_textures('test/data/railway_appearance.city.jsonl') WHERE image_data IS NULL;
+----
+4
+
+# A file with no appearance at all yields no sidecar rows rather than failing.
+query I
+SELECT COUNT(*) FROM cityjson_materials('test/data/minimal.city.json');
+----
+0
+
+query I
+SELECT COUNT(*) FROM cityjson_textures('test/data/minimal.city.json');
+----
+0
+
+# --- appearance := 'sidecar' -------------------------------------------------
+
+statement error
+SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'nonsense');
+----
+appearance must be 'local' or 'sidecar'
+
+# Every material id a geometry references resolves against the sidecar. In local
+# mode the indices are feature-local and this is only true by coincidence.
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE material_lod3_0 IS NOT NULL
+) r
+WHERE r.ref NOT IN (SELECT id FROM cityjson_materials('test/data/railway_appearance.city.jsonl'));
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(texture_lod3_0, 'texture')) AS ref
+  FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE texture_lod3_0 IS NOT NULL
+) r
+WHERE r.ref NOT IN (SELECT id FROM cityjson_textures('test/data/railway_appearance.city.jsonl'));
+----
+0
+
+# Texture UVs are inlined. A ring is [texId, uvIdx, uvIdx, ...] in the source and
+# becomes [texId, [u,v], [u,v], ...] here, so a ring's second element is an array
+# rather than a bare integer. Real coordinates carry a decimal point; indices
+# never do.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+WHERE texture_lod3_0 IS NOT NULL AND texture_lod3_0 LIKE '%,[%.%]%';
+----
+1
+
+# In local mode the ring entries stay bare integer indices into the feature's
+# per-feature vertices-texture pool -- meaningless once features share a table,
+# which is why the sidecar mode exists.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE texture_lod3_0 IS NOT NULL AND texture_lod3_0 NOT LIKE '%,[%.%]%';
+----
+1
+
+# The inlined coordinates are the ones the source's UV pool actually held: the
+# first ring's first UV index is 0, and vertices-texture[0] is [2.3283218, ...].
+#
+# The leading 2 is the texture id, and it is 2 rather than 0 because this feature
+# declares its own two textures, which the header does not: interning puts them after
+# the header's pair. It read 0 while the interning pass was being handed an exhausted
+# stream (see cityjson_seq_multipass.test) -- that pointed the ring at the header's
+# Vegetation_Juniper2.jpg instead of the bridge's own Bruecke-Schotter.jpg.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+WHERE texture_lod3_0 LIKE '%[2,[2.3283218,0.8466667]%';
+----
+1
+
+# The default is unchanged — local mode must keep behaving exactly as before.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE material_lod3_0 IS NOT NULL;
+----
+1
+
+# --- cityjson_geometry_templates ---------------------------------------------
+
+# One row per template, id by ordinal position. Templates have no identifier of
+# their own in CityJSON (they are array entries), so `name` is null -- the spec's
+# name column exists for sources that do carry one.
+query IT
+SELECT id, name FROM cityjson_geometry_templates('test/data/geometry_templates.city.json') ORDER BY id;
+----
+0	NULL
+1	NULL
+
+# A template is a single geometry at a single LoD, so the table carries one
+# geometry column per distinct LoD and each row populates only its own.
+query II
+SELECT
+  COUNT(*) FILTER (WHERE geometry_lod1_0 IS NOT NULL),
+  COUNT(*) FILTER (WHERE geometry_lod2_1 IS NOT NULL)
+FROM cityjson_geometry_templates('test/data/geometry_templates.city.json');
+----
+1	1
+
+# Template geometry is WKB, like any other geometry column.
+query T
+SELECT typeof(geometry_lod1_0) FROM cityjson_geometry_templates('test/data/geometry_templates.city.json') LIMIT 1;
+----
+BLOB
+
+# Templates are in LOCAL coordinates and exempt from the dataset transform: the
+# vertices-templates entries are raw doubles, so the extent is the template's own
+# -1..1 by 0..4 box, not something scaled by the transform's 0.001.
+query T
+SELECT cityjson_wkb_extent(geometry_lod1_0)
+FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
+WHERE geometry_lod1_0 IS NOT NULL;
+----
+{'min_x': -1.0, 'min_y': -1.0, 'min_z': 0.0, 'max_x': 1.0, 'max_y': 1.0, 'max_z': 4.0}
+
+# A template's own appearance is carried, and references the same sidecar.
+query I
+SELECT COUNT(*) FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
+WHERE material_lod1_0 IS NOT NULL;
+----
+1
+
+# A file with no templates yields no rows rather than failing.
+query I
+SELECT COUNT(*) FROM cityjson_geometry_templates('test/data/minimal.city.json');
+----
+0
+
+# --- template regressions from the 2026-07-26 review -------------------------
+
+# A template's own appearance is normalised like an object row's. Emitted
+# verbatim it would keep source-local ids and bare UV indices that no consumer
+# of the package can resolve.
+query T
+SELECT material_lod1_0 FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
+WHERE material_lod1_0 IS NOT NULL;
+----
+{"":{"values":[0,0]}}
+
+# A template whose lod cannot name a conforming column is rejected: its LoD
+# becomes part of its column names, so `geometry_lod` or `geometry_lodfoo` would
+# be invisible to every conforming reader, this extension's own included.
+statement error
+SELECT * FROM cityjson_geometry_templates('test/data/geometry_templates_bad_lod.city.json');
+----
+non-numeric lod

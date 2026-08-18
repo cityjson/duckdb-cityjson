@@ -1,0 +1,371 @@
+# name: test/sql/cityjson_corpus_parity.test
+# description: cross-format parity over the hosted corpus -- the SAME 3 features in
+# CityJSON, CityJSONSeq, FlatCityBuf and CityParquet. Network test: runs only when
+# CITYJSON_REMOTE_TEST is set.
+#   CITYJSON_REMOTE_TEST=1 ./build/release/test/unittest test/sql/cityjson_corpus_parity.test
+# or `just test-remote`. ~93 KB of downloads.
+#
+# WHY THIS FILE IS DIFFERENT FROM THE REST OF THE SUITE
+#
+# Every other conversion test in this repo generates its own "source" files with
+# the writer under test and then reads them back with the matching reader. That is
+# a circular oracle: a reader and writer that agree on a mutually WRONG encoding
+# pass every assertion. Green there means self-consistency, not correctness.
+#
+# The corpus below breaks that circle. All four files hold the same three 3DBAG
+# features and were produced by upstream tooling, not by this extension -- so a
+# disagreement between two of our readers is evidence about US, and agreement is
+# evidence we match an independent implementation.
+#
+#   https://cityjson.open3d.city/corpus/small.city.jsonl        (header + 3 features)
+#   https://cityjson.open3d.city/corpus/small.city.json
+#   https://cityjson.open3d.city/corpus/small.fcb
+#   https://cityjson.open3d.city/corpus/small/building.parquet  (+ metadata.json)
+#
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+require-env CITYJSON_REMOTE_TEST
+
+# The runner's default ignore_error_messages list is {"HTTP", "Unable to
+# connect"}, so a failed download would report as a *skip* and this file would
+# silently pass while testing nothing. Clearing it makes transport errors loud.
+set ignore_error_messages
+
+# The sqllogictest runner disables extension autoloading, so the readers' own
+# AutoLoadExtension cannot pull httpfs in here.
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+# ============================================================
+# 1. Same number of CityObjects through every format
+# ============================================================
+
+# 3 features, each a Building plus its BuildingPart.
+query IIII
+SELECT
+  (SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')),
+  (SELECT COUNT(*) FROM read_cityjson('https://cityjson.open3d.city/corpus/small.city.json')),
+  (SELECT COUNT(*) FROM read_flatcitybuf('https://cityjson.open3d.city/corpus/small.fcb')),
+  (SELECT COUNT(*) FROM read_parquet('https://cityjson.open3d.city/corpus/small/building.parquet'));
+----
+6	6	6	6
+
+query TI
+SELECT object_type, COUNT(*)
+FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')
+GROUP BY object_type ORDER BY object_type;
+----
+Building	3
+BuildingPart	3
+
+# ============================================================
+# 2. Same column structure across the three CityJSON-family readers
+# ============================================================
+
+query III
+SELECT
+  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))),
+  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('https://cityjson.open3d.city/corpus/small.city.json'))),
+  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('https://cityjson.open3d.city/corpus/small.fcb')));
+----
+68	68	68
+
+# Names AND types, both directions. Counts alone would pass if one reader lost a
+# column and invented another.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
+  EXCEPT
+  SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_cityjson('https://cityjson.open3d.city/corpus/small.city.json'))
+);
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_cityjson('https://cityjson.open3d.city/corpus/small.city.json'))
+  EXCEPT
+  SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
+);
+----
+0
+
+# FlatCityBuf carries a declared schema rather than inferring one, so this is the
+# pair most likely to diverge on type. It does not.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
+  EXCEPT
+  SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_flatcitybuf('https://cityjson.open3d.city/corpus/small.fcb'))
+);
+----
+0
+
+# CityParquet is a superset: it adds three columns the spec defines but the
+# CityJSON readers have no source for. Nothing is MISSING, which is the claim.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('https://cityjson.open3d.city/corpus/small/building.parquet'))
+);
+----
+0
+
+query T
+SELECT list(column_name ORDER BY column_name) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('https://cityjson.open3d.city/corpus/small/building.parquet'))
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
+);
+----
+[address, other_attributes, template]
+
+# ============================================================
+# 3. Same LoDs
+# ============================================================
+
+query T
+SELECT list(column_name ORDER BY column_name)
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
+WHERE column_name LIKE 'geometry_lod%';
+----
+[geometry_lod0_0, geometry_lod1_2, geometry_lod1_3, geometry_lod2_2]
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')) WHERE column_name LIKE 'geometry_lod%'
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('https://cityjson.open3d.city/corpus/small.fcb')) WHERE column_name LIKE 'geometry_lod%'
+);
+----
+0
+
+# ============================================================
+# 4. Same identity and hierarchy values, every pair
+# ============================================================
+
+# EXCEPT ALL, not EXCEPT: plain EXCEPT deduplicates and would hide a row that
+# appeared twice in one format and once in another.
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, object_type, parents, children FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')
+  EXCEPT ALL
+  SELECT id, object_type, parents, children FROM read_cityjson('https://cityjson.open3d.city/corpus/small.city.json')
+);
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, object_type FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')
+  EXCEPT ALL
+  SELECT id, object_type FROM read_flatcitybuf('https://cityjson.open3d.city/corpus/small.fcb')
+);
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, object_type FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')
+  EXCEPT ALL
+  SELECT id, object_type FROM read_parquet('https://cityjson.open3d.city/corpus/small/building.parquet')
+);
+----
+0
+
+# ============================================================
+# 5. Same geometry -- but compared with a tolerance, deliberately
+# ============================================================
+
+# The two JSON readers share wkb_encoder.cpp, so it is tempting to assert WKB
+# byte-equality here. That would be WRONG for this corpus: the two files were
+# quantised against different transform origins --
+#   small.city.jsonl  translate [85088.390625, 446394.25,  45.648002624511719]
+#   small.city.json   translate [84593.249625, 446459.603, -0.30399737548827943]
+# -- so the same real-world coordinate is stored as different integers and
+# dequantises to values one ULP apart. The blobs differ while the geometry does
+# not. Structure is asserted exactly (byte length -> vertex count); coordinates
+# get a tolerance sized to that reality, not to the quantisation scale.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl') s
+JOIN read_cityjson('https://cityjson.open3d.city/corpus/small.city.json') j USING (id)
+WHERE octet_length(s.geometry_lod2_2) IS DISTINCT FROM octet_length(j.geometry_lod2_2);
+----
+0
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl') s
+JOIN read_cityjson('https://cityjson.open3d.city/corpus/small.city.json') j USING (id)
+WHERE abs(s.bbox.min_x - j.bbox.min_x) > 1e-9
+   OR abs(s.bbox.min_y - j.bbox.min_y) > 1e-9
+   OR abs(s.bbox.min_z - j.bbox.min_z) > 1e-9
+   OR abs(s.bbox.max_x - j.bbox.max_x) > 1e-9
+   OR abs(s.bbox.max_y - j.bbox.max_y) > 1e-9
+   OR abs(s.bbox.max_z - j.bbox.max_z) > 1e-9;
+----
+0
+
+# FlatCityBuf stores its own vertices, so this is an independent encoding of the
+# same geometry rather than a second run of the same code path.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl') s
+JOIN read_flatcitybuf('https://cityjson.open3d.city/corpus/small.fcb') f USING (id)
+WHERE abs(s.bbox.min_x - f.bbox.min_x) > 1e-6
+   OR abs(s.bbox.min_y - f.bbox.min_y) > 1e-6
+   OR abs(s.bbox.max_z - f.bbox.max_z) > 1e-6;
+----
+0
+
+# ============================================================
+# 6. Metadata: the same facts, each reported under a truthful name
+# ============================================================
+
+query TTT
+SELECT
+  (SELECT reference_system.code FROM cityjsonseq_metadata('https://cityjson.open3d.city/corpus/small.city.jsonl')),
+  (SELECT reference_system.code FROM cityjson_metadata('https://cityjson.open3d.city/corpus/small.city.json')),
+  (SELECT reference_system.code FROM flatcitybuf_metadata('https://cityjson.open3d.city/corpus/small.fcb'));
+----
+7415	7415	7415
+
+query TTT
+SELECT
+  (SELECT title FROM cityjsonseq_metadata('https://cityjson.open3d.city/corpus/small.city.jsonl')),
+  (SELECT title FROM cityjson_metadata('https://cityjson.open3d.city/corpus/small.city.json')),
+  (SELECT title FROM flatcitybuf_metadata('https://cityjson.open3d.city/corpus/small.fcb'));
+----
+3DBAG	3DBAG	3DBAG
+
+# city_objects_count and features_count count different things, and each source
+# reports what it can actually know. 3 features carrying 6 CityObjects: the
+# CityJSONSeq reader knows both, whole-document CityJSON has no feature concept,
+# and FlatCityBuf's header knows only the feature count -- so it reports that
+# under its own name rather than passing 3 off as the CityObject count.
+query II
+SELECT city_objects_count, features_count
+FROM cityjsonseq_metadata('https://cityjson.open3d.city/corpus/small.city.jsonl');
+----
+6	3
+
+query II
+SELECT city_objects_count, features_count
+FROM cityjson_metadata('https://cityjson.open3d.city/corpus/small.city.json');
+----
+6	NULL
+
+query II
+SELECT city_objects_count, features_count
+FROM flatcitybuf_metadata('https://cityjson.open3d.city/corpus/small.fcb');
+----
+NULL	3
+
+# Whatever a metadata function does report must match the reader.
+query II
+SELECT
+  (SELECT city_objects_count FROM cityjsonseq_metadata('https://cityjson.open3d.city/corpus/small.city.jsonl')),
+  (SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'));
+----
+6	6
+
+# ============================================================
+# 7. The CityParquet package: footer and STAC sidecar
+# ============================================================
+
+# A spec-conformant object table declares its CRS in the `city` footer. Absent
+# would assert OGC:CRS84 over RD New coordinates, which is why the key is never
+# simply omitted for an object table.
+query I
+SELECT cityparquet_city_field(decode(value), 'crs') IS NOT NULL
+FROM parquet_kv_metadata('https://cityparquet.open3d.city/data/delft/building.parquet')
+WHERE key = 'city';
+----
+true
+
+query I
+SELECT cityparquet_city_field(decode(value), 'crs') IS NOT NULL
+FROM parquet_kv_metadata('https://cityjson.open3d.city/corpus/small/building.parquet')
+WHERE key = 'city';
+----
+true
+
+# The package's metadata.json is a STAC Item. Checked with LIKE rather than
+# json_extract: the JSON type and its functions live in the `json` extension,
+# which this one does not require, so they are unavailable here.
+query III
+SELECT
+  content LIKE '%"type": "Feature"%' OR content LIKE '%"type":"Feature"%',
+  content LIKE '%stac_version%',
+  content LIKE '%stac_extensions%'
+FROM read_text('https://cityjson.open3d.city/corpus/small/metadata.json');
+----
+true	true	true
+
+# ============================================================
+# 8. Round-trip: our writer against an upstream-produced source
+# ============================================================
+
+# Reading upstream data and writing it back is the one direction the rest of the
+# suite cannot test honestly, because its sources are our own output.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
+TO '__TEST_DIR__/corpus_rt.city.jsonl' (FORMAT cityjsonseq);
+
+query II
+SELECT
+  (SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')),
+  (SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/corpus_rt.city.jsonl'));
+----
+6	6
+
+# The CRS is inherited from a REMOTE source: a URL is a source like any other.
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('__TEST_DIR__/corpus_rt.city.jsonl');
+----
+EPSG	7415
+
+query II
+SELECT city_objects_count, features_count
+FROM cityjsonseq_metadata('__TEST_DIR__/corpus_rt.city.jsonl');
+----
+6	3
+
+# Geometry survives our own quantisation to within half the 1 mm scale.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl') s
+JOIN read_cityjsonseq('__TEST_DIR__/corpus_rt.city.jsonl') r USING (id)
+WHERE abs(s.bbox.min_x - r.bbox.min_x) > 1e-3
+   OR abs(s.bbox.min_y - r.bbox.min_y) > 1e-3
+   OR abs(s.bbox.max_z - r.bbox.max_z) > 1e-3;
+----
+0
+
+# Every LoD column survives, not just the one we happened to check.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')) WHERE column_name LIKE 'geometry_lod%'
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('__TEST_DIR__/corpus_rt.city.jsonl')) WHERE column_name LIKE 'geometry_lod%'
+);
+----
+0
+
+# Cross-format out of an upstream source: CityJSONSeq -> FlatCityBuf.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
+TO '__TEST_DIR__/corpus_rt.fcb' (FORMAT flatcitybuf);
+
+query II
+SELECT
+  (SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/corpus_rt.fcb')),
+  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/corpus_rt.fcb')));
+----
+6	68

@@ -74,7 +74,7 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &conte
 #ifdef CITYJSON_HAS_FCB
 	// FlatCityBuf format — FCB API reads directly from file path
 	if (EndsWith(file_name, ".fcb")) {
-		return std::make_unique<FlatCityBufReader>(file_name, file_name, sample_lines);
+		return std::make_unique<FlatCityBufReader>(context, file_name, file_name, sample_lines);
 	}
 #endif
 
@@ -100,6 +100,17 @@ std::unique_ptr<CityJSONReader> OpenAnyCityJSONFile(duckdb::ClientContext &conte
 	} else {
 		// Default to CityJSON format
 		return std::make_unique<LocalCityJSONReader>(file_name, std::move(content), sample_lines);
+	}
+}
+
+std::unique_ptr<CityJSONReader> OpenCityJSONFileOfKind(duckdb::ClientContext &context, ReaderKind kind,
+                                                       const std::string &file_name, size_t sample_lines) {
+	switch (kind) {
+	case ReaderKind::CityJSONSeq:
+		return OpenCityJSONSeqFile(context, file_name, sample_lines);
+	case ReaderKind::Auto:
+	default:
+		return OpenAnyCityJSONFile(context, file_name, sample_lines);
 	}
 }
 

@@ -1,0 +1,44 @@
+# name: test/sql/cityjson_streaming_reader_kind.test
+# description: the streaming scan re-opens the file the way the bind did, not by re-detecting (review P12)
+# group: [sql]
+
+require cityjson
+
+# test/data/seq_named_city_json.city.json is a genuine CityJSONSeq document under a
+# .city.json name, with the header cjseq really writes -- one that carries an empty
+# "CityObjects". That key is what defeats OpenAnyCityJSONFile's content sniff, so the
+# auto-detecting factory classifies the file as full CityJSON and chokes on line 2.
+# Pinned here because it is the whole reason read_cityjsonseq's streaming scan must
+# replay the bind's factory choice instead of detecting afresh.
+statement error
+SELECT COUNT(*) FROM read_cityjson('test/data/seq_named_city_json.city.json');
+----
+Failed to read metadata
+
+# read_cityjsonseq binds the sequence-only factory. Before the fix the scan's own reader
+# was opened by OpenAnyCityJSONFile, which disagreed as above and aborted the scan with an
+# INTERNAL error after a bind that had succeeded. The rows below are the bind's schema
+# being served in full by the streaming path.
+query TTI
+SELECT id, object_type, yearOfConstruction FROM read_cityjsonseq('test/data/seq_named_city_json.city.json') ORDER BY id;
+----
+building1	Building	2020
+building2	Building	2021
+
+# Geometry too: a document reader would have yielded no features at all here, so a
+# non-NULL WKB blob per row is the sharpest evidence the sequence reader is the one
+# actually streaming.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/seq_named_city_json.city.json')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+2
+
+# The same document under a .city.jsonl name takes the extension branch of the sniff, so
+# bind and scan agreed even before the fix. Identical results across the two names is the
+# property the fix restores.
+query TTI
+SELECT id, object_type, yearOfConstruction FROM read_cityjsonseq('test/data/sample.city.jsonl') ORDER BY id;
+----
+building1	Building	2020
+building2	Building	2021

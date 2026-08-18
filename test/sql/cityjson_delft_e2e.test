@@ -81,20 +81,20 @@ WHERE column_name LIKE 'geometry%' OR column_name = 'bbox'
 ORDER BY column_name;
 ----
 bbox
-geometry_lod0
+geometry_lod0_0
 geometry_lod1_2
 geometry_lod1_3
 geometry_lod2_2
-geometry_properties_lod0
+geometry_properties_lod0_0
 geometry_properties_lod1_2
 geometry_properties_lod1_3
 geometry_properties_lod2_2
 
-# LODs live on the expected object types: the footprint (lod0) on the Building,
+# LODs live on the expected object types: the footprint (lod0.0) on the Building,
 # the solids (lod1.2/1.3/2.2) on the BuildingPart.
 query TIII
 SELECT object_type,
-       COUNT(*) FILTER (WHERE geometry_lod0 IS NOT NULL)    AS l0,
+       COUNT(*) FILTER (WHERE geometry_lod0_0 IS NOT NULL)  AS l0,
        COUNT(*) FILTER (WHERE geometry_lod1_2 IS NOT NULL)  AS l12,
        COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)  AS l22
 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
@@ -103,12 +103,14 @@ GROUP BY object_type ORDER BY object_type;
 Building	10	0	0
 BuildingPart	0	10	10
 
-# geometry_properties carries the CityJSON type, LOD, and semantic surfaces
+# geometry_properties carries the spec form as a STRUCT: string `type`, verbatim
+# `surfaces`, and a flat `face_semantics` list (the LoD is carried by the column
+# name, never repeated in the value).
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
-WHERE geometry_properties_lod2_2 LIKE '%Solid%'
-  AND geometry_properties_lod2_2 LIKE '%2.2%'
-  AND geometry_properties_lod2_2 LIKE '%RoofSurface%';
+WHERE geometry_properties_lod2_2."type" = 'Solid'
+  AND geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%'
+  AND geometry_properties_lod2_2.face_semantics IS NOT NULL;
 ----
 10
 
@@ -157,7 +159,7 @@ b3_kas_warenhuis	BOOLEAN
 # ============================================================
 
 query TI
-SELECT typeof(geometry), COUNT(*) FILTER (WHERE geometry IS NOT NULL)
+SELECT typeof(geometry_lod2_2), COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)
 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
 GROUP BY 1;
 ----
@@ -166,7 +168,7 @@ BLOB	10
 # The WKB payloads are non-empty
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
-WHERE octet_length(geometry) > 0;
+WHERE octet_length(geometry_lod2_2) > 0;
 ----
 10
 
@@ -213,8 +215,8 @@ TO '__TEST_DIR__/delft_rt_lossless.city.jsonl'
 
 # All 10 geometries survive and every bbox coordinate matches within 1 cm
 query I
-WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL),
-     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL)
+WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL),
+     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) AS n
 FROM o JOIN r USING (id)
 WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01
@@ -225,6 +227,26 @@ WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01
   AND abs(o.bbox.max_z - r.bbox.max_z) < 0.01;
 ----
 10
+
+# A 1 cm bbox tolerance is a weak oracle on its own: it passes even if every
+# interior vertex is wrong, every semantic surface is dropped -- and, until the
+# COPY inherited its source's metadata, even though this very round trip silently
+# discarded EPSG:7415. A test called "lossless" has to check the CRS.
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('__TEST_DIR__/delft_rt_lossless.city.jsonl');
+----
+EPSG	7415
+
+# Vertex counts too, which the bbox cannot see: equal WKB byte length means the
+# same number of vertices survived, not merely the same extent.
+query I
+WITH o AS (SELECT id, geometry_lod2_2 g FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL),
+     r AS (SELECT id, geometry_lod2_2 g FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
+SELECT COUNT(*) FROM o JOIN r USING (id)
+WHERE octet_length(o.g) IS DISTINCT FROM octet_length(r.g);
+----
+0
 
 # ============================================================
 # 9. Default-mode (wide layout) round-trip preserves every LOD column + attributes
@@ -241,14 +263,14 @@ FROM (DESCRIBE SELECT * FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.j
 WHERE column_name LIKE 'geometry_lod%'
 ORDER BY column_name;
 ----
-geometry_lod0
+geometry_lod0_0
 geometry_lod1_2
 geometry_lod1_3
 geometry_lod2_2
 
-# Both the lod0 footprints and the lod2.2 solids come back non-null
+# Both the lod0.0 footprints and the lod2.2 solids come back non-null
 query II
-SELECT COUNT(*) FILTER (WHERE geometry_lod0 IS NOT NULL),
+SELECT COUNT(*) FILTER (WHERE geometry_lod0_0 IS NOT NULL),
        COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)
 FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.jsonl');
 ----
@@ -300,8 +322,8 @@ TO '__TEST_DIR__/delft_rt_default.city.jsonl' (FORMAT cityjsonseq);
 # Geometry is preserved and every bbox coordinate matches within 1 cm, with no
 # explicit transform passed.
 query I
-WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL),
-     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_default.city.jsonl', lod => '2.2') WHERE geometry IS NOT NULL)
+WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL),
+     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_default.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) AS n
 FROM o JOIN r USING (id)
 WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01

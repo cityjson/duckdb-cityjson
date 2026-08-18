@@ -14,3 +14,11 @@ test/python/__pycache__/
 .superset/
 Note.md
 .cache/
+# vcpkg manifest-mode local install output (build artifact)
+/vcpkg_installed/
+# Vendored flatbuffers + flatcitybuf sources and install prefix (`just vendor-fcb`)
+.vendor/
+# Node smoke harness for the wasm build (`just test-wasm`): installed deps, and the
+# scratch HOME the harness points DuckDB-Wasm's extension cache at.
+test/wasm/node_modules/
+test/wasm/.cache-home/

@@ -1,0 +1,138 @@
+# name: test/sql/cityjson_geoparquet.test
+# description: cityjson_geoparquet_geo — GeoParquet `geo` metadata (spec §13.3, G1)
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# `cityjson_geoparquet_geo(path)` returns the GeoParquet 1.1 `geo` JSON, declaring
+# only GeoParquet-legal geometry columns (types 1001–1007) with PROJJSON CRS from
+# the embedded EPSG table, to feed COPY … (FORMAT PARQUET, KV_METADATA {geo: …}).
+
+# Delft (EPSG:7415): the LoD0 footprint (MultiSurface -> MultiPolygon Z) is
+# declared; the LoD1.2/1.3/2.2 Solid columns (PolyhedralSurface Z) are excluded
+# (§13.3). CRS resolves to the Amersfoort / RD New + NAP compound CRS.
+query I
+SELECT COUNT(*) FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl')
+WHERE geo LIKE '%"primary_column":"geometry_lod0_0"%'
+  AND geo LIKE '%geometry_lod0_0%'
+  AND geo NOT LIKE '%geometry_lod2_2%'      -- the Solid column is not declared
+  AND geo LIKE '%MultiPolygon Z%'
+  AND geo LIKE '%"edges":"planar"%'
+  AND geo NOT LIKE '%cityparquet:orientation%'
+  AND geo LIKE '%Amersfoort%';              -- PROJJSON CRS embedded
+----
+1
+
+# The same call now also yields the REQUIRED `city` object for the COPY path:
+# every geometry column (Solid-family included), each entry with its name, real
+# encoding token, and explicit orientation_3d (spec 05-metadata.mdx).
+query I
+SELECT COUNT(*) FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl')
+WHERE city LIKE '%"version":"0.1.0-draft"%'
+  AND city LIKE '%"name":"geometry_lod0_0"%'
+  AND city LIKE '%"name":"geometry_lod2_2"%'
+  AND city LIKE '%PolyhedralSurface Z%'
+  AND city LIKE '%"orientation_3d":"right-handed"%'
+  AND city LIKE '%"encoding":"WKB"%'
+  AND city LIKE '%"primary_column":"geometry_lod2_2"%';
+----
+1
+
+# Solid-only file: no geo (unchanged), but city still declares the solid column.
+query II
+SELECT geo IS NULL, city LIKE '%PolyhedralSurface Z%'
+FROM cityjson_geoparquet_geo('test/data/minimal.city.json');
+----
+true	true
+
+# arrow-native: geo stays NULL (never GeoParquet-legal); city records the real token.
+query II
+SELECT geo IS NULL, city LIKE '%"encoding":"CityParquetArrowNative-v1"%'
+FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl', geometry_encoding := 'arrow-native');
+----
+true	true
+
+# One file, two encodings, one query: each scan must keep its own footer. GeoBindData's
+# identity is (file_name, geometry_encoding) — comparing file_name alone made these two
+# binds equal despite producing different `geo` and `city`. This cannot fail on the
+# unfixed code today: the only engine consumer of PhysicalOperator::Equals (and so of
+# PhysicalTableScan::Equals, and through it FunctionData::Equals) is
+# Executor::VerifyPipeline, which is compiled only under #ifdef DEBUG and uses the
+# result solely for symmetry D_ASSERTs. It is here to catch the day that changes.
+query II
+SELECT a.city LIKE '%CityParquetArrowNative-v1%', b.city LIKE '%CityParquetArrowNative-v1%'
+FROM cityjson_geoparquet_geo('test/data/minimal.city.json') a,
+     cityjson_geoparquet_geo('test/data/minimal.city.json', geometry_encoding := 'arrow-native') b;
+----
+false	true
+
+# A Solid-only dataset with no GeoParquet-legal column yields NULL geo (it is a
+# valid CityParquet table, simply not a GeoParquet file — §13.3).
+query I
+SELECT geo IS NULL FROM cityjson_geoparquet_geo('test/data/minimal.city.json');
+----
+true
+
+# A dataset with a legal column but no CRS still emits geo, with crs written as an
+# explicit null (not omitted — that would falsely assert GeoParquet's CRS84 default).
+query I
+SELECT COUNT(*) FROM cityjson_geoparquet_geo('test/data/railway_appearance.city.jsonl')
+WHERE geo LIKE '%geometry_lod3_0%' AND geo LIKE '%MultiPolygon Z%' AND geo LIKE '%"crs":null%';
+----
+1
+
+# An unresolvable CRS is DECLARED, not fatal: both objects carry an explicit null,
+# and neither guesses (spec 05-metadata.mdx, "CRS rules" — this amends an earlier
+# draft in which an unresolvable CRS was a hard conversion error).
+query II
+SELECT geo LIKE '%"crs":null%' AND geo NOT LIKE '%"crs":{%',
+       city LIKE '%"crs":null%' AND city NOT LIKE '%"crs":{%'
+FROM cityjson_geoparquet_geo('test/data/unknown_crs.city.json');
+----
+true	true
+
+# It is not silent either: the writer surfaces a diagnostic naming the CRS it could
+# not resolve, which the CLI prints and duckdb_logs records.
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET logging_level = 'WARNING';
+
+statement ok
+SELECT geo FROM cityjson_geoparquet_geo('test/data/unknown_crs.city.json');
+
+query I
+SELECT COUNT(*) > 0 FROM duckdb_logs WHERE message LIKE '%9999999%' AND message LIKE '%null%';
+----
+true
+
+statement ok
+SET enable_logging = false;
+
+# End-to-end: the geo JSON writes into a real Parquet footer via KV_METADATA,
+# carrying the geometry types and the CRS. `city` is REQUIRED on every CityParquet
+# file, so the same COPY writes both keys.
+statement ok
+SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl'));
+
+statement ok
+SET VARIABLE city = (SELECT city FROM cityjson_geoparquet_geo('test/data/delft_subset.city.jsonl'));
+
+statement ok
+COPY (SELECT geometry_lod0_0 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod0_0 IS NOT NULL)
+TO '__TEST_DIR__/delft_geo.parquet' (FORMAT PARQUET, KV_METADATA {geo: getvariable('geo'), city: getvariable('city')});
+
+query II
+SELECT (value::VARCHAR LIKE '%MultiPolygon Z%'), (value::VARCHAR LIKE '%Amersfoort%')
+FROM parquet_kv_metadata('__TEST_DIR__/delft_geo.parquet') WHERE key = 'geo';
+----
+true	true
+
+query II
+SELECT (decode(value) LIKE '%MultiPolygon Z%'), (decode(value) LIKE '%"orientation_3d":"right-handed"%')
+FROM parquet_kv_metadata('__TEST_DIR__/delft_geo.parquet') WHERE decode(key) = 'city';
+----
+true	true

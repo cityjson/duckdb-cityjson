@@ -1,0 +1,2 @@
+{"type": "CityJSON", "version": "2.0", "transform": {"scale": [1, 1, 1], "translate": [0, 0, 0]}, "CityObjects": {}, "vertices": []}
+{"type": "CityJSONFeature", "id": "o1", "CityObjects": {"o1": {"type": "Building", "attributes": {"material_lodging": "hotel"}, "geometry": [{"type": "MultiSurface", "lod": "2", "boundaries": [[[0, 1, 2, 3]]]}]}}, "vertices": [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]}

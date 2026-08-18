@@ -10,16 +10,6 @@ namespace cityjson {
 using namespace json_utils; // NOLINT(google-build-using-namespace)
 
 // ============================================================
-// Helpers
-// ============================================================
-
-static bool IsRemoteFile(const std::string &path) {
-	return path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 || path.rfind("s3://", 0) == 0 ||
-	       path.rfind("s3a://", 0) == 0 || path.rfind("s3n://", 0) == 0 || path.rfind("gcs://", 0) == 0 ||
-	       path.rfind("gs://", 0) == 0 || path.rfind("r2://", 0) == 0 || path.rfind("hf://", 0) == 0;
-}
-
-// ============================================================
 // Constructors
 // ============================================================
 
@@ -51,6 +41,15 @@ void LocalCityJSONSeqReader::OpenHandle() const {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path_);
 	}
 	metadata_read_ = false;
+}
+
+void LocalCityJSONSeqReader::Rewind() const {
+	OpenHandle();
+	// The header line has to be consumed again, not merely re-parsed. ReadMetadata()
+	// short-circuits on the cache and leaves the handle where it is, so without this the
+	// next ReadLine() would hand the header to CityJSONFeature::FromJson.
+	handle_->ReadLine();
+	metadata_read_ = true;
 }
 
 // ============================================================
@@ -148,6 +147,14 @@ std::vector<CityJSONFeature> LocalCityJSONSeqReader::ReadNFeatures(size_t n) con
 	std::vector<CityJSONFeature> features;
 	features.reserve(n);
 
+	// "The first n features", not "the next n". A sample must start at the start, and a
+	// caller that has already read the file gets the same sample as one that has not.
+	// Without this, inferring the schema after any other whole-file read sampled an
+	// exhausted stream and produced a schema with neither geometry nor attributes.
+	// ReadNextFeature is the incremental cursor and is deliberately left alone -- the
+	// streaming scan opens a reader of its own (init_global.cpp) and is unaffected.
+	Rewind();
+
 	for (size_t i = 0; i < n; i++) {
 		auto feature = ReadNextFeature();
 		if (!feature.has_value()) {
@@ -166,6 +173,13 @@ std::vector<CityJSONFeature> LocalCityJSONSeqReader::ReadNFeatures(size_t n) con
 CityJSONFeatureChunk LocalCityJSONSeqReader::ReadAllChunks() const {
 	std::vector<CityJSONFeature> features;
 
+	// "All chunks" has to mean all of them however often it is asked. The bind reads all
+	// chunks and then interns the appearance from all chunks again; the second call used
+	// to return nothing, so every feature-local material index fell through to the
+	// identity mapping and pointed at whichever definition the header happened to hold
+	// at that position.
+	Rewind();
+
 	while (true) {
 		auto feature = ReadNextFeature();
 		if (!feature.has_value()) {
@@ -175,28 +189,6 @@ CityJSONFeatureChunk LocalCityJSONSeqReader::ReadAllChunks() const {
 	}
 
 	return CityJSONFeatureChunk::CreateChunks(std::move(features), STANDARD_VECTOR_SIZE);
-}
-
-// ============================================================
-// ReadNthChunk
-// ============================================================
-
-CityJSONFeatureChunk LocalCityJSONSeqReader::ReadNthChunk(size_t n) const {
-	CityJSONFeatureChunk all_chunks = ReadAllChunks();
-
-	if (n >= all_chunks.ChunkCount()) {
-		return CityJSONFeatureChunk();
-	}
-
-	auto chunk_opt = all_chunks.GetChunk(n);
-	if (!chunk_opt.has_value()) {
-		return CityJSONFeatureChunk();
-	}
-
-	CityJSONFeatureChunk result;
-	result.records = std::vector<CityJSONFeature>(chunk_opt->begin(), chunk_opt->end());
-	result.chunks = {Range(0, result.records.size())};
-	return result;
 }
 
 // ============================================================

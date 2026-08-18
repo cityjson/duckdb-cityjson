@@ -100,14 +100,59 @@ WHERE geometry_lod2_2 IS NOT NULL;
 # The precise CityJSON geometry type is preserved via geometry_properties
 query I
 SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_geom.city.json')
-WHERE geometry_properties_lod2_2 LIKE '%Solid%';
+WHERE geometry_properties_lod2_2."type" = 'Solid';
 ----
 1
+
+# Semantic surfaces survive the full COPY round-trip: the writer rebuilds the
+# nested CityJSON semantics.values from the flattened face_semantics + shells
+# (spec §8 / G7), so a re-read yields the same surfaces and face_semantics.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2'))
+TO '__TEST_DIR__/rt_sem.city.jsonl' (FORMAT cityjsonseq, transform_scale '0.001,0.001,0.001');
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_sem.city.jsonl', lod => '2.2')
+WHERE geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%'
+  AND geometry_properties_lod2_2.face_semantics IS NOT NULL;
+----
+10
+
+query TTT
+SELECT geometry_properties_lod2_2."type",
+       geometry_properties_lod2_2.face_semantics,
+       geometry_properties_lod2_2.shells
+FROM read_cityjsonseq('__TEST_DIR__/rt_sem.city.jsonl', lod => '2.2')
+WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+Solid	[0, 2, 2, 2, 2, 1]	[[6]]
+
+query T
+SELECT geometry_properties_lod2_2.surfaces
+FROM read_cityjsonseq('__TEST_DIR__/rt_sem.city.jsonl', lod => '2.2')
+WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+[{"type":"GroundSurface"},{"type":"RoofSurface"},{"on_footprint_edge":true,"type":"WallSurface"},{"on_footprint_edge":false,"type":"WallSurface"}]
 
 # bbox is a derived column: recomputed on read, never written back as an attribute
 query I
 SELECT COUNT(*) FILTER (WHERE column_name = 'bbox')
 FROM (DESCRIBE SELECT * FROM read_cityjson('__TEST_DIR__/rt_geom.city.json'));
+----
+1
+
+# A WKB geometry column whose matching geometry_properties column is projected
+# away must NOT borrow a different column's shells to re-nest — that could drop
+# faces. With no exact properties match, no properties are applied and the
+# geometry survives intact.
+statement ok
+COPY (SELECT id, feature_id, object_type, geometry_lod2_2
+      FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/rt_noprops.city.json' (FORMAT cityjson);
+
+query I
+SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_noprops.city.json')
+WHERE geometry_lod2_2 IS NOT NULL;
 ----
 1
 

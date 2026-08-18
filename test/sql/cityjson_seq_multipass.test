@@ -1,0 +1,74 @@
+# name: test/sql/cityjson_seq_multipass.test
+# description: A CityJSONSeq reader must answer more than one whole-file question
+# group: [sql]
+
+require cityjson
+
+# The sequence reader is a forward stream over a FileHandle. Everything that asks it
+# for the whole file -- or for a sample of it -- must get the whole file, whatever was
+# asked before. Two shipped paths ask twice, and both were silently getting an
+# exhausted stream the second time.
+
+# 1. read_cityjson auto-detects a .city.jsonl, and its bind reads all chunks BEFORE
+#    inferring columns. Column inference samples the stream, so it used to see nothing
+#    and the geometry and attribute columns vanished -- a file read through
+#    read_cityjson had no geometry at all, with no error.
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/railway_appearance.city.jsonl'))
+WHERE column_name = 'geometry_lod3_0';
+----
+1
+
+# The two readers must agree about the file. Auto-detection is not a different format.
+query I
+SELECT COUNT(*) = 0 FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/railway_appearance.city.jsonl'))
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+);
+----
+true
+
+# 2. appearance := 'sidecar' interns definitions across the header AND every feature,
+#    then maps each feature's local indices onto the interned ids. Its bind samples the
+#    stream for columns first, so the interning pass used to see no features: the map
+#    was empty and every local index fell through to the identity mapping.
+#
+#    This fixture is built to expose exactly that. The header declares two materials,
+#    and feature GMLID_855011_330784_753 declares two DIFFERENT ones of its own. Its
+#    local indices 0 and 1 therefore mean sidecar ids 2 and 3, not 0 and 1 -- under the
+#    identity fallback the row pointed at the header's materials instead of its own.
+query T
+SELECT DISTINCT m.name FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE id = 'GMLID_855011_330784_753'
+) r JOIN cityjson_materials('test/data/railway_appearance.city.jsonl') m ON m.id = r.ref
+ORDER BY 1;
+----
+UUID_0794715b-1334-4855-83d3-8e8270c11e78
+UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
+
+# The same for the other feature's textures, which the header also does not declare.
+query T
+SELECT DISTINCT t.image_uri FROM (
+  SELECT UNNEST(cityjson_appearance_ids(texture_lod3_0, 'texture')) AS ref
+  FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE id = 'GMLID_BUI100628_817_8083'
+) r JOIN cityjson_textures('test/data/railway_appearance.city.jsonl') t ON t.id = r.ref
+ORDER BY 1;
+----
+appearances/Bruecke-Beton.jpg
+appearances/Bruecke-Schotter.jpg
+
+# Every appearance id an object row carries must name a row that exists in the sidecar.
+# A dangling reference is what the identity fallback produces once the sidecar grows
+# past the header's own set.
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+  WHERE material_lod3_0 IS NOT NULL
+) r WHERE r.ref NOT IN (SELECT id FROM cityjson_materials('test/data/railway_appearance.city.jsonl'));
+----
+0

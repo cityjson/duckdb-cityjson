@@ -14,8 +14,8 @@ namespace cityjson {
  *
  * Each LOD level gets its own table with:
  * - Standard columns (id, feature_id, object_type, attributes)
- * - Single geometry column (WKB BLOB)
- * - Single geometry_properties column (JSON)
+ * - One LoD-suffixed geometry column (WKB BLOB), e.g. geometry_lod2_2
+ * - Its matching geometry_properties_lod* STRUCT and material_/texture_ columns
  */
 struct LODTableDefinition {
 	std::string table_name;      // e.g., "buildings_lod2"
@@ -58,15 +58,18 @@ public:
 	static std::vector<Column> GetBaseColumns();
 
 	/**
-	 * Get geometry-specific columns for WKB encoding
+	 * Get geometry-specific columns for WKB encoding, suffixed with the given LoD
 	 *
-	 * Columns:
-	 * - geometry: BLOB (WKB)
-	 * - geometry_properties: JSON
+	 * Columns, for lod "2.2":
+	 * - geometry_lod2_2: BLOB (WKB)
+	 * - geometry_properties_lod2_2: STRUCT (spec § "Geometry properties and semantics")
+	 * - material_lod2_2 / texture_lod2_2: JSON appearance (§11)
+	 * - bbox: STRUCT
 	 *
+	 * @param lod Normalised LoD string, e.g. "2.2" or "3.0"
 	 * @return Vector of geometry column definitions
 	 */
-	static std::vector<Column> GetGeometryColumns();
+	static std::vector<Column> GetGeometryColumns(const std::string &lod);
 
 	/**
 	 * Collect all unique LOD values from features
@@ -111,8 +114,10 @@ public:
 	static std::string FormatLODAsColumnSuffix(const std::string &lod);
 
 	/**
-	 * Normalize a numeric LOD string to a canonical form
-	 * Examples: "2" -> "2", "2.0" -> "2", "2.00" -> "2", "2.2" -> "2.2"
+	 * Normalize a numeric LOD string to a canonical form. The result always
+	 * carries a minor (spec §9: a column suffix always carries a minor, e.g.
+	 * LoD "1" yields geometry_lod1_0, never geometry_lod1).
+	 * Examples: "2" -> "2.0", "2.0" -> "2.0", "2.00" -> "2.0", "2.2" -> "2.2"
 	 * Non-numeric LODs are returned unchanged.
 	 *
 	 * @param lod LOD value string
@@ -121,8 +126,9 @@ public:
 	static std::string NormalizeLOD(const std::string &lod);
 
 	/**
-	 * Normalize a numeric LOD double to a canonical string
-	 * Examples: 2.0 -> "2", 2.2 -> "2.2"
+	 * Normalize a numeric LOD double to a canonical string. Always carries a
+	 * minor (see the string overload).
+	 * Examples: 2.0 -> "2.0", 2.2 -> "2.2"
 	 *
 	 * @param lod LOD value as double
 	 * @return Canonical LOD string

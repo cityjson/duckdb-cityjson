@@ -1,13 +1,17 @@
 #include "cityjson/table_function.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/city_object_utils.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+
+#include <set>
 
 namespace duckdb {
 namespace cityjson {
@@ -19,6 +23,25 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
 		if (kv.first == "lod") {
 			options.target_lod = LODTableUtils::NormalizeLOD(StringValue::Get(kv.second));
 			options.use_wkb_encoding = true; // Enable WKB encoding when LOD is specified
+		} else if (kv.first == "appearance") {
+			auto mode = StringUtil::Lower(StringValue::Get(kv.second));
+			if (mode == "sidecar") {
+				options.sidecar_appearance = true;
+			} else if (mode == "local") {
+				options.sidecar_appearance = false;
+			} else {
+				throw BinderException(function_name + ": appearance must be 'local' or 'sidecar', got '" + mode + "'");
+			}
+		} else if (kv.first == "geometry_encoding") {
+			auto encoding = StringUtil::Lower(StringValue::Get(kv.second));
+			if (encoding == "wkb") {
+				options.geometry_encoding = GeometryEncoding::Wkb;
+			} else if (encoding == "arrow-native") {
+				options.geometry_encoding = GeometryEncoding::ArrowNative;
+			} else {
+				throw BinderException(function_name + ": geometry_encoding must be 'wkb' or 'arrow-native', got '" +
+				                      encoding + "'");
+			}
 		} else if (kv.first == "sample_lines") {
 			auto sample_lines = BigIntValue::Get(kv.second);
 			if (sample_lines < 0) {
@@ -42,11 +65,18 @@ static std::vector<CityJSONFeature> FlattenChunks(const CityJSONFeatureChunk &ch
 	return all_features;
 }
 
-static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines) {
+void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, size_t sample_lines) {
 	if (bind_data.target_lod.has_value()) {
 		std::vector<CityJSONFeature> features;
 		try {
-			features = bind_data.streaming ? reader.ReadNFeatures(sample_lines) : FlattenChunks(bind_data.chunks);
+			// Sample the reader whenever there are no materialised chunks to sample from:
+			// that is the streaming binds, and also a non-streaming caller that has
+			// deferred its materialise (read_flatcitybuf -- see BindCityJSONReadRaw's
+			// `materialise` parameter). Reading the chunks when we have them keeps the
+			// pre-existing behaviour exactly, including for a genuinely empty file, where
+			// both branches yield an empty feature list anyway.
+			features = bind_data.chunks.records.empty() ? reader.ReadNFeatures(sample_lines)
+			                                            : FlattenChunks(bind_data.chunks);
 		} catch (const CityJSONError &e) {
 			throw BinderException("Failed to infer LOD schema: " + std::string(e.what()));
 		}
@@ -73,46 +103,151 @@ static void InferSchema(CityJSONBindData &bind_data, CityJSONReader &reader, siz
 			throw BinderException("Failed to infer schema: " + std::string(e.what()));
 		}
 	}
+
+	// Both branches above build their column list for the default WKB encoding, in two
+	// independent derivations. Rewriting here -- the one point where either becomes
+	// bind_data.columns -- keeps them from having to agree about a second encoding too.
+	CityObjectUtils::ApplyGeometryEncoding(bind_data.columns, bind_data.geometry_encoding);
+
+	// Resolve each geometry-family column's LoD once. The scan used to run
+	// ParseLODFromGeometryColumn (a regex search) per column per row.
+	for (auto &column : bind_data.columns) {
+		switch (column.kind) {
+		case ColumnType::GeometryWKB:
+		case ColumnType::GeometryArrowNative:
+		case ColumnType::GeometryVerticesArrowNative:
+		case ColumnType::GeometryPropertiesStruct:
+		case ColumnType::AppearanceJson:
+			try {
+				column.lod = ParseLODFromGeometryColumn(column.name);
+			} catch (const CityJSONError &) {
+				column.lod.clear(); // no LoD component in the name
+			}
+			break;
+		case ColumnType::Geometry:
+			if (IsGeometryColumn(column.name)) {
+				column.lod = ParseLODFromColumnName(column.name);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSONReadOptions &options, bool streaming) {
+	// A probe bind_data, populated exactly as BindCityJSONReadRaw populates the real one,
+	// so InferCityJSONColumns produces the column list that read really will emit. That
+	// equality is the whole point of routing through this rather than re-deriving.
+	CityJSONBindData probe;
+	probe.streaming = streaming;
+	probe.target_lod = options.target_lod;
+	probe.use_wkb_encoding = options.use_wkb_encoding;
+	probe.geometry_encoding = options.geometry_encoding;
+
+	CityJSONFeatureChunk all;
+	try {
+		probe.metadata = reader.ReadMetadata();
+		if (!streaming) {
+			probe.chunks = reader.ReadAllChunks();
+		}
+		InferCityJSONColumns(probe, reader, options.sample_lines);
+		all = streaming ? reader.ReadAllChunks() : probe.chunks;
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to read source file: " + std::string(e.what()));
+	}
+
+	CityJSONSourceFacts facts;
+	facts.columns = probe.columns;
+	if (probe.metadata.metadata.has_value()) {
+		facts.reference_system = probe.metadata.metadata.value().reference_system;
+	}
+
+	// The complete set, from every feature: routing sends each type to its module table,
+	// so a type appearing only in the tail would otherwise land in no table at all.
+	std::set<std::string> types;
+	for (const auto &feature : all.records) {
+		for (const auto &entry : feature.city_objects) {
+			types.insert(entry.second.type);
+		}
+	}
+	facts.object_types.assign(types.begin(), types.end());
+
+	// Interned, not counted off the header: a CityJSONSeq feature may carry definitions
+	// the header never declared, and those need a sidecar just as much.
+	const auto index = AppearanceIndex::Build(probe.metadata, all.records);
+	facts.has_materials = !index.materials.empty();
+	facts.has_textures = !index.textures.empty();
+	if (probe.metadata.geometry_templates.has_value()) {
+		facts.geometry_templates = probe.metadata.geometry_templates.value();
+	}
+	return facts;
+}
+
+CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
+                                     vector<LogicalType> &return_types, vector<string> &names,
+                                     const std::string &function_name, CityJSONReader &reader, bool streaming,
+                                     bool materialise) {
+	CityJSONBindData result;
+
+	if (input.inputs.empty()) {
+		throw BinderException(function_name + " requires a file path");
+	}
+	result.file_name = StringValue::Get(input.inputs[0]);
+	result.streaming = streaming;
+
+	auto options = ParseCityJSONReadOptions(input, function_name);
+	result.target_lod = options.target_lod;
+	result.use_wkb_encoding = options.use_wkb_encoding;
+	result.geometry_encoding = options.geometry_encoding;
+	result.sample_lines = options.sample_lines;
+
+	try {
+		result.metadata = reader.ReadMetadata();
+	} catch (const CityJSONError &e) {
+		throw BinderException("Failed to read metadata: " + std::string(e.what()));
+	}
+
+	// `!materialise` leaves `chunks`/`scan_plan` empty on purpose; the caller materialises
+	// into the global state once the projection is known. Schema inference below still runs
+	// and, with no chunks to flatten, samples the reader directly.
+	if (!streaming && materialise) {
+		try {
+			result.chunks = reader.ReadAllChunks();
+		} catch (const CityJSONError &e) {
+			throw BinderException("Failed to read data: " + std::string(e.what()));
+		}
+		result.scan_plan = result.chunks.BuildScanPlan();
+	}
+
+	InferCityJSONColumns(result, reader, options.sample_lines);
+
+	if (options.sidecar_appearance) {
+		// Reading the whole file, not a sample: a definition used only by a feature in
+		// the tail belongs in the dataset's sidecar just as much as a header one, and
+		// omitting it would leave that feature's references unresolvable.
+		auto all = reader.ReadAllChunks();
+		result.appearance_index = AppearanceIndex::Build(result.metadata, all.records);
+	}
+
+	for (const auto &col : result.columns) {
+		names.push_back(col.name);
+		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
+	}
+
+	return result;
 }
 
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names,
                                           const std::string &function_name,
-                                          std::unique_ptr<CityJSONReader> reader, bool streaming) {
-	auto result = make_uniq<CityJSONBindData>();
-
-	if (input.inputs.empty()) {
-		throw BinderException(function_name + " requires a file path");
-	}
-	result->file_name = StringValue::Get(input.inputs[0]);
-	result->streaming = streaming;
-
-	auto options = ParseCityJSONReadOptions(input, function_name);
-	result->target_lod = options.target_lod;
-	result->use_wkb_encoding = options.use_wkb_encoding;
-
-	try {
-		result->metadata = reader->ReadMetadata();
-	} catch (const CityJSONError &e) {
-		throw BinderException("Failed to read metadata: " + std::string(e.what()));
-	}
-
-	if (!streaming) {
-		try {
-			result->chunks = reader->ReadAllChunks();
-		} catch (const CityJSONError &e) {
-			throw BinderException("Failed to read data: " + std::string(e.what()));
-		}
-		result->scan_plan = result->chunks.BuildScanPlan();
-	}
-
-	InferSchema(*result, *reader, options.sample_lines);
-
-	for (const auto &col : result->columns) {
-		names.push_back(col.name);
-		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
-	}
-
+                                          std::unique_ptr<CityJSONReader> reader, bool streaming,
+                                          ReaderKind reader_kind) {
+	auto result = make_uniq<CityJSONBindData>(
+	    BindCityJSONReadRaw(context, input, return_types, names, function_name, *reader, streaming));
+	// BindCityJSONReadRaw takes the reader already opened and so cannot know which factory
+	// made it; the caller that chose it records the choice here.
+	result->reader_kind = reader_kind;
 	return result;
 }
 
@@ -151,7 +286,8 @@ unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBi
 		throw BinderException("Failed to open CityJSONSeq file: " + std::string(e.what()));
 	}
 
-	return BindCityJSONRead(context, input, return_types, names, "read_cityjsonseq", std::move(reader), true);
+	return BindCityJSONRead(context, input, return_types, names, "read_cityjsonseq", std::move(reader), true,
+	                        ReaderKind::CityJSONSeq);
 }
 
 void CityJSONPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,

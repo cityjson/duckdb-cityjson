@@ -1,0 +1,23 @@
+# name: test/sql/cityjson_feature_id.test
+# description: whole-CityJSON feature_id is the root-parent id, not the file path (review P6)
+# group: [sql]
+
+require cityjson
+
+# Spec 02-object-table-schema.mdx: a root object's feature_id equals its own id;
+# a child's is the id of the root reached via the FIRST parents entry. The old
+# reader emitted the FILE PATH for every row.
+query TT
+SELECT id, feature_id FROM read_cityjson('test/data/hierarchy.city.json') ORDER BY id;
+----
+bldg-1	bldg-1
+storey-1	bldg-1
+storey-2	bldg-1
+
+# feature_id equality pushdown resolves against the same rule.
+query T
+SELECT id FROM read_cityjson('test/data/hierarchy.city.json') WHERE feature_id = 'bldg-1' ORDER BY id;
+----
+bldg-1
+storey-1
+storey-2

@@ -1,0 +1,21 @@
+# name: test/sql/cityjson_fcb_metadata_native.test
+# description: flatcitybuf_metadata against the native C++ flatcitybuf reader
+# group: [sql]
+
+require cityjson
+
+# The header carries a feature count, so that is what this reports. It used to be
+# surfaced as city_objects_count, which is a different quantity: one feature may
+# carry several CityObjects. sample.fcb happens to have one CityObject per feature,
+# which is exactly why the old assertion passed while being wrong in general --
+# cityjson_metadata_counts.test pins the distinction on data where they differ.
+query I
+SELECT features_count FROM flatcitybuf_metadata('test/data/sample.fcb');
+----
+2
+
+# Not claimed without a full decode.
+query I
+SELECT city_objects_count IS NULL FROM flatcitybuf_metadata('test/data/sample.fcb');
+----
+true

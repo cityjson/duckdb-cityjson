@@ -1,0 +1,36 @@
+{
+  "type": "CityJSON",
+  "version": "2.0",
+  "transform": {
+    "scale": [1.0, 1.0, 1.0],
+    "translate": [0.0, 0.0, 0.0]
+  },
+  "CityObjects": {
+    "bldg-1": {
+      "type": "Building",
+      "children": ["storey-1", "storey-2"],
+      "children_roles": ["storey", null],
+      "geometry": [
+        {
+          "type": "Solid",
+          "lod": "2.2",
+          "boundaries": [[[[0, 1, 2, 3]]]]
+        }
+      ]
+    },
+    "storey-1": {
+      "type": "BuildingStorey",
+      "parents": ["bldg-1"]
+    },
+    "storey-2": {
+      "type": "BuildingStorey",
+      "parents": ["bldg-1"]
+    }
+  },
+  "vertices": [
+    [0.0, 0.0, 0.0],
+    [10.0, 0.0, 0.0],
+    [10.0, 10.0, 0.0],
+    [0.0, 10.0, 0.0]
+  ]
+}

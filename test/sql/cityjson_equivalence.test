@@ -1,0 +1,185 @@
+# name: test/sql/cityjson_equivalence.test
+# description: round-trip equivalence -- the six criteria, on committed fixtures
+# group: [sql]
+
+# Equivalence, not identity. Byte-identical output is unreachable: the writer
+# re-sorts keys alphabetically, rebuilds the vertex pool deduping by quantised
+# coordinate, and re-quantises against the origin rather than the source's
+# transform. What must hold is that nothing is LOST that could have been kept.
+#
+# Two design rules, both learned by having been caught out:
+#   - Row-level equality is not sufficient. A timestamp written in the wrong
+#     lexical form re-parses to the same value, so EXCEPT sees nothing wrong
+#     while the file has degraded. Anything checkable at file level is checked
+#     at file level too.
+#   - EXCEPT ALL, never EXCEPT, for value parity: plain EXCEPT deduplicates and
+#     hides row-multiplicity drift.
+
+require cityjson
+
+statement ok
+CREATE TABLE src AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/eq.city.jsonl' (FORMAT cityjsonseq);
+
+statement ok
+CREATE TABLE rt AS SELECT * FROM read_cityjsonseq('__TEST_DIR__/eq.city.jsonl');
+
+# --- 1. same number of city objects ---
+query II
+SELECT (SELECT COUNT(*) FROM src), (SELECT COUNT(*) FROM rt);
+----
+20	20
+
+# --- 2. same attribute count, minus one structural loss ---
+# A key that is present-but-null in the source is written as absent, because the
+# reader surfaces "present and null" and "absent" identically as SQL NULL -- so
+# the writer cannot tell them apart from a row. That is structural, not a bug.
+# These six are null in all 20 objects and so do not survive. Asserting the diff
+# is EXACTLY these six pins both the accepted loss and the absence of any other.
+query I
+SELECT COUNT(*) FROM (
+  (SELECT column_name FROM (DESCRIBE SELECT * FROM src)
+   EXCEPT
+   SELECT column_name FROM (DESCRIBE SELECT * FROM rt))
+  EXCEPT
+  SELECT unnest(['eindregistratie', 'tijdstipinactief', 'tijdstipinactieflv',
+                 'eindgeldigheid', 'tijdstipnietbaglv', 'tijdstipeindregistratielv'])
+);
+----
+0
+
+# Nothing may appear that was not in the source.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM rt)
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM src)
+);
+----
+0
+
+# --- 3. same LoDs ---
+# The LoD is recoverable from the column name, which is why the wide layout keeps
+# the suffix grammar rather than a bare `geometry` column.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM src) WHERE column_name LIKE 'geometry_lod%'
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM rt) WHERE column_name LIKE 'geometry_lod%'
+);
+----
+0
+
+# --- 4. equivalent attribute values ---
+query I
+SELECT COUNT(*) FROM (
+  (SELECT id, object_type, tijdstipregistratie, b3_dak_type, oorspronkelijkbouwjaar FROM src)
+  EXCEPT ALL
+  (SELECT id, object_type, tijdstipregistratie, b3_dak_type, oorspronkelijkbouwjaar FROM rt)
+);
+----
+0
+
+# ...and the file-level form, which the row-level check above cannot see. This is
+# the assertion that catches an ISO-8601 regression.
+query I
+SELECT content LIKE '%"tijdstipregistratie":"2010-10-13T12:20:52Z"%'
+FROM read_text('__TEST_DIR__/eq.city.jsonl');
+----
+true
+
+# --- 5. equivalent geometry ---
+# Coordinates move by up to half the quantisation scale because the writer
+# re-quantises against the origin rather than the source's translate. 1e-3 is the
+# source's own scale; tightening below that is not meaningful.
+query I
+SELECT COUNT(*) FROM src s JOIN rt r USING (id)
+WHERE abs(s.bbox.min_x - r.bbox.min_x) > 1e-3
+   OR abs(s.bbox.min_y - r.bbox.min_y) > 1e-3
+   OR abs(s.bbox.min_z - r.bbox.min_z) > 1e-3
+   OR abs(s.bbox.max_x - r.bbox.max_x) > 1e-3
+   OR abs(s.bbox.max_y - r.bbox.max_y) > 1e-3
+   OR abs(s.bbox.max_z - r.bbox.max_z) > 1e-3;
+----
+0
+
+# A bbox tolerance alone is a weak oracle -- it passes even if every interior
+# vertex is wrong. Equal WKB byte length means the same number of vertices
+# survived, not merely the same extent.
+query I
+SELECT COUNT(*) FROM src s JOIN rt r USING (id)
+WHERE octet_length(s.geometry_lod2_2) IS DISTINCT FROM octet_length(r.geometry_lod2_2);
+----
+0
+
+# --- 6. equivalent CRS ---
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('__TEST_DIR__/eq.city.jsonl');
+----
+EPSG	7415
+
+# --- 6b. equivalent appearance (separate fixture -- delft_subset carries none) ---
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO '__TEST_DIR__/eq_app.city.jsonl' (FORMAT cityjsonseq);
+
+query II
+SELECT
+  (SELECT COUNT(*) FROM cityjson_materials('test/data/railway_appearance.city.jsonl')),
+  (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/eq_app.city.jsonl'));
+----
+4	4
+
+query II
+SELECT
+  (SELECT COUNT(*) FROM cityjson_textures('test/data/railway_appearance.city.jsonl')),
+  (SELECT COUNT(*) FROM cityjson_textures('__TEST_DIR__/eq_app.city.jsonl'));
+----
+4	4
+
+# --- 7. the writer is a fixed point ---
+# Byte-identity with the SOURCE is unreachable, but the writer reaches a fixed
+# point after one generation. Exact, no tolerance, and it doubles as a
+# determinism canary: CityJSONCopyToCombine appends local states in thread
+# arrival order, so a nondeterministic feature order would surface here first.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/eq.city.jsonl'))
+TO '__TEST_DIR__/eq2.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT (SELECT md5(content) FROM read_text('__TEST_DIR__/eq.city.jsonl'))
+     = (SELECT md5(content) FROM read_text('__TEST_DIR__/eq2.city.jsonl'));
+----
+true
+
+# --- 8. the accepted loss, stated at file level too ---
+query I
+SELECT content LIKE '%"eindgeldigheid":null%' FROM read_text('__TEST_DIR__/eq.city.jsonl');
+----
+false
+
+# --- 9. cross-format: CityJSONSeq vs FlatCityBuf from the same source ---
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/eq.fcb' (FORMAT flatcitybuf);
+
+# Same row count through a different physical encoding.
+query II
+SELECT (SELECT COUNT(*) FROM src), (SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/eq.fcb'));
+----
+20	20
+
+# Full column parity -- FCB declares its schema in the header, so unlike the JSON
+# path it does not lose the all-null columns.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM src)
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/eq.fcb'))
+);
+----
+0

@@ -49,15 +49,16 @@ public:
 
 	/**
 	 * Create a DataChunk containing metadata values
-	 * @param metadata The CityJSON metadata to convert
-	 * @param city_objects_count Total count of city objects
+	 * @param cityjson The CityJSON metadata to convert
+	 * @param city_objects_count Total count of CityObjects, or an invalid
+	 *        optional_idx when the source cannot report one without a full decode
+	 *        (FlatCityBuf) -- rendered as SQL NULL rather than a wrong number.
+	 * @param features_count Number of features (CityJSONSeq lines after the
+	 *        header, FlatCityBuf features), or invalid for a whole-document
+	 *        CityJSON, which has no feature concept.
 	 */
-	static unique_ptr<DataChunk> CreateMetadataChunk(const CityJSON &cityjson, idx_t city_objects_count);
-
-	/**
-	 * Generate SQL CREATE TABLE statement for metadata
-	 */
-	static string GetCreateTableSQL(const string &table_name = "metadata");
+	static unique_ptr<DataChunk> CreateMetadataChunk(const CityJSON &cityjson, optional_idx city_objects_count,
+	                                                 optional_idx features_count);
 };
 
 } // namespace cityjson

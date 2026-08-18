@@ -33,9 +33,33 @@ enum class ColumnType {
 	                    //        max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
 
 	// New WKB-based geometry types
-	GeometryWKB,            // BLOB - WKB-encoded geometry (3D)
-	GeometryPropertiesJson, // JSON - geometry properties (type, semantics, etc.)
+	GeometryWKB,              // BLOB - WKB-encoded geometry (3D)
+	GeometryPropertiesStruct, // STRUCT("type" VARCHAR, surfaces JSON,
+	                          //        face_semantics INTEGER[], shells INTEGER[][])
+	AppearanceJson,           // JSON - per-LoD material_lod*/texture_lod* appearance (§11)
+
+	// Arrow-native geometry encoding (experimental, branch arrow-native-type -- see
+	// docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md in the parent
+	// workspace repo). A nested LIST of vertex-pool indices replaces the WKB BLOB,
+	// paired with a sibling column holding the row's compacted vertex pool. The shape
+	// MUST match cityparquet-rs's arrow_native_geometry_data_type() /
+	// arrow_native_vertices_data_type() exactly -- the point of the experiment is that
+	// either producer's file is readable by the other.
+	GeometryArrowNative,         // solid -> shell -> face -> ring -> INTEGER vertex-pool index
+	GeometryVerticesArrowNative, // LIST(STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))
 };
+
+/**
+ * How the geometry columns are physically encoded.
+ *
+ * `Wkb` is the default and the only encoding the CityParquet specification
+ * currently blesses. `ArrowNative` is the experimental alternative under
+ * evaluation on the arrow-native-type branch (see
+ * docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md in the parent
+ * workspace repo), where geometry_lod* becomes nested LISTs of vertex-pool indices
+ * and gains a geometry_vertices_lod* sibling. The two never mix within one read.
+ */
+enum class GeometryEncoding { Wkb, ArrowNative };
 
 /**
  * Error kind enumeration for CityJSON extension
@@ -79,6 +103,11 @@ enum class VectorType {
 struct Column {
 	std::string name; // Column name
 	ColumnType kind;  // Column data type
+
+	// Normalised LoD parsed from the name at bind time ("2.2"); empty when the name
+	// carries no LoD component. Filled by InferCityJSONColumns so the scan does not
+	// run a regex per column per row.
+	std::string lod;
 
 	Column() = default;
 	Column(std::string name, ColumnType kind) : name(std::move(name)), kind(kind) {

@@ -34,13 +34,17 @@ std::string LODTableUtils::FormatLODAsColumnSuffix(const std::string &lod) {
 	return result;
 }
 
+// Trims trailing zeros from a fixed-precision decimal string, but always keeps
+// exactly one digit after the decimal point: "2.000000000000" -> "2.0", never
+// "2" (spec §9 — a column suffix always carries a minor).
 static std::string TrimTrailingZeros(const std::string &s) {
 	size_t end = s.find_last_not_of('0');
 	if (end == std::string::npos) {
 		return s;
 	}
 	if (s[end] == '.') {
-		end--;
+		// Every fractional digit was zero: keep exactly one of them.
+		return s.substr(0, end + 2);
 	}
 	return s.substr(0, end + 1);
 }
@@ -94,10 +98,20 @@ std::vector<Column> LODTableUtils::GetBaseColumns() {
 	};
 }
 
-std::vector<Column> LODTableUtils::GetGeometryColumns() {
+std::vector<Column> LODTableUtils::GetGeometryColumns(const std::string &lod) {
+	// Spec § "Levels of detail": every geometry column is suffixed, and the suffix
+	// always carries a minor -- LoD "3" reads back as "3.0" and yields
+	// geometry_lod3_0. The single-LoD `lod=` mode therefore uses exactly the same
+	// column grammar as the wide layout, just restricted to one LoD. That keeps the
+	// level of detail recoverable from the column name alone, which is what lets
+	// COPY TO cityjson re-emit it -- an un-suffixed layout had nowhere to put it.
+	std::string suffix = FormatLODAsColumnSuffix(lod);
 	return {
-	    Column("geometry", ColumnType::GeometryWKB),
-	    Column("geometry_properties", ColumnType::GeometryPropertiesJson),
+	    Column("geometry_" + suffix, ColumnType::GeometryWKB),
+	    Column("geometry_properties_" + suffix, ColumnType::GeometryPropertiesStruct),
+	    // Per-LoD appearance columns paired to the geometry by name (§11).
+	    Column("material_" + suffix, ColumnType::AppearanceJson),
+	    Column("texture_" + suffix, ColumnType::AppearanceJson),
 	    Column("bbox", ColumnType::GeographicalExtent),
 	};
 }
@@ -157,8 +171,8 @@ std::vector<LODTableDefinition> LODTableUtils::InferLODTables(const std::vector<
 		// Add attribute columns
 		table.columns.insert(table.columns.end(), attribute_columns.begin(), attribute_columns.end());
 
-		// Add geometry columns
-		auto geom_cols = GetGeometryColumns();
+		// Add geometry columns, suffixed with this table's LoD
+		auto geom_cols = GetGeometryColumns(lod);
 		table.columns.insert(table.columns.end(), geom_cols.begin(), geom_cols.end());
 
 		tables.push_back(std::move(table));

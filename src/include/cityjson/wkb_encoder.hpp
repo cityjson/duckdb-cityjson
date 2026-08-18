@@ -52,31 +52,14 @@ constexpr uint8_t WKB_XDR = 0; // Big Endian (Network byte order)
 constexpr uint8_t WKB_NDR = 1; // Little Endian (Intel byte order)
 
 /**
- * CityJSON geometry type codes for geometry_properties JSON
- * Based on 3DCityDB geometry module specification
- */
-enum class CityJSONGeometryTypeCode : int {
-	Point = 1,
-	MultiPoint = 2,
-	LineString = 3,
-	MultiLineString = 4,
-	Surface = 5,
-	CompositeSurface = 6,
-	TIN = 7,
-	MultiSurface = 8,
-	Solid = 9,
-	CompositeSolid = 10,
-	MultiSolid = 11
-};
-
-/**
  * WKB Encoder for converting CityJSON geometry to OGC Well-Known Binary format
  *
  * This encoder:
  * - Dereferences CityJSON vertex indices to actual 3D coordinates
  * - Applies transform (scale/translate) if present
- * - Reverses ring orientation for OGC compatibility
- *   (CityJSON: exterior CW, interior CCW; OGC: exterior CCW, interior CW)
+ * - Preserves the source ring order (CityJSON/CityGML wind exterior rings so the
+ *   right-hand rule gives the outward normal, i.e. right-handed orientation)
+ * - Closes each ring (OGC repeats the first vertex; CityJSON does not)
  * - Outputs WKB in little-endian format (NDR)
  *
  * Supported CityJSON to OGC mappings:
@@ -123,22 +106,6 @@ public:
 	 */
 	static WKBGeometryType GetOGCType(const std::string &cityjson_type);
 
-	/**
-	 * Get CityJSON geometry type code for geometry_properties JSON
-	 *
-	 * @param cityjson_type CityJSON geometry type name
-	 * @return Type code for geometry_properties JSON
-	 */
-	static CityJSONGeometryTypeCode GetTypeCode(const std::string &cityjson_type);
-
-	/**
-	 * Check if a CityJSON geometry type is supported for WKB encoding
-	 *
-	 * @param cityjson_type CityJSON geometry type name
-	 * @return true if the type can be encoded to WKB
-	 */
-	static bool IsSupported(const std::string &cityjson_type);
-
 private:
 	// Helper: Apply transform to a vertex
 	static std::array<double, 3> ApplyTransform(const std::array<double, 3> &vertex, const Transform &transform);
@@ -146,9 +113,6 @@ private:
 	// Helper: Get vertex from index with optional transform
 	static std::array<double, 3> GetVertex(const std::vector<std::array<double, 3>> &vertices, uint32_t index,
 	                                       const std::optional<Transform> &transform);
-
-	// Helper: Reverse ring orientation (CityJSON to OGC)
-	static void ReverseRing(std::vector<uint32_t> &ring);
 
 	// Write primitives to WKB buffer
 	static void WriteByte(std::vector<uint8_t> &out, uint8_t value);

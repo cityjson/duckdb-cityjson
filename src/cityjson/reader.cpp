@@ -17,5 +17,17 @@ size_t CityJSONReader::CountCityObjects() const {
 	return count;
 }
 
+size_t CityJSONReader::CountFeatures() const {
+	size_t count = 0;
+	auto chunks = ReadAllChunks();
+	for (size_t i = 0; i < chunks.ChunkCount(); i++) {
+		auto chunk = chunks.GetChunk(i);
+		if (chunk) {
+			count += chunk->size();
+		}
+	}
+	return count;
+}
+
 } // namespace cityjson
 } // namespace duckdb

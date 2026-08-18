@@ -1,0 +1,142 @@
+# name: test/sql/cityjson_copy_struct_properties.test
+# description: COPY TO cityjson reconstructs semantics from externally-shaped geometry_properties payloads
+# group: [sql]
+
+require cityjson
+
+# read_cityjson now emits geometry_properties_lod* as a native STRUCT, matching
+# what a CityParquet package stores. This file covers the payloads COPY TO
+# cityjson may still be handed by *other* producers:
+#
+#   1. a hand-built / cityparquet-rs STRUCT (the canonical form)
+#   2. a VARCHAR JSON-text properties column, which some external writer — or an
+#      older version of this extension — may still produce
+#
+# Regression: when the payload was a STRUCT the writer silently dropped ALL
+# semantics (ParseJson choked on DuckDB's struct-repr string).
+
+# Build a wide CityParquet row: geometry_lod2_2 (WKB) + a STRUCT
+# geometry_properties_lod2_2, borrowing a real 6-face solid from the fixture.
+statement ok
+CREATE TABLE cp AS
+SELECT id, feature_id, object_type,
+       geometry_lod2_2,
+       {
+         'type': 'Solid',
+         'surfaces': '[{"type":"GroundSurface"},{"type":"RoofSurface"},{"type":"WallSurface"},{"type":"WallSurface"}]',
+         'face_semantics': [0, 1, 2, 2, 2, 3]::INTEGER[],
+         'shells': [[6]]::INTEGER[][]
+       } AS geometry_properties_lod2_2
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL AND geometry_properties_lod2_2.surfaces IS NOT NULL
+LIMIT 1;
+
+statement ok
+COPY (SELECT * FROM cp) TO '__TEST_DIR__/cp_struct.city.jsonl' (FORMAT cityjsonseq);
+
+# The exported geometry keeps its LoD (2.2, from the column-name suffix) …
+query I
+SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+1
+
+# … and the semantic surfaces reconstructed from the STRUCT survive the round trip.
+query I
+SELECT geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%'
+FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+true
+
+# Exact face_semantics values survive (not corrupted, re-typed, or NULL-mangled).
+query I
+SELECT geometry_properties_lod2_2.face_semantics
+FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+[0, 1, 2, 2, 2, 3]
+
+# Multi-shell solids: shells nests one array per solid ([[3,3]] for a single
+# 2-shell Solid). This must re-nest into a genuine 2-shell solid — read back as
+# shells [[3,3]] — not collapse to the single-shell fallback [[6]]. Guards both
+# the signed-integer and the over-nesting bugs, which a single-shell case cannot
+# detect.
+statement ok
+CREATE TABLE cp2 AS
+SELECT id, feature_id, object_type,
+       geometry_lod2_2,
+       {
+         'type': 'Solid',
+         'surfaces': '[{"type":"GroundSurface"},{"type":"RoofSurface"}]',
+         'face_semantics': [0, 0, 0, 1, 1, 1]::INTEGER[],
+         'shells': [[3, 3]]::INTEGER[][]
+       } AS geometry_properties_lod2_2
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL AND geometry_properties_lod2_2.surfaces IS NOT NULL
+LIMIT 1;
+
+statement ok
+COPY (SELECT * FROM cp2) TO '__TEST_DIR__/cp2.city.jsonl' (FORMAT cityjsonseq);
+
+query II
+SELECT geometry_properties_lod2_2.shells,
+       geometry_properties_lod2_2.face_semantics
+FROM read_cityjsonseq('__TEST_DIR__/cp2.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+[[3, 3]]	[0, 0, 0, 1, 1, 1]
+
+# ============================================================
+# VARCHAR JSON-text properties from an external producer
+# ============================================================
+
+# A foreign writer may hand COPY a JSON-text properties column rather than a
+# STRUCT. That path must still reconstruct semantics.
+statement ok
+CREATE TABLE cp_json AS
+SELECT id, feature_id, object_type,
+       geometry_lod2_2,
+       '{"type":"Solid","surfaces":[{"type":"GroundSurface"},{"type":"RoofSurface"}],"face_semantics":[0,0,0,1,1,1],"shells":[[3,3]]}'
+         AS geometry_properties_lod2_2
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL
+LIMIT 1;
+
+statement ok
+COPY (SELECT * FROM cp_json) TO '__TEST_DIR__/cp_json.city.jsonl' (FORMAT cityjsonseq);
+
+query II
+SELECT geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%',
+       geometry_properties_lod2_2.shells
+FROM read_cityjsonseq('__TEST_DIR__/cp_json.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+true	[[3, 3]]
+
+# Legacy flat `shells` for a Solid ([3,3] rather than [[3,3]]) — what this
+# extension itself wrote before the nesting was corrected, and what a
+# third-party producer carrying the same bug still emits. The reader tells the
+# two forms apart by whether the first element is an array, so the shell
+# partition must survive rather than degrade to the single-shell fallback.
+statement ok
+CREATE TABLE cp_flat AS
+SELECT id, feature_id, object_type,
+       geometry_lod2_2,
+       '{"type":"Solid","surfaces":[{"type":"GroundSurface"},{"type":"RoofSurface"}],"face_semantics":[0,0,0,1,1,1],"shells":[3,3]}'
+         AS geometry_properties_lod2_2
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL
+LIMIT 1;
+
+statement ok
+COPY (SELECT * FROM cp_flat) TO '__TEST_DIR__/cp_flat.city.jsonl' (FORMAT cityjsonseq);
+
+# Re-read in the canonical nested form: the two shells were preserved.
+query II
+SELECT geometry_properties_lod2_2.shells,
+       geometry_properties_lod2_2.face_semantics
+FROM read_cityjsonseq('__TEST_DIR__/cp_flat.city.jsonl', lod => '2.2')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+[[3, 3]]	[0, 0, 0, 1, 1, 1]

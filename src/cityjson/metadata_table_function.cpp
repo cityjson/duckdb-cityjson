@@ -11,13 +11,15 @@ namespace cityjson {
 struct MetadataBindData : public TableFunctionData {
 	std::string file_name;
 	CityJSON metadata;
-	idx_t city_objects_count;
+	optional_idx city_objects_count;
+	optional_idx features_count;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<MetadataBindData>();
 		result->file_name = file_name;
 		result->metadata = metadata;
 		result->city_objects_count = city_objects_count;
+		result->features_count = features_count;
 		return result;
 	}
 
@@ -89,12 +91,17 @@ static void MetadataScan(ClientContext &context, TableFunctionInput &data, DataC
 	}
 
 	// Create the metadata chunk
-	auto metadata_chunk = MetadataTableUtils::CreateMetadataChunk(bind_data.metadata, bind_data.city_objects_count);
+	auto metadata_chunk = MetadataTableUtils::CreateMetadataChunk(bind_data.metadata, bind_data.city_objects_count,
+	                                                              bind_data.features_count);
 
-	// Copy data to output (not Reference, which would dangle after metadata_chunk is destroyed)
+	// Reference, not a per-value copy. Vector::Reference forwards to Reinterpret, which
+	// AssignSharedPointer()s both `buffer` and `auxiliary` (duckdb/src/common/types/
+	// vector.cpp) -- the output co-owns the data, the string heap and the STRUCT children,
+	// so nothing dangles when metadata_chunk goes out of scope. Same pattern, and the same
+	// column types, as FcbMetadataScan.
 	output.SetCardinality(1);
 	for (idx_t col = 0; col < metadata_chunk->ColumnCount(); col++) {
-		output.data[col].SetValue(0, metadata_chunk->data[col].GetValue(0));
+		output.data[col].Reference(metadata_chunk->data[col]);
 	}
 
 	global_state.done = true;
@@ -134,9 +141,12 @@ static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFun
 		throw BinderException("Failed to read CityJSONSeq metadata: " + std::string(e.what()));
 	}
 
-	// Count city objects from second line onwards using streaming count
+	// Count city objects from second line onwards using streaming count. Features
+	// are counted separately: a CityJSONSeq line is one feature but may carry
+	// several CityObjects, so the two numbers legitimately differ.
 	try {
 		result->city_objects_count = reader->CountCityObjects();
+		result->features_count = reader->CountFeatures();
 	} catch (const CityJSONError &e) {
 		throw BinderException("Failed to count city objects: " + std::string(e.what()));
 	}

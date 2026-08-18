@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cityjson/copy_source_ref.hpp"
+
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb.hpp"
@@ -30,6 +32,7 @@ enum class CopyColumnRole {
 	ChildrenRoles,      // children_roles array
 	GeometryWKB,        // geometry / geometry_lod* / geom_lod* (WKB blob)
 	GeometryProperties, // geometry_properties / geometry_properties_lod* JSON
+	Appearance,         // material_lod* / texture_lod* (per-LoD appearance, §11)
 	Bbox,               // derived bounding box — recomputed on read, ignored on write
 	Other,              // extension fields
 	Attribute           // everything else -> attributes map
@@ -46,6 +49,11 @@ struct CityJSONCopyBindData : public FunctionData {
 	bool is_seq = false; // true for cityjsonseq format
 	bool is_fcb = false; // true for flatcitybuf format
 
+	// FlatCityBuf write-only options (COPY TO ... FORMAT flatcitybuf).
+	std::vector<std::string> fcb_attr_index_columns; // parsed from attr_index, empty = none
+	std::optional<uint16_t> fcb_branching_factor;
+	std::optional<uint16_t> fcb_index_node_size;
+
 	// Metadata (from options or metadata_query)
 	std::string version = "2.0";
 	std::optional<std::string> crs;
@@ -55,6 +63,31 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::optional<std::string> reference_date;
 	std::optional<GeographicalExtent> geographical_extent;
 	std::optional<PointOfContact> point_of_contact;
+
+	// The source file this COPY reads from, when it is statically discoverable.
+	// COPY binds a relation, not a file, so file-level content -- the metadata
+	// header (CRS above all) and the appearance definitions -- is otherwise out of
+	// reach. Set from the parsed SELECT, or from the explicit metadata_from option.
+	std::optional<CopySourceRef> source_ref;
+
+	// Appearance definitions carried verbatim from the source.
+	//
+	// Only the per-geometry *references* (material_lod* / texture_lod*) are columns;
+	// the definitions they index live in the source file's `appearance` object and
+	// are reachable only through source_ref. Writing the refs without them -- which
+	// is what happened until now -- emits indices into an array that does not exist,
+	// i.e. invalid CityJSON that still passes a refs-only test.
+	//
+	// Kept as raw json rather than the parsed Appearance struct so that fields our
+	// Material/Texture models do not know about survive untouched.
+	//
+	// In CityJSONSeq each feature carries its OWN block and its refs are local
+	// indices into it, exactly as its boundary indices are local to its own vertex
+	// pool. So blocks are kept per feature and re-emitted onto the matching output
+	// feature; merging them into one array would keep every count identical while
+	// silently re-pointing every reference.
+	std::optional<json> source_appearance_header;
+	std::map<std::string, json> source_appearance_by_feature;
 
 	// Column mapping
 	std::vector<std::string> column_names;
@@ -76,6 +109,9 @@ struct CityJSONCopyBindData : public FunctionData {
 	// column name (e.g. "geometry_properties_lod2_2") so a geometry column can find its
 	// matching properties without assuming a single shared column.
 	std::unordered_map<std::string, idx_t> geometry_properties_by_name;
+	// material_lod*/texture_lod* columns by name, for re-attaching appearance to
+	// the matching geometry on export (§11).
+	std::unordered_map<std::string, idx_t> appearance_by_name;
 
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other) const override;

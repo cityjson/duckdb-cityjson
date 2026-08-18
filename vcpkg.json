@@ -1,9 +1,19 @@
 {
+        "builtin-baseline": "84bab45d415d22042bd0b9081aea57f362da3f35",
         "dependencies": [
-                "openssl",
-                "nlohmann-json"
+                "nlohmann-json",
+                "flatbuffers",
+                "flatcitybuf"
         ],
         "vcpkg-configuration": {
+                "registries": [
+                        {
+                                "kind": "git",
+                                "repository": "https://github.com/HideBa/vcpkg",
+                                "baseline": "c2db56ac6e28cdb52dc5ade8a29c347b17442221",
+                                "packages": ["flatcitybuf"]
+                        }
+                ],
                 "overlay-ports": [
                         "./extension-ci-tools/vcpkg_ports"
                 ],

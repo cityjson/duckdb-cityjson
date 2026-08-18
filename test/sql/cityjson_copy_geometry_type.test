@@ -1,0 +1,59 @@
+# name: test/sql/cityjson_copy_geometry_type.test
+# description: COPY TO cityjson decodes a DuckDB-core GEOMETRY geometry column (a GeoParquet LoD0 footprint), not only BLOB WKB
+# group: [sql]
+
+require cityjson
+
+# CityParquet's LoD0 footprint is a GeoParquet WKB column that DuckDB v1.5 reads as
+# the first-class GEOMETRY type (LogicalTypeId::GEOMETRY), not BLOB. COPY must
+# serialise it back to WKB and emit it. Regression for the silently-dropped LoD0.
+# The footprint here is a MultiPolygon Z (WKB code 1006), built with core
+# ST_GeomFromWKB so no `spatial` extension is needed.
+
+statement ok
+CREATE TABLE cp AS
+SELECT 'b1' AS id, 'f1' AS feature_id, 'Building' AS object_type,
+       ST_GeomFromWKB(from_hex('01EE0300000100000001EB0300000100000004000000000000000000000000000000000000000000000000000000000000000000F03F000000000000000000000000000000000000000000000000000000000000F03F0000000000000000000000000000000000000000000000000000000000000000')) AS geometry_lod0_0;
+
+# The input column really is the core GEOMETRY type, not BLOB.
+query I
+SELECT typeof(geometry_lod0_0) LIKE 'GEOMETRY%' FROM cp;
+----
+true
+
+statement ok
+COPY (SELECT * FROM cp) TO '__TEST_DIR__/geom.city.jsonl' (FORMAT cityjsonseq);
+
+# The LoD0 footprint round-trips: read back at LoD 0.0, its geometry is present.
+query I
+SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/geom.city.jsonl', lod => '0.0')
+WHERE geometry_lod0_0 IS NOT NULL;
+----
+1
+
+# … and it decoded to a MultiSurface (CityJSON mapping of WKB MultiPolygon).
+query I
+SELECT geometry_properties_lod0_0."type"
+FROM read_cityjsonseq('__TEST_DIR__/geom.city.jsonl', lod => '0.0')
+WHERE geometry_lod0_0 IS NOT NULL;
+----
+MultiSurface
+
+# Multi-row + a filter (forces sliced/dictionary vectors — the case a flat read
+# would corrupt) + an interleaved NULL geometry. The GEOMETRY→WKB view must be
+# dictionary-safe and skip NULLs cleanly.
+statement ok
+CREATE TABLE cp2 AS
+SELECT 'a' AS id, 'fa' AS feature_id, 'Building' AS object_type, geometry_lod0_0 FROM cp
+UNION ALL SELECT 'b', 'fb', 'Building', NULL FROM cp
+UNION ALL SELECT 'c', 'fc', 'Building', geometry_lod0_0 FROM cp;
+
+statement ok
+COPY (SELECT * FROM cp2 WHERE id IN ('b', 'c')) TO '__TEST_DIR__/geom2.city.jsonl' (FORMAT cityjsonseq);
+
+# Only 'c' has a footprint ('b' is NULL, filtered set still slices the vector).
+query I
+SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/geom2.city.jsonl', lod => '0.0')
+WHERE geometry_lod0_0 IS NOT NULL;
+----
+1

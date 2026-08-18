@@ -1,0 +1,149 @@
+# name: test/sql/cityjson_fcb_projection.test
+# description: projection-masked scans return values identical to wide scans
+# group: [sql]
+
+require cityjson
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
+TO '__TEST_DIR__/proj.fcb' (FORMAT flatcitybuf, attr_index 'height,category', branching_factor 4);
+
+# The wide scan is the oracle every narrower projection below is compared against.
+query IIIIII
+SELECT id, feature_id, object_type, category, height, bbox.min_x
+FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY id;
+----
+b1	f1	Building	A	10.0	0.0
+b2	f2	Building	B	20.0	100.0
+b3	f3	Building	A	30.0	200.0
+
+# attribute-only projection (light path: no geometry decoded)
+query II
+SELECT feature_id, height FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY feature_id;
+----
+f1	10.0
+f2	20.0
+f3	30.0
+
+# structural-only projection: no attribute is needed at all, but the predefined
+# columns must still be filled
+query III
+SELECT id, feature_id, object_type FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY id;
+----
+b1	f1	Building
+b2	f2	Building
+b3	f3	Building
+
+# `other` is a predefined column, but GetAttributeValue builds it from EVERY
+# non-predefined, non-geometry attribute -- so projecting it must decode all of
+# them, not none. A mask rule that treats every predefined column as
+# attribute-free would return NULL here.
+query II
+SELECT feature_id, other FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY feature_id;
+----
+f1	{"category":"A","height":10.0}
+f2	{"category":"B","height":20.0}
+f3	{"category":"A","height":30.0}
+
+# COUNT(*) -- empty projection, light path, still one row per CityObject
+query I
+SELECT count(*) FROM read_flatcitybuf('__TEST_DIR__/proj.fcb');
+----
+3
+
+# geometry projected -> full path; bbox is geometry-derived and forces it too
+query I
+SELECT count(*) FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') WHERE bbox IS NOT NULL;
+----
+3
+
+# the geometry blob and its properties sibling, byte-length pinned
+query III
+SELECT feature_id, octet_length(geometry_lod2_2), geometry_properties_lod2_2.type
+FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY feature_id;
+----
+f1	142	Solid
+f2	142	Solid
+f3	142	Solid
+
+# mixed projection: geometry-derived AND attribute columns together
+query IIII
+SELECT feature_id, height, bbox.min_x, bbox.max_y
+FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY feature_id;
+----
+f1	10.0	0.0	10.0
+f2	20.0	100.0	110.0
+f3	30.0	200.0	210.0
+
+# indexed attr filter + narrow projection: pushdown AND light path together
+query I
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') WHERE height > 15 ORDER BY feature_id;
+----
+f2
+f3
+
+# a filtered-on column that is NOT in the select list still has to be decoded --
+# the mask is computed from column_ids, which DuckDB widens to cover the filter.
+query I
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') WHERE category = 'A' ORDER BY feature_id;
+----
+f1
+f3
+
+# bbox param + attr filter (the post-filter case) with attribute-only projection
+query I
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/proj.fcb',
+    min_x := 50, min_y := 50, max_x := 250, max_y := 250)
+WHERE category = 'A' ORDER BY feature_id;
+----
+f3
+
+# bbox param alone, empty projection: the spatial filter must survive the move of
+# the one real read from bind to init_global
+query I
+SELECT count(*) FROM read_flatcitybuf('__TEST_DIR__/proj.fcb',
+    min_x := 50, min_y := 50, max_x := 150, max_y := 150);
+----
+1
+
+# a file with no attribute index at all: same answers, no pushdown involved
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
+TO '__TEST_DIR__/proj_noindex.fcb' (FORMAT flatcitybuf);
+
+query II
+SELECT feature_id, height FROM read_flatcitybuf('__TEST_DIR__/proj_noindex.fcb') ORDER BY feature_id;
+----
+f1	10.0
+f2	20.0
+f3	30.0
+
+query I
+SELECT count(*) FROM read_flatcitybuf('__TEST_DIR__/proj_noindex.fcb');
+----
+3
+
+# multi-CityObject feature: row count is per CityObject on the light path too
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_multi_object_feature.city.jsonl'))
+TO '__TEST_DIR__/proj_multi.fcb' (FORMAT flatcitybuf, attr_index 'height', branching_factor 4);
+
+query I
+SELECT count(*) FROM read_flatcitybuf('__TEST_DIR__/proj_multi.fcb');
+----
+2
+
+query II
+SELECT id, height FROM read_flatcitybuf('__TEST_DIR__/proj_multi.fcb') ORDER BY id;
+----
+b1	10.0
+b2	30.0
+
+# per-LoD binding (lod =) still infers its schema without a bind-time materialise
+query II
+SELECT feature_id, octet_length(geometry_lod2_2)
+FROM read_flatcitybuf('__TEST_DIR__/proj.fcb', lod := '2.2') ORDER BY feature_id;
+----
+f1	142
+f2	142
+f3	142

@@ -1,0 +1,89 @@
+# name: test/sql/cityjson_copy_metadata_preserve.test
+# description: COPY carries the source's metadata across by default (CRS above all)
+# group: [sql]
+
+require cityjson
+
+# COPY binds a relation, not a file, so the source's metadata header was out of
+# reach of the rows and a plain COPY wrote no `metadata` key at all -- silently
+# turning EPSG:7415 data into unreferenced coordinates. The source path is now
+# recovered from the parsed SELECT.
+
+# --- the headline case: a plain COPY, no options at all ---
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/preserved.city.jsonl' (FORMAT cityjsonseq);
+
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('__TEST_DIR__/preserved.city.jsonl');
+----
+EPSG	7415
+
+# --- it survives a format change too ---
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/preserved.city.json' (FORMAT cityjson);
+
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjson_metadata('__TEST_DIR__/preserved.city.json');
+----
+EPSG	7415
+
+# --- an explicit crs still overrides the inherited one ---
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/override.city.jsonl'
+  (FORMAT cityjsonseq, crs 'https://www.opengis.net/def/crs/EPSG/0/28992');
+
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('__TEST_DIR__/override.city.jsonl');
+----
+EPSG	28992
+
+# --- the source is not discoverable from a plain table reference ---
+statement ok
+CREATE TABLE detached AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+COPY (SELECT * FROM detached) TO '__TEST_DIR__/detached.city.jsonl' (FORMAT cityjsonseq);
+
+query T
+SELECT reference_system.code FROM cityjsonseq_metadata('__TEST_DIR__/detached.city.jsonl');
+----
+NULL
+
+# --- ...and metadata_from names it explicitly for exactly that case ---
+statement ok
+COPY (SELECT * FROM detached) TO '__TEST_DIR__/from_opt.city.jsonl'
+  (FORMAT cityjsonseq, metadata_from 'test/data/delft_subset.city.jsonl');
+
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('__TEST_DIR__/from_opt.city.jsonl');
+----
+EPSG	7415
+
+# --- an ambiguous source is refused rather than guessed ---
+# Two readers in one statement: claiming either file's CRS for the union would be
+# a coin flip, and stamping the wrong CRS onto georeferenced output is worse than
+# stamping none.
+statement ok
+COPY (
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+  UNION ALL
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+) TO '__TEST_DIR__/ambiguous.city.jsonl' (FORMAT cityjsonseq);
+
+query T
+SELECT reference_system.code FROM cityjsonseq_metadata('__TEST_DIR__/ambiguous.city.jsonl');
+----
+NULL
+
+# --- the rest of the metadata header travels too, not just the CRS ---
+query I
+SELECT title IS NOT NULL FROM cityjsonseq_metadata('__TEST_DIR__/preserved.city.jsonl');
+----
+true

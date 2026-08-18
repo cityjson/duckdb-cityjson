@@ -1,4 +1,6 @@
 #include "cityjson/city_object_utils.hpp"
+#include <set>
+#include <algorithm>
 #include "cityjson/column_types.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/wkb_encoder.hpp"
@@ -7,6 +9,7 @@
 #include <set>
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 
 namespace duckdb {
 namespace cityjson {
@@ -39,7 +42,13 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		if (!obj.children_roles.has_value() || obj.children_roles->empty()) {
 			return json(nullptr);
 		}
-		return json(obj.children_roles.value());
+		// Preserve null slots positionally -- WriteVarcharArray already writes a
+		// non-string array element as a SQL NULL list entry.
+		json roles = json::array();
+		for (const auto &role : obj.children_roles.value()) {
+			roles.push_back(role.has_value() ? json(role.value()) : json(nullptr));
+		}
+		return roles;
 	}
 
 	if (col.name == "geographical_extent") {
@@ -71,28 +80,6 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 
 	// Attribute not found
 	return json(nullptr);
-}
-
-// ============================================================
-// CityObjectUtils - Geometry Extraction
-// ============================================================
-
-json CityObjectUtils::GetGeometryValue(const CityObject &obj, const Column &col) {
-	// Parse LOD from column name (e.g., "geom_lod2_1" -> "2.1")
-	if (!IsGeometryColumn(col.name)) {
-		throw CityJSONError::InvalidSchema("Not a geometry column: " + col.name);
-	}
-
-	std::string lod = ParseLODFromColumnName(col.name);
-
-	// Find geometry with matching LOD
-	auto geom_opt = obj.GetGeometryAtLOD(lod);
-	if (!geom_opt.has_value()) {
-		return json(nullptr);
-	}
-
-	// Return geometry as JSON object
-	return geom_opt->ToJson();
 }
 
 // ============================================================
@@ -190,7 +177,12 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	for (const auto &lod : lods) {
 		std::string suffix = LODTableUtils::FormatLODAsColumnSuffix(lod);
 		result.emplace_back("geometry_" + suffix, ColumnType::GeometryWKB);
-		result.emplace_back("geometry_properties_" + suffix, ColumnType::GeometryPropertiesJson);
+		result.emplace_back("geometry_properties_" + suffix, ColumnType::GeometryPropertiesStruct);
+		// Per-LoD appearance columns paired to the geometry by name (§11.1). Present
+		// for every LoD that has a geometry column, whether or not any row carries
+		// appearance for it (nullable).
+		result.emplace_back("material_" + suffix, ColumnType::AppearanceJson);
+		result.emplace_back("texture_" + suffix, ColumnType::AppearanceJson);
 	}
 
 	// A single per-row bbox (computed from the highest-LOD geometry) completes the
@@ -200,6 +192,43 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	}
 
 	return result;
+}
+
+CompactedGeometry CityObjectUtils::GetGeometryArrowNative(const Geometry &geometry,
+                                                          const std::vector<std::array<double, 3>> &vertices,
+                                                          const std::optional<Transform> &transform) {
+	return ArrowNativeEncoder::Encode(geometry, vertices, transform);
+}
+
+void CityObjectUtils::ApplyGeometryEncoding(std::vector<Column> &columns, GeometryEncoding encoding) {
+	if (encoding == GeometryEncoding::Wkb) {
+		return;
+	}
+
+	// The vertex-pool column is linked to its geometry column purely by name, the
+	// same way geometry_properties_lod*/material_lod*/texture_lod* already are --
+	// no metadata field cross-references them (design doc, "File-level provenance").
+	std::vector<Column> result;
+	result.reserve(columns.size());
+	for (auto &column : columns) {
+		if (column.kind != ColumnType::GeometryWKB) {
+			result.push_back(std::move(column));
+			continue;
+		}
+		static constexpr const char *PREFIX = "geometry_";
+		const size_t prefix_len = std::strlen(PREFIX);
+		if (column.name.compare(0, prefix_len, PREFIX) != 0) {
+			// Both derivations name every WKB geometry column "geometry_<suffix>", and
+			// the sibling's name is derived from that suffix. If the convention ever
+			// breaks, say so here rather than emit a sibling nothing can pair up.
+			throw CityJSONError::Other("arrow-native encoding: geometry column '" + column.name +
+			                           "' does not start with '" + PREFIX + "'");
+		}
+		std::string suffix = column.name.substr(prefix_len);
+		result.emplace_back(column.name, ColumnType::GeometryArrowNative);
+		result.emplace_back("geometry_vertices_" + suffix, ColumnType::GeometryVerticesArrowNative);
+	}
+	columns = std::move(result);
 }
 
 // ============================================================
@@ -212,7 +241,8 @@ std::vector<uint8_t> CityObjectUtils::GetGeometryWKB(const Geometry &geometry,
 	return WKBEncoder::Encode(geometry, vertices, transform);
 }
 
-json CityObjectUtils::GetGeometryPropertiesJson(const Geometry &geometry, const std::optional<std::string> &object_id) {
+json CityObjectUtils::GetGeometryPropertiesStruct(const Geometry &geometry,
+                                                  const std::optional<std::string> &object_id) {
 	// Note: object_id parameter reserved for future use
 	(void)object_id; // Suppress unused parameter warning
 	return GeometryPropertiesSerializer::Serialize(geometry);
@@ -249,6 +279,58 @@ static void CollectExtentRecursive(const json &boundaries, const std::vector<std
 			CollectExtentRecursive(child, vertices, transform, extent, found);
 		}
 	}
+}
+
+namespace {
+
+void MergeExtent(std::optional<GeographicalExtent> &into, const GeographicalExtent &other) {
+	if (!into.has_value()) {
+		into = other;
+		return;
+	}
+	into->min_x = std::min(into->min_x, other.min_x);
+	into->min_y = std::min(into->min_y, other.min_y);
+	into->min_z = std::min(into->min_z, other.min_z);
+	into->max_x = std::max(into->max_x, other.max_x);
+	into->max_y = std::max(into->max_y, other.max_y);
+	into->max_z = std::max(into->max_z, other.max_z);
+}
+
+void AccumulateObjectExtent(const std::string &object_id, const std::map<std::string, CityObject> &objects,
+                            const std::vector<std::array<double, 3>> &vertices,
+                            const std::optional<Transform> &transform, std::set<std::string> &visited,
+                            std::optional<GeographicalExtent> &result) {
+	if (!visited.insert(object_id).second) {
+		return; // already folded in; also guards a cyclic hierarchy
+	}
+	auto entry = objects.find(object_id);
+	if (entry == objects.end()) {
+		return; // dangling child reference contributes nothing
+	}
+	const auto &object = entry->second;
+
+	// Every stored LoD, not just the highest.
+	for (const auto &geometry : object.geometry) {
+		auto extent = CityObjectUtils::GetGeometryExtent(geometry, vertices, transform);
+		if (extent.has_value()) {
+			MergeExtent(result, extent.value());
+		}
+	}
+	for (const auto &child_id : object.children) {
+		AccumulateObjectExtent(child_id, objects, vertices, transform, visited, result);
+	}
+}
+
+} // namespace
+
+std::optional<GeographicalExtent> CityObjectUtils::GetObjectExtent(const std::string &object_id,
+                                                                   const std::map<std::string, CityObject> &objects,
+                                                                   const std::vector<std::array<double, 3>> &vertices,
+                                                                   const std::optional<Transform> &transform) {
+	std::optional<GeographicalExtent> result;
+	std::set<std::string> visited;
+	AccumulateObjectExtent(object_id, objects, vertices, transform, visited, result);
+	return result;
 }
 
 std::optional<GeographicalExtent> CityObjectUtils::GetGeometryExtent(const Geometry &geometry,
