@@ -130,11 +130,18 @@ test-file FILE:
 test-fcb-remote url="https://flatcitybuf.open3d.city/data/3dbag_subset.city.fcb":
     FCB_REMOTE_TEST_URL={{url}} ./build/release/test/unittest "test/sql/cityjson_fcb_remote.test"
 
-# HTTP read tests for the CityJSON/CityJSONSeq readers, the three metadata
-# functions and a hosted CityParquet package, against the open3d.city datasets.
-# Opt-in: ~25 MB of downloads, so `make test` skips the file entirely.
+# HTTP read tests against the open3d.city datasets. Two files:
+#   cityjson_remote.test        transport -- every reader and metadata function
+#                               over HTTP, plus a hosted CityParquet package
+#                               (~25 MB of downloads, full Delft)
+#   cityjson_corpus_parity.test semantics -- the SAME 3 features in all four
+#                               formats, produced by UPSTREAM tooling, so a
+#                               reader disagreement is evidence about us rather
+#                               than a circular oracle (~93 KB)
+# Opt-in: `make test` skips both entirely.
 test-remote:
     CITYJSON_REMOTE_TEST=1 ./build/release/test/unittest "test/sql/cityjson_remote.test"
+    CITYJSON_REMOTE_TEST=1 ./build/release/test/unittest "test/sql/cityjson_corpus_parity.test"
 
 # Runtime smoke test of the wasm build under Node + @duckdb/duckdb-wasm. Opt-in like
 # the other extra harnesses (`make test` never runs it); needs `just wasm` first, and

@@ -396,6 +396,28 @@ path alone. A real fixture would have to come from upstream.
   **not** rebuild. Undefined `fcb::` / `nlohmann` symbols (or a `json_abi_v3_11_3`
   mangling mismatch) means the `.so` predates the sources — fix with
   `ninja -C build/release src/libduckdb.so`.
+- `test/sql/cityjson_corpus_parity.test` — **the one test in the suite whose
+  fixtures this extension did not produce.** Every other conversion test
+  generates its "source" with the writer under test and reads it back with the
+  matching reader: a circular oracle, where a reader and writer that agree on a
+  mutually wrong encoding pass everything. The hosted corpus
+  (`https://cityjson.open3d.city/corpus/`) holds the same three 3DBAG features
+  as `small.city.jsonl`, `small.city.json`, `small.fcb` and the CityParquet
+  package `small/building.parquet` + `metadata.json`, all written by upstream
+  tooling — so a disagreement between two of our readers is evidence about us.
+  All three CityJSON-family readers agree at 68 columns with a zero name+type
+  diff; CityParquet is a superset by `address` / `other_attributes` / `template`.
+  Same gate and recipe as below (`CITYJSON_REMOTE_TEST`, `just test-remote`),
+  ~93 KB.
+
+  **Do not assert WKB byte-equality between the two JSON readers here**, however
+  much sharing `wkb_encoder.cpp` invites it. The corpus's two files were
+  quantised against different transform origins (`translate`
+  `[85088.390625, 446394.25, 45.648…]` vs `[84593.249625, 446459.603, -0.304…]`),
+  so the same real-world coordinate is stored as different integers and
+  dequantises one ULP apart — the blobs differ while the geometry does not.
+  Structure is asserted exactly via WKB byte *length*; coordinates get a 1e-9
+  tolerance.
 - `test/sql/cityjson_remote.test` — HTTP reads for `read_cityjson`,
   `read_cityjsonseq`, all three metadata functions, and a hosted CityParquet
   package (`read_parquet` + `cityparquet_city_field` on the footer). Gated on
