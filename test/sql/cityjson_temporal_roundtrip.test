@@ -1,0 +1,44 @@
+# name: test/sql/cityjson_temporal_roundtrip.test
+# description: temporal attributes keep their ISO-8601 lexical form through a COPY
+# group: [sql]
+
+require cityjson
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/temporal.city.jsonl' (FORMAT cityjsonseq);
+
+# The row-level value is unchanged -- it always was. This assertion exists to show
+# that it is NOT sufficient evidence of fidelity, and to catch a regression that
+# changes the parsed value while fixing the lexical form.
+query II
+SELECT
+  (SELECT tijdstipregistratie FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+    WHERE tijdstipregistratie IS NOT NULL ORDER BY id LIMIT 1),
+  (SELECT tijdstipregistratie FROM read_cityjsonseq('__TEST_DIR__/temporal.city.jsonl')
+    WHERE tijdstipregistratie IS NOT NULL ORDER BY id LIMIT 1);
+----
+2010-10-13 12:20:52	2010-10-13 12:20:52
+
+# The file-level form is what regressed. CityJSON dates are ISO-8601: 'T'
+# separator, 'Z' suffix. ValueToJson had no TIMESTAMP arm, so the default arm
+# rendered DuckDB's display form instead.
+query I
+SELECT content LIKE '%"tijdstipregistratie":"2010-10-13T12:20:52Z"%'
+FROM read_text('__TEST_DIR__/temporal.city.jsonl');
+----
+true
+
+# ...and the space-separated form must be gone entirely.
+query I
+SELECT content LIKE '%"tijdstipregistratie":"2010-10-13 12:20:52"%'
+FROM read_text('__TEST_DIR__/temporal.city.jsonl');
+----
+false
+
+# A DATE-typed attribute keeps its plain YYYY-MM-DD form (no time, no 'Z').
+query I
+SELECT content LIKE '%"begingeldigheid":"1930-02-10"%'
+FROM read_text('__TEST_DIR__/temporal.city.jsonl');
+----
+true

@@ -9,6 +9,9 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/geometry.hpp"
+#include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/common/types/date.hpp"
+#include "duckdb/common/types/time.hpp"
 #include <limits>
 
 namespace duckdb {
@@ -471,6 +474,26 @@ static json ValueToJson(const Value &val) {
 		return json(val.GetValue<double>());
 	case LogicalTypeId::VARCHAR:
 		return json(StringValue::Get(val));
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ: {
+		// CityJSON dates are ISO-8601. Without an explicit arm here the default
+		// below rendered DuckDB's *display* form ("2010-10-13 12:43:04"), which is
+		// not valid ISO-8601 -- silently rewriting every timestamp attribute on the
+		// way out. The loss is invisible to any row-level comparison, because the
+		// value re-parses to the same TIMESTAMP; only the file changes.
+		//
+		// UTC is the only offset we can honestly claim: InferTemporalType matches
+		// the date and time fields alone, so any source offset is already discarded
+		// at read time and "Z" loses nothing that is not already lost.
+		date_t date;
+		dtime_t time;
+		Timestamp::Convert(TimestampValue::Get(val), date, time);
+		return json(Date::ToString(date) + "T" + Time::ToString(time) + "Z");
+	}
+	case LogicalTypeId::DATE:
+		return json(Date::ToString(DateValue::Get(val)));
+	case LogicalTypeId::TIME:
+		return json(Time::ToString(dtime_t(TimeValue::Get(val))));
 	default:
 		// For complex types, try to convert to string
 		return json(val.ToString());
