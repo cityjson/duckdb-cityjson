@@ -487,7 +487,7 @@ Material Material::FromJson(const json &obj) {
 		result.is_smooth = smooth->get<bool>();
 	}
 	result.other = AppearanceOther(obj, {"name", "ambientIntensity", "diffuseColor", "specularColor", "emissiveColor",
-	                                  "transparency", "shininess", "isSmooth"});
+	                                     "transparency", "shininess", "isSmooth"});
 	return result;
 }
 

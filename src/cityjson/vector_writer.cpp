@@ -17,21 +17,24 @@ VectorWrapper::VectorWrapper(VectorType type, Vector *vector) : type_(type), vec
 
 Vector *VectorWrapper::AsFlatMut() {
 	if (type_ != VectorType::Flat) {
-		throw CityJSONError::Other("VectorWrapper: expected Flat vector, got " + std::to_string(static_cast<int>(type_)));
+		throw CityJSONError::Other("VectorWrapper: expected Flat vector, got " +
+		                           std::to_string(static_cast<int>(type_)));
 	}
 	return vector_;
 }
 
 Vector *VectorWrapper::AsListMut() {
 	if (type_ != VectorType::List) {
-		throw CityJSONError::Other("VectorWrapper: expected List vector, got " + std::to_string(static_cast<int>(type_)));
+		throw CityJSONError::Other("VectorWrapper: expected List vector, got " +
+		                           std::to_string(static_cast<int>(type_)));
 	}
 	return vector_;
 }
 
 Vector *VectorWrapper::AsStructMut() {
 	if (type_ != VectorType::Struct) {
-		throw CityJSONError::Other("VectorWrapper: expected Struct vector, got " + std::to_string(static_cast<int>(type_)));
+		throw CityJSONError::Other("VectorWrapper: expected Struct vector, got " +
+		                           std::to_string(static_cast<int>(type_)));
 	}
 	return vector_;
 }

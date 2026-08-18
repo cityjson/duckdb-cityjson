@@ -213,8 +213,7 @@ static Value CreatePointOfContactValue(const std::optional<PointOfContact> &poc)
 	return Value::STRUCT(std::move(children));
 }
 
-unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &cityjson,
-                                                              optional_idx city_objects_count,
+unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &cityjson, optional_idx city_objects_count,
                                                               optional_idx features_count) {
 	auto types = GetMetadataTableTypes();
 	auto chunk = make_uniq<DataChunk>();

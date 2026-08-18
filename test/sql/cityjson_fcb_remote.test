@@ -1,5 +1,7 @@
 # name: test/sql/cityjson_fcb_remote.test
 # description: HTTP range-request reads via DuckDBRangeReader + httpfs. Network test:
+# group: [sql]
+
 # runs only when FCB_REMOTE_TEST_URL is set, e.g.
 #   FCB_REMOTE_TEST_URL=https://flatcitybuf.open3d.city/data/3dbag_subset.city.fcb
 # The bbox below defaults to a 500 m square inside the hosted 3DBAG subset's extent
@@ -9,7 +11,6 @@
 # multi-gigabyte file without a bbox that lands inside it, because the reader still
 # materialises every matching feature in one go (at scan init since Task 5, at bind
 # before it -- either way, all of them).
-# group: [sql]
 
 require cityjson
 

@@ -78,7 +78,8 @@ std::string BuildOrphansSQL(ClientContext &context, const std::string &schema) {
 		if (referenced.empty()) {
 			continue; // undeterminable — see ReferencedIds
 		}
-		parts.push_back("SELECT " + KeywordHelper::WriteQuoted(sidecar, '\'') + " AS table_name, "
+		parts.push_back("SELECT " + KeywordHelper::WriteQuoted(sidecar, '\'') +
+		                " AS table_name, "
 		                "CAST(s.id AS VARCHAR) AS id, 'unreferenced' AS reason FROM " +
 		                QualifiedName(schema, sidecar) + " s WHERE s.id NOT IN (" + referenced + ")");
 	}
@@ -117,8 +118,8 @@ std::string BuildVacuumSQL(ClientContext &context, const std::string &schema) {
 		snapshot += "CREATE OR REPLACE TEMP TABLE " + temp + " AS " + referenced + ";\n";
 		// NOT IN: vacuum removes what nothing references. Inverting this would delete
 		// precisely the rows still in use.
-		deletes += "DELETE FROM " + QualifiedName(schema, sidecar) + " WHERE id NOT IN (SELECT ref FROM " + temp +
-		           ");\n";
+		deletes +=
+		    "DELETE FROM " + QualifiedName(schema, sidecar) + " WHERE id NOT IN (SELECT ref FROM " + temp + ");\n";
 		cleanup += "DROP TABLE IF EXISTS " + temp + ";\n";
 	}
 	if (snapshot.empty()) {

@@ -56,8 +56,7 @@ static json FlattenFaceSemantics(const Geometry &geometry, const json &values) {
 			}
 			for (size_t si = 0; si < solid.size(); ++si) {
 				size_t n_faces = solid[si].is_array() ? solid[si].size() : 0;
-				const json &sv =
-				    (solid_values.is_array() && si < solid_values.size()) ? solid_values[si] : kJsonNull;
+				const json &sv = (solid_values.is_array() && si < solid_values.size()) ? solid_values[si] : kJsonNull;
 				FlattenShellValues(out, sv, n_faces);
 			}
 		}

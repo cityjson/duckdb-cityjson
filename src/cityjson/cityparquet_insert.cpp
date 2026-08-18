@@ -181,8 +181,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * REPLACE (" + remap_expr +
 	       " AS object_type) FROM " + ReadCall(reader_function, path, options, sidecar_appearance) + ";\n";
 	for (const auto &sidecar : source_sidecars) {
-		sql += "CREATE OR REPLACE TEMP TABLE " + StageTable(sidecar) + " AS SELECT * FROM " +
-		       SidecarFunction(sidecar) + "(" + Literal(path) + ");\n";
+		sql += "CREATE OR REPLACE TEMP TABLE " + StageTable(sidecar) + " AS SELECT * FROM " + SidecarFunction(sidecar) +
+		       "(" + Literal(path) + ");\n";
 	}
 
 	// ---- Phase 2: preconditions, before any mutation ------------------------
@@ -432,8 +432,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		replacements.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", '" + kind + "', " +
 		                       OffsetExpr(sidecar) + ") AS " + Quoted(column.name));
 	}
-	const std::string projection =
-	    replacements.empty() ? "*" : "* REPLACE (" + Join(replacements, ", ") + ")";
+	const std::string projection = replacements.empty() ? "*" : "* REPLACE (" + Join(replacements, ", ") + ")";
 
 	for (const auto &entry : types_by_module) {
 		std::vector<std::string> literals;
@@ -532,14 +531,14 @@ void InsertSQLScalar(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &context = state.GetContext();
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(), [&](string_t schema, string_t path) {
-		    return StringVector::AddString(
-		        result, BuildInsertSQL(context, schema.GetString(), path.GetString(), "read_cityjson", InsertOptions()));
+		    return StringVector::AddString(result, BuildInsertSQL(context, schema.GetString(), path.GetString(),
+		                                                          "read_cityjson", InsertOptions()));
 	    });
 }
 
 void RegisterOne(ExtensionLoader &loader, const char *name, pragma_query_t query) {
-	auto pragma = PragmaFunction::PragmaCall(name, query,
-	                                         {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
+	auto pragma = PragmaFunction::PragmaCall(
+	    name, query, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
 	pragma.named_parameters["create_tables"] = LogicalType(LogicalTypeId::BOOLEAN);
 	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	pragma.named_parameters["lod"] = LogicalType(LogicalTypeId::VARCHAR);

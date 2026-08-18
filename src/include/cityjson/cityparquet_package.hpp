@@ -106,8 +106,7 @@ std::string AllObjectsCTE(ClientContext &context, const std::string &schema,
                           const std::map<std::string, bool> &known_children_roles = {});
 
 //! True when `schema.table` has a column of this (lower-cased) name.
-bool HasColumn(ClientContext &context, const std::string &schema, const std::string &table,
-               const std::string &column);
+bool HasColumn(ClientContext &context, const std::string &schema, const std::string &table, const std::string &column);
 
 //! Loads a CityParquet package directory into `schema`: one table per file found, plus
 //! a `__cityparquet` row per file with the footer's `city` object recovered via

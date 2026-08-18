@@ -200,8 +200,8 @@ void RegisterWKBExtentFunction(ExtensionLoader &loader) {
 	ScalarFunction func("cityjson_wkb_extent", {LogicalType::BLOB}, ExtentType(), WKBExtentFunction);
 	loader.RegisterFunction(func);
 
-	ScalarFunction type_name("cityjson_wkb_geometry_type", {LogicalType::BLOB},
-	                         LogicalType(LogicalTypeId::VARCHAR), WKBGeometryTypeFunction);
+	ScalarFunction type_name("cityjson_wkb_geometry_type", {LogicalType::BLOB}, LogicalType(LogicalTypeId::VARCHAR),
+	                         WKBGeometryTypeFunction);
 	loader.RegisterFunction(type_name);
 }
 

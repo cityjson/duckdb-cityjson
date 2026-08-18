@@ -33,8 +33,8 @@ public:
 		}
 		auto raw = index_json.get<int64_t>();
 		if (raw < 0 || static_cast<uint64_t>(raw) >= vertices_.size()) {
-			throw CityJSONError::InvalidGeometry("Vertex index out of bounds: " + std::to_string(raw) +
-			                                     " not in [0, " + std::to_string(vertices_.size()) + ")");
+			throw CityJSONError::InvalidGeometry("Vertex index out of bounds: " + std::to_string(raw) + " not in [0, " +
+			                                     std::to_string(vertices_.size()) + ")");
 		}
 		auto source = static_cast<uint32_t>(raw);
 

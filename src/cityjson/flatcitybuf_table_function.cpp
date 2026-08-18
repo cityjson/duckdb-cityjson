@@ -226,8 +226,8 @@ bool FlatCityBufBindData::Equals(const FunctionData &other_p) const {
 	// CityJSONBindData::Equals (bind_data.cpp).
 	return file_name == other.file_name && target_lod == other.target_lod &&
 	       use_wkb_encoding == other.use_wkb_encoding && geometry_encoding == other.geometry_encoding &&
-	       streaming == other.streaming && reader_kind == other.reader_kind &&
-	       sample_lines == other.sample_lines && appearance_index.has_value() == other.appearance_index.has_value() &&
+	       streaming == other.streaming && reader_kind == other.reader_kind && sample_lines == other.sample_lines &&
+	       appearance_index.has_value() == other.appearance_index.has_value() &&
 	       equality_filters == other.equality_filters && bbox == other.bbox;
 }
 
@@ -254,10 +254,9 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 		if (!(has_min_x && has_min_y && has_max_x && has_max_y)) {
 			throw BinderException("read_flatcitybuf: min_x, min_y, max_x, and max_y must all be given together");
 		}
-		bbox = std::array<double, 4> {DoubleValue::Get(input.named_parameters.at("min_x")),
-		                              DoubleValue::Get(input.named_parameters.at("min_y")),
-		                              DoubleValue::Get(input.named_parameters.at("max_x")),
-		                              DoubleValue::Get(input.named_parameters.at("max_y"))};
+		bbox = std::array<double, 4> {
+		    DoubleValue::Get(input.named_parameters.at("min_x")), DoubleValue::Get(input.named_parameters.at("min_y")),
+		    DoubleValue::Get(input.named_parameters.at("max_x")), DoubleValue::Get(input.named_parameters.at("max_y"))};
 		reader->SetBBoxFilter(bbox.value());
 	}
 

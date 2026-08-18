@@ -287,7 +287,6 @@ static uint16_t ParseTreeTuningOption(const Value &val, const std::string &optio
 // COPY TO Bind (shared between cityjson and cityjsonseq)
 // ============================================================
 
-
 // ============================================================
 // Helper: carry appearance definitions over from the source file
 // ============================================================

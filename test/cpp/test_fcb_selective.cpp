@@ -111,13 +111,13 @@ struct AllTypesBlob {
 static AllTypesBlob MakeAllTypesBlob() {
 	AllTypesBlob b;
 	b.schema = {
-	    Col(0, "c_bool", ::ColumnType::Bool),         Col(1, "c_byte", ::ColumnType::Byte),
-	    Col(2, "c_ubyte", ::ColumnType::UByte),       Col(3, "c_short", ::ColumnType::Short),
-	    Col(4, "c_ushort", ::ColumnType::UShort),     Col(5, "c_int", ::ColumnType::Int),
-	    Col(6, "c_uint", ::ColumnType::UInt),         Col(7, "c_long", ::ColumnType::Long),
-	    Col(8, "c_ulong", ::ColumnType::ULong),       Col(9, "c_float", ::ColumnType::Float),
-	    Col(10, "c_double", ::ColumnType::Double),    Col(11, "c_string", ::ColumnType::String),
-	    Col(12, "c_json", ::ColumnType::Json),        Col(13, "c_datetime", ::ColumnType::DateTime),
+	    Col(0, "c_bool", ::ColumnType::Bool),      Col(1, "c_byte", ::ColumnType::Byte),
+	    Col(2, "c_ubyte", ::ColumnType::UByte),    Col(3, "c_short", ::ColumnType::Short),
+	    Col(4, "c_ushort", ::ColumnType::UShort),  Col(5, "c_int", ::ColumnType::Int),
+	    Col(6, "c_uint", ::ColumnType::UInt),      Col(7, "c_long", ::ColumnType::Long),
+	    Col(8, "c_ulong", ::ColumnType::ULong),    Col(9, "c_float", ::ColumnType::Float),
+	    Col(10, "c_double", ::ColumnType::Double), Col(11, "c_string", ::ColumnType::String),
+	    Col(12, "c_json", ::ColumnType::Json),     Col(13, "c_datetime", ::ColumnType::DateTime),
 	    Col(14, "c_binary", ::ColumnType::Binary),
 	};
 
@@ -431,9 +431,8 @@ static std::string WritePerObjectColumnsFcb() {
 	     {{"b1",
 	       {{"type", "Building"},
 	        {"attributes", {{"aaa", "shared"}, {"bbb", 1.5}}},
-	        {"geometry", nlohmann::ordered_json::array({{{"type", "MultiSurface"},
-	                                                     {"lod", "1"},
-	                                                     {"boundaries", {{{0, 1, 2}}}}}})}}}}},
+	        {"geometry", nlohmann::ordered_json::array(
+	                         {{{"type", "MultiSurface"}, {"lod", "1"}, {"boundaries", {{{0, 1, 2}}}}}})}}}}},
 	    {"vertices", {{0, 0, 0}, {10, 0, 0}, {10, 10, 0}}}};
 
 	// b2's attributes introduce "ccc", which the header schema lacks, so the
@@ -445,9 +444,8 @@ static std::string WritePerObjectColumnsFcb() {
 	     {{"b2",
 	       {{"type", "Building"},
 	        {"attributes", {{"bbb", 7.5}, {"ccc", "own-schema"}}},
-	        {"geometry", nlohmann::ordered_json::array({{{"type", "MultiSurface"},
-	                                                     {"lod", "1"},
-	                                                     {"boundaries", {{{0, 1, 2}}}}}})}}}}},
+	        {"geometry", nlohmann::ordered_json::array(
+	                         {{{"type", "MultiSurface"}, {"lod", "1"}, {"boundaries", {{{0, 1, 2}}}}}})}}}}},
 	    {"vertices", {{0, 0, 0}, {10, 0, 0}, {10, 10, 0}}}};
 
 	// The header schema is built from f1 ONLY: aaa->0 (String), bbb->1 (Double).

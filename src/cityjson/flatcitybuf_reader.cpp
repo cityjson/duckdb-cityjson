@@ -62,7 +62,6 @@ std::optional<fcb::KeyValue> KeyValueFromJsonByKind(const json &value, fcb::KeyK
 	}
 }
 
-
 // Map a header-declared FlatCityBuf column type onto our ColumnType. Used only
 // for columns the feature sample never saw a value for, so in practice the type
 // is whatever the writer declared -- String for an all-null column, since
@@ -241,7 +240,7 @@ std::vector<CityJSONFeature> FlatCityBufReader::ParseFeatures(std::optional<size
 }
 
 std::vector<CityJSONFeature> FlatCityBufReader::ParseFeaturesWithMask(std::optional<size_t> limit,
-                                                                     const FcbFieldMask &mask) const {
+                                                                      const FcbFieldMask &mask) const {
 	auto fcb_reader = OpenFcbReader();
 	auto it = SelectIterator(fcb_reader);
 	bool need_post_filter = bbox_.has_value() && attr_query_.has_value();

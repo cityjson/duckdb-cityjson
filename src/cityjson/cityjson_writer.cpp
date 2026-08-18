@@ -137,7 +137,6 @@ static int GetBoundaryDepth(const std::string &geom_type) {
 
 std::vector<std::array<int64_t, 3>> CityJSONWriter::BuildVertexPool(std::vector<std::pair<std::string, json>> &objects,
                                                                     const std::optional<Transform> &transform) {
-
 	std::map<std::tuple<int64_t, int64_t, int64_t>, size_t> vertex_map;
 	std::vector<std::array<int64_t, 3>> vertex_pool;
 
@@ -197,7 +196,6 @@ void CityJSONWriter::WriteCityJSON(
     const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order, const std::optional<json> &appearance) {
-
 	// Build the root CityJSON object
 	json root;
 	root["type"] = "CityJSON";
@@ -268,7 +266,6 @@ void CityJSONWriter::WriteCityJSONSeq(
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order, const std::optional<json> &appearance_header,
     const std::map<std::string, json> &appearance_by_feature) {
-
 	std::ofstream out(file_path);
 	if (!out.is_open()) {
 		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
@@ -369,10 +366,8 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
                                       std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
                                       const std::vector<std::string> &feature_order,
                                       const std::vector<std::string> &attr_index_columns,
-                                      std::optional<uint16_t> branching_factor,
-                                      std::optional<uint16_t> index_node_size,
+                                      std::optional<uint16_t> branching_factor, std::optional<uint16_t> index_node_size,
                                       const std::vector<std::string> &declared_attr_columns) {
-
 	// Build the metadata header (same shape as CityJSONSeq's line 1).
 	json header;
 	header["type"] = "CityJSON";

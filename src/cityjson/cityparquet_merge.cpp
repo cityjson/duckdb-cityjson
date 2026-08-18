@@ -16,9 +16,8 @@ namespace cityjson {
 namespace {
 
 bool HasColumn(const std::vector<ColumnInfo> &columns, const std::string &name) {
-	return std::any_of(columns.begin(), columns.end(), [&](const ColumnInfo &c) {
-		return StringUtil::Lower(c.name) == StringUtil::Lower(name);
-	});
+	return std::any_of(columns.begin(), columns.end(),
+	                   [&](const ColumnInfo &c) { return StringUtil::Lower(c.name) == StringUtil::Lower(name); });
 }
 
 //! Offsets are named per sidecar so several can be in flight at once.

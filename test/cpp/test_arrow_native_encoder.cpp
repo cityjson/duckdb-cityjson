@@ -98,7 +98,7 @@ static void TestSolidFlattensShellsIntoOnePaddedShell() {
 static void TestFaceWithInteriorRing() {
 	std::printf("face keeps interior rings\n");
 	std::vector<std::array<double, 3>> vertices = {{0, 0, 0}, {4, 0, 0}, {4, 4, 0}, {0, 4, 0},
-	                                              {1, 1, 0}, {2, 1, 0}, {2, 2, 0}};
+	                                               {1, 1, 0}, {2, 1, 0}, {2, 2, 0}};
 	auto geom = MakeGeometry("MultiSurface", "[[[0,1,2,3],[4,5,6]]]");
 
 	auto compacted = ArrowNativeEncoder::Encode(geom, vertices, std::nullopt);
@@ -128,7 +128,7 @@ static void TestMultiSolid() {
 static void TestPoolHoldsOnlyReferencedVertices() {
 	std::printf("pool holds only referenced vertices\n");
 	std::vector<std::array<double, 3>> vertices = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0},
-	                                              {4, 0, 0}, {5, 0, 0}, {6, 0, 0}};
+	                                               {4, 0, 0}, {5, 0, 0}, {6, 0, 0}};
 	auto geom = MakeGeometry("MultiSurface", "[[[5,6,1]]]");
 
 	auto compacted = ArrowNativeEncoder::Encode(geom, vertices, std::nullopt);

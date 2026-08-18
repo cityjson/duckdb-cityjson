@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Format staged files with the SAME tools CI uses, then re-stage them.
+#
+# Install with `just hooks` (sets core.hooksPath). Bypass a single commit with
+# SKIP_FORMAT=1 git commit ..., or entirely with git commit --no-verify.
+#
+# Why this exists: `Code Quality Check / Format Check` runs
+# `python3 duckdb/scripts/format.py --all --check --directories src test` in CI,
+# and a red format check blocks a PR long after the commit that caused it.
+set -uo pipefail
+
+if [ "${SKIP_FORMAT:-0}" = "1" ]; then
+	exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root" || exit 1
+
+if [ ! -f duckdb/scripts/format.py ]; then
+	echo "pre-commit: duckdb/scripts/format.py missing (submodule not initialised?) — skipping format" >&2
+	exit 0
+fi
+
+# The version check is the whole game. duckdb/scripts/format.py hard-requires
+# clang-format 11.0.1 and black >=24, and a DIFFERENT clang-format does not merely
+# skip work — it reformats correctly-formatted code its own way, so the hook would
+# fight CI on every commit and the diff would churn forever. CI pins these in
+# extension-ci-tools/.github/workflows/_extension_code_quality.yml.
+missing=""
+command -v clang-format >/dev/null 2>&1 || missing="clang-format"
+command -v black >/dev/null 2>&1 || missing="$missing black"
+if [ -n "$missing" ]; then
+	echo "pre-commit: missing formatter(s):$missing — skipping format." >&2
+	echo "            install with: pip install 'clang_format==11.0.1' 'black==24.*' cmake-format" >&2
+	exit 0
+fi
+
+cf_version="$(clang-format --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+if [ "$cf_version" != "11.0.1" ]; then
+	echo "pre-commit: clang-format is $cf_version but CI pins 11.0.1 — skipping format." >&2
+	echo "            Formatting with another version would churn the diff and still fail CI." >&2
+	echo "            install with: pip install 'clang_format==11.0.1'" >&2
+	exit 0
+fi
+
+formatted=0
+skipped_partial=""
+
+# Only what is staged, and only Added/Copied/Modified/Renamed. Read via a while
+# loop rather than `mapfile`, which is bash 4+ and macOS still ships bash 3.2.
+while IFS= read -r f; do
+	[ -n "$f" ] || continue
+	[ -f "$f" ] || continue
+
+	case "$f" in
+	# Vendored third-party source. duckdb's format.py has a hardcoded
+	# ignored_directories list we cannot extend without editing the submodule,
+	# so the exclusion lives here.
+	src/external/*) continue ;;
+	# CI only checks these two trees; formatting anything else would produce
+	# diffs no check asks for.
+	src/* | test/*) ;;
+	*) continue ;;
+	esac
+
+	case "$f" in
+	*.cpp | *.hpp | *.c | *.h | *.cc | *.hh | *.py | *.test | *.test_slow | *.test_coverage | *.benchmark) ;;
+	*) continue ;;
+	esac
+
+	# A file with BOTH staged and unstaged changes is left alone: formatting it
+	# and re-adding would sweep the unstaged half into the commit, which is not
+	# what `git add -p` asked for.
+	if ! git diff --quiet -- "$f"; then
+		skipped_partial="$skipped_partial $f"
+		continue
+	fi
+
+	before="$(git hash-object "$f")"
+	if ! python3 duckdb/scripts/format.py "$f" --fix --noconfirm --silent >/dev/null 2>&1; then
+		echo "pre-commit: failed to format $f — commit continues, CI will report it" >&2
+		continue
+	fi
+	after="$(git hash-object "$f")"
+
+	if [ "$before" != "$after" ]; then
+		git add -- "$f"
+		echo "pre-commit: formatted $f"
+		formatted=$((formatted + 1))
+	fi
+# Piping into the loop would run it in a subshell and lose $formatted, so the
+# process substitution keeps it in this shell.
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ -n "$skipped_partial" ]; then
+	echo "pre-commit: not formatted (has unstaged changes too):$skipped_partial" >&2
+fi
+if [ "$formatted" -gt 0 ]; then
+	echo "pre-commit: $formatted file(s) reformatted and re-staged."
+fi
+
+exit 0

@@ -14,8 +14,8 @@ unique_ptr<GlobalTableFunctionState> CityJSONInitGlobal(ClientContext &context, 
 			// Replay the bind's own choice of factory and sampling depth rather than
 			// auto-detecting afresh: re-detection can pick a different reader for the same
 			// path than the one the schema was bound against. See ReaderKind (reader.hpp).
-			result->streaming_reader = OpenCityJSONFileOfKind(context, bind_data.reader_kind, bind_data.file_name,
-			                                                  bind_data.sample_lines);
+			result->streaming_reader =
+			    OpenCityJSONFileOfKind(context, bind_data.reader_kind, bind_data.file_name, bind_data.sample_lines);
 			// Consume metadata so the scan starts at the first feature line.
 			result->streaming_reader->ReadMetadata();
 		} catch (const CityJSONError &e) {

@@ -28,8 +28,7 @@ bool CityJSONBindData::Equals(const FunctionData &other_p) const {
 	// operator==.
 	return file_name == other.file_name && target_lod == other.target_lod &&
 	       use_wkb_encoding == other.use_wkb_encoding && geometry_encoding == other.geometry_encoding &&
-	       streaming == other.streaming && reader_kind == other.reader_kind &&
-	       sample_lines == other.sample_lines &&
+	       streaming == other.streaming && reader_kind == other.reader_kind && sample_lines == other.sample_lines &&
 	       appearance_index.has_value() == other.appearance_index.has_value() &&
 	       equality_filters == other.equality_filters;
 }

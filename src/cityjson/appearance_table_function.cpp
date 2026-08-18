@@ -79,8 +79,8 @@ Value OtherOrNull(const json &other) {
 }
 
 unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names,
-                                        SidecarKind kind, const char *function_name) {
+                                        vector<LogicalType> &return_types, vector<string> &names, SidecarKind kind,
+                                        const char *function_name) {
 	auto result = make_uniq<AppearanceBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 	result->kind = kind;
@@ -135,8 +135,7 @@ unique_ptr<FunctionData> MaterialsBind(ClientContext &context, TableFunctionBind
 
 unique_ptr<FunctionData> TemplatesBind(ClientContext &context, TableFunctionBindInput &input,
                                        vector<LogicalType> &return_types, vector<string> &names) {
-	return AppearanceBind(context, input, return_types, names, SidecarKind::TEMPLATES,
-	                      "cityjson_geometry_templates");
+	return AppearanceBind(context, input, return_types, names, SidecarKind::TEMPLATES, "cityjson_geometry_templates");
 }
 
 unique_ptr<FunctionData> TexturesBind(ClientContext &context, TableFunctionBindInput &input,
@@ -255,18 +254,10 @@ void AppearanceSidecarColumns(const std::string &sidecar, std::vector<std::strin
 	// (`ambientIntensity`, `wrapMode`, `borderColor`) -- those are the spec's names, not a
 	// style choice, and a package is read by matching them.
 	if (sidecar == "materials") {
-		names = {"id",            "name",         "ambientIntensity", "diffuseColor", "specularColor",
-		         "emissiveColor", "transparency", "shininess",        "isSmooth",     "other"};
-		types = {LogicalType(LogicalTypeId::BIGINT),
-		         varchar,
-		         dbl,
-		         dbl_list,
-		         dbl_list,
-		         dbl_list,
-		         dbl,
-		         dbl,
-		         LogicalType(LogicalTypeId::BOOLEAN),
-		         varchar};
+		names = {"id",           "name",      "ambientIntensity", "diffuseColor", "specularColor", "emissiveColor",
+		         "transparency", "shininess", "isSmooth",         "other"};
+		types = {LogicalType(LogicalTypeId::BIGINT),  varchar, dbl, dbl_list, dbl_list, dbl_list, dbl, dbl,
+		         LogicalType(LogicalTypeId::BOOLEAN), varchar};
 		return;
 	}
 	names = {"id", "image_uri", "image_data", "image_type", "wrapMode", "textureType", "borderColor", "other"};

@@ -142,14 +142,14 @@ public:
 	 * CityJSONFeature's objects, or the whole document's for plain CityJSON). Cycles in
 	 * the hierarchy are tolerated: each id is visited once.
 	 */
-	static std::optional<GeographicalExtent>
-	GetObjectExtent(const std::string &object_id, const std::map<std::string, CityObject> &objects,
-	                const std::vector<std::array<double, 3>> &vertices,
-	                const std::optional<Transform> &transform);
+	static std::optional<GeographicalExtent> GetObjectExtent(const std::string &object_id,
+	                                                         const std::map<std::string, CityObject> &objects,
+	                                                         const std::vector<std::array<double, 3>> &vertices,
+	                                                         const std::optional<Transform> &transform);
 
-	static std::optional<GeographicalExtent>
-	GetGeometryExtent(const Geometry &geometry, const std::vector<std::array<double, 3>> &vertices,
-	                  const std::optional<Transform> &transform);
+	static std::optional<GeographicalExtent> GetGeometryExtent(const Geometry &geometry,
+	                                                           const std::vector<std::array<double, 3>> &vertices,
+	                                                           const std::optional<Transform> &transform);
 
 	/**
 	 * Serialize geometry properties to the spec §8 payload

@@ -48,9 +48,8 @@ std::set<std::string> ReferencedColumns(const std::string &predicate) {
 			}
 			columns.insert(chain);
 		}
-		ParsedExpressionIterator::EnumerateChildren(
-		    const_cast<ParsedExpression &>(expression),
-		    [&](const ParsedExpression &child) { walk(child); });
+		ParsedExpressionIterator::EnumerateChildren(const_cast<ParsedExpression &>(expression),
+		                                            [&](const ParsedExpression &child) { walk(child); });
 	};
 	for (const auto &expression : expressions) {
 		walk(*expression);
@@ -232,8 +231,7 @@ std::string BuildDeleteSQL(ClientContext &context, const std::string &schema, co
 
 void RegisterCityParquetDeleteFunctions(ExtensionLoader &loader) {
 	auto pragma = PragmaFunction::PragmaCall(
-	    "cityparquet_delete", PragmaDelete,
-	    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
+	    "cityparquet_delete", PragmaDelete, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
 	pragma.named_parameters["cascade"] = LogicalType(LogicalTypeId::BOOLEAN);
 	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	loader.RegisterFunction(pragma);
