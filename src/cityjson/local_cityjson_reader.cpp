@@ -34,9 +34,9 @@ std::string LocalCityJSONReader::Name() const {
 
 const json &LocalCityJSONReader::LoadJson() const {
 	if (!cached_json_.has_value()) {
-		cached_json_ = content_.has_value() ? ParseJson(content_.value()) : ParseJsonFile(file_path_);
+		cached_json_.emplace(content_.has_value() ? ParseJson(content_.value()) : ParseJsonFile(file_path_));
 	}
-	return cached_json_.value();
+	return *cached_json_;
 }
 
 // ============================================================

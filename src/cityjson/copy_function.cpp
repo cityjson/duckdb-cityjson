@@ -390,18 +390,21 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 		} else if (loption == "transform_scale") {
 			auto parsed = ParseDoubleTriple(val.ToString());
 			if (parsed.has_value()) {
-				if (!bind_data->transform.has_value()) {
-					bind_data->transform = Transform();
-				}
-				bind_data->transform->scale = parsed.value();
+				// value_or, then assign the whole optional back: scale and translate are
+				// set independently and either may arrive first, so the existing Transform
+				// has to survive. Writing through bind_data->transform-> after engaging it
+				// in a branch above would say the same thing, but reads as an unchecked
+				// access -- to a reviewer as much as to clang-tidy.
+				auto transform = bind_data->transform.value_or(Transform());
+				transform.scale = parsed.value();
+				bind_data->transform = transform;
 			}
 		} else if (loption == "transform_translate") {
 			auto parsed = ParseDoubleTriple(val.ToString());
 			if (parsed.has_value()) {
-				if (!bind_data->transform.has_value()) {
-					bind_data->transform = Transform();
-				}
-				bind_data->transform->translate = parsed.value();
+				auto transform = bind_data->transform.value_or(Transform());
+				transform.translate = parsed.value();
+				bind_data->transform = transform;
 			}
 		} else if (loption == "attr_index") {
 			auto columns_str = val.ToString();
@@ -451,8 +454,11 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	}
 
 	if (bind_data->source_ref.has_value()) {
+		// Bound once, here, rather than dereferenced at each use inside the try: the
+		// optional is settled by this point and nothing below reassigns it.
+		const auto &source_ref = *bind_data->source_ref;
 		try {
-			auto reader = OpenAnyCityJSONFile(context, bind_data->source_ref->path, 1);
+			auto reader = OpenAnyCityJSONFile(context, source_ref.path, 1);
 			auto source_meta = reader->ReadMetadata();
 
 			// Only fill what the user did not state. An explicit crs must win, so it
@@ -478,12 +484,12 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 					bind_data->point_of_contact = source_meta.metadata->point_of_contact;
 				}
 			}
-			LoadSourceAppearance(context, *bind_data->source_ref, *bind_data);
+			LoadSourceAppearance(context, source_ref, *bind_data);
 		} catch (const std::exception &e) {
 			// An unreadable source is not fatal -- the rows are what is being copied,
 			// and the metadata is a bonus. Warn rather than fail the whole COPY.
-			DUCKDB_LOG_WARNING(context, "cityjson: could not read metadata from source '" +
-			                                bind_data->source_ref->path + "': " + std::string(e.what()));
+			DUCKDB_LOG_WARNING(context, "cityjson: could not read metadata from source '" + source_ref.path +
+			                                "': " + std::string(e.what()));
 		}
 	} else if (!has_explicit_crs && !has_metadata_query) {
 		DUCKDB_LOG_WARNING(context, "cityjson: could not determine the source file for this COPY, so no metadata "
