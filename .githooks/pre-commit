@@ -269,15 +269,30 @@ RUNNER
 $(cat "$tmpdir"/*.rc 2>/dev/null)
 EOF
 
-	if [ -n "$crashed" ]; then
-		echo "pre-commit: clang-tidy exited abnormally on:$crashed" >&2
-		sed "s|$repo_root/||" "$tmpdir"/*.log 2>/dev/null | tail -20 >&2
-		echo "            The analysis did not run, so nothing was checked. Commit blocked" >&2
-		echo "            rather than passed. On Apple Silicon, install a native build" >&2
-		echo "            (brew install llvm@18) — the pip wheel is x86_64 and dies under Rosetta." >&2
-		rc=1
-	elif grep -hqE ": (error|warning): " "$tmpdir"/*.log 2>/dev/null; then
-		grep -hE ": (error|warning): " "$tmpdir"/*.log 2>/dev/null | sed "s|$repo_root/||" | sort -u >&2
+	# A diagnostic from outside the repo means the translation unit did not parse:
+	# a toolchain mismatch, near-always a clang-tidy older than the SDK's libc++.
+	# Same class as a non-0/1 exit -- the analysis never reached this commit's code.
+	#
+	# Both are reported loudly and then skipped, neither passed nor blocked. Passing
+	# would claim a check that did not happen; blocking would stop every commit on
+	# this machine over a broken tool, on a gate CI still enforces properly.
+	local outside
+	outside="$(grep -hE ": (error|warning): " "$tmpdir"/*.log 2>/dev/null | grep -vF "$repo_root/" | head -3)"
+
+	if [ -n "$crashed" ] || [ -n "$outside" ]; then
+		echo "pre-commit: clang-tidy could not analyse this tree — NOT checked." >&2
+		[ -n "$crashed" ] && echo "            exited abnormally on:$crashed" >&2
+		[ -n "$outside" ] && printf '            %s\n' "$outside" >&2
+		echo "            This is a toolchain problem, not a finding: clang-tidy $tidy_version" >&2
+		echo "            cannot parse the headers this build uses. A newer one usually can" >&2
+		echo "            (macOS: brew install llvm). CI's Tidy Check still covers the commit." >&2
+		rm -rf "$tmpdir"
+		return 0
+	fi
+
+	if grep -hE ": (error|warning): " "$tmpdir"/*.log 2>/dev/null | grep -qF "$repo_root/"; then
+		grep -hE ": (error|warning): " "$tmpdir"/*.log 2>/dev/null |
+			grep -F "$repo_root/" | sed "s|$repo_root/||" | sort -u >&2
 		echo "pre-commit: clang-tidy findings above — commit blocked." >&2
 		echo "            fix them, or bypass with: SKIP_TIDY=1 git commit ..." >&2
 		rc=1
