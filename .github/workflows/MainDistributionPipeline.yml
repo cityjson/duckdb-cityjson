@@ -75,6 +75,12 @@ jobs:
           vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
           vcpkgGitURL: https://github.com/microsoft/vcpkg.git
 
+      # EXT_FLAGS carries VCPKG_MANIFEST_DIR because the Makefile's tidy-check target
+      # is the one cmake invocation that leaves $(VCPKG_MANIFEST_FLAGS) off its command
+      # line -- release, debug and every wasm target pass it. Without it vcpkg never
+      # enters manifest mode, so the toolchain above is active but installs nothing and
+      # find_package comes up empty all the same. EXT_FLAGS is part of BUILD_FLAGS,
+      # which tidy-check does pass, so this is the way in.
       - name: Tidy Check
         shell: bash
-        run: make tidy-check
+        run: make tidy-check EXT_FLAGS="-DVCPKG_MANIFEST_DIR=$GITHUB_WORKSPACE"
