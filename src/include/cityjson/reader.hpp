@@ -175,7 +175,7 @@ public:
 	 * Read the next feature line from the stream.
 	 * Returns nullopt when the stream is exhausted.
 	 */
-	std::optional<CityJSONFeature> ReadNextFeature() const;
+	std::optional<CityJSONFeature> ReadNextFeature() const override;
 
 private:
 	std::string file_path_;          // Path to CityJSONSeq file

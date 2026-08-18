@@ -27,4 +27,54 @@ jobs:
       duckdb_version: v1.5.4
       ci_tools_version: v1.5.4
       extension_name: cityjson
-      format_checks: 'format;tidy'
+      format_checks: 'format'
+
+  # Tidy runs here rather than through _extension_code_quality.yml's `tidy` check.
+  # That workflow's job installs clang-tidy and nothing else, so `make tidy-check`
+  # configures CMake with no vcpkg toolchain -- and this extension opens with
+  # find_package(nlohmann_json REQUIRED), which is config-only and therefore
+  # unresolvable without one. The configure dies before clang-tidy sees a file.
+  # No release of extension-ci-tools wires vcpkg into that job, so the steps below
+  # mirror it and add the toolchain the extension actually needs. Keep the versions
+  # here in step with the duckdb_version/ci_tools_version pinned above.
+  tidy-check:
+    name: Tidy Check
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+      GEN: ninja
+      TIDY_THREADS: 4
+      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      # The public read-only cache duckdb's own build jobs use; a miss just means
+      # flatcitybuf gets built from source.
+      VCPKG_BINARY_SOURCES: 'clear;http,https://vcpkg-cache.duckdb.org,read'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: 'recursive'
+
+      - uses: actions/checkout@v4
+        name: Checkout Extension CI tools
+        with:
+          path: 'extension-ci-tools'
+          ref: v1.5.4
+          repository: duckdb/extension-ci-tools
+
+      - name: Install
+        shell: bash
+        run: sudo apt-get update -y -qq && sudo apt-get install -y -qq ninja-build clang-tidy && sudo pip3 install pybind11[global] --break-system-packages
+
+      # vcpkg.json's overlay-ports and overlay-triplets resolve under
+      # extension-ci-tools/, so this has to follow that checkout.
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11.1
+        with:
+          vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
+          vcpkgGitURL: https://github.com/microsoft/vcpkg.git
+
+      - name: Tidy Check
+        shell: bash
+        run: make tidy-check

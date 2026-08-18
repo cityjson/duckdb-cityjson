@@ -127,18 +127,24 @@ PointOfContact PointOfContact::FromJson(const json &obj) {
 json PointOfContact::ToJson() const {
 	json result = {{"contactName", contact_name}, {"emailAddress", email_address}};
 
-	if (role)
+	if (role) {
 		result["role"] = *role;
-	if (website)
+	}
+	if (website) {
 		result["website"] = *website;
-	if (contact_type)
+	}
+	if (contact_type) {
 		result["contactType"] = *contact_type;
-	if (address)
+	}
+	if (address) {
 		result["address"] = *address;
-	if (phone)
+	}
+	if (phone) {
 		result["phone"] = *phone;
-	if (organization)
+	}
+	if (organization) {
 		result["organization"] = *organization;
+	}
 
 	return result;
 }
@@ -316,9 +322,9 @@ CityObject CityObject::FromJson(const json &obj) {
 		std::vector<std::optional<std::string>> roles;
 		for (const auto &role : obj["children_roles"]) {
 			if (role.is_null()) {
-				roles.push_back(std::nullopt);
+				roles.emplace_back(std::nullopt);
 			} else if (role.is_string()) {
-				roles.push_back(role.get<std::string>());
+				roles.emplace_back(role.get<std::string>());
 			} else {
 				throw CityJSONError::InvalidSchema("children_roles entries must be strings or null");
 			}

@@ -135,11 +135,13 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 			continue;
 		}
 		std::vector<std::string> extents;
+		extents.reserve(geometry_columns.size());
 		for (const auto &column : geometry_columns) {
 			extents.push_back("cityjson_wkb_extent(" + KeywordHelper::WriteOptionallyQuoted(column) + ")");
 		}
 		auto agg = [&](const char *fn, const char *field) {
 			std::vector<std::string> terms;
+			terms.reserve(extents.size());
 			for (const auto &extent : extents) {
 				terms.push_back(extent + "." + field);
 			}

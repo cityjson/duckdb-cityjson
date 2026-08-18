@@ -127,6 +127,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	auto record_sidecar = [&](const std::string &sidecar, const std::vector<std::string> &names,
 	                          const std::vector<LogicalType> &types) {
 		std::vector<ColumnInfo> columns;
+		columns.reserve(names.size());
 		for (idx_t i = 0; i < names.size(); i++) {
 			columns.push_back({names[i], types[i]});
 		}
@@ -204,6 +205,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// uniqueness is checked against the whole destination, not just the target module.
 	{
 		std::vector<std::string> destination_ids;
+		destination_ids.reserve(destination_tables.size());
 		for (const auto &table : destination_tables) {
 			destination_ids.push_back("SELECT id FROM " + QualifiedName(schema, table));
 		}
@@ -436,6 +438,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 
 	for (const auto &entry : types_by_module) {
 		std::vector<std::string> literals;
+		literals.reserve(entry.second.size());
 		for (const auto &object_type : entry.second) {
 			literals.push_back(Literal(object_type));
 		}

@@ -681,13 +681,13 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		item["assets"] = std::move(assets);
 
 		const auto path = fs.JoinPath(bind_data.directory, "metadata.json");
-		const auto text = item.dump(2);
+		auto text = item.dump(2);
 		// FILE_CREATE_NEW, not FILE_CREATE: the former truncates, the latter opens an
 		// existing file and overwrites from offset 0 only. A rewrite that is shorter than
 		// the metadata.json already there would otherwise leave the old tail in place and
 		// the file would no longer parse as JSON.
 		auto handle = fs.OpenFile(path, FileOpenFlags::FILE_FLAGS_WRITE | FileOpenFlags::FILE_FLAGS_FILE_CREATE_NEW);
-		fs.Write(*handle, const_cast<char *>(text.c_str()), static_cast<int64_t>(text.size()));
+		fs.Write(*handle, text.data(), static_cast<int64_t>(text.size()));
 		handle->Close();
 
 		WrittenFile written;

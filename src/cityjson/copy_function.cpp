@@ -169,7 +169,7 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 			if (val.type().id() == LogicalTypeId::STRUCT) {
 				auto &children = StructValue::GetChildren(val);
 				// Reconstruct CRS URI: base_url + authority/version/code
-				std::string base_url = children.size() > 0 && !children[0].IsNull() ? children[0].ToString() : "";
+				std::string base_url = !children.empty() && !children[0].IsNull() ? children[0].ToString() : "";
 				std::string authority = children.size() > 1 && !children[1].IsNull() ? children[1].ToString() : "";
 				std::string version_str = children.size() > 2 && !children[2].IsNull() ? children[2].ToString() : "";
 				std::string code = children.size() > 3 && !children[3].IsNull() ? children[3].ToString() : "";
@@ -297,9 +297,12 @@ static uint16_t ParseTreeTuningOption(const Value &val, const std::string &optio
 // independently, one per feature -- and a feature's material/texture refs are
 // LOCAL indices into its own block. So they are collected per feature id and
 // re-emitted onto the matching output feature rather than merged.
-static void LoadSourceAppearance(ClientContext &context, CityJSONCopyBindData &bind_data) {
-	const auto &path = bind_data.source_ref->path;
-	auto content = json_utils::ReadFileContent(context, path);
+// The source ref arrives as its own parameter rather than being read back out of
+// bind_data.source_ref: the caller has already established the optional holds a value,
+// and dereferencing it again here would be an unchecked access.
+static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref,
+                                 CityJSONCopyBindData &bind_data) {
+	auto content = json_utils::ReadFileContent(context, source_ref.path);
 
 	auto take_appearance = [](const json &doc) -> std::optional<json> {
 		auto it = doc.find("appearance");
@@ -311,7 +314,7 @@ static void LoadSourceAppearance(ClientContext &context, CityJSONCopyBindData &b
 		return std::optional<json>(std::in_place, *it);
 	};
 
-	if (!bind_data.source_ref->is_seq) {
+	if (!source_ref.is_seq) {
 		// Whole-document CityJSON: one block, and no per-feature blocks exist.
 		bind_data.source_appearance_header = take_appearance(json_utils::ParseJson(content));
 		return;
@@ -475,7 +478,7 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 					bind_data->point_of_contact = source_meta.metadata->point_of_contact;
 				}
 			}
-			LoadSourceAppearance(context, *bind_data);
+			LoadSourceAppearance(context, *bind_data->source_ref, *bind_data);
 		} catch (const std::exception &e) {
 			// An unreadable source is not fatal -- the rows are what is being copied,
 			// and the metadata is a bonus. Warn rather than fail the whole COPY.

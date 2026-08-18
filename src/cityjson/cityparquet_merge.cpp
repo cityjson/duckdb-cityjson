@@ -66,10 +66,12 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 	// files, so a Road colliding with a Building id is still a collision.
 	{
 		std::vector<std::string> destination_ids;
+		destination_ids.reserve(destination_tables.size());
 		for (const auto &table : destination_tables) {
 			destination_ids.push_back("SELECT id FROM " + QualifiedName(destination, table));
 		}
 		std::vector<std::string> incoming_ids;
+		incoming_ids.reserve(source_tables.size());
 		for (const auto &table : source_tables) {
 			incoming_ids.push_back("SELECT id FROM " + QualifiedName(source, table));
 		}

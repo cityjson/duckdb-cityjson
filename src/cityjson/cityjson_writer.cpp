@@ -220,8 +220,9 @@ void CityJSONWriter::WriteCityJSON(
 	std::vector<std::pair<std::string, json>> all_objects;
 	for (const auto &fid : feature_order) {
 		auto it = feature_objects.find(fid);
-		if (it == feature_objects.end())
+		if (it == feature_objects.end()) {
 			continue;
+		}
 		for (const auto &[obj_id, obj_json] : it->second) {
 			all_objects.emplace_back(obj_id, obj_json);
 		}
@@ -302,8 +303,9 @@ void CityJSONWriter::WriteCityJSONSeq(
 	// Line 2+: one CityJSONFeature per feature_id, with per-feature vertex pool
 	for (const auto &fid : feature_order) {
 		auto it = feature_objects.find(fid);
-		if (it == feature_objects.end())
+		if (it == feature_objects.end()) {
 			continue;
+		}
 
 		// Copy objects for this feature (we'll modify them for vertex pool building)
 		auto feature_objs = it->second;
