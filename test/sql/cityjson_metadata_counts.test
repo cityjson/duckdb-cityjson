@@ -1,0 +1,63 @@
+# name: test/sql/cityjson_metadata_counts.test
+# description: city_objects_count vs features_count -- the three metadata functions must not contradict each other
+# group: [sql]
+
+require cityjson
+
+# These count different things. A CityJSONSeq line is one FEATURE and may carry
+# several CityObjects (a Building plus its BuildingParts), so on 3DBAG data the
+# two differ by roughly 2x. Conflating them made flatcitybuf_metadata report 1115
+# for a Delft dataset whose other two metadata functions -- and both readers --
+# report 2231.
+
+# CityJSONSeq: 20 CityObjects across 10 features.
+query II
+SELECT city_objects_count, features_count
+FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl');
+----
+20	10
+
+# Whole-document CityJSON has no feature concept, so features_count is NULL
+# rather than a fabricated 1.
+query II
+SELECT city_objects_count, features_count
+FROM cityjson_metadata('test/data/minimal.city.json');
+----
+1	NULL
+
+# FlatCityBuf reports the header's feature count under features_count, and does
+# not claim a CityObject count it has not paid a full decode to compute.
+query II
+SELECT city_objects_count, features_count
+FROM flatcitybuf_metadata('test/data/sample.fcb');
+----
+NULL	2
+
+# The reader is the authority on row count; metadata must never contradict it.
+query II
+SELECT
+  (SELECT city_objects_count FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl')),
+  (SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'));
+----
+20	20
+
+# ...and the FCB feature count must not be mistaken for the row count. sample.fcb
+# holds 2 features; read_flatcitybuf returns one row per CityObject. Asserting
+# they are BOTH reported and separately correct is the whole point of the split.
+query II
+SELECT
+  (SELECT features_count FROM flatcitybuf_metadata('test/data/sample.fcb')),
+  (SELECT COUNT(*) FROM read_flatcitybuf('test/data/sample.fcb'));
+----
+2	2
+
+# All three metadata functions expose the same schema -- a parity criterion in its
+# own right, and the reason the FCB count is NULLed rather than the column dropped.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM cityjsonseq_metadata('test/data/delft_subset.city.jsonl'))
+  EXCEPT
+  SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM flatcitybuf_metadata('test/data/sample.fcb'))
+);
+----
+0

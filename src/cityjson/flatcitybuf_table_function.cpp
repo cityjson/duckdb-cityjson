@@ -367,13 +367,15 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 struct FcbMetadataBindData : public TableFunctionData {
 	std::string file_name;
 	CityJSON metadata;
-	idx_t city_objects_count;
+	optional_idx city_objects_count;
+	optional_idx features_count;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<FcbMetadataBindData>();
 		result->file_name = file_name;
 		result->metadata = metadata;
 		result->city_objects_count = city_objects_count;
+		result->features_count = features_count;
 		return result;
 	}
 
@@ -405,7 +407,14 @@ static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFun
 
 	// features_count comes straight from the header -- no separate reopen needed now
 	// that FlatCityBufReader exposes Header() directly.
-	result->city_objects_count = reader->Header().info().features_count;
+	//
+	// It counts FEATURES. A row is a CityObject, and one feature may carry several
+	// (a Building plus its BuildingParts), so on Delft this is 1115 where both
+	// readers return 2231 rows. Reporting it as city_objects_count contradicted
+	// cityjson_metadata, cityjsonseq_metadata and read_flatcitybuf itself. The true
+	// CityObject count needs a full decode, which a metadata call should not pay
+	// for, so it is left unset and surfaces as SQL NULL.
+	result->features_count = reader->Header().info().features_count;
 
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
 	names = MetadataTableUtils::GetMetadataTableNames();
@@ -427,7 +436,8 @@ static void FcbMetadataScan(ClientContext &context, TableFunctionInput &data, Da
 		return;
 	}
 
-	auto metadata_chunk = MetadataTableUtils::CreateMetadataChunk(bind_data.metadata, bind_data.city_objects_count);
+	auto metadata_chunk = MetadataTableUtils::CreateMetadataChunk(bind_data.metadata, bind_data.city_objects_count,
+	                                                              bind_data.features_count);
 	output.SetCardinality(1);
 	for (idx_t col = 0; col < metadata_chunk->ColumnCount(); col++) {
 		output.data[col].Reference(metadata_chunk->data[col]);

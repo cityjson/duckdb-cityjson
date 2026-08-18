@@ -80,6 +80,16 @@ public:
 	virtual size_t CountCityObjects() const;
 
 	/**
+	 * Count features, not CityObjects. One feature may carry several CityObjects
+	 * (a Building plus its BuildingParts), so the two differ by roughly 2x on
+	 * 3DBAG data -- reporting one as the other is a factual error, not a rounding.
+	 *
+	 * @return Total number of features
+	 * @throws CityJSONError on read or parse failure
+	 */
+	virtual size_t CountFeatures() const;
+
+	/**
 	 * Read the next feature incrementally.
 	 * Default implementation returns nullopt (not supported by this reader).
 	 */
