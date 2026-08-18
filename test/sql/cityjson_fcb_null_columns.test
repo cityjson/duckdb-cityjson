@@ -1,0 +1,71 @@
+# name: test/sql/cityjson_fcb_null_columns.test
+# description: an attribute that is null in every object still survives a FlatCityBuf write
+# group: [sql]
+
+require cityjson
+
+# Two independent mechanisms conspired to lose these columns:
+#   1. the COPY sink omits null attributes from the JSON entirely, so
+#      fcb::add_attributes never saw them and the header never declared them;
+#   2. FlatCityBufReader infers columns by sampling decoded features, so even a
+#      declared-but-never-valued column would not surface.
+# Fixing only one leaves 68 columns; this test pins both.
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/nullcols.fcb' (FORMAT flatcitybuf);
+
+# 74 columns in, 74 columns out. Before this fix: 68.
+query II
+SELECT
+  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))),
+  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb')));
+----
+74	74
+
+# Name them: these six are null in every object of the fixture, which is exactly
+# why guess_type could not type them.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+  WHERE column_name IN ('eindregistratie', 'tijdstipinactief', 'tijdstipinactieflv',
+                        'eindgeldigheid', 'tijdstipnietbaglv', 'tijdstipeindregistratielv')
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb'))
+);
+----
+0
+
+# No column may be lost in either direction.
+query I
+SELECT COUNT(*) FROM (
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+  EXCEPT
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb'))
+);
+----
+0
+
+# They must read back as NULL, not as an empty string.
+query I
+SELECT COUNT(*) FILTER (WHERE eindregistratie IS NOT NULL)
+FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb');
+----
+0
+
+# The header seeding must not disturb columns that DO carry values: the feature
+# sample stays authoritative on type, so a valued column keeps its real type
+# rather than being downgraded to the header's declared String.
+query II
+SELECT
+  (SELECT COUNT(*) FILTER (WHERE b3_h_dak_max IS NOT NULL)
+     FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')),
+  (SELECT COUNT(*) FILTER (WHERE b3_h_dak_max IS NOT NULL)
+     FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb'));
+----
+10	10
+
+query I
+SELECT typeof(b3_h_dak_max) FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb') LIMIT 1;
+----
+DOUBLE

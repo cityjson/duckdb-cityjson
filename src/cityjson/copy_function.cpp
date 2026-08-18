@@ -1118,9 +1118,19 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 		CityJSONWriter::WriteCityJSONSeq(output_path, write_meta, gstate.feature_objects, gstate.feature_order);
 #ifdef CITYJSON_HAS_FCB
 	} else if (bind_data.is_fcb) {
+		// The relation's attribute columns, not the ones that happened to carry a
+		// value. An attribute that is NULL in every row is omitted from the JSON by
+		// the sink above, so without this list the FCB header never learns it exists
+		// and the column is lost.
+		std::vector<std::string> declared_attr_columns;
+		for (idx_t col = 0; col < bind_data.column_roles.size(); col++) {
+			if (bind_data.column_roles[col] == CopyColumnRole::Attribute) {
+				declared_attr_columns.push_back(bind_data.column_names[col]);
+			}
+		}
 		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.fcb_attr_index_columns, bind_data.fcb_branching_factor,
-		                                 bind_data.fcb_index_node_size);
+		                                 bind_data.fcb_index_node_size, declared_attr_columns);
 #endif
 	} else {
 		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order);

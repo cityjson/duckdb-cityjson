@@ -6,6 +6,7 @@
 #include <fstream>
 #include <cmath>
 #include <map>
+#include <algorithm>
 
 namespace duckdb {
 namespace cityjson {
@@ -344,7 +345,8 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
                                       const std::vector<std::string> &feature_order,
                                       const std::vector<std::string> &attr_index_columns,
                                       std::optional<uint16_t> branching_factor,
-                                      std::optional<uint16_t> index_node_size) {
+                                      std::optional<uint16_t> index_node_size,
+                                      const std::vector<std::string> &declared_attr_columns) {
 
 	// Build the metadata header (same shape as CityJSONSeq's line 1).
 	json header;
@@ -432,6 +434,32 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 			}
 		}
 	}
+	// Pass 1b: declare attributes that never carry a value.
+	//
+	// fcb::add_attributes derives each column's type with guess_type, which cannot
+	// type a JSON null. Worse, the COPY sink omits null attributes from the JSON
+	// altogether, so an attribute that is null in EVERY object is not merely
+	// untypeable here -- it is entirely invisible, and the column vanishes from the
+	// file. The 3DBAG export has six such columns (eindregistratie,
+	// tijdstipinactief, ...), which is why a 74-column CityJSONSeq source came back
+	// as 68 columns through FlatCityBuf.
+	//
+	// The source relation's column list is the authority on which attributes exist,
+	// so declare from that rather than from observed values. String is the only
+	// honest type for a value we have never seen; the column carries no values
+	// either way, so the declared type only affects how it reads back.
+	std::uint16_t next_column_index = 0;
+	for (const auto &entry : attr_schema) {
+		next_column_index =
+		    std::max<std::uint16_t>(next_column_index, static_cast<std::uint16_t>(entry.second.first + 1));
+	}
+	for (const auto &column_name : declared_attr_columns) {
+		if (attr_schema.count(column_name) != 0) {
+			continue;
+		}
+		attr_schema.emplace(column_name, std::make_pair(next_column_index++, ::ColumnType::String));
+	}
+
 	const bool has_semantic_attrs = !semantic_attr_schema.empty();
 
 	fcb::FcbWriterOptions options;

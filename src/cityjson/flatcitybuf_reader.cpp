@@ -5,6 +5,7 @@
 #include "cityjson/duckdb_fs_range_reader.hpp"
 #include "cityjson/json_utils.hpp"
 #include <fcb/cityjson.hpp>
+#include <fcb/generated/header_generated.h>
 
 namespace duckdb {
 namespace cityjson {
@@ -58,6 +59,38 @@ std::optional<fcb::KeyValue> KeyValueFromJsonByKind(const json &value, fcb::KeyK
 		}
 	} catch (const json::type_error &) {
 		return std::nullopt; // attribute's actual JSON type doesn't match the column's declared type
+	}
+}
+
+
+// Map a header-declared FlatCityBuf column type onto our ColumnType. Used only
+// for columns the feature sample never saw a value for, so in practice the type
+// is whatever the writer declared -- String for an all-null column, since
+// guess_type cannot derive a type from values that do not exist.
+ColumnType ColumnKindForFcbType(std::uint8_t raw_type) {
+	switch (static_cast<::ColumnType>(raw_type)) {
+	case ::ColumnType::Bool:
+		return ColumnType::Boolean;
+	case ::ColumnType::Byte:
+	case ::ColumnType::UByte:
+	case ::ColumnType::Short:
+	case ::ColumnType::UShort:
+	case ::ColumnType::Int:
+	case ::ColumnType::UInt:
+	case ::ColumnType::Long:
+	case ::ColumnType::ULong:
+		return ColumnType::BigInt;
+	case ::ColumnType::Float:
+	case ::ColumnType::Double:
+		return ColumnType::Double;
+	case ::ColumnType::DateTime:
+		return ColumnType::Timestamp;
+	case ::ColumnType::Json:
+		return ColumnType::Json;
+	case ::ColumnType::String:
+	case ::ColumnType::Binary:
+	default:
+		return ColumnType::Varchar;
 	}
 }
 
@@ -304,6 +337,34 @@ std::vector<Column> FlatCityBufReader::Columns() const {
 	std::vector<CityJSONFeature> sample_features = ParseFeaturesWithMask(sample_lines_, FcbFieldMask {});
 	std::vector<Column> attr_columns = CityObjectUtils::InferAttributeColumns(sample_features, sample_lines_);
 	std::vector<Column> geom_columns = CityObjectUtils::InferGeometryColumns(sample_features, sample_lines_);
+
+	// Sampling decoded features only finds attributes that carry a value somewhere.
+	// A column that is null in every feature is declared in the header and never
+	// valued, so it is invisible to the sample -- which is how a 74-column source
+	// read back as 68 through FlatCityBuf. The header's column list is the file's
+	// own declaration of its schema, so honour it: append anything it declares that
+	// the sample did not find.
+	//
+	// Appending (rather than replacing) keeps the sample authoritative on TYPE. The
+	// header can only say String for a column whose values were never seen, while
+	// the sample sees the real values -- so preferring the header here would
+	// downgrade well-typed columns to VARCHAR.
+	{
+		auto fcb_reader = OpenFcbReader();
+		for (const auto &col : fcb_reader.header().info().columns) {
+			bool already_present = false;
+			for (const auto &existing : attr_columns) {
+				if (existing.name == col.name) {
+					already_present = true;
+					break;
+				}
+			}
+			if (already_present || IsPredefinedColumn(col.name)) {
+				continue;
+			}
+			attr_columns.emplace_back(col.name, ColumnKindForFcbType(col.type));
+		}
+	}
 
 	columns.insert(columns.end(), attr_columns.begin(), attr_columns.end());
 	columns.insert(columns.end(), geom_columns.begin(), geom_columns.end());

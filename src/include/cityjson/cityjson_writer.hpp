@@ -71,13 +71,22 @@ public:
 	 * @param attr_index_columns Attribute column names to give a B+tree index
 	 * @param branching_factor B+tree branching factor applied to every indexed column
 	 * @param index_node_size R-tree node size
+	 * @param declared_attr_columns Every attribute column of the source relation.
+	 *        The header schema is otherwise derived from observed JSON values via
+	 *        fcb::add_attributes, whose guess_type cannot type a null -- and the
+	 *        COPY sink omits null attributes from the JSON entirely, so a column
+	 *        that is null in every object is invisible to that derivation and
+	 *        vanishes from the file. The relation's column list is the authority
+	 *        on which attributes exist; this restores the six all-null columns a
+	 *        74-column 3DBAG source otherwise loses on the way into FCB.
 	 */
 	static void WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                             std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
 	                             const std::vector<std::string> &feature_order,
 	                             const std::vector<std::string> &attr_index_columns = {},
 	                             std::optional<uint16_t> branching_factor = std::nullopt,
-	                             std::optional<uint16_t> index_node_size = std::nullopt);
+	                             std::optional<uint16_t> index_node_size = std::nullopt,
+	                             const std::vector<std::string> &declared_attr_columns = {});
 #endif
 
 private:
