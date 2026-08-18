@@ -161,12 +161,12 @@ struct Geometry {
  * Represents a single city object (building, road, etc.)
  */
 struct CityObject {
-	std::string type;                                       // CityObject type (e.g., "Building", "Road")
-	std::map<std::string, json> attributes;                 // Custom attributes
-	std::vector<Geometry> geometry;                         // List of geometries at various LODs
-	std::optional<GeographicalExtent> geographical_extent;  // 3D bounding box
-	std::vector<std::string> children;                      // Child CityObject IDs
-	std::vector<std::string> parents;                       // Parent CityObject IDs
+	std::string type;                                      // CityObject type (e.g., "Building", "Road")
+	std::map<std::string, json> attributes;                // Custom attributes
+	std::vector<Geometry> geometry;                        // List of geometries at various LODs
+	std::optional<GeographicalExtent> geographical_extent; // 3D bounding box
+	std::vector<std::string> children;                     // Child CityObject IDs
+	std::vector<std::string> parents;                      // Parent CityObject IDs
 	// Roles of children, positionally aligned with `children` (CityParquet spec
 	// §object-table-schema: length MUST equal children, with null for a child that
 	// has no role) -- so an unset entry has to be representable, not just absent.

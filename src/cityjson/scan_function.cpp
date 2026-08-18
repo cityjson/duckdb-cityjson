@@ -140,10 +140,10 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 						uv_pool = &bind_data.metadata.appearance->vertices_texture;
 					}
 					static const std::vector<std::array<double, 2>> empty_pool;
-					const auto normalised =
-					    is_material ? NormaliseMaterialMap(*appearance, index, feature.id)
-					                : NormaliseTextureMap(*appearance, index, feature.id,
-					                                      uv_pool != nullptr ? *uv_pool : empty_pool);
+					const auto normalised = is_material
+					                            ? NormaliseMaterialMap(*appearance, index, feature.id)
+					                            : NormaliseTextureMap(*appearance, index, feature.id,
+					                                                  uv_pool != nullptr ? *uv_pool : empty_pool);
 					WriteJsonText(wrappers[col_idx].AsFlatMut(), normalised, output_row);
 				} else {
 					WriteJsonText(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
@@ -177,8 +177,8 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				// Per-LOD mode restricts the table to one LoD, so the bbox describes that
 				// geometry alone -- there is no other LoD in the table to union with, and
 				// a descendant's bbox at this LoD is its own row's business.
-				auto extent = target_geom != nullptr ? CityObjectUtils::GetGeometryExtent(
-				                                           *target_geom, *vertex_pool, bind_data.metadata.transform)
+				auto extent = target_geom != nullptr ? CityObjectUtils::GetGeometryExtent(*target_geom, *vertex_pool,
+				                                                                          bind_data.metadata.transform)
 				                                     : std::nullopt;
 				value = extent.has_value() ? extent->ToJson() : json(nullptr);
 			} else {

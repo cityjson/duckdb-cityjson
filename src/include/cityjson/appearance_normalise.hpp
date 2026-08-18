@@ -51,8 +51,7 @@ struct AppearanceIndex {
 /**
  * Rewrite one geometry's material map so every index is a dataset-global sidecar id.
  */
-json NormaliseMaterialMap(const json &material_map, const AppearanceIndex &index,
-                          const std::string &feature_id);
+json NormaliseMaterialMap(const json &material_map, const AppearanceIndex &index, const std::string &feature_id);
 
 /**
  * Rewrite one geometry's texture map: every texture index becomes a global sidecar id,

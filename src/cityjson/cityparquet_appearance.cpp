@@ -132,8 +132,8 @@ void ShiftAppearanceIdsFunction(DataChunk &args, ExpressionState &state, Vector 
 		}
 		const auto kind = StringUtil::Lower(kinds[ki].GetString());
 		if (kind != "material" && kind != "texture") {
-			throw InvalidInputException(
-			    "cityjson_shift_appearance_ids: kind must be 'material' or 'texture', got '%s'", kind);
+			throw InvalidInputException("cityjson_shift_appearance_ids: kind must be 'material' or 'texture', got '%s'",
+			                            kind);
 		}
 		json parsed;
 		try {
@@ -155,8 +155,8 @@ void ShiftAppearanceIdsFunction(DataChunk &args, ExpressionState &state, Vector 
 			json theme = entry.value();
 			auto values = theme.find("values");
 			if (values != theme.end()) {
-				theme["values"] = kind == "material" ? ShiftMaterialIds(*values, offset)
-				                                     : ShiftTextureIds(*values, offset);
+				theme["values"] =
+				    kind == "material" ? ShiftMaterialIds(*values, offset) : ShiftTextureIds(*values, offset);
 			}
 			auto value = theme.find("value");
 			if (kind == "material" && value != theme.end()) {
@@ -239,10 +239,10 @@ void RegisterAppearanceIdsFunction(ExtensionLoader &loader) {
 	                    LogicalType::LIST(LogicalType(LogicalTypeId::BIGINT)), AppearanceIdsFunction);
 	loader.RegisterFunction(func);
 
-	ScalarFunction shift("cityjson_shift_appearance_ids",
-	                     {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                      LogicalType(LogicalTypeId::BIGINT)},
-	                     LogicalType(LogicalTypeId::VARCHAR), ShiftAppearanceIdsFunction);
+	ScalarFunction shift(
+	    "cityjson_shift_appearance_ids",
+	    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT)},
+	    LogicalType(LogicalTypeId::VARCHAR), ShiftAppearanceIdsFunction);
 	loader.RegisterFunction(shift);
 }
 

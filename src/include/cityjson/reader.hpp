@@ -178,9 +178,9 @@ public:
 	std::optional<CityJSONFeature> ReadNextFeature() const;
 
 private:
-	std::string file_path_;              // Path to CityJSONSeq file
-	size_t sample_lines_;                // Number of features to sample for schema inference
-	duckdb::ClientContext &context_;     // DuckDB client context for FileSystem access
+	std::string file_path_;          // Path to CityJSONSeq file
+	size_t sample_lines_;            // Number of features to sample for schema inference
+	duckdb::ClientContext &context_; // DuckDB client context for FileSystem access
 
 	// Caching fields (mutable for lazy initialization in const methods)
 	mutable std::optional<CityJSON> cached_metadata_;

@@ -26,15 +26,15 @@ namespace cityjson {
  * Contains file information, metadata, chunks, and schema
  */
 struct CityJSONBindData : public TableFunctionData {
-	std::string file_name;                 // Path to CityJSON file
-	CityJSON metadata;                     // CityJSON metadata
-	CityJSONFeatureChunk chunks;           // All data divided into chunks
-	CityJSONScanPlan scan_plan;            // Precomputed batch -> source position mapping
-	std::vector<Column> columns;           // Complete column schema
-	std::optional<std::string> target_lod; // Optional: filter to specific LOD
-	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
+	std::string file_name;                                      // Path to CityJSON file
+	CityJSON metadata;                                          // CityJSON metadata
+	CityJSONFeatureChunk chunks;                                // All data divided into chunks
+	CityJSONScanPlan scan_plan;                                 // Precomputed batch -> source position mapping
+	std::vector<Column> columns;                                // Complete column schema
+	std::optional<std::string> target_lod;                      // Optional: filter to specific LOD
+	bool use_wkb_encoding = false;                              // Use WKB geometry encoding (when lod specified)
 	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb; // Physical geometry encoding
-	bool streaming = false;                // True when data is loaded during scan init instead of bind
+	bool streaming = false; // True when data is loaded during scan init instead of bind
 	// The factory this bind opened its reader with, and the sampling depth it opened it
 	// at. A streaming scan re-opens the file in init_global and must reproduce both, or
 	// it can end up reading the same path through a different reader than the one whose
@@ -133,9 +133,8 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
  */
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names,
-                                          const std::string &function_name,
-                                          std::unique_ptr<CityJSONReader> reader, bool streaming = false,
-                                          ReaderKind reader_kind = ReaderKind::Auto);
+                                          const std::string &function_name, std::unique_ptr<CityJSONReader> reader,
+                                          bool streaming = false, ReaderKind reader_kind = ReaderKind::Auto);
 
 /**
  * Same as BindCityJSONRead, but takes the reader by reference instead of by
@@ -150,8 +149,8 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
  */
 CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
                                      vector<LogicalType> &return_types, vector<string> &names,
-                                     const std::string &function_name, CityJSONReader &reader,
-                                     bool streaming = false, bool materialise = true);
+                                     const std::string &function_name, CityJSONReader &reader, bool streaming = false,
+                                     bool materialise = true);
 
 // ============================================================
 // Global State
@@ -162,9 +161,9 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
  * Shared across all threads
  */
 struct CityJSONGlobalState : public GlobalTableFunctionState {
-	std::atomic<size_t> batch_index;                 // Current batch index for parallel scanning
-	CityJSONFeatureChunk chunks;                     // Materialized chunks (non-streaming)
-	CityJSONScanPlan scan_plan;                      // Scan plan for materialized chunks
+	std::atomic<size_t> batch_index; // Current batch index for parallel scanning
+	CityJSONFeatureChunk chunks;     // Materialized chunks (non-streaming)
+	CityJSONScanPlan scan_plan;      // Scan plan for materialized chunks
 	// When true the scan reads `chunks`/`scan_plan` above instead of the bind data's.
 	// Set by read_flatcitybuf's init_global, which is the only place the projection --
 	// and therefore how much of each feature needs decoding -- is known.

@@ -61,8 +61,7 @@ CityJSONFeature ConvertFeatureLight(const fcb::Feature &feature, const fcb::Head
  * -- exactly what fcb::decode_attributes does, and for the same reason: with an
  * unknown width the remainder of the blob cannot be located, masked out or not.
  */
-nlohmann::json DecodeAttributesFiltered(const uint8_t *data, size_t size,
-                                        const std::vector<fcb::ColumnInfo> &schema,
+nlohmann::json DecodeAttributesFiltered(const uint8_t *data, size_t size, const std::vector<fcb::ColumnInfo> &schema,
                                         const std::optional<std::set<std::string>> &wanted);
 
 /**

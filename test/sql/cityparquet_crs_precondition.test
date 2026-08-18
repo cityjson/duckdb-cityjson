@@ -1,7 +1,8 @@
 # name: test/sql/cityparquet_crs_precondition.test
 # description: the one-CRS-per-package precondition shared by insert_cityjson and
-#              cityparquet_merge, across the tri-state crs
 # group: [sql]
+
+#              cityparquet_merge, across the tri-state crs
 
 require cityjson
 

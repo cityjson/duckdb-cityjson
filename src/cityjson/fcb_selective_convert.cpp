@@ -95,8 +95,7 @@ bool IsKnownColumnType(uint8_t raw) {
 // DecodeAttributesFiltered
 // ============================================================
 
-nlohmann::json DecodeAttributesFiltered(const uint8_t *data, size_t size,
-                                        const std::vector<fcb::ColumnInfo> &schema,
+nlohmann::json DecodeAttributesFiltered(const uint8_t *data, size_t size, const std::vector<fcb::ColumnInfo> &schema,
                                         const std::optional<std::set<std::string>> &wanted) {
 	nlohmann::json out = nlohmann::json::object();
 	if (data == nullptr || size == 0) {
@@ -250,9 +249,8 @@ CityJSONFeature ConvertFeatureLight(const fcb::Feature &feature, const fcb::Head
 		CityObject co;
 		// extension_type wins verbatim when present; city_object_type_name's
 		// "+UnknownCityObject" fallback is only ever reached without it.
-		co.type = (obj->extension_type() != nullptr)
-		              ? obj->extension_type()->str()
-		              : fcb::city_object_type_name(static_cast<uint8_t>(obj->type()));
+		co.type = (obj->extension_type() != nullptr) ? obj->extension_type()->str()
+		                                             : fcb::city_object_type_name(static_cast<uint8_t>(obj->type()));
 
 		// TRAP: an object that declares its OWN columns must be decoded against
 		// them, not the header's -- records are not self-delimiting, so the wrong

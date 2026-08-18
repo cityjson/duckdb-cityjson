@@ -22,10 +22,9 @@ namespace cityjson {
 const std::vector<std::string> &ModuleTableNames() {
 	// The CityGML 3.0 modules that hold feature objects. CityObjectGroup is not a
 	// thematic feature and gets no file of its own -- it folds into generics.
-	static const std::vector<std::string> names = {"building",      "bridge",         "tunnel",
-	                                               "construction",  "transportation", "vegetation",
-	                                               "relief",        "water_body",     "land_use",
-	                                               "city_furniture", "generics"};
+	static const std::vector<std::string> names = {"building",       "bridge",         "tunnel",  "construction",
+	                                               "transportation", "vegetation",     "relief",  "water_body",
+	                                               "land_use",       "city_furniture", "generics"};
 	return names;
 }
 
@@ -181,8 +180,7 @@ std::vector<std::string> ColumnsWithPrefix(ClientContext &context, const std::st
 	// with DuckDB's own strong definition. Same trap as LogicalType::DOUBLE in
 	// wkb_extent.cpp.
 	std::vector<std::string> found;
-	auto &catalog_entry =
-	    Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	auto &catalog_entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
 	auto &entry = catalog_entry.Cast<TableCatalogEntry>();
 	for (auto &column : entry.GetColumns().Logical()) {
 		if (MatchesLodSuffix(StringUtil::Lower(column.Name()), prefix)) {
@@ -221,8 +219,7 @@ std::vector<std::string> AppearanceLodColumns(ClientContext &context, const std:
 	return ColumnsWithPrefix(context, schema, table, prefix);
 }
 
-bool HasColumn(ClientContext &context, const std::string &schema, const std::string &table,
-               const std::string &column) {
+bool HasColumn(ClientContext &context, const std::string &schema, const std::string &table, const std::string &column) {
 	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
 	for (auto &existing : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
 		if (StringUtil::Lower(existing.Name()) == column) {
@@ -248,8 +245,7 @@ std::string AllObjectsCTE(ClientContext &context, const std::string &schema,
 		const bool has_roles = known != known_children_roles.end()
 		                           ? known->second
 		                           : HasColumn(context, schema, object_tables[i], "children_roles");
-		const auto roles = has_roles ? std::string("children_roles")
-		                             : std::string("NULL::VARCHAR[] AS children_roles");
+		const auto roles = has_roles ? std::string("children_roles") : std::string("NULL::VARCHAR[] AS children_roles");
 		cte += "  SELECT " + Literal(object_tables[i]) + " AS __tbl, id, feature_id, parents, children, " + roles +
 		       " FROM " + QualifiedName(schema, object_tables[i]) + "\n";
 	}
@@ -399,8 +395,7 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory, c
 
 void RegisterCityParquetPackageFunctions(ExtensionLoader &loader) {
 	loader.RegisterFunction(PragmaFunction::PragmaCall(
-	    "cityparquet_read", PragmaRead,
-	    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}));
+	    "cityparquet_read", PragmaRead, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}));
 
 	loader.RegisterFunction(
 	    PragmaFunction::PragmaCall("cityparquet_init", PragmaInit, {LogicalType(LogicalTypeId::VARCHAR)}));

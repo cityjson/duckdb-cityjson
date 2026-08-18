@@ -75,8 +75,8 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 			// `materialise` parameter). Reading the chunks when we have them keeps the
 			// pre-existing behaviour exactly, including for a genuinely empty file, where
 			// both branches yield an empty feature list anyway.
-			features = bind_data.chunks.records.empty() ? reader.ReadNFeatures(sample_lines)
-			                                            : FlattenChunks(bind_data.chunks);
+			features =
+			    bind_data.chunks.records.empty() ? reader.ReadNFeatures(sample_lines) : FlattenChunks(bind_data.chunks);
 		} catch (const CityJSONError &e) {
 			throw BinderException("Failed to infer LOD schema: " + std::string(e.what()));
 		}
@@ -240,9 +240,8 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names,
-                                          const std::string &function_name,
-                                          std::unique_ptr<CityJSONReader> reader, bool streaming,
-                                          ReaderKind reader_kind) {
+                                          const std::string &function_name, std::unique_ptr<CityJSONReader> reader,
+                                          bool streaming, ReaderKind reader_kind) {
 	auto result = make_uniq<CityJSONBindData>(
 	    BindCityJSONReadRaw(context, input, return_types, names, function_name, *reader, streaming));
 	// BindCityJSONReadRaw takes the reader already opened and so cannot know which factory
@@ -341,7 +340,6 @@ void CityJSONPushdownComplexFilter(ClientContext &context, LogicalGet &get, Func
 		}
 	}
 }
-
 
 } // namespace cityjson
 } // namespace duckdb

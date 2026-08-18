@@ -1,9 +1,13 @@
 # name: test/sql/cityjson_corpus_parity.test
-# description: cross-format parity over the hosted corpus -- the SAME 3 features in
-# CityJSON, CityJSONSeq, FlatCityBuf and CityParquet. Network test: runs only when
-# CITYJSON_REMOTE_TEST is set.
+# description: cross-format parity over the hosted corpus (upstream-produced fixtures)
+# group: [sql]
+
+#
+# Network test: runs only when CITYJSON_REMOTE_TEST is set.
 #   CITYJSON_REMOTE_TEST=1 ./build/release/test/unittest test/sql/cityjson_corpus_parity.test
 # or `just test-remote`. ~93 KB of downloads.
+#
+# The same 3 features in CityJSON, CityJSONSeq, FlatCityBuf and CityParquet.
 #
 # WHY THIS FILE IS DIFFERENT FROM THE REST OF THE SUITE
 #
@@ -21,8 +25,6 @@
 #   https://cityjson.open3d.city/corpus/small.city.json
 #   https://cityjson.open3d.city/corpus/small.fcb
 #   https://cityjson.open3d.city/corpus/small/building.parquet  (+ metadata.json)
-#
-# group: [sql]
 
 require cityjson
 

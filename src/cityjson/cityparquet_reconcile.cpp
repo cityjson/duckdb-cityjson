@@ -62,7 +62,8 @@ std::string FeatureIdPhase(const std::string &schema, const std::vector<std::str
 	       "WHERE ancestor NOT IN (SELECT child FROM __cp_first_edges);\n";
 
 	for (const auto &table : object_tables) {
-		sql += "UPDATE " + QualifiedName(schema, table) + " t SET feature_id = r.root " + "FROM __cp_roots r WHERE r.id = t.id AND t.feature_id IS DISTINCT FROM r.root;\n";
+		sql += "UPDATE " + QualifiedName(schema, table) + " t SET feature_id = r.root " +
+		       "FROM __cp_roots r WHERE r.id = t.id AND t.feature_id IS DISTINCT FROM r.root;\n";
 	}
 	return sql;
 }
@@ -78,9 +79,8 @@ std::string HierarchyPhase(ClientContext &context, const std::string &schema,
 		const auto qualified = QualifiedName(schema, table);
 		// `children_roles` is optional, and a table read in `lod =` mode has none.
 		auto pending_entry = pending.find(table);
-		const bool has_roles = pending_entry == pending.end()
-		                           ? HasColumn(context, schema, table, "children_roles")
-		                           : pending_entry->second.has_children_roles;
+		const bool has_roles = pending_entry == pending.end() ? HasColumn(context, schema, table, "children_roles")
+		                                                      : pending_entry->second.has_children_roles;
 		const std::string roles = has_roles ? ", children_roles = NULL" : "";
 		// Rewrite only where the child *set* is genuinely wrong. Comparing sorted lists
 		// rather than the lists themselves leaves a correct-but-differently-ordered
@@ -111,8 +111,8 @@ bool HasBboxColumn(ClientContext &context, const std::string &schema, const std:
 
 //! bbox = the object's own geometry extent, unioned across every stored LoD *and*
 //! across all of its descendants.
-std::string BboxPhase(ClientContext &context, const std::string &schema,
-                      const std::vector<std::string> &object_tables, const PendingTables &pending) {
+std::string BboxPhase(ClientContext &context, const std::string &schema, const std::vector<std::string> &object_tables,
+                      const PendingTables &pending) {
 	std::string sql;
 
 	// Own extent, per row: LEAST/GREATEST across every geometry_lod* column the table
@@ -146,9 +146,8 @@ std::string BboxPhase(ClientContext &context, const std::string &schema,
 			return std::string(fn) + "(" + Join(terms, ", ") + ") AS " + field;
 		};
 		own_parts.push_back("SELECT id, " + agg("LEAST", "min_x") + ", " + agg("LEAST", "min_y") + ", " +
-		                    agg("LEAST", "min_z") + ", " + agg("GREATEST", "max_x") + ", " +
-		                    agg("GREATEST", "max_y") + ", " + agg("GREATEST", "max_z") + " FROM " +
-		                    QualifiedName(schema, table));
+		                    agg("LEAST", "min_z") + ", " + agg("GREATEST", "max_x") + ", " + agg("GREATEST", "max_y") +
+		                    ", " + agg("GREATEST", "max_z") + " FROM " + QualifiedName(schema, table));
 	}
 	sql += "CREATE OR REPLACE TEMP TABLE __cp_own AS\n" + Join(own_parts, "\nUNION ALL\n") + ";\n";
 
@@ -172,8 +171,8 @@ std::string BboxPhase(ClientContext &context, const std::string &schema,
 		// geometry at all carries neither geometry columns nor a bbox. There is nothing
 		// to write there, and writing anyway is a binder error.
 		auto pending_entry = pending.find(table);
-		const bool has_bbox = pending_entry == pending.end() ? HasBboxColumn(context, schema, table)
-		                                                     : pending_entry->second.has_bbox;
+		const bool has_bbox =
+		    pending_entry == pending.end() ? HasBboxColumn(context, schema, table) : pending_entry->second.has_bbox;
 		if (!has_bbox) {
 			continue;
 		}
@@ -189,7 +188,8 @@ std::string BboxPhase(ClientContext &context, const std::string &schema,
 		// there. So a pending table keeps what it has when nothing was computed.
 		const char *absent = pending_entry == pending.end() ? "NULL" : "t.bbox";
 		sql += "UPDATE " + QualifiedName(schema, table) + " t SET bbox = CASE WHEN b.min_x IS NULL THEN " +
-		       std::string(absent) + " ELSE "
+		       std::string(absent) +
+		       " ELSE "
 		       "{'min_x': b.min_x, 'min_y': b.min_y, 'min_z': b.min_z, "
 		       "'max_x': b.max_x, 'max_y': b.max_y, 'max_z': b.max_z} END "
 		       "FROM __cp_bbox b WHERE b.id = t.id;\n";
@@ -236,8 +236,8 @@ std::string BuildReconcilePrelude(ClientContext &context, const std::string &sch
 	return NodesAndEdges(context, schema, ObjectTablesInSchema(context, schema), {});
 }
 
-std::string BuildReconcileSQL(ClientContext &context, const std::string &schema,
-                              const std::vector<std::string> &checks, const PendingTables &pending) {
+std::string BuildReconcileSQL(ClientContext &context, const std::string &schema, const std::vector<std::string> &checks,
+                              const PendingTables &pending) {
 	auto object_tables = ObjectTablesInSchema(context, schema);
 	for (const auto &entry : pending) {
 		if (std::find(object_tables.begin(), object_tables.end(), entry.first) == object_tables.end()) {

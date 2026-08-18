@@ -47,8 +47,8 @@ using PendingTables = std::map<std::string, PendingTable>;
 
 //! `checks` selects from {"feature_id", "hierarchy", "bbox"}; empty means all three.
 //! Regardless of the order given, the script emits feature_id, then hierarchy, then bbox.
-std::string BuildReconcileSQL(ClientContext &context, const std::string &schema,
-                              const std::vector<std::string> &checks, const PendingTables &pending = {});
+std::string BuildReconcileSQL(ClientContext &context, const std::string &schema, const std::vector<std::string> &checks,
+                              const PendingTables &pending = {});
 
 //! The temp tables the reconcile script builds and drops. Exposed so cityparquet_delete
 //! can reuse the same derivation without duplicating it.

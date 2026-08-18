@@ -196,11 +196,9 @@ void CollectInventory(Connection &connection, const std::string &schema, const s
 		return;
 	}
 	for (const auto &column : facts) {
-		const auto properties =
-		    "geometry_properties_" + column.name.substr(std::string("geometry_").size());
+		const auto properties = "geometry_properties_" + column.name.substr(std::string("geometry_").size());
 		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(schema, table) + " WHERE " +
-		                                   KeywordHelper::WriteOptionallyQuoted(properties) +
-		                                   ".surfaces IS NOT NULL");
+		                                   KeywordHelper::WriteOptionallyQuoted(properties) + ".surfaces IS NOT NULL");
 		if (present->GetValue(0, 0).GetValue<int64_t>() > 0) {
 			inventory.semantic_surfaces = true;
 			return;
@@ -249,8 +247,8 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 			// (spec 05-metadata.mdx "city.columns entries"). No extent probe: the
 			// bbox entry is optional, and cityjson_wkb_extent is WKB-only.
 			entry.encoding = "CityParquetArrowNative-v1";
-			const auto props = KeywordHelper::WriteOptionallyQuoted(
-			    "geometry_properties_" + column.substr(std::string("geometry_").size()));
+			const auto props = KeywordHelper::WriteOptionallyQuoted("geometry_properties_" +
+			                                                        column.substr(std::string("geometry_").size()));
 			auto result = Run(connection, "SELECT DISTINCT " + props + ".\"type\" FROM " +
 			                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
 			for (idx_t row = 0; row < result->RowCount(); row++) {
@@ -428,8 +426,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 
 	// The carried footer, per table.
 	std::map<std::string, std::string> carried;
-	auto bookkeeping = connection.Query("SELECT table_name, city FROM " +
-	                                    QualifiedName(bind_data.schema, "__cityparquet"));
+	auto bookkeeping =
+	    connection.Query("SELECT table_name, city FROM " + QualifiedName(bind_data.schema, "__cityparquet"));
 	if (!bookkeeping->HasError()) {
 		for (idx_t row = 0; row < bookkeeping->RowCount(); row++) {
 			auto city = bookkeeping->GetValue(1, row);
@@ -688,8 +686,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// existing file and overwrites from offset 0 only. A rewrite that is shorter than
 		// the metadata.json already there would otherwise leave the old tail in place and
 		// the file would no longer parse as JSON.
-		auto handle =
-		    fs.OpenFile(path, FileOpenFlags::FILE_FLAGS_WRITE | FileOpenFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		auto handle = fs.OpenFile(path, FileOpenFlags::FILE_FLAGS_WRITE | FileOpenFlags::FILE_FLAGS_FILE_CREATE_NEW);
 		fs.Write(*handle, const_cast<char *>(text.c_str()), static_cast<int64_t>(text.size()));
 		handle->Close();
 
@@ -720,9 +717,8 @@ static void WriteScan(ClientContext &, TableFunctionInput &data, DataChunk &outp
 }
 
 void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
-	TableFunction func("cityparquet_write",
-	                   {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}, WriteScan,
-	                   WriteBind);
+	TableFunction func("cityparquet_write", {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
+	                   WriteScan, WriteBind);
 	func.init_global = WriteInitGlobal;
 	func.named_parameters["crs"] = LogicalType(LogicalTypeId::VARCHAR);
 	func.named_parameters["source_format"] = LogicalType(LogicalTypeId::VARCHAR);

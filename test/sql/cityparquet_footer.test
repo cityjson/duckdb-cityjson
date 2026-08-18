@@ -1,7 +1,8 @@
 # name: test/sql/cityparquet_footer.test
 # description: city.columns[] carries name + real encoding; GeometryCollection Z is not geo-legal (review P3);
-#              the tri-state `crs` (object / explicit null / absent)
 # group: [sql]
+
+#              the tri-state `crs` (object / explicit null / absent)
 
 require cityjson
 

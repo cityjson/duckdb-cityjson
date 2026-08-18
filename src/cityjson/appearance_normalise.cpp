@@ -37,8 +37,7 @@ void AppendOptional(std::ostringstream &out, const std::optional<std::vector<dou
 
 //! Intern `key`, returning its existing id or assigning the next one.
 template <typename T>
-int64_t Intern(const std::string &key, const T &definition, std::map<std::string, int64_t> &seen,
-               std::vector<T> &out) {
+int64_t Intern(const std::string &key, const T &definition, std::map<std::string, int64_t> &seen, std::vector<T> &out) {
 	auto existing = seen.find(key);
 	if (existing != seen.end()) {
 		return existing->second;
@@ -236,7 +235,9 @@ json RewriteThemes(const json &map, const std::function<json(const json &)> &rew
 } // namespace
 
 json NormaliseMaterialMap(const json &material_map, const AppearanceIndex &index, const std::string &feature_id) {
-	auto remap = [&](int64_t local) { return index.ResolveMaterial(feature_id, local); };
+	auto remap = [&](int64_t local) {
+		return index.ResolveMaterial(feature_id, local);
+	};
 	return RewriteThemes(
 	    material_map, [&](const json &values) { return RemapMaterialValues(values, remap); },
 	    [&](const json &value) { return RemapMaterialValues(value, remap); });
@@ -244,7 +245,9 @@ json NormaliseMaterialMap(const json &material_map, const AppearanceIndex &index
 
 json NormaliseTextureMap(const json &texture_map, const AppearanceIndex &index, const std::string &feature_id,
                          const std::vector<std::array<double, 2>> &uv_pool) {
-	auto remap = [&](int64_t local) { return index.ResolveTexture(feature_id, local); };
+	auto remap = [&](int64_t local) {
+		return index.ResolveTexture(feature_id, local);
+	};
 	return RewriteThemes(
 	    texture_map, [&](const json &values) { return RemapTextureValues(values, remap, uv_pool); }, nullptr);
 }
