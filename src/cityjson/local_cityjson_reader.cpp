@@ -36,6 +36,10 @@ const json &LocalCityJSONReader::LoadJson() const {
 	if (!cached_json_.has_value()) {
 		cached_json_.emplace(content_.has_value() ? ParseJson(content_.value()) : ParseJsonFile(file_path_));
 	}
+	// Engaged by the branch above on exactly the path where it was not already.
+	// clang-tidy's optional model does not track that for a mutable member reached
+	// through `this` in a const method, so it reads the return as unchecked.
+	// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
 	return *cached_json_;
 }
 

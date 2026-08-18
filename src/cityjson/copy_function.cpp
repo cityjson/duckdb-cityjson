@@ -456,6 +456,13 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	if (bind_data->source_ref.has_value()) {
 		// Bound once, here, rather than dereferenced at each use inside the try: the
 		// optional is settled by this point and nothing below reassigns it.
+		//
+		// The suppression is for the analyser's reach, not for a doubt about the
+		// value. bind_data is a unique_ptr, and clang-tidy's optional model does not
+		// carry a has_value() across the deref -- it cannot prove the two
+		// `bind_data->` on these adjacent lines name the same object. Binding here
+		// rather than inside the try is what keeps this to one such spot.
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
 		const auto &source_ref = *bind_data->source_ref;
 		try {
 			auto reader = OpenAnyCityJSONFile(context, source_ref.path, 1);
