@@ -18,6 +18,16 @@ build_targets := "cityjson_extension cityjson_loadable_extension duckdb unittest
 emsdk_version := "3.1.71"
 vcpkg_baseline := "84bab45d415d22042bd0b9081aea57f362da3f35"
 
+# Install the repo's git hooks (pre-commit auto-formats staged files with the
+# CI-pinned tools). One command per clone; core.hooksPath is local config, so it
+# is not inherited automatically. Needs the formatters CI pins:
+#   pip install 'clang_format==11.0.1' 'black==24.*' cmake-format
+# The hook skips itself with a warning if they are missing or the wrong version,
+# rather than blocking your commit or churning the diff.
+hooks:
+    git config core.hooksPath .githooks
+    @echo "core.hooksPath -> .githooks"
+
 # List available recipes (default).
 default:
     @just --list
