@@ -4,6 +4,8 @@
 
 require cityjson
 
+require parquet
+
 # --- supporting scalars ------------------------------------------------------
 
 # Shifting material ids moves every integer leaf, at whatever nesting depth.
@@ -281,3 +283,47 @@ query I
 SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
 ----
 0
+
+# --- a nested reserved column is refused, not stringified --------------------
+
+# cityparquet-rs's `bbox` STRUCT field names (xmin/ymin/...) diverge from this
+# extension's (min_x/min_y/...) -- an open format disagreement, not something
+# fixed here. But merging the two used to widen `bbox` to VARCHAR silently: two
+# genuinely different STRUCT shapes are not an int/double pair, so WidenedType's
+# catch-all stringified them, corrupting the destination's `bbox` column before
+# the merge's own reconcile phase (which runs after, as separate auto-commit
+# statements) ever got a chance to object.
+statement ok
+CREATE SCHEMA nested_dst;
+
+statement ok
+CREATE TABLE nested_dst.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 1;
+
+statement ok
+PRAGMA cityparquet_init('nested_dst');
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'nested_src');
+
+query T
+SELECT typeof(bbox) FROM nested_dst.building LIMIT 1;
+----
+STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+
+query T
+SELECT typeof(bbox) FROM nested_src.building LIMIT 1;
+----
+STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
+
+statement error
+PRAGMA cityparquet_merge('nested_dst', 'nested_src');
+----
+column 'bbox' cannot be widened
+
+# The destination's `bbox` column is untouched by the refused merge -- still a
+# STRUCT, not VARCHAR.
+query T
+SELECT typeof(bbox) FROM nested_dst.building LIMIT 1;
+----
+STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)

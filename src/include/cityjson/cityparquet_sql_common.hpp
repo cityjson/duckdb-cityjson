@@ -28,10 +28,20 @@ std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &
 //! Case-insensitive lookup; nullptr when absent.
 const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::string &name);
 
-//! The promotion lattice: BIGINT -> DOUBLE is a safe widening; anything else that
-//! disagrees falls back to VARCHAR. INVALID means the destination already
-//! accommodates the source.
-LogicalType WidenedType(const LogicalType &destination, const LogicalType &source);
+//! The promotion lattice: BIGINT -> DOUBLE is a safe widening; anything else scalar
+//! that disagrees falls back to VARCHAR. INVALID means the destination already
+//! accommodates the source. `function` and `column_name` name the caller and the
+//! column being evolved, for the exception below.
+//!
+//! A nested type (STRUCT/LIST/MAP) on either side is refused outright rather than
+//! stringified: reserved structural columns (`bbox`, `children`, `children_roles`, a
+//! `geometry_properties_lod*`, ...) disagreeing in shape between two packages means
+//! they disagree about the package's own schema, not that one of them needs
+//! coercing to text. Silently rewriting such a column to VARCHAR destroys it --
+//! `bbox.min_x` stops binding, and cityparquet_write can no longer emit the STRUCT
+//! the spec requires -- so this throws a BinderException instead.
+LogicalType WidenedType(const LogicalType &destination, const LogicalType &source, const std::string &function,
+                        const std::string &column_name);
 
 //! A column reference for a WKB-consuming SQL expression, converting DuckDB-native
 //! GEOMETRY to WKB BLOB via ST_AsWKB. Any column named in a package's `geo` footer is

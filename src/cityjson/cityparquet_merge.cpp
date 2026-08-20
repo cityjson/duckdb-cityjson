@@ -163,7 +163,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				existing.push_back(column);
 				continue;
 			}
-			const auto widened = WidenedType(match->type, column.type);
+			const auto widened = WidenedType(match->type, column.type, "cityparquet_merge", column.name);
 			if (widened.id() != LogicalTypeId::INVALID) {
 				sql += "ALTER TABLE " + QualifiedName(destination, table) + " ALTER COLUMN " + Quoted(column.name) +
 				       " SET DATA TYPE " + widened.ToString() + ";\n";
