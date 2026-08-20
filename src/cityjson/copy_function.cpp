@@ -654,9 +654,13 @@ static json ValueToJson(const Value &val) {
 		// way out. The loss is invisible to any row-level comparison, because the
 		// value re-parses to the same TIMESTAMP; only the file changes.
 		//
-		// UTC is the only offset we can honestly claim: InferTemporalType matches
-		// the date and time fields alone, so any source offset is already discarded
-		// at read time and "Z" loses nothing that is not already lost.
+		// UTC is not a guess -- it is what the stored value already is.
+		// ParseTimestampString (temporal_parser.cpp) genuinely subtracts the
+		// source's own +HH:MM/-HH:MM offset while parsing, converting the reading
+		// to a true UTC instant before it ever reaches DuckDB's TIMESTAMP storage
+		// (InferTemporalType only classifies the string's shape; it plays no part
+		// in that conversion). "Z" here states a fact about the stored instant,
+		// not an assumption about the source.
 		date_t date;
 		dtime_t time;
 		Timestamp::Convert(TimestampValue::Get(val), date, time);
