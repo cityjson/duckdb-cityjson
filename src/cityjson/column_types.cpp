@@ -22,7 +22,11 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 	case ColumnType::Varchar:
 		return "VARCHAR";
 	case ColumnType::Timestamp:
-		return "TIMESTAMP";
+		// A CityJSON date-time is an ISO 8601 instant, so this column MUST be
+		// UTC-adjusted (spec 02-object-table-schema.mdx "Temporal columns");
+		// DuckDB's timezone-naive TIMESTAMP would denote a wall-clock reading,
+		// a different quantity.
+		return "TIMESTAMP WITH TIME ZONE";
 	case ColumnType::Date:
 		return "DATE";
 	case ColumnType::Time:
@@ -68,7 +72,7 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 	case ColumnType::Varchar:
 		return LogicalTypeId::VARCHAR;
 	case ColumnType::Timestamp:
-		return LogicalTypeId::TIMESTAMP;
+		return LogicalTypeId::TIMESTAMP_TZ;
 	case ColumnType::Date:
 		return LogicalTypeId::DATE;
 	case ColumnType::Time:
@@ -111,7 +115,7 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 	case ColumnType::Varchar:
 		return LogicalType::VARCHAR;
 	case ColumnType::Timestamp:
-		return LogicalType::TIMESTAMP;
+		return LogicalType::TIMESTAMP_TZ;
 	case ColumnType::Date:
 		return LogicalType::DATE;
 	case ColumnType::Time:
