@@ -1,0 +1,86 @@
+{
+  "type": "Feature",
+  "stac_version": "1.1.0",
+  "stac_extensions": [
+    "https://cityjson.github.io/stac-city3d/v0.2.0/schema.json",
+    "https://stac-extensions.github.io/file/v2.1.0/schema.json"
+  ],
+  "id": "rs_minimal",
+  "geometry": null,
+  "properties": {
+    "datetime": "2026-08-20T08:36:08Z",
+    "city3d:version": "2.0",
+    "city3d:city_objects": 121,
+    "city3d:lods": [
+      "0.0",
+      "3.0"
+    ],
+    "city3d:co_types": [
+      "Bridge",
+      "BridgeConstructiveElement",
+      "BridgeInstallation",
+      "Building",
+      "BuildingInstallation",
+      "CityFurniture",
+      "CityObjectGroup",
+      "GenericCityObject",
+      "Railway",
+      "SolitaryVegetationObject",
+      "TINRelief",
+      "Tunnel",
+      "TunnelInstallation",
+      "WaterBody"
+    ],
+    "city3d:attributes": [
+      {
+        "name": "class",
+        "type": "String"
+      },
+      {
+        "name": "function",
+        "type": "String"
+      },
+      {
+        "name": "species",
+        "type": "String"
+      }
+    ],
+    "city3d:semantic_surfaces": true,
+    "city3d:textures": true,
+    "city3d:materials": true,
+    "cityparquet:version": "0.1.0-draft"
+  },
+  "links": [],
+  "assets": {
+    "data": {
+      "href": "./building.parquet",
+      "title": "3D city model data",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data"
+      ],
+      "file:size": 51273,
+      "file:checksum": "1220b5385c03a4eec02cd478294c51466e46763b8198976255c0d363f2881c28b104"
+    },
+    "bridge.parquet": {
+      "href": "./bridge.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-objects"
+      ],
+      "file:size": 93626,
+      "file:checksum": "1220a4db6a6bdb5f0c2b54198019fbfe8b856295c1a8f8c61a3d23ce442c6f537540"
+    },
+    "building.parquet": {
+      "href": "./building.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-objects"
+      ],
+      "file:size": 51273,
+      "file:checksum": "1220b5385c03a4eec02cd478294c51466e46763b8198976255c0d363f2881c28b104"
+    }
+  }
+}
