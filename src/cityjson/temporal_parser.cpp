@@ -119,7 +119,8 @@ int64_t ParseTimestampString(const std::string &timestamp_str) {
 			// half-hour offset like -05:30 computes tz_hour*60 + tz_minute = -270 (4.5h)
 			// instead of -330 (5.5h), understating the true offset by a full hour.
 			int64_t tz_offset_micros =
-			    (static_cast<int64_t>(tz_hour) * 60 + (tz_hour < 0 ? -1 : 1) * tz_minute) * 60LL * 1000000LL;
+			    (static_cast<int64_t>(tz_hour) * 60 + static_cast<int64_t>(tz_hour < 0 ? -1 : 1) * tz_minute) * 60LL *
+			    1000000LL;
 			timestamp.value -= tz_offset_micros;
 		}
 
