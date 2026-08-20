@@ -312,9 +312,8 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		// (enable_geoparquet_conversion, on by default). The underlying bytes
 		// are the same WKB either way, and casting keeps one probe rather than
 		// two overloads that could drift apart.
-		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + quoted +
-		                                  "::BLOB) FROM " + QualifiedName(schema, table) +
-		                                  " WHERE " + quoted + " IS NOT NULL");
+		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + quoted + "::BLOB) FROM " +
+		                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
 		for (idx_t row = 0; row < result->RowCount(); row++) {
 			auto value = result->GetValue(0, row);
 			if (!value.IsNull()) {
@@ -326,8 +325,8 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		}
 		auto extent = Run(connection, "SELECT min(e.min_x), min(e.min_y), min(e.min_z), max(e.max_x), max(e.max_y), "
 		                              "max(e.max_z) FROM (SELECT cityjson_wkb_extent(" +
-		                                  quoted + "::BLOB) AS e FROM " + QualifiedName(schema, table) +
-		                                  " WHERE " + quoted + " IS NOT NULL) t");
+		                                  quoted + "::BLOB) AS e FROM " + QualifiedName(schema, table) + " WHERE " +
+		                                  quoted + " IS NOT NULL) t");
 		if (extent->RowCount() == 1 && !extent->GetValue(0, 0).IsNull()) {
 			entry.has_extent = true;
 			entry.min_x = extent->GetValue(0, 0).GetValue<double>();

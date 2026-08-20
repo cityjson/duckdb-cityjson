@@ -1,6 +1,6 @@
 # name: test/sql/cityparquet_geoparquet_roundtrip.test
 # description: A package with a GeoParquet-declared column reads in and writes back out
-# group: [cityparquet]
+# group: [sql]
 
 # A conformant writer declares its GeoParquet-legal LoD0 column in the `geo` footer,
 # so DuckDB decodes that column to native GEOMETRY on read. The write path's
