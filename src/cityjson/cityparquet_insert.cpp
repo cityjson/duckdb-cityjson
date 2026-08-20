@@ -280,13 +280,18 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 
 	// ---- Phase 3: schema evolution, before any INSERT -----------------------
 	PendingTables pending;
-	std::vector<std::string> incoming_geometry_columns;
+	std::vector<ColumnInfo> incoming_geometry_columns;
 	bool incoming_has_bbox = false;
 	bool incoming_has_children_roles = false;
 	for (const auto &column : facts.columns) {
 		const auto lowered = StringUtil::Lower(column.name);
 		if (MatchesLodSuffix(lowered, "geometry_lod")) {
-			incoming_geometry_columns.push_back(column.name);
+			// A source column freshly staged from CityJSON is always written as WKB
+			// BLOB (ColumnTypeUtils::ToDuckDBType), never DuckDB-native GEOMETRY --
+			// that promotion only happens on a `read_parquet` of a GeoParquet-declared
+			// column -- but the type travels alongside the name regardless, so BboxPhase
+			// never has to special-case where a PendingTable came from.
+			incoming_geometry_columns.push_back({column.name, ColumnTypeUtils::ToDuckDBType(column.kind)});
 		} else if (lowered == "bbox") {
 			incoming_has_bbox = true;
 		} else if (lowered == "children_roles") {
@@ -362,7 +367,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			for (const auto &column : existing) {
 				const auto lowered = StringUtil::Lower(column.name);
 				if (MatchesLodSuffix(lowered, "geometry_lod")) {
-					entry.geometry_columns.push_back(column.name);
+					entry.geometry_columns.push_back(column);
 				} else if (lowered == "bbox") {
 					entry.has_bbox = true;
 				} else if (lowered == "children_roles") {

@@ -139,7 +139,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			for (const auto &column : created) {
 				const auto lowered = StringUtil::Lower(column.name);
 				if (MatchesLodSuffix(lowered, "geometry_lod")) {
-					entry.geometry_columns.push_back(column.name);
+					entry.geometry_columns.push_back(column);
 				} else if (lowered == "bbox") {
 					entry.has_bbox = true;
 				} else if (lowered == "children_roles") {

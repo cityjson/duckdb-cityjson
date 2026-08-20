@@ -121,11 +121,20 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 	// NULL throughout.
 	std::vector<std::string> own_parts;
 	for (const auto &table : object_tables) {
-		// A pending table is not in the catalog yet, so its geometry columns are the ones
-		// the caller is about to create it with rather than ones to look up.
+		// A pending table is not in the catalog yet, so its geometry columns -- names
+		// AND types, the latter needed just below -- are the ones the caller is about
+		// to create it with rather than ones to look up.
 		auto found = pending.find(table);
-		auto geometry_columns =
-		    found == pending.end() ? GeometryLodColumns(context, schema, table) : found->second.geometry_columns;
+		std::vector<ColumnInfo> geometry_columns;
+		if (found == pending.end()) {
+			for (const auto &column : TableColumns(context, schema, table)) {
+				if (MatchesLodSuffix(StringUtil::Lower(column.name), "geometry_lod")) {
+					geometry_columns.push_back(column);
+				}
+			}
+		} else {
+			geometry_columns = found->second.geometry_columns;
+		}
 		if (geometry_columns.empty()) {
 			// A table with no analysis geometry contributes ids but no extents, so its
 			// rows can still receive a bbox unioned from descendants elsewhere.
@@ -137,7 +146,14 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 		std::vector<std::string> extents;
 		extents.reserve(geometry_columns.size());
 		for (const auto &column : geometry_columns) {
-			extents.push_back("cityjson_wkb_extent(" + KeywordHelper::WriteOptionallyQuoted(column) + ")");
+			// A column named in the file's `geo` footer arrives here promoted to
+			// DuckDB-native GEOMETRY on a plain `read_parquet` -- enable_geoparquet_
+			// conversion, gated only on the `parquet` extension, not on `spatial` being
+			// installed or loaded. cityjson_wkb_extent is BLOB-only, so such a column
+			// needs the same ST_AsWKB conversion cityparquet_write's CopySourceList
+			// applies on the way out.
+			const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.name);
+			extents.push_back("cityjson_wkb_extent(" + GeometryColumnRef(quoted, column.type) + ")");
 		}
 		auto agg = [&](const char *fn, const char *field) {
 			std::vector<std::string> terms;

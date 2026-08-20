@@ -33,6 +33,17 @@ const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::
 //! accommodates the source.
 LogicalType WidenedType(const LogicalType &destination, const LogicalType &source);
 
+//! A column reference for a WKB-consuming SQL expression, converting DuckDB-native
+//! GEOMETRY to WKB BLOB via ST_AsWKB. Any column named in a package's `geo` footer is
+//! promoted to native GEOMETRY on a plain `read_parquet` (enable_geoparquet_conversion,
+//! on by default and gated only on the `parquet` extension being loaded, not on
+//! `spatial` -- so this promotion happens whether or not `spatial` is installed).
+//! ST_AsWKB rather than a `::BLOB` cast: the cast is registered by `spatial` only once
+//! it is loaded, whereas ST_AsWKB/ST_AsBinary ship in DuckDB core and need no extension
+//! at all. Shared by cityparquet_write's CopySourceList and cityparquet_reconcile's
+//! BboxPhase -- every site that hands a geometry column to a BLOB-only function.
+std::string GeometryColumnRef(const std::string &quoted_name, const LogicalType &type);
+
 // --- the one-CRS-per-package precondition, shared by insert_cityjson and merge -------
 //
 // A package states ONE CRS for every row it holds (spec 05-metadata.mdx: `city.crs` is

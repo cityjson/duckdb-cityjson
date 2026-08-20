@@ -1,6 +1,7 @@
 #include "cityjson/cityparquet_write.hpp"
 
 #include "cityjson/cityparquet_package.hpp"
+#include "cityjson/cityparquet_sql_common.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/crs_projjson.hpp"
 #include "cityjson/json_utils.hpp"
@@ -173,11 +174,8 @@ std::string CopySourceList(ClientContext &context, const std::string &schema, co
 	vector<string> parts;
 	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.Name());
-		if (column.Type().id() == LogicalTypeId::GEOMETRY) {
-			parts.push_back("ST_AsWKB(" + quoted + ") AS " + quoted);
-		} else {
-			parts.push_back(quoted);
-		}
+		const auto ref = GeometryColumnRef(quoted, column.Type());
+		parts.push_back(column.Type().id() == LogicalTypeId::GEOMETRY ? (ref + " AS " + quoted) : ref);
 	}
 	return StringUtil::Join(parts, ", ");
 }
@@ -298,15 +296,12 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 			}
 			continue;
 		}
-		// ST_AsWKB(...) rather than a `::BLOB` cast when the column arrives here
-		// already decoded to DuckDB's native GEOMETRY type -- promoted because it
-		// was declared in the file's GeoParquet `geo` footer (enable_geoparquet_
-		// conversion, on by default, gated only on the `parquet` extension, not on
-		// `spatial` being installed or loaded). A `::BLOB` cast needs `spatial`
-		// loaded to exist at all; ST_AsWKB/ST_AsBinary ship in DuckDB core and need
-		// no extension, so this never requires `spatial` and never loads it. The
-		// underlying bytes are the same WKB either way.
-		const auto wkb_expr = col_type.id() == LogicalTypeId::GEOMETRY ? ("ST_AsWKB(" + quoted + ")") : quoted;
+		// GeometryColumnRef: the column arrives here already decoded to DuckDB's
+		// native GEOMETRY type when it was promoted -- declared in the file's
+		// GeoParquet `geo` footer (enable_geoparquet_conversion, on by default,
+		// gated only on the `parquet` extension, not on `spatial`). The underlying
+		// bytes are the same WKB either way.
+		const auto wkb_expr = GeometryColumnRef(quoted, col_type);
 		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + wkb_expr + ") FROM " +
 		                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
 		for (idx_t row = 0; row < result->RowCount(); row++) {

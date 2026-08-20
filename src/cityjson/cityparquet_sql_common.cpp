@@ -61,6 +61,13 @@ LogicalType WidenedType(const LogicalType &destination, const LogicalType &sourc
 	return LogicalType(LogicalTypeId::VARCHAR);
 }
 
+std::string GeometryColumnRef(const std::string &quoted_name, const LogicalType &type) {
+	if (type.id() == LogicalTypeId::GEOMETRY) {
+		return "ST_AsWKB(" + quoted_name + ")";
+	}
+	return quoted_name;
+}
+
 namespace {
 
 //! The object-table footers that actually declare a CRS -- the only rows either helper
