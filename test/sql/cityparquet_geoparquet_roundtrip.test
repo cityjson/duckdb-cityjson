@@ -17,6 +17,13 @@ CREATE SCHEMA geo_pkg;
 statement ok
 PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'geo_pkg');
 
+# Pins the premise: if promotion ever stops firing, this column would be BLOB and
+# the rest of the test would pass vacuously without exercising the GEOMETRY path.
+query I
+SELECT typeof(geometry_lod0_0) FROM geo_pkg.building LIMIT 1;
+----
+GEOMETRY
+
 statement ok
 SELECT * FROM cityparquet_write('geo_pkg', '__TEST_DIR__/geo_out');
 

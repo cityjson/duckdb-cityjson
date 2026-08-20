@@ -406,6 +406,17 @@ TO 'delft.parquet'
 use [`cityparquet_write`](#the-package-round-trip), which branches the footer
 shape in C++ for exactly this reason.
 
+A geometry column that DuckDB has decoded to its native `GEOMETRY` type — which
+`enable_geoparquet_conversion` does automatically for any column named in a
+source file's `geo` footer key, whether or not the `spatial` extension is
+installed or loaded — carries its own writer hook: `COPY ... TO ... (FORMAT
+PARQUET)` over such a column stamps its own `geo` entry into `KV_METADATA`
+alongside any `geo` key given explicitly above. Parquet allows duplicate keys
+silently, so the file ends up with two, and a reader that picks the wrong one
+gets a footer this COPY never intended. Convert the column back to WKB first
+(`ST_AsWKB(col)`, in DuckDB core, no extension needed) before a `COPY` that also
+supplies its own `geo` key.
+
 ---
 
 ## Appearance sidecars

@@ -155,22 +155,26 @@ LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, co
 	return LogicalType(LogicalTypeId::INVALID);
 }
 
-//! A COPY source list that casts any DuckDB-native GEOMETRY column back to BLOB.
-//! enable_geoparquet_conversion (on by default whenever `spatial` is merely
-//! installed, independent of whether it is loaded) promotes a column named in a
-//! source footer's `geo` key to GEOMETRY on read; passing that straight through a
-//! `COPY table TO ... (FORMAT PARQUET)` lets DuckDB's own GeoParquet writer hook
-//! stamp a second `geo` key into the KV metadata alongside this extension's.
-//! Parquet permits duplicate keys silently, so a reader taking the wrong one gets
-//! a footer this writer never intended. The cast undoes the promotion; the bytes
-//! underneath are the same WKB either way.
+//! A COPY source list that converts any DuckDB-native GEOMETRY column back to WKB
+//! BLOB via ST_AsWKB. enable_geoparquet_conversion (on by default whenever the
+//! `parquet` extension reads a footer's `geo` key -- not gated on `spatial` being
+//! installed or loaded at all) promotes such a column to GEOMETRY on read; passing
+//! that straight through a `COPY table TO ... (FORMAT PARQUET)` lets DuckDB's own
+//! GeoParquet writer hook stamp a second `geo` key into the KV metadata alongside
+//! this extension's. Parquet permits duplicate keys silently, so a reader taking
+//! the wrong one gets a footer this writer never intended. ST_AsWKB rather than a
+//! `::BLOB` cast: the cast is registered by `spatial` only once it is loaded,
+//! whereas ST_AsWKB/ST_AsBinary ship in DuckDB core (functions.json) and need no
+//! extension at all -- so this never requires `spatial` to be installed, and never
+//! loads it, so it never re-arms this same collision one layer out for a caller's
+//! own COPY over the resulting table.
 std::string CopySourceList(ClientContext &context, const std::string &schema, const std::string &table) {
 	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
 	vector<string> parts;
 	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.Name());
 		if (column.Type().id() == LogicalTypeId::GEOMETRY) {
-			parts.push_back(quoted + "::BLOB AS " + quoted);
+			parts.push_back("ST_AsWKB(" + quoted + ") AS " + quoted);
 		} else {
 			parts.push_back(quoted);
 		}
@@ -294,25 +298,16 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 			}
 			continue;
 		}
-		if (col_type.id() == LogicalTypeId::GEOMETRY) {
-			// enable_geoparquet_conversion (on by default whenever `spatial` is merely
-			// installed, independent of whether it is loaded) has already promoted this
-			// column -- declared in the file's GeoParquet `geo` footer -- to DuckDB's
-			// core GEOMETRY type. The type itself needs no extension to exist, but the
-			// `::BLOB` cast below calls a function spatial registers only once it is
-			// actually loaded; this gate only ever fires when spatial is already
-			// installed locally (that is what produced the GEOMETRY column in the
-			// first place), so the load is off disk, never a network fetch. A direct
-			// `LOAD` rather than ExtensionHelper::AutoLoadExtension because autoloading
-			// is off in the test runner and this must not depend on it.
-			Run(connection, "LOAD spatial");
-		}
-		// `::BLOB` because a column declared in the file's GeoParquet `geo`
-		// footer arrives here already decoded to DuckDB's native GEOMETRY type
-		// (enable_geoparquet_conversion, on by default). The underlying bytes
-		// are the same WKB either way, and casting keeps one probe rather than
-		// two overloads that could drift apart.
-		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + quoted + "::BLOB) FROM " +
+		// ST_AsWKB(...) rather than a `::BLOB` cast when the column arrives here
+		// already decoded to DuckDB's native GEOMETRY type -- promoted because it
+		// was declared in the file's GeoParquet `geo` footer (enable_geoparquet_
+		// conversion, on by default, gated only on the `parquet` extension, not on
+		// `spatial` being installed or loaded). A `::BLOB` cast needs `spatial`
+		// loaded to exist at all; ST_AsWKB/ST_AsBinary ship in DuckDB core and need
+		// no extension, so this never requires `spatial` and never loads it. The
+		// underlying bytes are the same WKB either way.
+		const auto wkb_expr = col_type.id() == LogicalTypeId::GEOMETRY ? ("ST_AsWKB(" + quoted + ")") : quoted;
+		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + wkb_expr + ") FROM " +
 		                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
 		for (idx_t row = 0; row < result->RowCount(); row++) {
 			auto value = result->GetValue(0, row);
@@ -325,7 +320,7 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		}
 		auto extent = Run(connection, "SELECT min(e.min_x), min(e.min_y), min(e.min_z), max(e.max_x), max(e.max_y), "
 		                              "max(e.max_z) FROM (SELECT cityjson_wkb_extent(" +
-		                                  quoted + "::BLOB) AS e FROM " + QualifiedName(schema, table) + " WHERE " +
+		                                  wkb_expr + ") AS e FROM " + QualifiedName(schema, table) + " WHERE " +
 		                                  quoted + " IS NOT NULL) t");
 		if (extent->RowCount() == 1 && !extent->GetValue(0, 0).IsNull()) {
 			entry.has_extent = true;

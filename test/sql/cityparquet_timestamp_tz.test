@@ -16,7 +16,7 @@ CREATE SCHEMA ts_pkg;
 
 statement ok
 CREATE TABLE ts_pkg.building AS
-  SELECT * FROM read_cityjsonseq('../cityparquet-rs/tests/fixtures/delft.city.jsonl', lod => '2.2');
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2');
 
 statement ok
 PRAGMA cityparquet_init('ts_pkg');
