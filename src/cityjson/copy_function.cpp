@@ -1269,9 +1269,8 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 			auto bbox_val = input.data[bind_data.bbox_col].GetValue(row);
 			if (!bbox_val.IsNull() && bbox_val.type().id() == LogicalTypeId::STRUCT) {
 				auto &children = StructValue::GetChildren(bbox_val);
-				if (children.size() >= 6 && !children[0].IsNull() && !children[1].IsNull() &&
-				    !children[2].IsNull() && !children[3].IsNull() && !children[4].IsNull() &&
-				    !children[5].IsNull()) {
+				if (children.size() >= 6 && !children[0].IsNull() && !children[1].IsNull() && !children[2].IsNull() &&
+				    !children[3].IsNull() && !children[4].IsNull() && !children[5].IsNull()) {
 					geographical_extent_out =
 					    json::array({children[0].GetValue<double>(), children[1].GetValue<double>(),
 					                 children[2].GetValue<double>(), children[3].GetValue<double>(),
