@@ -25,8 +25,9 @@ public:
 	 * - "children" → CityObject.children
 	 * - "parents" → CityObject.parents
 	 * - "children_roles" → CityObject.children_roles
-	 * - "geographical_extent" → CityObject.geographical_extent
-	 * - "other" → Attributes not in predefined/dynamic columns
+	 * - "other" → Attributes not in predefined/dynamic columns, plus
+	 *   CityObject.geographical_extent (spec 07-mapping-cityjson.mdx: no dedicated
+	 *   reserved column for the source's per-object geographicalExtent)
 	 * - "address", "template" → always NULL; CityObject carries no field for
 	 *   either yet, so nothing is invented
 	 *

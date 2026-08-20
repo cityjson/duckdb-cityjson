@@ -38,12 +38,18 @@ b3	f3	Building
 # non-predefined, non-geometry attribute -- so projecting it must decode all of
 # them, not none. A mask rule that treats every predefined column as
 # attribute-free would return NULL here.
+#
+# geographicalExtent also lands here even though the source fixture never
+# declares one: FlatCityBuf's own per-object extent field is always populated
+# (COPY ... TO flatcitybuf falls back to bbox when a CityObject has no source
+# geographicalExtent), and the full read path surfaces that stored extent the
+# same way it would a source-declared one.
 query II
 SELECT feature_id, other FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY feature_id;
 ----
-f1	{"category":"A","height":10.0}
-f2	{"category":"B","height":20.0}
-f3	{"category":"A","height":30.0}
+f1	{"category":"A","geographicalExtent":[0.0,0.0,0.0,10.0,10.0,0.0],"height":10.0}
+f2	{"category":"B","geographicalExtent":[100.0,100.0,0.0,110.0,110.0,0.0],"height":20.0}
+f3	{"category":"A","geographicalExtent":[200.0,200.0,0.0,210.0,210.0,0.0],"height":30.0}
 
 # COUNT(*) -- empty projection, light path, still one row per CityObject
 query I

@@ -1,0 +1,74 @@
+# name: test/sql/cityjson_geographical_extent_other.test
+# description: a CityObject's source geographicalExtent has no reserved column, lives in other, and round-trips verbatim
+# group: [sql]
+
+#
+# Fixture: test/data/delft_subset.city.jsonl (real 3DBAG data, not produced by this
+# extension). Its Building CityObjects carry a source `geographicalExtent`; its
+# BuildingPart children do not.
+#
+
+require cityjson
+
+# The spec's reserved-column list has no dedicated `geographical_extent` column --
+# `bbox` (derived from geometry) is a different thing.
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+WHERE column_name = 'geographical_extent';
+----
+0
+
+# The source's per-object geographicalExtent for this Building lands in `other`,
+# under its own source key, verbatim.
+query I
+SELECT other LIKE '%"geographicalExtent":[84593.2421875,446459.625,0.47600001096725464,84597.5,446462.78125,3.2257587909698486]%'
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+----
+true
+
+# A BuildingPart child has no source geographicalExtent, so `other` never
+# synthesises one -- nothing may fail on its absence.
+query I
+SELECT other NOT LIKE '%geographicalExtent%' OR other IS NULL
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE object_type = 'BuildingPart' LIMIT 1;
+----
+true
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/delft_ge_roundtrip.city.jsonl' (FORMAT cityjsonseq);
+
+# COPY ... TO cityjson reconstructs the Building's geographicalExtent from
+# `other`, byte-identical to the source -- not recomputed from bbox, which would
+# differ (bbox is unioned across LoDs/descendants and derived from geometry, not
+# copied from the source's own declared extent).
+query I
+SELECT content LIKE '%[84593.2421875,446459.625,0.47600001096725464,84597.5,446462.78125,3.2257587909698486]%'
+FROM read_text('__TEST_DIR__/delft_ge_roundtrip.city.jsonl');
+----
+true
+
+# Neither `other` nor `bbox`: a projection with no bbox column, restricted to a
+# BuildingPart (no source geographicalExtent) writes no geographicalExtent member
+# at all -- absence is not an error, and there is nothing to fall back to.
+statement ok
+COPY (
+    SELECT id, feature_id, object_type, children, parents, children_roles, other
+    FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+    WHERE object_type = 'BuildingPart'
+)
+TO '__TEST_DIR__/delft_ge_no_bbox.city.jsonl' (FORMAT cityjsonseq);
+
+# The object's own JSON body has no geographicalExtent key at all -- if the
+# fallback had fired wrongly it would insert alphabetically before "geometry" and
+# this exact substring would no longer match. (The file's header line still
+# carries the *dataset-level* metadata.geographicalExtent, inherited from the
+# source unconditionally -- a different thing, untouched by this change -- so the
+# assertion is scoped to this one CityObject's body rather than the whole file.)
+query I
+SELECT content LIKE '%"NL.IMBAG.Pand.0503100000012869-0":{"geometry":[],"parents":["NL.IMBAG.Pand.0503100000012869"],"type":"BuildingPart"}%'
+FROM read_text('__TEST_DIR__/delft_ge_no_bbox.city.jsonl');
+----
+true

@@ -104,6 +104,11 @@ struct CityJSONCopyBindData : public FunctionData {
 	idx_t parents_col = DConstants::INVALID_INDEX;
 	idx_t children_roles_col = DConstants::INVALID_INDEX;
 	idx_t geometry_col = DConstants::INVALID_INDEX;
+	// `bbox` and `other`, for reconstructing each CityObject's geographicalExtent on
+	// export: `other`'s geographicalExtent wins verbatim when present, else it falls
+	// back to `bbox`, else the member is omitted (see CityJSONCopyToSink).
+	idx_t bbox_col = DConstants::INVALID_INDEX;
+	idx_t other_col = DConstants::INVALID_INDEX;
 	// Legacy single properties column / fallback when a geometry column has no per-LOD
 	// properties counterpart (e.g. the old geom_lod* layout).
 	idx_t geometry_properties_col = DConstants::INVALID_INDEX;

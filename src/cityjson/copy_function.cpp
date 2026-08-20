@@ -109,6 +109,8 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->parents_col = parents_col;
 	result->children_roles_col = children_roles_col;
 	result->geometry_col = geometry_col;
+	result->bbox_col = bbox_col;
+	result->other_col = other_col;
 	result->geometry_properties_col = geometry_properties_col;
 	result->geometry_properties_by_name = geometry_properties_by_name;
 	result->appearance_by_name = appearance_by_name;
@@ -584,6 +586,12 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 			break;
 		case CopyColumnRole::Appearance:
 			bind_data->appearance_by_name[names[i]] = i;
+			break;
+		case CopyColumnRole::Bbox:
+			bind_data->bbox_col = i;
+			break;
+		case CopyColumnRole::Other:
+			bind_data->other_col = i;
 			break;
 		default:
 			break;
@@ -1232,6 +1240,47 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 		}
 		if (!attributes.empty()) {
 			city_obj["attributes"] = attributes;
+		}
+
+		// geographicalExtent: no reserved column carries the source's per-object
+		// extent (spec 07-mapping-cityjson.mdx), so reconstruct it from wherever this
+		// writer's own convention put it. `other`'s geographicalExtent is the
+		// producer's own declared extent and wins, verbatim; `bbox` (derived from
+		// geometry, spec-recomputed rather than source data) is only a fallback;
+		// absent both, the member is simply omitted. Storing it in `other` is tool
+		// behaviour, not a spec requirement, so its absence here is never an error.
+		std::optional<json> geographical_extent_out;
+		if (bind_data.other_col != DConstants::INVALID_INDEX) {
+			auto other_val = input.data[bind_data.other_col].GetValue(row);
+			if (!other_val.IsNull()) {
+				try {
+					json other_json = json_utils::ParseJson(other_val.ToString());
+					if (other_json.is_object() && other_json.contains("geographicalExtent") &&
+					    !other_json["geographicalExtent"].is_null()) {
+						geographical_extent_out = other_json["geographicalExtent"];
+					}
+				} catch (const CityJSONError &) {
+					// Malformed `other` text is not this reconstruction's problem to
+					// diagnose; fall through to the bbox fallback below.
+				}
+			}
+		}
+		if (!geographical_extent_out.has_value() && bind_data.bbox_col != DConstants::INVALID_INDEX) {
+			auto bbox_val = input.data[bind_data.bbox_col].GetValue(row);
+			if (!bbox_val.IsNull() && bbox_val.type().id() == LogicalTypeId::STRUCT) {
+				auto &children = StructValue::GetChildren(bbox_val);
+				if (children.size() >= 6 && !children[0].IsNull() && !children[1].IsNull() &&
+				    !children[2].IsNull() && !children[3].IsNull() && !children[4].IsNull() &&
+				    !children[5].IsNull()) {
+					geographical_extent_out =
+					    json::array({children[0].GetValue<double>(), children[1].GetValue<double>(),
+					                 children[2].GetValue<double>(), children[3].GetValue<double>(),
+					                 children[4].GetValue<double>(), children[5].GetValue<double>()});
+				}
+			}
+		}
+		if (geographical_extent_out.has_value()) {
+			city_obj["geographicalExtent"] = geographical_extent_out.value();
 		}
 
 		// Add to local buffer

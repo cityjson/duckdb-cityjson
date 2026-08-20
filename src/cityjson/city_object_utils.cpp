@@ -51,13 +51,6 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		return roles;
 	}
 
-	if (col.name == "geographical_extent") {
-		if (!obj.geographical_extent.has_value()) {
-			return json(nullptr);
-		}
-		return obj.geographical_extent->ToJson();
-	}
-
 	// `address` and `template`: reserved columns the spec requires present (spec
 	// "Optional data is NULL, not an omitted column"), but nothing in CityObject
 	// parses source address members or geometry-template instance data yet. Always
@@ -76,6 +69,13 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 			if (!IsPredefinedColumn(key) && !IsGeometryColumn(key)) {
 				other_attrs[key] = value;
 			}
+		}
+		// The spec's reserved-column list has no dedicated column for the source's
+		// per-object geographicalExtent (07-mapping-cityjson.mdx: `bbox` is derived
+		// from geometry rather than copied from the source extent, so the source
+		// extent is preserved here verbatim, under its source key).
+		if (obj.geographical_extent.has_value()) {
+			other_attrs["geographicalExtent"] = obj.geographical_extent->ToJson();
 		}
 		if (other_attrs.empty()) {
 			return json(nullptr);
