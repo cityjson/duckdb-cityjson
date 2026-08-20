@@ -42,23 +42,12 @@ public:
 	 */
 	static std::string GetTableNameForLOD(const std::string &lod, const std::string &base_name = "geometry");
 
-	/**
-	 * Get the leading (head) reserved columns that appear in every LOD table,
-	 * before `bbox` and the geometry group (spec 02-object-table-schema.mdx,
-	 * "Reserved columns").
-	 *
-	 * Columns, in order:
-	 * - id: VARCHAR
-	 * - feature_id: VARCHAR
-	 * - object_type: VARCHAR
-	 * - parents: LIST(VARCHAR)
-	 * - children: LIST(VARCHAR)
-	 * - children_roles: LIST(VARCHAR)
-	 * - address: LIST(STRUCT) -- always NULL until a reader parses source addresses
-	 *
-	 * @return Vector of base column definitions
-	 */
-	static std::vector<Column> GetBaseColumns();
+	// The leading (head) reserved columns that appear in every LOD table, before
+	// `bbox` and the geometry group, are GetDefinedColumns() (column_types.hpp) --
+	// not a second accessor here. The `lod =>` path (InferLODTables) and the
+	// default wide-layout readers (local_cityjson_reader.cpp and its siblings)
+	// must read the identical head run from one place, or the two are free to
+	// drift apart exactly as this task existed to repair.
 
 	/**
 	 * Get `bbox` plus the geometry-specific columns for WKB encoding, suffixed

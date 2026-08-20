@@ -90,17 +90,6 @@ std::string LODTableUtils::ParseLODFromSuffix(const std::string &column_suffix) 
 // Column Definitions
 // =============================================================================
 
-std::vector<Column> LODTableUtils::GetBaseColumns() {
-	// Spec 02-object-table-schema.mdx, "Reserved columns": the head run, up to
-	// but not including `bbox`.
-	return {
-	    Column("id", ColumnType::Varchar),          Column("feature_id", ColumnType::Varchar),
-	    Column("object_type", ColumnType::Varchar), Column("parents", ColumnType::VarcharArray),
-	    Column("children", ColumnType::VarcharArray), Column("children_roles", ColumnType::VarcharArray),
-	    Column("address", ColumnType::AddressList),
-	};
-}
-
 std::vector<Column> LODTableUtils::GetGeometryColumns(const std::string &lod) {
 	// Spec § "Levels of detail": every geometry column is suffixed, and the suffix
 	// always carries a minor -- LoD "3" reads back as "3.0" and yields
@@ -182,8 +171,11 @@ std::vector<LODTableDefinition> LODTableUtils::InferLODTables(const std::vector<
 
 		// Reserved columns first, in the spec's fixed order -- head, then bbox +
 		// geometry (suffixed with this table's LoD), then the trailing run -- and
-		// only then every attribute column.
-		auto base_cols = GetBaseColumns();
+		// only then every attribute column. The head run is GetDefinedColumns()
+		// itself, not a second hand-maintained copy of it: the `lod =>` path and
+		// the default wide-layout readers must not be able to drift apart on what
+		// the head run contains.
+		auto base_cols = GetDefinedColumns();
 		table.columns.insert(table.columns.end(), base_cols.begin(), base_cols.end());
 
 		auto geom_cols = GetGeometryColumns(lod);

@@ -41,9 +41,12 @@ extension only generates text.
   NULL, but a *source* column with no destination match is a binder error. Schema
   evolution must run over sidecars too, not only module tables — `geometry_templates`
   carries per-LoD columns, so its shape varies by file.
-- **`bbox` is optional.** A source with only template geometry produces neither
-  `geometry_lod*` nor `bbox`, so anything generating `UPDATE ... SET bbox` must check the
-  column exists.
+- **`bbox` is always present from this extension's own readers, but not from every
+  table.** A source with only template geometry produces no `geometry_lod*` columns,
+  but `bbox` is unconditional regardless (spec 02-object-table-schema.mdx, like
+  `address`/`template`). A hand-rolled or foreign table can still lack it, so anything
+  generating `UPDATE ... SET bbox` must check the column exists rather than assume a
+  table this extension wrote.
 - **`cityparquet_write` is a table function, not a pragma.** `KV_METADATA` accepts
   `getvariable()` (so a footer *value* can be computed in generated SQL) but cannot omit a
   *key*: a NULL value writes the literal string `"NULL"`. A solid-only table must write no

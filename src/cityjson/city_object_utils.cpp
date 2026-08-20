@@ -181,12 +181,15 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	}
 
 	// `bbox` leads the geometry group (spec 02-object-table-schema.mdx, "Reserved
-	// columns": bbox precedes every geometry_lod*). Only emitted when at least one
-	// LOD geometry exists.
+	// columns": bbox precedes every geometry_lod*), and is emitted unconditionally
+	// -- unlike the geometry_lod*/geometry_properties_lod*/material_lod*/
+	// texture_lod* family, whose per-LoD *set* genuinely is a property of the
+	// dataset (spec: "a table whose objects have no analysis geometry at all
+	// carries none of them"), bbox is not part of that per-LoD exception: it is a
+	// single reserved column like `address` or `template`, column-nullable but
+	// always present. cityparquet-rs pushes it unconditionally too.
 	std::vector<Column> result;
-	if (!lods.empty()) {
-		result.emplace_back("bbox", ColumnType::GeographicalExtent);
-	}
+	result.emplace_back("bbox", ColumnType::GeographicalExtent);
 
 	// Create per-LOD WKB geometry columns (CityParquet-style wide layout):
 	// for each LOD, a "geometry_lodX_Y" (WKB BLOB) and "geometry_properties_lodX_Y" (JSON).

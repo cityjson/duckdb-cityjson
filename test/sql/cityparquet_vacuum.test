@@ -182,6 +182,15 @@ SELECT COUNT(*) FROM ams.materials WHERE id = 42;
 ----
 1
 
+# The template row itself must survive too -- ams.building's `template` column
+# is always NULL (this reader does not populate it yet), so a real reference
+# to id 1 is nowhere for ReferencedIds to find. That must read as
+# "undeterminable", not "nothing references template 1".
+query I
+SELECT COUNT(*) FROM ams.geometry_templates;
+----
+1
+
 # An ordinary attribute that merely starts with the appearance prefix is not an
 # appearance column, so orphan detection must not try to parse it.
 statement ok

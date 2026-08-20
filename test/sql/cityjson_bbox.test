@@ -91,3 +91,19 @@ WHERE p.bbox.max_z < c.bbox.max_z OR p.bbox.min_z > c.bbox.min_z
    OR p.bbox.min_x > c.bbox.min_x OR p.bbox.max_x < c.bbox.max_x;
 ----
 0
+
+# `bbox` is a reserved column (spec 02-object-table-schema.mdx: "column nullable;
+# the six struct fields are non-null") -- present regardless of whether any object
+# in the table has geometry at all. The per-LoD exception in the same spec section
+# covers only the geometry_lod*/geometry_properties_lod*/material_lod*/texture_lod*
+# family, not bbox. cityparquet-rs pushes bbox unconditionally too (model.rs).
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/no_geometry.city.json'))
+WHERE column_name = 'bbox';
+----
+1
+
+query T
+SELECT bbox FROM read_cityjson('test/data/no_geometry.city.json');
+----
+NULL

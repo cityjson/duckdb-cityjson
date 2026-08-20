@@ -322,7 +322,14 @@ simply nothing to index.
 | `geometry` / `geometry_lod*` | No | WKB `BLOB` **or** DuckDB `GEOMETRY` |
 | `geometry_properties*` | No | CityParquet STRUCT **or** JSON text |
 
-Everything else is written as a CityJSON attribute.
+Everything else is written as a CityJSON attribute, with one exception: `bbox`,
+`other`, `address` and `template` are **recognised but not round-tripped** — a
+writer neither serialises their value into the output CityJSON nor declares them
+as attribute columns. `bbox` is derived and recomputed on read, so writing it
+back would be redundant; `other`, `address` and `template` are not written yet
+(a future writer would reassemble `other`'s members onto the CityObject, and
+`address`/`template` into their respective CityJSON members, rather than
+flattening any of the three into `attributes`).
 
 **The wide CityParquet layout round-trips directly.** A Parquet object table goes
 back to CityJSON with no intermediate step, one multi-LoD CityObject per feature:

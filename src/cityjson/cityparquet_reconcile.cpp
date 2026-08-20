@@ -169,9 +169,11 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 	       "FROM __cp_anc a JOIN __cp_own o ON o.id = a.node GROUP BY a.ancestor;\n";
 
 	for (const auto &table : object_tables) {
-		// `bbox` is an optional column, and a table whose objects have no analysis
-		// geometry at all carries neither geometry columns nor a bbox. There is nothing
-		// to write there, and writing anyway is a binder error.
+		// `bbox` is column-optional at the catalog level (a table this extension's
+		// own readers produced always carries it -- spec 02-object-table-schema.mdx,
+		// unconditional like `address`/`template` -- but a hand-rolled or foreign
+		// table need not). Writing `bbox = ...` against a table that lacks the
+		// column is a binder error, so this still has to check rather than assume.
 		auto pending_entry = pending.find(table);
 		const bool has_bbox =
 		    pending_entry == pending.end() ? HasBboxColumn(context, schema, table) : pending_entry->second.has_bbox;
