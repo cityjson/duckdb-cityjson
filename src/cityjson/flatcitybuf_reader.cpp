@@ -2,6 +2,7 @@
 
 #include "cityjson/flatcitybuf_reader.hpp"
 #include "cityjson/city_object_utils.hpp"
+#include "cityjson/lod_table.hpp"
 #include "cityjson/duckdb_fs_range_reader.hpp"
 #include "cityjson/json_utils.hpp"
 #include <fcb/cityjson.hpp>
@@ -358,15 +359,26 @@ std::vector<Column> FlatCityBufReader::Columns() const {
 					break;
 				}
 			}
-			if (already_present || IsPredefinedColumn(col.name)) {
+			// IsReservedColumnName, not IsPredefinedColumn: the latter is only the
+			// small set GetAttributeValue's `other` accumulation cares about (and
+			// deliberately omits e.g. `bbox`/`address`/`template`, which fall back
+			// into `other` on a genuine source-attribute collision). A header that
+			// declares an attribute literally named `bbox` or `address` must not
+			// duplicate this reader's own reserved column of that name.
+			if (already_present || IsReservedColumnName(col.name)) {
 				continue;
 			}
 			attr_columns.emplace_back(col.name, ColumnKindForFcbType(col.type));
 		}
 	}
 
-	columns.insert(columns.end(), attr_columns.begin(), attr_columns.end());
+	// Reserved columns in the spec's fixed order -- head, then bbox + geometry,
+	// then the trailing run (template, other) -- and only then every attribute
+	// column (spec 02-object-table-schema.mdx, "Reserved columns").
 	columns.insert(columns.end(), geom_columns.begin(), geom_columns.end());
+	auto trailing_columns = LODTableUtils::GetTrailingColumns();
+	columns.insert(columns.end(), trailing_columns.begin(), trailing_columns.end());
+	columns.insert(columns.end(), attr_columns.begin(), attr_columns.end());
 
 	cached_columns_ = columns;
 	return columns;

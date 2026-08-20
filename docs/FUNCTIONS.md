@@ -832,19 +832,24 @@ generated statements are idempotent, but two things a generator cannot do:
 
 ### Predefined columns
 
+Reserved columns appear in the order below, before every attribute column
+(CityParquet spec, "Reserved columns"):
+
 | Column | Type | Description |
 | ------ | ---- | ----------- |
 | `id` | VARCHAR | CityObject identifier |
 | `feature_id` | VARCHAR | Root-family grouping key |
 | `object_type` | VARCHAR | CityGML class name (`Building`, `Road`, …) |
+| `parents` | VARCHAR[] | Parent CityObject ids |
 | `children` | VARCHAR[] | Child CityObject ids |
 | `children_roles` | VARCHAR[] | Roles, positionally aligned with `children` |
-| `parents` | VARCHAR[] | Parent CityObject ids |
-| `other` | JSON (VARCHAR) | Attributes not mapped to their own column |
+| `address` | STRUCT[] | Reserved; always NULL — no reader parses source addresses yet |
+| `bbox` | STRUCT (`min_x … max_z DOUBLE`) | 3D extent in world coordinates (below) |
+| *(the per-LoD geometry group, below)* | | |
+| `template` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses geometry-template instances yet |
+| `other` | JSON (VARCHAR) | Source members not mapped to a reserved or attribute column |
 
-Then **dynamic attribute columns** inferred from the data, then the per-LoD
-geometry columns, and **last** a `bbox` STRUCT (`min_x … max_z DOUBLE`) in world
-coordinates.
+Then **every attribute column** inferred from the data, last.
 
 `bbox` is **unioned across every stored LoD and across the object's
 descendants** — so a parent `Building` whose 3D detail lives on its
@@ -852,10 +857,15 @@ descendants** — so a parent `Building` whose 3D detail lives on its
 single exception is `lod =>` mode, which has only the one requested LoD to work
 from.)
 
+A query selecting a reserved column **by name** is unaffected by this order; one
+selecting by ordinal position (`SELECT #4`, or a `SELECT *` a caller then indexes
+into) must be updated.
+
 ### Geometry columns (CityParquet wide layout)
 
-One group per LoD found in the data, named after the normalised LoD. A suffix
-always carries a minor, so `2.0` becomes `geometry_lod2_0`, never `geometry_lod2`:
+`bbox` (above) leads the geometry group; then one group per LoD found in the
+data, named after the normalised LoD. A suffix always carries a minor, so `2.0`
+becomes `geometry_lod2_0`, never `geometry_lod2`:
 
 | Column | Type | Description |
 | ------ | ---- | ----------- |

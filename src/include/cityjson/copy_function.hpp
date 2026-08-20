@@ -35,6 +35,8 @@ enum class CopyColumnRole {
 	Appearance,         // material_lod* / texture_lod* (per-LoD appearance, §11)
 	Bbox,               // derived bounding box — recomputed on read, ignored on write
 	Other,              // extension fields
+	Address,            // reserved `address` column — no writer round-trips it yet
+	Template,           // reserved `template` column — no writer round-trips it yet
 	Attribute           // everything else -> attributes map
 };
 

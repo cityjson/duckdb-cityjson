@@ -43,33 +43,54 @@ public:
 	static std::string GetTableNameForLOD(const std::string &lod, const std::string &base_name = "geometry");
 
 	/**
-	 * Get base columns that appear in every LOD table
-	 * These are the standard columns without geometry
+	 * Get the leading (head) reserved columns that appear in every LOD table,
+	 * before `bbox` and the geometry group (spec 02-object-table-schema.mdx,
+	 * "Reserved columns").
 	 *
-	 * Columns:
+	 * Columns, in order:
 	 * - id: VARCHAR
 	 * - feature_id: VARCHAR
 	 * - object_type: VARCHAR
-	 * - children: LIST(VARCHAR)
 	 * - parents: LIST(VARCHAR)
+	 * - children: LIST(VARCHAR)
+	 * - children_roles: LIST(VARCHAR)
+	 * - address: LIST(STRUCT) -- always NULL until a reader parses source addresses
 	 *
 	 * @return Vector of base column definitions
 	 */
 	static std::vector<Column> GetBaseColumns();
 
 	/**
-	 * Get geometry-specific columns for WKB encoding, suffixed with the given LoD
+	 * Get `bbox` plus the geometry-specific columns for WKB encoding, suffixed
+	 * with the given LoD. `bbox` leads the group, per the spec's reserved order.
 	 *
 	 * Columns, for lod "2.2":
+	 * - bbox: STRUCT
 	 * - geometry_lod2_2: BLOB (WKB)
 	 * - geometry_properties_lod2_2: STRUCT (spec § "Geometry properties and semantics")
 	 * - material_lod2_2 / texture_lod2_2: JSON appearance (§11)
-	 * - bbox: STRUCT
 	 *
 	 * @param lod Normalised LoD string, e.g. "2.2" or "3.0"
 	 * @return Vector of geometry column definitions
 	 */
 	static std::vector<Column> GetGeometryColumns(const std::string &lod);
+
+	/**
+	 * Get the trailing reserved columns that come after every geometry column
+	 * and before any attribute column (spec 02-object-table-schema.mdx,
+	 * "Reserved columns").
+	 *
+	 * Columns, in order:
+	 * - template: STRUCT -- always NULL until a reader parses geometry-template
+	 *   instances
+	 * - other: JSON
+	 *
+	 * `other_attributes` is deliberately not included: the spec permits a reader
+	 * omitting it entirely, and this reader never synthesises one.
+	 *
+	 * @return Vector of trailing reserved column definitions
+	 */
+	static std::vector<Column> GetTrailingColumns();
 
 	/**
 	 * Collect all unique LOD values from features

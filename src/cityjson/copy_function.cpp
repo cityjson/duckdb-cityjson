@@ -66,6 +66,19 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 	if (name == "other") {
 		return CopyColumnRole::Other;
 	}
+	// Reserved (spec 02-object-table-schema.mdx) but always NULL today: no reader
+	// populates either from source data, and no writer here reassembles a CityJSON
+	// `address` member or geometry-template instance from one. Excluded from
+	// CopyColumnRole::Attribute so a NULL `address`/`template` column is never
+	// written as a literal CityJSON attribute, nor declared into an FCB header's
+	// attribute schema (copy_function.cpp's declared_attr_columns) -- same
+	// acceptable-loss treatment as Bbox and Other already get.
+	if (name == "address") {
+		return CopyColumnRole::Address;
+	}
+	if (name == "template") {
+		return CopyColumnRole::Template;
+	}
 	return CopyColumnRole::Attribute;
 }
 

@@ -27,6 +27,8 @@ public:
 	 * - "children_roles" → CityObject.children_roles
 	 * - "geographical_extent" → CityObject.geographical_extent
 	 * - "other" → Attributes not in predefined/dynamic columns
+	 * - "address", "template" → always NULL; CityObject carries no field for
+	 *   either yet, so nothing is invented
 	 *
 	 * Dynamic columns:
 	 * - Looks up attribute by column name in CityObject.attributes

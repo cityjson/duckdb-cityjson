@@ -47,6 +47,11 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 		return "INTEGER[][][][][]";
 	case ColumnType::GeometryVerticesArrowNative:
 		return "STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]";
+	case ColumnType::AddressList:
+		return "STRUCT(street VARCHAR, house_number VARCHAR, po_box VARCHAR, zip_code VARCHAR, city VARCHAR, "
+		       "state VARCHAR, country VARCHAR, free_text VARCHAR, location BLOB)[]";
+	case ColumnType::TemplateStruct:
+		return "STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])";
 	default:
 		return "UNKNOWN";
 	}
@@ -86,6 +91,10 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 		return LogicalTypeId::LIST;
 	case ColumnType::GeometryVerticesArrowNative:
 		return LogicalTypeId::LIST;
+	case ColumnType::AddressList:
+		return LogicalTypeId::LIST;
+	case ColumnType::TemplateStruct:
+		return LogicalTypeId::STRUCT;
 	default:
 		return LogicalTypeId::INVALID;
 	}
@@ -200,6 +209,34 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		children.push_back(std::make_pair("y", LogicalType::DOUBLE));
 		children.push_back(std::make_pair("z", LogicalType::DOUBLE));
 		return LogicalType::LIST(LogicalType::STRUCT(children));
+	}
+
+	case ColumnType::AddressList: {
+		// Spec "Addresses": a lean subset of 3DCityDB v5's ADDRESS table. `location`
+		// is a WKB MultiPointZ in the file CRS -- geometry, not a vertex-pool
+		// reference, so it is a BLOB like any other geometry column.
+		child_list_t<LogicalType> fields;
+		fields.push_back(std::make_pair("street", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("house_number", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("po_box", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("zip_code", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("city", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("state", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("country", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("free_text", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("location", LogicalType::BLOB));
+		return LogicalType::LIST(LogicalType::STRUCT(fields));
+	}
+
+	case ColumnType::TemplateStruct: {
+		// Spec: geometry-template instance data. The matrix is a flat 16-element
+		// row-major 4x4, not a nested type -- there is no per-writer choice to
+		// preserve, and DOUBLE[] is what a consumer actually wants to index into.
+		child_list_t<LogicalType> children;
+		children.push_back(std::make_pair("id", LogicalType::BIGINT));
+		children.push_back(std::make_pair("point", LogicalType::BLOB));
+		children.push_back(std::make_pair("transformationMatrix", LogicalType::LIST(LogicalType::DOUBLE)));
+		return LogicalType::STRUCT(children);
 	}
 
 	default:
@@ -415,7 +452,8 @@ bool ColumnTypeUtils::IsTemporal(ColumnType type) {
 bool ColumnTypeUtils::IsComplex(ColumnType type) {
 	return type == ColumnType::Json || type == ColumnType::VarcharArray || type == ColumnType::Geometry ||
 	       type == ColumnType::GeographicalExtent || type == ColumnType::GeometryWKB ||
-	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::AppearanceJson;
+	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::AppearanceJson ||
+	       type == ColumnType::AddressList || type == ColumnType::TemplateStruct;
 }
 
 // ============================================================
@@ -423,14 +461,18 @@ bool ColumnTypeUtils::IsComplex(ColumnType type) {
 // ============================================================
 
 std::vector<Column> GetDefinedColumns() {
+	// Spec 02-object-table-schema.mdx, "Reserved columns": this is the leading
+	// (head) run of the reserved order, up to but not including `bbox` -- callers
+	// splice geometry columns after this and LODTableUtils::GetTrailingColumns()
+	// (`template`, `other`) after that, before any attribute column.
 	return {
 	    Column("id", ColumnType::Varchar),
 	    Column("feature_id", ColumnType::Varchar),
 	    Column("object_type", ColumnType::Varchar),
+	    Column("parents", ColumnType::VarcharArray),
 	    Column("children", ColumnType::VarcharArray),
 	    Column("children_roles", ColumnType::VarcharArray),
-	    Column("parents", ColumnType::VarcharArray),
-	    Column("other", ColumnType::Json),
+	    Column("address", ColumnType::AddressList),
 	};
 }
 

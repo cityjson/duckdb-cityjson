@@ -56,10 +56,10 @@ std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Co
 		VectorType vec_type;
 
 		if (col.kind == ColumnType::VarcharArray || col.kind == ColumnType::GeometryArrowNative ||
-		    col.kind == ColumnType::GeometryVerticesArrowNative) {
+		    col.kind == ColumnType::GeometryVerticesArrowNative || col.kind == ColumnType::AddressList) {
 			vec_type = VectorType::List;
 		} else if (col.kind == ColumnType::Geometry || col.kind == ColumnType::GeographicalExtent ||
-		           col.kind == ColumnType::GeometryPropertiesStruct) {
+		           col.kind == ColumnType::GeometryPropertiesStruct || col.kind == ColumnType::TemplateStruct) {
 			vec_type = VectorType::Struct;
 		} else {
 			// All primitives and Json (stored as VARCHAR) are Flat -- including
@@ -403,6 +403,28 @@ static void AppendIntList(Vector &list_vec, const json &arr, size_t row) {
 	ListVector::SetListSize(list_vec, list_size + n);
 }
 
+// Append one LIST<DOUBLE> row from a flat json array of numbers (spec `template`:
+// transformationMatrix, a flat 16-element row-major 4x4). A non-numeric item
+// writes a SQL NULL list entry rather than failing the whole row.
+static void AppendDoubleList(Vector &list_vec, const json &arr, size_t row) {
+	const size_t n = arr.is_array() ? arr.size() : 0;
+	auto list_size = ListVector::GetListSize(list_vec);
+
+	FlatVector::GetData<list_entry_t>(list_vec)[row] = list_entry_t(list_size, n);
+	ListVector::Reserve(list_vec, list_size + n);
+
+	auto &child = ListVector::GetEntry(list_vec);
+	auto child_data = FlatVector::GetData<double>(child);
+	for (size_t i = 0; i < n; i++) {
+		if (arr[i].is_number()) {
+			child_data[list_size + i] = arr[i].get<double>();
+		} else {
+			FlatVector::SetNull(child, list_size + i, true);
+		}
+	}
+	ListVector::SetListSize(list_vec, list_size + n);
+}
+
 // Append one LIST<LIST<INTEGER>> row from a json array of arrays (spec `shells`:
 // per-solid, then per-shell, face counts -- always two levels deep).
 static void AppendIntListList(Vector &list_vec, const json &arr, size_t row) {
@@ -620,6 +642,43 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 	} else {
 		FlatVector::GetData<list_entry_t>(shells_vec)[row] = list_entry_t(0, 0);
 		FlatVector::SetNull(shells_vec, row, true);
+	}
+}
+
+// ============================================================
+// Template Struct
+// ============================================================
+
+void WriteTemplateStruct(Vector *vec, const json &value, size_t row) {
+	// STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
+	auto &children = StructVector::GetEntries(*vec);
+	auto &id_vec = *children[0];
+	auto &point_vec = *children[1];
+	auto &matrix_vec = *children[2];
+
+	// Same trap as WriteGeometryProperties: a null struct still needs a
+	// well-formed (empty) list_entry_t on its LIST child, or a later flatten/copy
+	// pass dereferences uninitialised list metadata regardless of the struct's own
+	// validity bit.
+	const bool is_null = value.is_null() || !value.is_object();
+	if (is_null) {
+		FlatVector::SetNull(*vec, row, true);
+	}
+
+	if (!is_null && value.contains("id") && value["id"].is_number_integer()) {
+		FlatVector::GetData<int64_t>(id_vec)[row] = value["id"].get<int64_t>();
+	} else {
+		FlatVector::SetNull(id_vec, row, true);
+	}
+
+	// `point`: no reader resolves a template instance's placement point yet.
+	FlatVector::SetNull(point_vec, row, true);
+
+	if (!is_null && value.contains("transformationMatrix") && value["transformationMatrix"].is_array()) {
+		AppendDoubleList(matrix_vec, value["transformationMatrix"], row);
+	} else {
+		FlatVector::GetData<list_entry_t>(matrix_vec)[row] = list_entry_t(0, 0);
+		FlatVector::SetNull(matrix_vec, row, true);
 	}
 }
 

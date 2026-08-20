@@ -91,10 +91,13 @@ std::string LODTableUtils::ParseLODFromSuffix(const std::string &column_suffix) 
 // =============================================================================
 
 std::vector<Column> LODTableUtils::GetBaseColumns() {
+	// Spec 02-object-table-schema.mdx, "Reserved columns": the head run, up to
+	// but not including `bbox`.
 	return {
-	    Column("id", ColumnType::Varchar),           Column("feature_id", ColumnType::Varchar),
-	    Column("object_type", ColumnType::Varchar),  Column("children", ColumnType::VarcharArray),
-	    Column("parents", ColumnType::VarcharArray),
+	    Column("id", ColumnType::Varchar),          Column("feature_id", ColumnType::Varchar),
+	    Column("object_type", ColumnType::Varchar), Column("parents", ColumnType::VarcharArray),
+	    Column("children", ColumnType::VarcharArray), Column("children_roles", ColumnType::VarcharArray),
+	    Column("address", ColumnType::AddressList),
 	};
 }
 
@@ -105,14 +108,27 @@ std::vector<Column> LODTableUtils::GetGeometryColumns(const std::string &lod) {
 	// column grammar as the wide layout, just restricted to one LoD. That keeps the
 	// level of detail recoverable from the column name alone, which is what lets
 	// COPY TO cityjson re-emit it -- an un-suffixed layout had nowhere to put it.
+	//
+	// `bbox` leads the group: the spec places it immediately before the
+	// geometry_lod* family, not after.
 	std::string suffix = FormatLODAsColumnSuffix(lod);
 	return {
+	    Column("bbox", ColumnType::GeographicalExtent),
 	    Column("geometry_" + suffix, ColumnType::GeometryWKB),
 	    Column("geometry_properties_" + suffix, ColumnType::GeometryPropertiesStruct),
 	    // Per-LoD appearance columns paired to the geometry by name (§11).
 	    Column("material_" + suffix, ColumnType::AppearanceJson),
 	    Column("texture_" + suffix, ColumnType::AppearanceJson),
-	    Column("bbox", ColumnType::GeographicalExtent),
+	};
+}
+
+std::vector<Column> LODTableUtils::GetTrailingColumns() {
+	// Spec 02-object-table-schema.mdx, "Reserved columns": everything after the
+	// geometry group and before any attribute column, excluding the optional
+	// `other_attributes` (this reader never synthesises one).
+	return {
+	    Column("template", ColumnType::TemplateStruct),
+	    Column("other", ColumnType::Json),
 	};
 }
 
@@ -164,16 +180,19 @@ std::vector<LODTableDefinition> LODTableUtils::InferLODTables(const std::vector<
 		table.lod_value = lod;
 		table.table_name = GetTableNameForLOD(lod);
 
-		// Add base columns
+		// Reserved columns first, in the spec's fixed order -- head, then bbox +
+		// geometry (suffixed with this table's LoD), then the trailing run -- and
+		// only then every attribute column.
 		auto base_cols = GetBaseColumns();
 		table.columns.insert(table.columns.end(), base_cols.begin(), base_cols.end());
 
-		// Add attribute columns
-		table.columns.insert(table.columns.end(), attribute_columns.begin(), attribute_columns.end());
-
-		// Add geometry columns, suffixed with this table's LoD
 		auto geom_cols = GetGeometryColumns(lod);
 		table.columns.insert(table.columns.end(), geom_cols.begin(), geom_cols.end());
+
+		auto trailing_cols = GetTrailingColumns();
+		table.columns.insert(table.columns.end(), trailing_cols.begin(), trailing_cols.end());
+
+		table.columns.insert(table.columns.end(), attribute_columns.begin(), attribute_columns.end());
 
 		tables.push_back(std::move(table));
 	}

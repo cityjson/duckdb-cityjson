@@ -1,0 +1,128 @@
+# name: test/sql/cityparquet_column_order.test
+# description: Reserved object-table columns emit in the spec's fixed order before every attribute
+# group: [sql]
+
+require cityjson
+
+# CityParquet spec (02-object-table-schema.mdx, "Reserved columns"): reserved columns
+# appear, in this order, before any attribute column --
+#   id, feature_id, object_type, parents, children, children_roles, address, bbox,
+#   geometry_lod*/geometry_properties_lod*/material_lod*/texture_lod*, template, other,
+#   [other_attributes]
+# `other_attributes` is optional (spec line 34) and never synthesised by this reader, so
+# it is not asserted here. minimal.city.json carries three attributes (function,
+# measuredHeight, yearOfConstruction), which is what exercises requirement 4 below.
+
+statement ok
+CREATE TABLE wide_cols AS
+SELECT column_name, row_number() OVER () AS ord
+FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json'));
+
+# 1. parents precedes children precedes children_roles
+query I
+SELECT (SELECT ord FROM wide_cols WHERE column_name = 'parents')
+     < (SELECT ord FROM wide_cols WHERE column_name = 'children')
+   AND (SELECT ord FROM wide_cols WHERE column_name = 'children')
+     < (SELECT ord FROM wide_cols WHERE column_name = 'children_roles');
+----
+true
+
+# 2. address and template exist, even though this fixture never populates either
+query I
+SELECT COUNT(*) FROM wide_cols WHERE column_name IN ('address', 'template');
+----
+2
+
+# 3. bbox precedes every geometry_lod* column
+query I
+SELECT COUNT(*) FROM wide_cols
+WHERE column_name LIKE 'geometry_lod%'
+  AND ord <= (SELECT ord FROM wide_cols WHERE column_name = 'bbox');
+----
+0
+
+# 4. every attribute column's position is greater than every reserved column's position,
+# asserted generically rather than by naming one attribute. Reserved names are the ones
+# the spec fixes plus the per-LoD structural families this fixture actually carries.
+statement ok
+CREATE TABLE wide_reserved AS
+SELECT column_name FROM wide_cols
+WHERE column_name IN ('id', 'feature_id', 'object_type', 'parents', 'children',
+                       'children_roles', 'address', 'bbox', 'template', 'other',
+                       'other_attributes')
+   OR column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
+   OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%';
+
+query I
+SELECT COUNT(*)
+FROM wide_cols attr
+WHERE attr.column_name NOT IN (SELECT column_name FROM wide_reserved)
+  AND attr.ord <= (SELECT MAX(ord) FROM wide_cols WHERE column_name IN (SELECT column_name FROM wide_reserved));
+----
+0
+
+statement ok
+DROP TABLE wide_cols;
+
+statement ok
+DROP TABLE wide_reserved;
+
+# The single-LoD `lod =>` path (LODTableUtils) is a second, independent assembly and
+# must satisfy the same order.
+statement ok
+CREATE TABLE lod_cols AS
+SELECT column_name, row_number() OVER () AS ord
+FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '2.2'));
+
+query I
+SELECT (SELECT ord FROM lod_cols WHERE column_name = 'parents')
+     < (SELECT ord FROM lod_cols WHERE column_name = 'children')
+   AND (SELECT ord FROM lod_cols WHERE column_name = 'children')
+     < (SELECT ord FROM lod_cols WHERE column_name = 'children_roles');
+----
+true
+
+query I
+SELECT COUNT(*) FROM lod_cols WHERE column_name IN ('address', 'template');
+----
+2
+
+query I
+SELECT COUNT(*) FROM lod_cols
+WHERE column_name LIKE 'geometry_lod%'
+  AND ord <= (SELECT ord FROM lod_cols WHERE column_name = 'bbox');
+----
+0
+
+statement ok
+DROP TABLE lod_cols;
+
+# read_cityjsonseq goes through a different reader (LocalCityJSONSeqReader) that also
+# consumes GetDefinedColumns() -- same order requirement.
+statement ok
+CREATE TABLE seq_cols AS
+SELECT column_name, row_number() OVER () AS ord
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'));
+
+query I
+SELECT (SELECT ord FROM seq_cols WHERE column_name = 'parents')
+     < (SELECT ord FROM seq_cols WHERE column_name = 'children')
+   AND (SELECT ord FROM seq_cols WHERE column_name = 'children')
+     < (SELECT ord FROM seq_cols WHERE column_name = 'children_roles');
+----
+true
+
+query I
+SELECT COUNT(*) FROM seq_cols WHERE column_name IN ('address', 'template');
+----
+2
+
+query I
+SELECT COUNT(*) FROM seq_cols
+WHERE column_name LIKE 'geometry_lod%'
+  AND ord <= (SELECT ord FROM seq_cols WHERE column_name = 'bbox');
+----
+0
+
+statement ok
+DROP TABLE seq_cols;
