@@ -1,6 +1,6 @@
 # name: test/sql/cityparquet_footer_attributes.test
 # description: Reserved structural columns never appear in the city.attributes list
-# group: [cityparquet]
+# group: [sql]
 
 require cityjson
 

@@ -30,8 +30,8 @@ namespace {
 //! from pre-batch state (TRAPS.md, "Generated SQL and the pragma layer").
 bool HasNonNullTemplateReference(ClientContext &context, const std::string &schema, const std::string &table) {
 	Connection connection(DatabaseInstance::GetDatabase(context));
-	auto result = connection.Query("SELECT COUNT(*) FROM " + QualifiedName(schema, table) +
-	                               " WHERE template IS NOT NULL");
+	auto result =
+	    connection.Query("SELECT COUNT(*) FROM " + QualifiedName(schema, table) + " WHERE template IS NOT NULL");
 	if (result->HasError()) {
 		// Conservative default: treat a probe failure as "no evidence", the same
 		// outcome as the column not existing at all.
