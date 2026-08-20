@@ -1,0 +1,44 @@
+# name: test/sql/cityjson_wkb_ring_closing.test
+# description: WKB rings are always closed, degenerate first==last rings included
+# group: [sql]
+
+require cityjson
+
+# railway_appearance.city.jsonl object GMLID_855011_330784_753, lod 3, has two
+# rings whose first and last vertex INDEX already coincide before closing:
+# surface 67 ring [87, 71, 87] and surface 75 ring [87, 144, 88, 87]. CityJSON
+# rings never repeat the first vertex, so a ring like this is degenerate (an
+# out-and-back edge, zero area), not already closed -- it still needs its
+# closing vertex appended, same as every other ring. Skipping it emits WKB
+# rings that, once a strict reader strips the (already-present) duplicate
+# closing vertex, have too few points left to be a ring at all -- this is the
+# root cause of cityparquet-rs's "polygon ring has 2 points after stripping
+# the closing vertex, need at least 3" on this exact object.
+#
+# octet_length is a structural, byte-level check: both degenerate rings gain
+# one closing point (24 bytes each: 3 doubles x 8 bytes), so the geometry
+# blob grows by exactly 48 bytes over the unclosed encoding (15678 -> 15726).
+
+query I
+SELECT octet_length(geometry_lod3_0)
+FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE id = 'GMLID_855011_330784_753';
+----
+15726
+
+# The closed geometry still round-trips through the WKB-parsing scalar
+# functions without error, and its extent is unaffected by the added
+# (duplicate) closing vertices.
+query T
+SELECT cityjson_wkb_geometry_type(geometry_lod3_0)
+FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE id = 'GMLID_855011_330784_753';
+----
+MultiPolygon Z
+
+query I
+SELECT cityjson_wkb_extent(geometry_lod3_0) IS NOT NULL
+FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE id = 'GMLID_855011_330784_753';
+----
+true
