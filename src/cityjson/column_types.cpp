@@ -39,7 +39,7 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 		return "STRUCT(lod VARCHAR, type VARCHAR, boundaries VARCHAR, semantics VARCHAR, material VARCHAR, texture "
 		       "VARCHAR)";
 	case ColumnType::GeographicalExtent:
-		return "STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)";
+		return "STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)";
 	case ColumnType::GeometryWKB:
 		return "BLOB";
 	case ColumnType::GeometryPropertiesStruct:
@@ -142,15 +142,19 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 	}
 
 	case ColumnType::GeographicalExtent: {
-		// STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE,
-		//        max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+		// STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE,
+		//        xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
+		// Field names follow GeoParquet's bbox convention (spec
+		// 02-object-table-schema.mdx): this is the row-level `bbox` column's type,
+		// not the metadata table's `geographical_extent`, which keeps its own
+		// separate min_x/max_x naming in metadata_table.cpp.
 		child_list_t<LogicalType> children;
-		children.push_back(std::make_pair("min_x", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("min_y", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("min_z", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("max_x", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("max_y", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("max_z", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("xmin", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("ymin", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("zmin", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("xmax", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("ymax", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("zmax", LogicalType::DOUBLE));
 		return LogicalType::STRUCT(children);
 	}
 

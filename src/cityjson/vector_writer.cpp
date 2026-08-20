@@ -215,8 +215,8 @@ void WriteGeographicalExtent(Vector *struct_vec, const json &value, size_t row) 
 	}
 
 	// Get child vectors
-	// STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE,
-	//        max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+	// STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE,
+	//        xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
 	auto &children = StructVector::GetEntries(*struct_vec);
 
 	// Write all 6 fields

@@ -11,11 +11,11 @@ CREATE TABLE b AS SELECT * FROM read_cityjson('test/data/minimal.city.json', lod
 query T
 SELECT typeof(bbox) FROM b;
 ----
-STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
 
 # bbox computed from geometry vertices (0,0,0)..(10,10,0), identity transform
 query RRRRRR
-SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FROM b;
+SELECT bbox.xmin, bbox.ymin, bbox.zmin, bbox.xmax, bbox.ymax, bbox.zmax FROM b;
 ----
 0.0	0.0	0.0	10.0	10.0	0.0
 
@@ -36,10 +36,10 @@ CREATE TABLE bdef AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
 query T
 SELECT typeof(bbox) FROM bdef;
 ----
-STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
 
 query RRRRRR
-SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FROM bdef;
+SELECT bbox.xmin, bbox.ymin, bbox.zmin, bbox.xmax, bbox.ymax, bbox.zmax FROM bdef;
 ----
 0.0	0.0	0.0	10.0	10.0	0.0
 
@@ -58,10 +58,10 @@ SELECT COUNT(*) FROM bseq;
 query T
 SELECT typeof(bbox) FROM bseq;
 ----
-STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
 
 query RRRRRR
-SELECT bbox.min_x, bbox.min_y, bbox.min_z, bbox.max_x, bbox.max_y, bbox.max_z FROM bseq;
+SELECT bbox.xmin, bbox.ymin, bbox.zmin, bbox.xmax, bbox.ymax, bbox.zmax FROM bseq;
 ----
 0.0	0.0	0.0	10.0	10.0	0.0
 
@@ -79,7 +79,7 @@ DROP TABLE bseq;
 # on the parent silently misses the building — the normal 3DBAG shape.
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
-WHERE parents IS NULL AND bbox.max_z <= bbox.min_z;
+WHERE parents IS NULL AND bbox.zmax <= bbox.zmin;
 ----
 0
 
@@ -87,8 +87,8 @@ WHERE parents IS NULL AND bbox.max_z <= bbox.min_z;
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') p
 JOIN read_cityjsonseq('test/data/delft_subset.city.jsonl') c ON c.id = p.children[1]
-WHERE p.bbox.max_z < c.bbox.max_z OR p.bbox.min_z > c.bbox.min_z
-   OR p.bbox.min_x > c.bbox.min_x OR p.bbox.max_x < c.bbox.max_x;
+WHERE p.bbox.zmax < c.bbox.zmax OR p.bbox.zmin > c.bbox.zmin
+   OR p.bbox.xmin > c.bbox.xmin OR p.bbox.xmax < c.bbox.xmax;
 ----
 0
 

@@ -10,7 +10,7 @@ TO '__TEST_DIR__/proj.fcb' (FORMAT flatcitybuf, attr_index 'height,category', br
 
 # The wide scan is the oracle every narrower projection below is compared against.
 query IIIIII
-SELECT id, feature_id, object_type, category, height, bbox.min_x
+SELECT id, feature_id, object_type, category, height, bbox.xmin
 FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY id;
 ----
 b1	f1	Building	A	10.0	0.0
@@ -68,7 +68,7 @@ f3	142	Solid
 
 # mixed projection: geometry-derived AND attribute columns together
 query IIII
-SELECT feature_id, height, bbox.min_x, bbox.max_y
+SELECT feature_id, height, bbox.xmin, bbox.ymax
 FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY feature_id;
 ----
 f1	10.0	0.0	10.0

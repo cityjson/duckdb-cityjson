@@ -180,7 +180,7 @@ SELECT cityjson_wkb_extent(geometry_lod1_0)
 FROM cityjson_geometry_templates('test/data/geometry_templates.city.json')
 WHERE geometry_lod1_0 IS NOT NULL;
 ----
-{'min_x': -1.0, 'min_y': -1.0, 'min_z': 0.0, 'max_x': 1.0, 'max_y': 1.0, 'max_z': 4.0}
+{'xmin': -1.0, 'ymin': -1.0, 'zmin': 0.0, 'xmax': 1.0, 'ymax': 1.0, 'zmax': 4.0}
 
 # A template's own appearance is carried, and references the same sidecar.
 query I

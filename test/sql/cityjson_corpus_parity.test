@@ -206,12 +206,12 @@ WHERE octet_length(s.geometry_lod2_2) IS DISTINCT FROM octet_length(j.geometry_l
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl') s
 JOIN read_cityjson('https://cityjson.open3d.city/corpus/small.city.json') j USING (id)
-WHERE abs(s.bbox.min_x - j.bbox.min_x) > 1e-9
-   OR abs(s.bbox.min_y - j.bbox.min_y) > 1e-9
-   OR abs(s.bbox.min_z - j.bbox.min_z) > 1e-9
-   OR abs(s.bbox.max_x - j.bbox.max_x) > 1e-9
-   OR abs(s.bbox.max_y - j.bbox.max_y) > 1e-9
-   OR abs(s.bbox.max_z - j.bbox.max_z) > 1e-9;
+WHERE abs(s.bbox.xmin - j.bbox.xmin) > 1e-9
+   OR abs(s.bbox.ymin - j.bbox.ymin) > 1e-9
+   OR abs(s.bbox.zmin - j.bbox.zmin) > 1e-9
+   OR abs(s.bbox.xmax - j.bbox.xmax) > 1e-9
+   OR abs(s.bbox.ymax - j.bbox.ymax) > 1e-9
+   OR abs(s.bbox.zmax - j.bbox.zmax) > 1e-9;
 ----
 0
 
@@ -220,9 +220,9 @@ WHERE abs(s.bbox.min_x - j.bbox.min_x) > 1e-9
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl') s
 JOIN read_flatcitybuf('https://cityjson.open3d.city/corpus/small.fcb') f USING (id)
-WHERE abs(s.bbox.min_x - f.bbox.min_x) > 1e-6
-   OR abs(s.bbox.min_y - f.bbox.min_y) > 1e-6
-   OR abs(s.bbox.max_z - f.bbox.max_z) > 1e-6;
+WHERE abs(s.bbox.xmin - f.bbox.xmin) > 1e-6
+   OR abs(s.bbox.ymin - f.bbox.ymin) > 1e-6
+   OR abs(s.bbox.zmax - f.bbox.zmax) > 1e-6;
 ----
 0
 
@@ -344,9 +344,9 @@ FROM cityjsonseq_metadata('__TEST_DIR__/corpus_rt.city.jsonl');
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl') s
 JOIN read_cityjsonseq('__TEST_DIR__/corpus_rt.city.jsonl') r USING (id)
-WHERE abs(s.bbox.min_x - r.bbox.min_x) > 1e-3
-   OR abs(s.bbox.min_y - r.bbox.min_y) > 1e-3
-   OR abs(s.bbox.max_z - r.bbox.max_z) > 1e-3;
+WHERE abs(s.bbox.xmin - r.bbox.xmin) > 1e-3
+   OR abs(s.bbox.ymin - r.bbox.ymin) > 1e-3
+   OR abs(s.bbox.zmax - r.bbox.zmax) > 1e-3;
 ----
 0
 

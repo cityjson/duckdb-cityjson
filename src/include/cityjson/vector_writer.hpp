@@ -173,13 +173,14 @@ void WriteGeometry(Vector *struct_vec, const Geometry &geom, size_t row);
 
 /**
  * Write geographical extent to struct vector
- * Handles GeographicalExtent STRUCT type with fields:
- * - min_x: DOUBLE
- * - min_y: DOUBLE
- * - min_z: DOUBLE
- * - max_x: DOUBLE
- * - max_y: DOUBLE
- * - max_z: DOUBLE
+ * Handles GeographicalExtent STRUCT type with fields (positional, per
+ * ExtentType()/GetLogicalTypeForColumn -- the `bbox` column's shape):
+ * - xmin: DOUBLE
+ * - ymin: DOUBLE
+ * - zmin: DOUBLE
+ * - xmax: DOUBLE
+ * - ymax: DOUBLE
+ * - zmax: DOUBLE
  *
  * @param struct_vec Pointer to struct vector
  * @param value JSON array with 6 elements [minx, miny, minz, maxx, maxy, maxz]

@@ -89,7 +89,7 @@ ORDER BY b3_h_dak_max DESC LIMIT 3;
 #### `lod =>` — one LoD, same column grammar
 
 ```sql
-SELECT id, cityjson_wkb_extent(geometry_lod2_2).max_z AS ridge_height
+SELECT id, cityjson_wkb_extent(geometry_lod2_2).zmax AS ridge_height
 FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL
 LIMIT 3;
@@ -492,7 +492,7 @@ a `MultiSurface`.
 SELECT cityjson_wkb_extent(geometry_lod2_2)
 FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
 WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;
---> STRUCT(min_x, min_y, min_z, max_x, max_y, max_z DOUBLE)
+--> STRUCT(xmin, ymin, zmin, xmax, ymax, zmax DOUBLE)
 ```
 
 ### `cityjson_appearance_ids(cell, kind)`
@@ -862,7 +862,7 @@ Reserved columns appear in the order below, before every attribute column
 | `children` | VARCHAR[] | Child CityObject ids |
 | `children_roles` | VARCHAR[] | Roles, positionally aligned with `children` |
 | `address` | STRUCT[] | Reserved; always NULL — no reader parses source addresses yet |
-| `bbox` | STRUCT (`min_x … max_z DOUBLE`) | 3D extent in world coordinates (below) |
+| `bbox` | STRUCT (`xmin … zmax DOUBLE`) | 3D extent in world coordinates (below) |
 | *(the per-LoD geometry group, below)* | | |
 | `template` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses geometry-template instances yet |
 | `other` | JSON (VARCHAR) | Source members not mapped to a reserved or attribute column |

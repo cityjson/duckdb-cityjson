@@ -313,8 +313,8 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		if (entry.geometry_types.empty()) {
 			continue; // the column exists but no row populates it
 		}
-		auto extent = Run(connection, "SELECT min(e.min_x), min(e.min_y), min(e.min_z), max(e.max_x), max(e.max_y), "
-		                              "max(e.max_z) FROM (SELECT cityjson_wkb_extent(" +
+		auto extent = Run(connection, "SELECT min(e.xmin), min(e.ymin), min(e.zmin), max(e.xmax), max(e.ymax), "
+		                              "max(e.zmax) FROM (SELECT cityjson_wkb_extent(" +
 		                                  wkb_expr + ") AS e FROM " + QualifiedName(schema, table) + " WHERE " +
 		                                  quoted + " IS NOT NULL) t");
 		if (extent->RowCount() == 1 && !extent->GetValue(0, 0).IsNull()) {

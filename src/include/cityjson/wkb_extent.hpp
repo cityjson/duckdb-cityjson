@@ -8,12 +8,11 @@ namespace cityjson {
 
 /**
  * The DuckDB type of a 3D extent:
- * STRUCT(min_x, min_y, min_z, max_x, max_y, max_z DOUBLE).
+ * STRUCT(xmin, ymin, zmin, xmax, ymax, zmax DOUBLE).
  *
  * Field names deliberately match the `bbox` column built in column_types.cpp, so a
- * recomputed extent can be assigned straight into `bbox` by generated SQL. Note the
- * CityParquet specification writes these as xmin/ymin/zmin/xmax/ymax/zmax — the
- * divergence is pre-existing and tracked in docs/CITYPARQUET_SPEC_QUESTIONS.md.
+ * recomputed extent can be assigned straight into `bbox` by generated SQL. This also
+ * matches the CityParquet specification, which follows GeoParquet's bbox convention.
  */
 LogicalType ExtentType();
 
@@ -26,7 +25,7 @@ LogicalType ExtentType();
 const char *WKBTypeName(uint32_t code);
 
 /**
- * Registers cityjson_wkb_extent(BLOB) -> STRUCT(min_x, ..., max_z).
+ * Registers cityjson_wkb_extent(BLOB) -> STRUCT(xmin, ..., zmax).
  *
  * DuckDB spatial cannot serve this purpose: it rejects PolyhedralSurfaceZ, which is
  * what every CityParquet solid LoD is encoded as.

@@ -176,7 +176,7 @@ WHERE octet_length(geometry_lod2_2) > 0;
 query T
 SELECT typeof(bbox) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') LIMIT 1;
 ----
-STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
 
 # ============================================================
 # 7. Filter pushdown on real ids / types
@@ -219,12 +219,12 @@ WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.js
      r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) AS n
 FROM o JOIN r USING (id)
-WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01
-  AND abs(o.bbox.min_y - r.bbox.min_y) < 0.01
-  AND abs(o.bbox.min_z - r.bbox.min_z) < 0.01
-  AND abs(o.bbox.max_x - r.bbox.max_x) < 0.01
-  AND abs(o.bbox.max_y - r.bbox.max_y) < 0.01
-  AND abs(o.bbox.max_z - r.bbox.max_z) < 0.01;
+WHERE abs(o.bbox.xmin - r.bbox.xmin) < 0.01
+  AND abs(o.bbox.ymin - r.bbox.ymin) < 0.01
+  AND abs(o.bbox.zmin - r.bbox.zmin) < 0.01
+  AND abs(o.bbox.xmax - r.bbox.xmax) < 0.01
+  AND abs(o.bbox.ymax - r.bbox.ymax) < 0.01
+  AND abs(o.bbox.zmax - r.bbox.zmax) < 0.01;
 ----
 10
 
@@ -326,12 +326,12 @@ WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.js
      r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_default.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) AS n
 FROM o JOIN r USING (id)
-WHERE abs(o.bbox.min_x - r.bbox.min_x) < 0.01
-  AND abs(o.bbox.min_y - r.bbox.min_y) < 0.01
-  AND abs(o.bbox.min_z - r.bbox.min_z) < 0.01
-  AND abs(o.bbox.max_x - r.bbox.max_x) < 0.01
-  AND abs(o.bbox.max_y - r.bbox.max_y) < 0.01
-  AND abs(o.bbox.max_z - r.bbox.max_z) < 0.01;
+WHERE abs(o.bbox.xmin - r.bbox.xmin) < 0.01
+  AND abs(o.bbox.ymin - r.bbox.ymin) < 0.01
+  AND abs(o.bbox.zmin - r.bbox.zmin) < 0.01
+  AND abs(o.bbox.xmax - r.bbox.xmax) < 0.01
+  AND abs(o.bbox.ymax - r.bbox.ymax) < 0.01
+  AND abs(o.bbox.zmax - r.bbox.zmax) < 0.01;
 ----
 10
 

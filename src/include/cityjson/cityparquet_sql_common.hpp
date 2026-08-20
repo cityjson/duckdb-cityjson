@@ -38,7 +38,7 @@ const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::
 //! `geometry_properties_lod*`, ...) disagreeing in shape between two packages means
 //! they disagree about the package's own schema, not that one of them needs
 //! coercing to text. Silently rewriting such a column to VARCHAR destroys it --
-//! `bbox.min_x` stops binding, and cityparquet_write can no longer emit the STRUCT
+//! `bbox.xmin` stops binding, and cityparquet_write can no longer emit the STRUCT
 //! the spec requires -- so this throws a BinderException instead.
 LogicalType WidenedType(const LogicalType &destination, const LogicalType &source, const std::string &function,
                         const std::string &column_name);

@@ -284,15 +284,12 @@ SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
 ----
 0
 
-# --- a nested reserved column is refused, not stringified --------------------
+# --- bbox field names agree across the two reference implementations --------
 
-# cityparquet-rs's `bbox` STRUCT field names (xmin/ymin/...) diverge from this
-# extension's (min_x/min_y/...) -- an open format disagreement, not something
-# fixed here. But merging the two used to widen `bbox` to VARCHAR silently: two
-# genuinely different STRUCT shapes are not an int/double pair, so WidenedType's
-# catch-all stringified them, corrupting the destination's `bbox` column before
-# the merge's own reconcile phase (which runs after, as separate auto-commit
-# statements) ever got a chance to object.
+# cityparquet-rs and this extension both name the `bbox` STRUCT fields
+# xmin/ymin/zmin/xmax/ymax/zmax, matching GeoParquet's bbox convention (spec
+# 02-object-table-schema.mdx). A package read from either one carries the same
+# shape, so merging across them no longer trips on `bbox` at all.
 statement ok
 CREATE SCHEMA nested_dst;
 
@@ -309,21 +306,58 @@ PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'nested_src');
 query T
 SELECT typeof(bbox) FROM nested_dst.building LIMIT 1;
 ----
-STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
 
 query T
 SELECT typeof(bbox) FROM nested_src.building LIMIT 1;
 ----
 STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
 
+# --- a nested reserved column is refused, not stringified --------------------
+
+# Merging a genuinely different nested shape used to widen `bbox` to VARCHAR
+# silently: two disagreeing STRUCT shapes are not an int/double pair, so
+# WidenedType's catch-all stringified them, corrupting the destination's `bbox`
+# column before the merge's own reconcile phase (which runs after, as separate
+# auto-commit statements) ever got a chance to object. The two reference
+# implementations no longer disagree on `bbox`'s shape, so this is proven here
+# with a hand-built 2D bbox -- the shape a GeoParquet-only source might carry.
+statement ok
+CREATE SCHEMA shape_dst;
+
+statement ok
+CREATE TABLE shape_dst.building (id VARCHAR, feature_id VARCHAR, object_type VARCHAR,
+  bbox STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE));
+
+statement ok
+INSERT INTO shape_dst.building VALUES ('a', 'a', 'Building',
+  {'xmin': 0.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 1.0, 'ymax': 1.0, 'zmax': 1.0});
+
+statement ok
+PRAGMA cityparquet_init('shape_dst');
+
+statement ok
+CREATE SCHEMA shape_src;
+
+statement ok
+CREATE TABLE shape_src.building (id VARCHAR, feature_id VARCHAR, object_type VARCHAR,
+  bbox STRUCT(xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE));
+
+statement ok
+INSERT INTO shape_src.building VALUES ('b', 'b', 'Building',
+  {'xmin': 2.0, 'ymin': 2.0, 'xmax': 3.0, 'ymax': 3.0});
+
+statement ok
+PRAGMA cityparquet_init('shape_src');
+
 statement error
-PRAGMA cityparquet_merge('nested_dst', 'nested_src');
+PRAGMA cityparquet_merge('shape_dst', 'shape_src');
 ----
 column 'bbox' cannot be widened
 
 # The destination's `bbox` column is untouched by the refused merge -- still a
 # STRUCT, not VARCHAR.
 query T
-SELECT typeof(bbox) FROM nested_dst.building LIMIT 1;
+SELECT typeof(bbox) FROM shape_dst.building LIMIT 1;
 ----
-STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)

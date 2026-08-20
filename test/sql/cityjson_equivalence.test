@@ -97,12 +97,12 @@ true
 # source's own scale; tightening below that is not meaningful.
 query I
 SELECT COUNT(*) FROM src s JOIN rt r USING (id)
-WHERE abs(s.bbox.min_x - r.bbox.min_x) > 1e-3
-   OR abs(s.bbox.min_y - r.bbox.min_y) > 1e-3
-   OR abs(s.bbox.min_z - r.bbox.min_z) > 1e-3
-   OR abs(s.bbox.max_x - r.bbox.max_x) > 1e-3
-   OR abs(s.bbox.max_y - r.bbox.max_y) > 1e-3
-   OR abs(s.bbox.max_z - r.bbox.max_z) > 1e-3;
+WHERE abs(s.bbox.xmin - r.bbox.xmin) > 1e-3
+   OR abs(s.bbox.ymin - r.bbox.ymin) > 1e-3
+   OR abs(s.bbox.zmin - r.bbox.zmin) > 1e-3
+   OR abs(s.bbox.xmax - r.bbox.xmax) > 1e-3
+   OR abs(s.bbox.ymax - r.bbox.ymax) > 1e-3
+   OR abs(s.bbox.zmax - r.bbox.zmax) > 1e-3;
 ----
 0
 

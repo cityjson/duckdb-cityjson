@@ -38,7 +38,7 @@ WHERE a.feature_id IS DISTINCT FROM b.feature_id
 # was flat (zmin == zmax), which made pruning on a parent's bbox silently miss
 # buildings — the normal 3DBAG shape.
 query I
-SELECT COUNT(*) FROM ams.building WHERE parents IS NULL AND bbox.max_z > bbox.min_z;
+SELECT COUNT(*) FROM ams.building WHERE parents IS NULL AND bbox.zmax > bbox.zmin;
 ----
 10
 
@@ -91,14 +91,14 @@ SELECT children FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 # bbox: a corrupted extent is recomputed from geometry.
 statement ok
 UPDATE ams.building
-  SET bbox = {'min_x': 0.0, 'min_y': 0.0, 'min_z': 0.0, 'max_x': 0.0, 'max_y': 0.0, 'max_z': 0.0}
+  SET bbox = {'xmin': 0.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 0.0, 'ymax': 0.0, 'zmax': 0.0}
   WHERE id = 'NL.IMBAG.Pand.0503100000005156-0';
 
 statement ok
 PRAGMA cityparquet_reconcile('ams');
 
 query I
-SELECT bbox.max_z > 1 FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000005156-0';
+SELECT bbox.zmax > 1 FROM ams.building WHERE id = 'NL.IMBAG.Pand.0503100000005156-0';
 ----
 true
 
@@ -106,10 +106,10 @@ true
 query I
 SELECT COUNT(*) FROM ams.building p
 JOIN ams.building c ON c.id = p.children[1]
-WHERE p.bbox.max_z < c.bbox.max_z
-   OR p.bbox.min_z > c.bbox.min_z
-   OR p.bbox.min_x > c.bbox.min_x
-   OR p.bbox.max_x < c.bbox.max_x;
+WHERE p.bbox.zmax < c.bbox.zmax
+   OR p.bbox.zmin > c.bbox.zmin
+   OR p.bbox.xmin > c.bbox.xmin
+   OR p.bbox.xmax < c.bbox.xmax;
 ----
 0
 
@@ -157,7 +157,7 @@ CREATE SCHEMA multi;
 statement ok
 CREATE TABLE multi.building (id VARCHAR, feature_id VARCHAR, object_type VARCHAR,
   parents VARCHAR[], children VARCHAR[], children_roles VARCHAR[],
-  bbox STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE));
+  bbox STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE));
 
 statement ok
 INSERT INTO multi.building VALUES
