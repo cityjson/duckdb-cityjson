@@ -245,18 +245,18 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 
 	auto reader = std::make_shared<FlatCityBufReader>(context, file_name, file_name, options.sample_lines);
 
-	bool has_min_x = input.named_parameters.count("min_x") > 0;
-	bool has_min_y = input.named_parameters.count("min_y") > 0;
-	bool has_max_x = input.named_parameters.count("max_x") > 0;
-	bool has_max_y = input.named_parameters.count("max_y") > 0;
+	bool has_xmin = input.named_parameters.count("xmin") > 0;
+	bool has_ymin = input.named_parameters.count("ymin") > 0;
+	bool has_xmax = input.named_parameters.count("xmax") > 0;
+	bool has_ymax = input.named_parameters.count("ymax") > 0;
 	std::optional<std::array<double, 4>> bbox;
-	if (has_min_x || has_min_y || has_max_x || has_max_y) {
-		if (!(has_min_x && has_min_y && has_max_x && has_max_y)) {
-			throw BinderException("read_flatcitybuf: min_x, min_y, max_x, and max_y must all be given together");
+	if (has_xmin || has_ymin || has_xmax || has_ymax) {
+		if (!(has_xmin && has_ymin && has_xmax && has_ymax)) {
+			throw BinderException("read_flatcitybuf: xmin, ymin, xmax, and ymax must all be given together");
 		}
 		bbox = std::array<double, 4> {
-		    DoubleValue::Get(input.named_parameters.at("min_x")), DoubleValue::Get(input.named_parameters.at("min_y")),
-		    DoubleValue::Get(input.named_parameters.at("max_x")), DoubleValue::Get(input.named_parameters.at("max_y"))};
+		    DoubleValue::Get(input.named_parameters.at("xmin")), DoubleValue::Get(input.named_parameters.at("ymin")),
+		    DoubleValue::Get(input.named_parameters.at("xmax")), DoubleValue::Get(input.named_parameters.at("ymax"))};
 		reader->SetBBoxFilter(bbox.value());
 	}
 
@@ -344,10 +344,10 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 
 	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
 	func.named_parameters["lod"] = LogicalType::VARCHAR;
-	func.named_parameters["min_x"] = LogicalType::DOUBLE;
-	func.named_parameters["min_y"] = LogicalType::DOUBLE;
-	func.named_parameters["max_x"] = LogicalType::DOUBLE;
-	func.named_parameters["max_y"] = LogicalType::DOUBLE;
+	func.named_parameters["xmin"] = LogicalType::DOUBLE;
+	func.named_parameters["ymin"] = LogicalType::DOUBLE;
+	func.named_parameters["xmax"] = LogicalType::DOUBLE;
+	func.named_parameters["ymax"] = LogicalType::DOUBLE;
 
 	func.init_global = FlatCityBufInitGlobal;
 	func.init_local = CityJSONInitLocal;

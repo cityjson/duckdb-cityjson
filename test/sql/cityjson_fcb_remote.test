@@ -57,8 +57,8 @@ SELECT count(*), bool_and(city_objects_count > 0) FROM flatcitybuf_metadata('${F
 query I
 SELECT count(*) > 0 AND count(*) = count(id)
 FROM read_flatcitybuf('${FCB_REMOTE_TEST_URL}',
-    min_x := ${FCB_REMOTE_MIN_X}, min_y := ${FCB_REMOTE_MIN_Y},
-    max_x := ${FCB_REMOTE_MAX_X}, max_y := ${FCB_REMOTE_MAX_Y});
+    xmin := ${FCB_REMOTE_MIN_X}, ymin := ${FCB_REMOTE_MIN_Y},
+    xmax := ${FCB_REMOTE_MAX_X}, ymax := ${FCB_REMOTE_MAX_Y});
 ----
 true
 
@@ -66,6 +66,6 @@ true
 query I
 SELECT count(*)
 FROM read_flatcitybuf('${FCB_REMOTE_TEST_URL}',
-    min_x := -1000000, min_y := -1000000, max_x := -999000, max_y := -999000);
+    xmin := -1000000, ymin := -1000000, xmax := -999000, ymax := -999000);
 ----
 0

@@ -93,7 +93,7 @@ f3
 # bbox param + attr filter (the post-filter case) with attribute-only projection
 query I
 SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/proj.fcb',
-    min_x := 50, min_y := 50, max_x := 250, max_y := 250)
+    xmin := 50, ymin := 50, xmax := 250, ymax := 250)
 WHERE category = 'A' ORDER BY feature_id;
 ----
 f3
@@ -102,7 +102,7 @@ f3
 # the one real read from bind to init_global
 query I
 SELECT count(*) FROM read_flatcitybuf('__TEST_DIR__/proj.fcb',
-    min_x := 50, min_y := 50, max_x := 150, max_y := 150);
+    xmin := 50, ymin := 50, xmax := 150, ymax := 150);
 ----
 1
 

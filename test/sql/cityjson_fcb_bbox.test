@@ -1,5 +1,5 @@
 # name: test/sql/cityjson_fcb_bbox.test
-# description: bbox query pushdown on read_flatcitybuf via min_x/min_y/max_x/max_y
+# description: bbox query pushdown on read_flatcitybuf via xmin/ymin/xmax/ymax
 # group: [sql]
 
 require cityjson
@@ -12,19 +12,19 @@ TO '__TEST_DIR__/bbox_query.fcb' (FORMAT flatcitybuf);
 
 # bbox covering only f2 (id is the CityObject id -- b1/b2/b3 here -- feature_id is f1/f2/f3)
 query I
-SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 50, min_y := 50, max_x := 150, max_y := 150) ORDER BY feature_id;
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', xmin := 50, ymin := 50, xmax := 150, ymax := 150) ORDER BY feature_id;
 ----
 f2
 
 # bbox covering nothing
 query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 500, min_y := 500, max_x := 600, max_y := 600);
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', xmin := 500, ymin := 500, xmax := 600, ymax := 600);
 ----
 0
 
 # bbox covering everything
 query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 0, min_y := 0, max_x := 300, max_y := 300);
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', xmin := 0, ymin := 0, xmax := 300, ymax := 300);
 ----
 3
 
@@ -34,8 +34,8 @@ SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb');
 ----
 3
 
-# a partial bbox (missing max_y) is a binder error, not a silent no-op
+# a partial bbox (missing ymax) is a binder error, not a silent no-op
 statement error
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', min_x := 0, min_y := 0, max_x := 300);
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', xmin := 0, ymin := 0, xmax := 300);
 ----
-read_flatcitybuf: min_x, min_y, max_x, and max_y must all be given together
+read_flatcitybuf: xmin, ymin, xmax, and ymax must all be given together

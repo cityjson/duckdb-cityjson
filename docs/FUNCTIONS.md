@@ -154,7 +154,7 @@ never decoded. All four bounds must be given together:
 
 ```sql
 SELECT COUNT(*) FROM read_flatcitybuf('delft.fcb',
-    min_x => 84900, min_y => 446200, max_x => 85200, max_y => 446500);
+    xmin => 84900, ymin => 446200, xmax => 85200, ymax => 446500);
 -- 58
 ```
 
