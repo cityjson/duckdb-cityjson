@@ -1,0 +1,26 @@
+# name: test/sql/cityparquet_geoparquet_roundtrip.test
+# description: A package with a GeoParquet-declared column reads in and writes back out
+# group: [cityparquet]
+
+# A conformant writer declares its GeoParquet-legal LoD0 column in the `geo` footer,
+# so DuckDB decodes that column to native GEOMETRY on read. The write path's
+# geometry-type probe must cope: otherwise every such package is readable but not
+# writable, which is most of them.
+
+require cityjson
+
+require parquet
+
+statement ok
+CREATE SCHEMA geo_pkg;
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'geo_pkg');
+
+statement ok
+SELECT * FROM cityparquet_write('geo_pkg', '__TEST_DIR__/geo_out');
+
+query I
+SELECT count(*) > 0 FROM read_parquet('__TEST_DIR__/geo_out/building.parquet');
+----
+true

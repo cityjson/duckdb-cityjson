@@ -12,15 +12,6 @@ require parquet
 # the schema -- and a conformant reader then tries to decode `address` as a user
 # attribute.
 
-# DuckDB's built-in GeoParquet auto-conversion (`enable_geoparquet_conversion`)
-# promotes any column named in a footer's `geo` key to its native GEOMETRY type on
-# read, purely because the spatial extension is installed -- independent of whether
-# it is loaded. That is orthogonal to what this test pins down, and cityparquet_write
-# does not expect it, so it is disabled here.
-
-statement ok
-SET enable_geoparquet_conversion = false;
-
 statement ok
 CREATE SCHEMA pkg;
 
