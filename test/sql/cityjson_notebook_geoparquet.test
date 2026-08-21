@@ -1,0 +1,100 @@
+# name: test/sql/cityjson_notebook_geoparquet.test
+# description: Notebook cell 4 -- LoD0 read from Seq and from the document agree
+# group: [sql]
+
+#
+# Network test: runs only when CITYJSON_NOTEBOOK_TEST is set, and needs `spatial`.
+#   CITYJSON_NOTEBOOK_TEST=1 ./build/release/test/unittest test/sql/cityjson_notebook_geoparquet.test
+# or `just test-notebook`.
+#
+# Split out of cityjson_notebook_e2e.test for one reason: `require spatial` skips
+# the whole FILE, not the one query that needs it, and spatial is not present in
+# the community-extensions build container. Keeping it here lets the other twenty
+# cells run wherever the extension builds.
+#
+# This is the sharpest assertion in docs/TESTING.md, and the only one that was
+# already a real check when the notebook was driven by hand: Delft is published
+# both as a CityJSONSeq and as a whole CityJSON document, so the LoD0 footprint
+# this extension decodes from one MUST equal the footprint it decodes from the
+# other. Both URLs are the same origin, so a divergence is this extension's doing
+# rather than two publishers drifting apart.
+#
+# The notebook compared with a bare ST_Equals. That does not hold, and the reason
+# is not a defect: the two encodings apply the CityJSON `transform` at different
+# points, so the decoded doubles differ in their last bits -- 446014.454 from the
+# Seq against 446014.45399999997 from the document. Every one of the 1115 LoD0
+# geometries differs bytewise, and ST_Equals rejects 1059 of them, while the
+# largest area disagreement across the whole of Delft is 5.4e-9 m^2.
+#
+# So the comparison is made at a precision the difference cannot reach: both
+# sides are snapped to a micrometre grid first. That is roughly seven orders of
+# magnitude finer than anything a building survey means, so it still fails on any
+# real geometric divergence -- a dropped ring, a swapped axis, a wrong vertex --
+# while ignoring the last-bit noise that is all this actually is.
+
+require cityjson
+
+require-env CITYJSON_NOTEBOOK_TEST
+
+# Without this a transport failure reports as a skip, and the file passes while
+# testing nothing. See the same comment in cityjson_remote.test.
+set ignore_error_messages
+
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+# INSTALL/LOAD rather than `require spatial`, for the same reason httpfs is loaded
+# this way: `require` SKIPS the file when the extension is not already loaded, and
+# the runner has autoloading off -- so a run deliberately opted into by setting
+# CITYJSON_NOTEBOOK_TEST would report a pass having tested nothing. The notebook
+# cell said `load spatial` too.
+statement ok
+INSTALL spatial;
+
+statement ok
+LOAD spatial;
+
+# Rows come back only for ids missing from one side, for an object that has a
+# LoD0 in one encoding and not the other, or for a footprint that genuinely
+# differs. Zero is the pass.
+query I
+WITH seq AS (
+  SELECT id, ST_GeomFromWKB(geometry_lod0_0) AS geom
+  FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
+),
+doc AS (
+  SELECT id, ST_GeomFromWKB(geometry_lod0_0) AS geom
+  FROM read_cityjson('https://cityjson.open3d.city/cityjson/delft.city.json')
+)
+SELECT count(*)
+FROM seq FULL JOIN doc USING (id)
+WHERE seq.id IS NULL
+   OR doc.id IS NULL
+   OR (seq.geom IS NULL) <> (doc.geom IS NULL)
+   OR (seq.geom IS NOT NULL
+       AND NOT ST_Equals(ST_ReducePrecision(seq.geom, 1e-6), ST_ReducePrecision(doc.geom, 1e-6)));
+----
+0
+
+# The tolerance above is a floor, not a licence: state separately how far apart
+# the two encodings are actually allowed to be. A square micrometre of drift over
+# the whole city would already be four orders of magnitude worse than what this
+# extension produces today, so a regression that stayed under the grid above
+# still has to get past this.
+query I
+WITH seq AS (
+  SELECT id, ST_GeomFromWKB(geometry_lod0_0) AS geom
+  FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
+),
+doc AS (
+  SELECT id, ST_GeomFromWKB(geometry_lod0_0) AS geom
+  FROM read_cityjson('https://cityjson.open3d.city/cityjson/delft.city.json')
+)
+SELECT max(abs(ST_Area(seq.geom) - ST_Area(doc.geom))) < 1e-6
+FROM seq JOIN doc USING (id)
+WHERE seq.geom IS NOT NULL AND doc.geom IS NOT NULL;
+----
+true

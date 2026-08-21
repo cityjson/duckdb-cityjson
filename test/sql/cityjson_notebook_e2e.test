@@ -1,0 +1,386 @@
+# name: test/sql/cityjson_notebook_e2e.test
+# description: The manual notebook walkthrough in docs/TESTING.md, run end to end
+# group: [sql]
+
+#
+# Network test: runs only when CITYJSON_NOTEBOOK_TEST is set.
+#   CITYJSON_NOTEBOOK_TEST=1 ./build/release/test/unittest test/sql/cityjson_notebook_e2e.test
+# or `just test-notebook`. Deliberately kept out of `make test`.
+#
+# Around 90 MB crosses the wire, from four files totalling 18 MB: nothing is
+# cached between queries, so a file read by six cells is fetched six times. Delft
+# alone (6.3 MB) is read nine times below. That is the price of not staging the
+# data first, and it is worth naming so nobody later mistakes the runtime for
+# something being slow in the reader.
+#
+# The 3DBAG URL is pinned to a dataset version (v20250903) because 'latest' would
+# make this test depend on whatever 3DBAG published this morning. Old versions do
+# get retired: if this file ever fails on a transport error from data.3dbag.nl,
+# bump the version in the path rather than suspecting insert_cityjson.
+#
+# docs/TESTING.md is a transcript of a DuckDB notebook someone drove by hand
+# against real datasets. This file is that walkthrough as a test. The notebook's
+# local fixtures lived in a sibling repo of the parent workspace, which this repo
+# cannot reference -- so each one is read from the URL it was published at
+# instead. Nothing is downloaded in advance; the readers fetch over HTTP.
+#
+# Cell 4 is not here. It needs `spatial`, and `require spatial` skips the whole
+# file rather than one query, so it lives in cityjson_notebook_geoparquet.test.
+#
+# NOTHING BELOW IS PINNED TO A ROW COUNT. Every assertion is an invariant that
+# holds whatever the hosted datasets contain -- a count relates to another count
+# in the same run, never to a number recorded here. The upstream data is not ours
+# and can be republished at any time; a test that has to be re-baselined when that
+# happens reports on the dataset rather than on this extension.
+
+require cityjson
+
+require parquet
+
+require-env CITYJSON_NOTEBOOK_TEST
+
+# The runner's default ignore_error_messages list is {"HTTP", "Unable to
+# connect"} (TestConfiguration::ErrorMessagesToBeSkipped), so a failed remote read
+# would report as a *skip* rather than a failure -- the exact outcome this file
+# exists to catch. `set` with no values clears the list, making transport errors
+# fail loudly.
+set ignore_error_messages
+
+# The sqllogictest runner turns extension autoloading off by default, so the
+# readers' own AutoLoadExtension(context, "httpfs") cannot pull httpfs in here.
+# `require httpfs` would instead skip the whole file, which would make a run you
+# deliberately opted into by setting the env var silently do nothing.
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+# The footer-metadata cells below read the `geo` and `city` objects as JSON, and
+# autoloading is off here for the same reason httpfs has to be explicit.
+statement ok
+INSTALL json;
+
+statement ok
+LOAD json;
+
+# ============================================================
+# Cells 2, 3, 5 -- the reading cells
+# ============================================================
+#
+# The notebook eyeballed these; there is nothing to assert beyond "it reads".
+# `statement ok` is the whole check: a bind error, a decode failure or a transport
+# error all fail here, and those are the regressions these cells can catch.
+
+# Cell 2 -- CityJSONSeq over HTTP
+statement ok
+SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+
+# Cell 3 -- whole-document CityJSON, filtered by object type
+statement ok
+SELECT * FROM read_cityjson('https://storage.googleapis.com/cityjson/lod3_railway.city.json')
+WHERE object_type IN ['Building', 'BuildingInstallation', 'BuildingPart'];
+
+# Cell 5 -- a textured Seq from a different collection
+statement ok
+SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/Helsinki_tex.city.jsonl') LIMIT 10;
+
+# ============================================================
+# Cell 6 -- arrow-native geometry encoding
+# ============================================================
+#
+# The notebook read the DESCRIBE output to see the encoding had taken effect.
+# The invariant behind that: asking for arrow-native at a given LoD produces a
+# geometry column for that LoD, and it is a LIST rather than the BLOB the WKB
+# path yields. Which columns exist depends on the dataset; that one does not.
+
+query I
+SELECT count(*) > 0
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl',
+                                              lod => '2.2', geometry_encoding := 'arrow-native'))
+WHERE column_name LIKE 'geometry_lod2_2%' AND column_type LIKE '%[]%';
+----
+true
+
+# ============================================================
+# Cell 7 -- GeoParquet `geo` footer metadata
+# ============================================================
+#
+# Asserted on shape, not on content: the object parses as JSON and declares the
+# two keys every GeoParquet reader needs. The column names inside it are the
+# dataset's business.
+
+query II
+SELECT geo IS NOT NULL, json_valid(geo)
+FROM cityjson_geoparquet_geo('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+----
+true	true
+
+query II
+WITH g AS (
+  SELECT geo::JSON AS geo FROM cityjson_geoparquet_geo('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
+)
+SELECT geo ->> '$.version' IS NOT NULL, geo ->> '$.primary_column' IS NOT NULL FROM g;
+----
+true	true
+
+# ============================================================
+# Cell 8 -- roundtrip through Parquet
+# ============================================================
+#
+# The notebook wrote the rows out with the `geo` metadata attached and then read
+# the file back to look at it. What that is really testing is that the write does
+# not change the rows, so the check is parity in BOTH directions -- EXCEPT ALL,
+# not EXCEPT, because plain EXCEPT deduplicates and would hide multiplicity drift.
+
+statement ok
+SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl'));
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl'))
+  TO '__TEST_DIR__/delft_duckdb.parquet'
+  (FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
+
+# Attaching `geo` has a consequence worth stating before comparing anything: on
+# read, DuckDB promotes the columns that footer declares from BLOB to GEOMETRY
+# (enable_geoparquet_conversion, on by default). That is the write working, not a
+# problem -- but it makes the two sides of the comparison different types, so the
+# promotion is turned off for the parity check and turned back on afterwards.
+# LIKE rather than =: typeof() on a promoted column carries the whole PROJJSON
+# CRS with it, and that is the dataset's business, not this assertion's.
+query I
+SELECT typeof(geometry_lod0_0) LIKE 'GEOMETRY%' FROM read_parquet('__TEST_DIR__/delft_duckdb.parquet') LIMIT 1;
+----
+true
+
+statement ok
+SET enable_geoparquet_conversion = false;
+
+query I
+SELECT count(*) FROM (
+  SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
+  EXCEPT ALL
+  SELECT * FROM read_parquet('__TEST_DIR__/delft_duckdb.parquet')
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+  SELECT * FROM read_parquet('__TEST_DIR__/delft_duckdb.parquet')
+  EXCEPT ALL
+  SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
+);
+----
+0
+
+statement ok
+SET enable_geoparquet_conversion = true;
+
+# The `geo` key survives the write. A row-level EXCEPT cannot see this: the rows
+# re-read identically while the file on disk has lost its metadata.
+query I
+SELECT count(*) FROM parquet_kv_metadata('__TEST_DIR__/delft_duckdb.parquet') WHERE key::VARCHAR = 'geo';
+----
+1
+
+# ============================================================
+# Cells 9, 10 -- appearance
+# ============================================================
+#
+# lod3_railway is the notebook's appearance fixture because it actually carries
+# materials and textures. Related to each other rather than pinned: a file that
+# declares materials must yield some, and a material reference can only point at
+# a material that exists.
+
+query III
+SELECT (SELECT count(*) FROM cityjson_materials('https://storage.googleapis.com/cityjson/lod3_railway.city.json')) > 0,
+       (SELECT count(*) FROM cityjson_textures('https://storage.googleapis.com/cityjson/lod3_railway.city.json')) >= 0,
+       (SELECT count(*) FROM cityjson_geometry_templates('https://storage.googleapis.com/cityjson/lod3_railway.city.json')) >= 0;
+----
+true	true	true
+
+statement ok
+SELECT * FROM cityjson_materials('https://storage.googleapis.com/cityjson/lod3_railway.city.json');
+
+# Cell 10 -- sidecar appearance. Not every object carries a material, so the
+# invariant is containment, not equality.
+query I
+SELECT count(*) >= count(material_lod3_0) AND count(*) > 0
+FROM read_cityjson('https://storage.googleapis.com/cityjson/lod3_railway.city.json',
+                   lod => '3', appearance := 'sidecar');
+----
+true
+
+# ============================================================
+# Cells 11-13 -- build a package schema and validate it
+# ============================================================
+
+statement ok
+CREATE SCHEMA pkg;
+
+statement ok
+CREATE TABLE pkg.building AS
+SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('pkg');
+
+# Cell 11 -- init registers the table it was given, as an object table.
+query I
+SELECT count(*) FROM pkg.__cityparquet WHERE table_name = 'building' AND role = 'object';
+----
+1
+
+# Cells 12, 13 -- validate reports no error-severity findings on a package built
+# straight from a reader's own output. Anything else means the reader and the
+# validator disagree about what a well-formed package looks like.
+statement ok
+PRAGMA cityparquet_validate('pkg');
+
+query I
+SELECT count(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+# ============================================================
+# Cell 14 -- insert a second file into the package
+# ============================================================
+#
+# The invariant you asked for: what went in comes back out. Row counts are taken
+# before and after and compared against the source's own count, so the assertion
+# is about the insert rather than about how many buildings Delft has.
+
+statement ok
+CREATE TEMP TABLE nb_before AS SELECT count(*) AS n FROM pkg.building;
+
+statement ok
+CREATE TEMP TABLE nb_incoming AS
+SELECT count(*) AS n FROM read_cityjson('https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json');
+
+# Every column the table had before the insert must still be there afterwards.
+# Schema evolution may ADD columns for attributes the incoming file introduces;
+# it must never drop one, which would silently truncate the rows already stored.
+statement ok
+CREATE TEMP TABLE nb_cols_before AS
+SELECT column_name FROM duckdb_columns() WHERE schema_name = 'pkg' AND table_name = 'building';
+
+statement ok
+PRAGMA insert_cityjson('pkg', 'https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json');
+
+query I
+SELECT (SELECT count(*) FROM pkg.building) = (SELECT n FROM nb_before) + (SELECT n FROM nb_incoming);
+----
+true
+
+query I
+SELECT count(*) FROM (
+  SELECT column_name FROM nb_cols_before
+  EXCEPT ALL
+  SELECT column_name FROM duckdb_columns() WHERE schema_name = 'pkg' AND table_name = 'building'
+);
+----
+0
+
+# Cell 15 -- the notebook looked at the table after the insert.
+statement ok
+SELECT * FROM pkg.building;
+
+# ============================================================
+# Cells 16-19 -- write the package out, then read it back
+# ============================================================
+
+statement ok
+CREATE TEMP TABLE nb_written AS
+SELECT (SELECT count(*) FROM pkg.building) AS rows,
+       (SELECT count(*) FROM duckdb_columns() WHERE schema_name = 'pkg' AND table_name = 'building') AS cols;
+
+statement ok
+SELECT * FROM cityparquet_write('pkg', '__TEST_DIR__/pkg_out', crs => 'EPSG:7415');
+
+# Cell 17 -- the `geo` footer the writer attached is readable and declares the
+# keys a GeoParquet reader binds to.
+query III
+WITH meta AS (
+  SELECT decode(value)::JSON AS geo
+  FROM parquet_kv_metadata('__TEST_DIR__/pkg_out/building.parquet')
+  WHERE key::VARCHAR = 'geo'
+)
+SELECT count(*) = 1,
+       bool_and(geo ->> '$.version' IS NOT NULL),
+       bool_and(geo ->> '$.primary_column' IS NOT NULL)
+FROM meta;
+----
+true	true	true
+
+# Cell 18 -- and the `city` footer beside it. The notebook read this from the
+# package directory; it is written into each object table's own footer.
+query II
+WITH meta AS (
+  SELECT decode(value)::JSON AS city
+  FROM parquet_kv_metadata('__TEST_DIR__/pkg_out/building.parquet')
+  WHERE key::VARCHAR = 'city'
+)
+SELECT count(*) = 1, bool_and(city ->> '$.version' IS NOT NULL) FROM meta;
+----
+true	true
+
+# Cell 19 -- cityparquet_read builds the schema back from the directory. Rows and
+# columns must survive the round trip; that is the whole point of writing it out.
+statement ok
+CREATE SCHEMA delft;
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/pkg_out', 'delft');
+
+query II
+SELECT (SELECT count(*) FROM delft.building) = (SELECT rows FROM nb_written),
+       (SELECT count(*) FROM duckdb_columns() WHERE schema_name = 'delft' AND table_name = 'building')
+         = (SELECT cols FROM nb_written);
+----
+true	true
+
+# ============================================================
+# Cells 20-22 -- FlatCityBuf over HTTP
+# ============================================================
+
+# Cell 20 -- a whole hosted FCB file.
+statement ok
+SELECT * FROM read_flatcitybuf('https://flatcitybuf.open3d.city/data/delft.fcb');
+
+# Cells 21, 22 -- the spatial index and an attribute filter on top of it. The
+# hosted dataset can be republished, so the assertion is that the bbox pushdown
+# CONFINES the result rather than that it returns some number of rows.
+#
+# Confines it at FEATURE granularity, which is the part worth writing down. The
+# index is over features; the reader emits a row per CityObject. A Building whose
+# footprint crosses the edge of the box brings its BuildingParts with it, and a
+# part can lie wholly outside -- on this box, two do, by two and three metres.
+# So "every ROW intersects the box" is false and should be: the guarantee is that
+# every row belongs to a feature that intersects it. That is what an R-tree over
+# features can promise, and it still catches the index returning unrelated
+# features, which is the regression worth having.
+query I
+WITH q AS (
+  SELECT feature_id, bbox
+  FROM read_flatcitybuf('https://flatcitybuf.open3d.city/data/3dbag_all_index.fcb',
+                        xmin := 84000, ymin := 446000, xmax := 85000, ymax := 447000)
+),
+intersecting AS (
+  SELECT DISTINCT feature_id FROM q
+  WHERE bbox.xmax >= 84000 AND bbox.xmin <= 85000
+    AND bbox.ymax >= 446000 AND bbox.ymin <= 447000
+)
+SELECT count(*) FROM q WHERE feature_id NOT IN (SELECT feature_id FROM intersecting);
+----
+0
+
+# The attribute filter narrows that result further, and never widens it.
+query I
+SELECT (SELECT count(*) FROM read_flatcitybuf('https://flatcitybuf.open3d.city/data/3dbag_all_index.fcb',
+                                              xmin := 84000, ymin := 446000, xmax := 85000, ymax := 447000)
+        WHERE b3_h_dak_50p >= 10)
+     <= (SELECT count(*) FROM read_flatcitybuf('https://flatcitybuf.open3d.city/data/3dbag_all_index.fcb',
+                                               xmin := 84000, ymin := 446000, xmax := 85000, ymax := 447000));
+----
+true
