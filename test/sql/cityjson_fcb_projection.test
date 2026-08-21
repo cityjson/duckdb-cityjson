@@ -34,14 +34,27 @@ b1	f1	Building
 b2	f2	Building
 b3	f3	Building
 
-# `other` is a predefined column, but GetAttributeValue must inspect EVERY
-# attribute to tell which ones have no column of their own -- so projecting it
-# must decode all of them, not none. A mask rule that treats every predefined
-# column as attribute-free would silently drop that check.
+# `other` is a predefined column. This fixture's only attributes -- category and
+# height -- each have their own column, so `other` is NULL for every row: there
+# is nothing left over regardless of whether the mask that selects `other`
+# decodes every attribute or none. That makes this assertion prove only "other
+# stays NULL when nothing is left over under FlatCityBuf's own projection path"
+# -- NOT that selecting `other` forces full attribute decode. A mask bug that
+# (wrongly) treated every predefined column as attribute-free would land on the
+# same NULL here, so this fixture cannot tell the two apart.
 #
-# category and height each have their own column here, so neither is repeated
-# in `other`; geographicalExtent is carried by bbox, not `other`. Nothing is
-# left over, so `other` is NULL for every row.
+# Discriminating the two needs an FCB file whose ON-DISK attribute schema
+# itself declares a column with a reserved name, so only decode-everything puts
+# something in `other`. This extension's own COPY TO cannot produce that
+# fixture: its attribute-building step (copy_function.cpp) only round-trips
+# CopyColumnRole::Attribute columns and drops everything `other` might carry
+# except geographicalExtent -- confirmed for both `FORMAT flatcitybuf` and
+# `FORMAT cityjsonseq`, so it is not an FCB-specific gap, and a source
+# attribute that collides with a reserved name (and so lives only in `other`)
+# never reaches a COPY TO'd file to read back. Producing such a fixture needs
+# either the upstream `fcb` CLI (not available in this environment) or a raw
+# FCB binary authored outside this extension's writer path; neither is
+# exercised in this suite today.
 query II
 SELECT feature_id, other FROM read_flatcitybuf('__TEST_DIR__/proj.fcb') ORDER BY feature_id;
 ----
