@@ -10,7 +10,8 @@ SELECT count(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE
 ----
 0
 
-# The same holds for the non-seq and FlatCityBuf readers.
+# The same holds for the non-seq reader. (FlatCityBuf is not exercised in this
+# file.)
 query I
 SELECT count(*) FROM read_cityjson('test/data/minimal.city.json') WHERE other IS NOT NULL;
 ----
@@ -58,3 +59,14 @@ query I
 SELECT content LIKE '%"bbox":"attr-bbox-value"%' FROM read_text('__TEST_DIR__/bbox_attr_roundtrip.city.jsonl');
 ----
 true
+
+# An `other` entry whose key duplicates an attribute already decoded from its own
+# column is invalid input (spec 02-object-table-schema.mdx, "The `other` column"):
+# the two copies cannot be reconciled, so COPY TO must error rather than silently
+# keep the column's copy and drop the `other` one.
+statement error
+COPY (
+    SELECT * FROM (VALUES ('obj1', 'obj1', 'Building', '{"height": 12}', 12)) AS t(id, feature_id, object_type, other, height)
+) TO '__TEST_DIR__/other_duplicate_key.city.jsonl' (FORMAT cityjsonseq);
+----
+obj1

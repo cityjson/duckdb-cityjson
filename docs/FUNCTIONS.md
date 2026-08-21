@@ -888,14 +888,13 @@ A query selecting a reserved column **by name** is unaffected by this order; one
 selecting by ordinal position (`SELECT #4`, or a `SELECT *` a caller then indexes
 into) must be updated.
 
-**A source CityObject's own `geographicalExtent`** has no dedicated column —
-`bbox` is always derived from geometry, not copied from the source — so it
-lands in `other.geographicalExtent` verbatim instead. All three `COPY … TO`
-formats (`cityjson`, `cityjsonseq`, `flatcitybuf`) reverse this on the way out:
-a CityObject's `geographicalExtent` is taken from `other` when present,
-otherwise derived from `bbox`, otherwise omitted entirely. A CityObject with
-neither a source extent nor a `bbox` (e.g. one carrying no geometry) writes no
-`geographicalExtent` member at all.
+**A source CityObject's own `geographicalExtent`** has no dedicated column and is
+never carried in `other`: on scan it is unioned into `bbox` alongside the extent
+computed from the object's own geometry, so the two extents merge into the one
+stored value rather than travelling separately. All three `COPY … TO` formats
+(`cityjson`, `cityjsonseq`, `flatcitybuf`) rebuild `geographicalExtent` from `bbox`
+alone on the way out. A CityObject with no `bbox` (e.g. one carrying no geometry and
+no source extent) writes no `geographicalExtent` member at all.
 
 ### Geometry columns (CityParquet wide layout)
 

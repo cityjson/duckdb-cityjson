@@ -146,14 +146,6 @@ public:
 std::vector<Column> GetDefinedColumns();
 
 /**
- * Check if column name is a predefined column
- *
- * @param name Column name to check
- * @return true if name is a predefined column
- */
-bool IsPredefinedColumn(const std::string &name);
-
-/**
  * Check if a name collides (case-insensitively) with any reserved output column.
  *
  * Reserved columns are the predefined structural columns plus the wide-layout

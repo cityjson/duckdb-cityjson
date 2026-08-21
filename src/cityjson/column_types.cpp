@@ -484,13 +484,6 @@ std::vector<Column> GetDefinedColumns() {
 	};
 }
 
-bool IsPredefinedColumn(const std::string &name) {
-	static const std::vector<std::string> predefined = {
-	    "id", "feature_id", "object_type", "children", "children_roles", "parents", "other"};
-
-	return std::find(predefined.begin(), predefined.end(), name) != predefined.end();
-}
-
 static std::string ToLowerAscii(const std::string &name) {
 	std::string lowered = name;
 	std::transform(lowered.begin(), lowered.end(), lowered.begin(),

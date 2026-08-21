@@ -6,6 +6,7 @@
 #include "duckdb/logging/logger.hpp"
 #include "cityjson/copy_source_ref.hpp"
 #include "cityjson/reader.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -1242,6 +1243,12 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 		// reader rule is that every entry is restored as an attribute. Without
 		// this, an attribute whose name collides with a reserved column is read
 		// into `other` and then written nowhere.
+		//
+		// An `other` entry whose key duplicates an attribute already decoded from
+		// its own column is invalid input (spec 02-object-table-schema.mdx, "The
+		// `other` column"): the two copies cannot be reconciled without inventing
+		// a preference the format does not state, so this is an error rather than
+		// a silent keep-the-column-drop-the-other-copy resolution.
 		if (bind_data.other_col != DConstants::INVALID_INDEX) {
 			auto other_val = input.data[bind_data.other_col].GetValue(row);
 			if (!other_val.IsNull()) {
@@ -1249,9 +1256,14 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 					json other_json = json_utils::ParseJson(other_val.ToString());
 					if (other_json.is_object()) {
 						for (auto it = other_json.begin(); it != other_json.end(); ++it) {
-							if (!attributes.contains(it.key())) {
-								attributes[it.key()] = it.value();
+							if (attributes.contains(it.key())) {
+								throw InvalidInputException(
+								    "COPY TO cityjson: object '%s' has an `other` entry for key '%s' that "
+								    "duplicates the value already decoded from its own attribute column; a "
+								    "reader must reject this rather than silently keep one copy",
+								    city_obj_id, it.key());
 							}
+							attributes[it.key()] = it.value();
 						}
 					}
 				} catch (const CityJSONError &) {
