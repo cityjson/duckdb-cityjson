@@ -1,11 +1,20 @@
 # name: test/sql/cityjson_geographical_extent_other.test
-# description: a CityObject's source geographicalExtent has no reserved column, lives in other, and round-trips verbatim
+# description: a CityObject's source geographicalExtent has no reserved column and does not survive read-back; COPY TO reconstructs it from bbox instead
 # group: [sql]
 
 #
 # Fixture: test/data/delft_subset.city.jsonl (real 3DBAG data, not produced by this
 # extension). Its Building CityObjects carry a source `geographicalExtent`; its
 # BuildingPart children do not.
+#
+# `other` no longer carries geographicalExtent (other-column simplification,
+# duckdb-cityjson task 7): the source's own declared extent is discarded on
+# read, since `bbox` already carries the object's extent and `other` now holds
+# only members with no column of their own. COPY TO's existing bbox fallback
+# (copy_function.cpp) is the only path left to populate the output's
+# geographicalExtent member, so the round-tripped value is bbox-derived, not the
+# source's verbatim declaration -- those differ (bbox is unioned across
+# LoDs/descendants and derived from geometry).
 #
 
 require cityjson
@@ -18,10 +27,10 @@ WHERE column_name = 'geographical_extent';
 ----
 0
 
-# The source's per-object geographicalExtent for this Building lands in `other`,
-# under its own source key, verbatim.
+# The source's per-object geographicalExtent has no column of its own, and is no
+# longer preserved in `other` either -- there is nothing left for it to survive in.
 query I
-SELECT other LIKE '%"geographicalExtent":[84593.2421875,446459.625,0.47600001096725464,84597.5,446462.78125,3.2257587909698486]%'
+SELECT other IS NULL
 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
 WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 ----
@@ -40,12 +49,12 @@ statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
 TO '__TEST_DIR__/delft_ge_roundtrip.city.jsonl' (FORMAT cityjsonseq);
 
-# COPY ... TO cityjson reconstructs the Building's geographicalExtent from
-# `other`, byte-identical to the source -- not recomputed from bbox, which would
-# differ (bbox is unioned across LoDs/descendants and derived from geometry, not
-# copied from the source's own declared extent).
+# With `other`'s geographicalExtent gone, COPY ... TO cityjson falls back to
+# `bbox` (copy_function.cpp) for every object that has one -- so the written
+# geographicalExtent is the bbox-derived value, not the source's verbatim
+# declared extent.
 query I
-SELECT content LIKE '%[84593.2421875,446459.625,0.47600001096725464,84597.5,446462.78125,3.2257587909698486]%'
+SELECT content LIKE '%[84593.249625,446459.603,0.47500262451171693,84597.507625,446462.774,3.225002624511717]%'
 FROM read_text('__TEST_DIR__/delft_ge_roundtrip.city.jsonl');
 ----
 true

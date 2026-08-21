@@ -1,0 +1,27 @@
+# name: test/sql/cityjson_other_column.test
+# description: other carries only data with no column of its own
+# group: [cityjson]
+
+require cityjson
+
+# Every ordinary attribute has its own column, so nothing is left for other.
+query I
+SELECT count(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE other IS NOT NULL;
+----
+0
+
+# The same holds for the non-seq and FlatCityBuf readers.
+query I
+SELECT count(*) FROM read_cityjson('test/data/minimal.city.json') WHERE other IS NOT NULL;
+----
+0
+
+# An attribute that has its own column is never also copied into other. Checked
+# with LIKE rather than json_extract: the JSON type and its functions live in the
+# `json` extension, which this file does not require.
+query I
+SELECT count(*)
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE other IS NOT NULL AND other LIKE '%b3_h_dak_50p%';
+----
+0

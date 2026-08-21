@@ -2,6 +2,7 @@
 #include "cityjson/vector_writer.hpp"
 #include "cityjson/city_object_utils.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
+#include <set>
 
 namespace duckdb {
 namespace cityjson {
@@ -16,7 +17,7 @@ static const std::string &ResolvedFeatureId(const CityJSONFeature &feature, cons
 static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSONFeature &feature,
                                const std::string &city_obj_id, const CityObject &city_obj,
                                std::vector<VectorWrapper> &wrappers, const std::vector<idx_t> &projected_cols,
-                               size_t output_row) {
+                               size_t output_row, const std::set<std::string> &emitted_columns) {
 	// For WKB encoding mode, find the geometry matching the target LOD. Every geometry
 	// pointer below aims into city_obj.geometry, which this function only reads -- the
 	// vector is never resized or reassigned while a row is being written.
@@ -211,7 +212,7 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				value = extent.has_value() ? extent->ToJson() : json(nullptr);
 			}
 		} else {
-			value = CityObjectUtils::GetAttributeValue(city_obj, col);
+			value = CityObjectUtils::GetAttributeValue(city_obj, col, emitted_columns);
 		}
 
 		// Write to vector
@@ -255,6 +256,25 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 	const auto &projected_cols =
 	    local_state.projection_ids.empty() ? local_state.column_ids : local_state.projection_ids;
 	auto wrappers = CreateVectors(output, bind_data.columns, projected_cols);
+
+	// Every ATTRIBUTE column the bound schema emits, for `other`'s "what has no
+	// column" test. Built once per scan rather than per row.
+	//
+	// Filtered to non-reserved names, not the raw bind_data.columns list: a
+	// reserved/structural column (bbox, geometry_vertices_lod2_2, ...) is never
+	// populated from obj.attributes, so its presence in the schema says nothing
+	// about whether a same-named attribute has "a column of its own" -- an
+	// attribute literally called geometry_vertices_lod2_2 must still land in
+	// `other` even though a column of that exact name exists (it holds the
+	// vertex pool, not the attribute). IsReservedColumnName is the same
+	// predicate InferAttributeColumns used to decide the attribute got no
+	// column in the first place, so the two stay in lockstep.
+	std::set<std::string> emitted_columns;
+	for (const auto &c : bind_data.columns) {
+		if (!IsReservedColumnName(c.name)) {
+			emitted_columns.insert(c.name);
+		}
+	}
 
 	if (bind_data.equality_filters.empty()) {
 		// No filters: use the precomputed batch-based scan plan.
@@ -304,7 +324,8 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 						break;
 					}
 
-					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row,
+					                   emitted_columns);
 
 					output_row++;
 					remaining--;
@@ -349,7 +370,8 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 				global_state.filter_obj_offset = obj_idx + 1;
 
 				if (MatchesFilters(bind_data, feature, city_obj_id, city_obj)) {
-					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row,
+					                   emitted_columns);
 					output_row++;
 					break;
 				}
@@ -380,6 +402,25 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 	    local_state.projection_ids.empty() ? local_state.column_ids : local_state.projection_ids;
 	auto wrappers = CreateVectors(output, bind_data.columns, projected_cols);
 
+	// Every ATTRIBUTE column the bound schema emits, for `other`'s "what has no
+	// column" test. Built once per scan rather than per row.
+	//
+	// Filtered to non-reserved names, not the raw bind_data.columns list: a
+	// reserved/structural column (bbox, geometry_vertices_lod2_2, ...) is never
+	// populated from obj.attributes, so its presence in the schema says nothing
+	// about whether a same-named attribute has "a column of its own" -- an
+	// attribute literally called geometry_vertices_lod2_2 must still land in
+	// `other` even though a column of that exact name exists (it holds the
+	// vertex pool, not the attribute). IsReservedColumnName is the same
+	// predicate InferAttributeColumns used to decide the attribute got no
+	// column in the first place, so the two stay in lockstep.
+	std::set<std::string> emitted_columns;
+	for (const auto &c : bind_data.columns) {
+		if (!IsReservedColumnName(c.name)) {
+			emitted_columns.insert(c.name);
+		}
+	}
+
 	size_t output_row = 0;
 
 	while (output_row < STANDARD_VECTOR_SIZE) {
@@ -402,7 +443,8 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 		++global_state.streaming_obj_it;
 
 		if (bind_data.equality_filters.empty() || MatchesFilters(bind_data, feature, city_obj_id, city_obj)) {
-			WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+			WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row,
+			                   emitted_columns);
 			output_row++;
 		}
 	}
