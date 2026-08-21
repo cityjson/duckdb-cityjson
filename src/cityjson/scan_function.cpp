@@ -190,16 +190,16 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			}
 			continue;
 		} else if (col.name == "bbox") {
+			std::optional<GeographicalExtent> extent;
 			if (vertex_pool == nullptr) {
-				value = json(nullptr);
+				extent = std::nullopt;
 			} else if (bind_data.target_lod.has_value()) {
 				// Per-LOD mode restricts the table to one LoD, so the bbox describes that
 				// geometry alone -- there is no other LoD in the table to union with, and
 				// a descendant's bbox at this LoD is its own row's business.
-				auto extent = target_geom != nullptr ? CityObjectUtils::GetGeometryExtent(*target_geom, *vertex_pool,
-				                                                                          bind_data.metadata.transform)
-				                                     : std::nullopt;
-				value = extent.has_value() ? extent->ToJson() : json(nullptr);
+				extent = target_geom != nullptr ? CityObjectUtils::GetGeometryExtent(*target_geom, *vertex_pool,
+				                                                                     bind_data.metadata.transform)
+				                                : std::nullopt;
 			} else {
 				// Wide mode: the specification defines bbox as unioned across every stored
 				// LoD *and* across the object's descendants. Using only the highest LoD
@@ -207,10 +207,18 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				// gave a Building carrying just an LoD0 footprint a flat bbox that excluded
 				// its BuildingPart's solid -- so a query pruning on the parent's bbox
 				// silently missed the building, which is the normal 3DBAG shape.
-				auto extent = CityObjectUtils::GetObjectExtent(city_obj_id, feature.city_objects, *vertex_pool,
-				                                               bind_data.metadata.transform);
-				value = extent.has_value() ? extent->ToJson() : json(nullptr);
+				extent = CityObjectUtils::GetObjectExtent(city_obj_id, feature.city_objects, *vertex_pool,
+				                                          bind_data.metadata.transform);
 			}
+			// The source's declared per-object extent is unioned in, never
+			// substituted: a declared extent is not guaranteed to contain the
+			// geometry it describes, and a box narrower than the geometry prunes
+			// the row out of queries that intersect it.
+			if (city_obj.geographical_extent.has_value()) {
+				extent = extent.has_value() ? extent->Union(city_obj.geographical_extent.value())
+				                            : city_obj.geographical_extent;
+			}
+			value = extent.has_value() ? extent->ToJson() : json(nullptr);
 		} else {
 			value = CityObjectUtils::GetAttributeValue(city_obj, col, emitted_columns);
 		}

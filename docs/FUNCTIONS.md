@@ -682,11 +682,20 @@ exactly that.
 may match a non-root object, and deleting a `BuildingPart` must not take out the
 parent `Building` sharing its `feature_id`.
 
-**Reconciling an already-correct package is a no-op**, `bbox` included. The
-reader and `cityparquet_reconcile` agree on the specification's rule that `bbox`
-is unioned across every stored LoD *and* across the object's descendants, so a
-freshly-read package is already reconciled. `test/sql/cityparquet_reconcile.test`
-asserts exactly that — zero changed rows.
+**Reconciling an already-correct package is a no-op for `feature_id`, hierarchy,
+and, in general, `bbox`.** Both the reader and `cityparquet_reconcile` union a
+row's own geometry across every stored LoD *and* across its descendants, so a
+freshly-read package's structural columns are already reconciled. `bbox` is the
+one exception: the reader additionally unions in the source's declared
+per-object extent (never substituting it, since a declared extent is not
+guaranteed to contain its geometry), but `cityparquet_reconcile` has no declared
+extent to consult -- only stored geometry -- and must be able to shrink a stale
+`bbox` after an in-place geometry `UPDATE`. So reconciling a package read from a
+source with wider declared extents narrows those rows' `bbox`; the invariant
+that holds universally is containment (reconcile's result is never wider than
+the reader's), not identity. `test/sql/cityparquet_reconcile.test` asserts both:
+zero changed rows for the structural columns, and zero containment violations
+for `bbox`.
 
 ### Inspection and housekeeping
 

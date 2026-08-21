@@ -142,17 +142,29 @@ SELECT
 4	4
 
 # --- 7. the writer is a fixed point ---
-# Byte-identity with the SOURCE is unreachable, but the writer reaches a fixed
-# point after one generation. Exact, no tolerance, and it doubles as a
-# determinism canary: CityJSONCopyToCombine appends local states in thread
-# arrival order, so a nondeterministic feature order would surface here first.
+# Byte-identity with the SOURCE is unreachable, and -- now that geographicalExtent
+# is derived solely from bbox -- identity with the FIRST generation is not either:
+# bbox unions in the source's own declared per-object extent (never substituted,
+# since a declared extent is not guaranteed to contain its geometry), and
+# delft_subset's declared extents carry fewer significant digits than the
+# writer's own re-quantised geometry, so the union nudges bbox by ~1e-4 on that
+# first write. The union can only widen, though, so it stabilises one generation
+# later: generation 2 (derived from generation 1, which already carries the
+# widened bbox as its OWN declared extent) is the genuine fixed point. Exact, no
+# tolerance from there on, and it still doubles as a determinism canary:
+# CityJSONCopyToCombine appends local states in thread arrival order, so a
+# nondeterministic feature order would surface here too.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/eq.city.jsonl'))
 TO '__TEST_DIR__/eq2.city.jsonl' (FORMAT cityjsonseq);
 
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/eq2.city.jsonl'))
+TO '__TEST_DIR__/eq3.city.jsonl' (FORMAT cityjsonseq);
+
 query I
-SELECT (SELECT md5(content) FROM read_text('__TEST_DIR__/eq.city.jsonl'))
-     = (SELECT md5(content) FROM read_text('__TEST_DIR__/eq2.city.jsonl'));
+SELECT (SELECT md5(content) FROM read_text('__TEST_DIR__/eq2.city.jsonl'))
+     = (SELECT md5(content) FROM read_text('__TEST_DIR__/eq3.city.jsonl'));
 ----
 true
 

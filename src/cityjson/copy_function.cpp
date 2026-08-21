@@ -1238,48 +1238,48 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 				}
 			}
 		}
-		if (!attributes.empty()) {
-			city_obj["attributes"] = attributes;
-		}
-
-		// geographicalExtent: no reserved column carries the source's per-object
-		// extent (spec 07-mapping-cityjson.mdx), so reconstruct it from wherever this
-		// writer's own convention put it. `other`'s geographicalExtent is the
-		// producer's own declared extent and wins, verbatim; `bbox` (derived from
-		// geometry, spec-recomputed rather than source data) is only a fallback;
-		// absent both, the member is simply omitted. Storing it in `other` is tool
-		// behaviour, not a spec requirement, so its absence here is never an error.
-		std::optional<json> geographical_extent_out;
+		// `other` carries source data with no column of its own; the format's
+		// reader rule is that every entry is restored as an attribute. Without
+		// this, an attribute whose name collides with a reserved column is read
+		// into `other` and then written nowhere.
 		if (bind_data.other_col != DConstants::INVALID_INDEX) {
 			auto other_val = input.data[bind_data.other_col].GetValue(row);
 			if (!other_val.IsNull()) {
 				try {
 					json other_json = json_utils::ParseJson(other_val.ToString());
-					if (other_json.is_object() && other_json.contains("geographicalExtent") &&
-					    !other_json["geographicalExtent"].is_null()) {
-						geographical_extent_out = other_json["geographicalExtent"];
+					if (other_json.is_object()) {
+						for (auto it = other_json.begin(); it != other_json.end(); ++it) {
+							if (!attributes.contains(it.key())) {
+								attributes[it.key()] = it.value();
+							}
+						}
 					}
 				} catch (const CityJSONError &) {
-					// Malformed `other` text is not this reconstruction's problem to
-					// diagnose; fall through to the bbox fallback below.
+					// Malformed `other` text is bad input, not this
+					// reconstruction's problem to diagnose; the attributes it
+					// would have contributed are simply absent.
 				}
 			}
 		}
-		if (!geographical_extent_out.has_value() && bind_data.bbox_col != DConstants::INVALID_INDEX) {
+		if (!attributes.empty()) {
+			city_obj["attributes"] = attributes;
+		}
+
+		// `geographicalExtent` is derived from `bbox`: the format stores one
+		// spatial extent per row and `bbox` is it. `other` is no longer
+		// consulted -- it carries attributes now, not the source extent.
+		if (bind_data.bbox_col != DConstants::INVALID_INDEX) {
 			auto bbox_val = input.data[bind_data.bbox_col].GetValue(row);
 			if (!bbox_val.IsNull() && bbox_val.type().id() == LogicalTypeId::STRUCT) {
 				auto &children = StructValue::GetChildren(bbox_val);
 				if (children.size() >= 6 && !children[0].IsNull() && !children[1].IsNull() && !children[2].IsNull() &&
 				    !children[3].IsNull() && !children[4].IsNull() && !children[5].IsNull()) {
-					geographical_extent_out =
+					city_obj["geographicalExtent"] =
 					    json::array({children[0].GetValue<double>(), children[1].GetValue<double>(),
 					                 children[2].GetValue<double>(), children[3].GetValue<double>(),
 					                 children[4].GetValue<double>(), children[5].GetValue<double>()});
 				}
 			}
-		}
-		if (geographical_extent_out.has_value()) {
-			city_obj["geographicalExtent"] = geographical_extent_out.value();
 		}
 
 		// Add to local buffer

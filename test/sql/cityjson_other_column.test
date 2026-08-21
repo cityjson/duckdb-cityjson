@@ -1,6 +1,6 @@
 # name: test/sql/cityjson_other_column.test
 # description: other carries only data with no column of its own
-# group: [cityjson]
+# group: [sql]
 
 require cityjson
 
@@ -25,3 +25,36 @@ FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
 WHERE other IS NOT NULL AND other LIKE '%b3_h_dak_50p%';
 ----
 0
+
+# bbox unions the source's declared extent, so it never sits inside the geometry.
+query I
+SELECT count(*)
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE bbox.zmax < bbox.zmin;
+----
+0
+
+# COPY TO restores other's entries as attributes rather than dropping them.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/other_roundtrip.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/other_roundtrip.city.jsonl');
+----
+20
+
+# A discriminating case: an attribute literally named "bbox" collides with the
+# reserved bbox column, so it is read into `other`, not a column of its own
+# (bbox is never eligible for one). Round-tripping through COPY TO cityjsonseq
+# must restore it into `attributes` in the output text -- previously `other`
+# was read but never written back, so a reserved-colliding attribute like this
+# vanished on the first write.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/bbox_attr_collision.city.json'))
+TO '__TEST_DIR__/bbox_attr_roundtrip.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT content LIKE '%"bbox":"attr-bbox-value"%' FROM read_text('__TEST_DIR__/bbox_attr_roundtrip.city.jsonl');
+----
+true
