@@ -8,7 +8,8 @@ statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
 TO '__TEST_DIR__/temporal.city.jsonl' (FORMAT cityjsonseq);
 
-# The row-level value is unchanged -- it always was. This assertion exists to show
+# The row-level instant is unchanged -- it always was (the `+00` is TIMESTAMP WITH
+# TIME ZONE's own display form, not a value change). This assertion exists to show
 # that it is NOT sufficient evidence of fidelity, and to catch a regression that
 # changes the parsed value while fixing the lexical form.
 query II
@@ -18,7 +19,7 @@ SELECT
   (SELECT tijdstipregistratie FROM read_cityjsonseq('__TEST_DIR__/temporal.city.jsonl')
     WHERE tijdstipregistratie IS NOT NULL ORDER BY id LIMIT 1);
 ----
-2010-10-13 12:20:52	2010-10-13 12:20:52
+2010-10-13 12:20:52+00	2010-10-13 12:20:52+00
 
 # The file-level form is what regressed. CityJSON dates are ISO-8601: 'T'
 # separator, 'Z' suffix. ValueToJson had no TIMESTAMP arm, so the default arm

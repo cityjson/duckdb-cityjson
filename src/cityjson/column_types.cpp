@@ -22,7 +22,11 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 	case ColumnType::Varchar:
 		return "VARCHAR";
 	case ColumnType::Timestamp:
-		return "TIMESTAMP";
+		// A CityJSON date-time is an ISO 8601 instant, so this column MUST be
+		// UTC-adjusted (spec 02-object-table-schema.mdx "Temporal columns");
+		// DuckDB's timezone-naive TIMESTAMP would denote a wall-clock reading,
+		// a different quantity.
+		return "TIMESTAMP WITH TIME ZONE";
 	case ColumnType::Date:
 		return "DATE";
 	case ColumnType::Time:
@@ -35,7 +39,7 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 		return "STRUCT(lod VARCHAR, type VARCHAR, boundaries VARCHAR, semantics VARCHAR, material VARCHAR, texture "
 		       "VARCHAR)";
 	case ColumnType::GeographicalExtent:
-		return "STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)";
+		return "STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)";
 	case ColumnType::GeometryWKB:
 		return "BLOB";
 	case ColumnType::GeometryPropertiesStruct:
@@ -47,6 +51,11 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 		return "INTEGER[][][][][]";
 	case ColumnType::GeometryVerticesArrowNative:
 		return "STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]";
+	case ColumnType::AddressList:
+		return "STRUCT(street VARCHAR, house_number VARCHAR, po_box VARCHAR, zip_code VARCHAR, city VARCHAR, "
+		       "state VARCHAR, country VARCHAR, free_text VARCHAR, location BLOB)[]";
+	case ColumnType::TemplateStruct:
+		return "STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])";
 	default:
 		return "UNKNOWN";
 	}
@@ -63,7 +72,7 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 	case ColumnType::Varchar:
 		return LogicalTypeId::VARCHAR;
 	case ColumnType::Timestamp:
-		return LogicalTypeId::TIMESTAMP;
+		return LogicalTypeId::TIMESTAMP_TZ;
 	case ColumnType::Date:
 		return LogicalTypeId::DATE;
 	case ColumnType::Time:
@@ -86,6 +95,10 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 		return LogicalTypeId::LIST;
 	case ColumnType::GeometryVerticesArrowNative:
 		return LogicalTypeId::LIST;
+	case ColumnType::AddressList:
+		return LogicalTypeId::LIST;
+	case ColumnType::TemplateStruct:
+		return LogicalTypeId::STRUCT;
 	default:
 		return LogicalTypeId::INVALID;
 	}
@@ -102,7 +115,7 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 	case ColumnType::Varchar:
 		return LogicalType::VARCHAR;
 	case ColumnType::Timestamp:
-		return LogicalType::TIMESTAMP;
+		return LogicalType::TIMESTAMP_TZ;
 	case ColumnType::Date:
 		return LogicalType::DATE;
 	case ColumnType::Time:
@@ -129,15 +142,19 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 	}
 
 	case ColumnType::GeographicalExtent: {
-		// STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE,
-		//        max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+		// STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE,
+		//        xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
+		// Field names follow GeoParquet's bbox convention (spec
+		// 02-object-table-schema.mdx): this is the row-level `bbox` column's type,
+		// not the metadata table's `geographical_extent`, which keeps its own
+		// separate min_x/max_x naming in metadata_table.cpp.
 		child_list_t<LogicalType> children;
-		children.push_back(std::make_pair("min_x", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("min_y", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("min_z", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("max_x", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("max_y", LogicalType::DOUBLE));
-		children.push_back(std::make_pair("max_z", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("xmin", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("ymin", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("zmin", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("xmax", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("ymax", LogicalType::DOUBLE));
+		children.push_back(std::make_pair("zmax", LogicalType::DOUBLE));
 		return LogicalType::STRUCT(children);
 	}
 
@@ -200,6 +217,34 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		children.push_back(std::make_pair("y", LogicalType::DOUBLE));
 		children.push_back(std::make_pair("z", LogicalType::DOUBLE));
 		return LogicalType::LIST(LogicalType::STRUCT(children));
+	}
+
+	case ColumnType::AddressList: {
+		// Spec "Addresses": a lean subset of 3DCityDB v5's ADDRESS table. `location`
+		// is a WKB MultiPointZ in the file CRS -- geometry, not a vertex-pool
+		// reference, so it is a BLOB like any other geometry column.
+		child_list_t<LogicalType> fields;
+		fields.push_back(std::make_pair("street", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("house_number", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("po_box", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("zip_code", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("city", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("state", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("country", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("free_text", LogicalType::VARCHAR));
+		fields.push_back(std::make_pair("location", LogicalType::BLOB));
+		return LogicalType::LIST(LogicalType::STRUCT(fields));
+	}
+
+	case ColumnType::TemplateStruct: {
+		// Spec: geometry-template instance data. The matrix is a flat 16-element
+		// row-major 4x4, not a nested type -- there is no per-writer choice to
+		// preserve, and DOUBLE[] is what a consumer actually wants to index into.
+		child_list_t<LogicalType> children;
+		children.push_back(std::make_pair("id", LogicalType::BIGINT));
+		children.push_back(std::make_pair("point", LogicalType::BLOB));
+		children.push_back(std::make_pair("transformationMatrix", LogicalType::LIST(LogicalType::DOUBLE)));
+		return LogicalType::STRUCT(children);
 	}
 
 	default:
@@ -415,7 +460,8 @@ bool ColumnTypeUtils::IsTemporal(ColumnType type) {
 bool ColumnTypeUtils::IsComplex(ColumnType type) {
 	return type == ColumnType::Json || type == ColumnType::VarcharArray || type == ColumnType::Geometry ||
 	       type == ColumnType::GeographicalExtent || type == ColumnType::GeometryWKB ||
-	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::AppearanceJson;
+	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::AppearanceJson ||
+	       type == ColumnType::AddressList || type == ColumnType::TemplateStruct;
 }
 
 // ============================================================
@@ -423,14 +469,18 @@ bool ColumnTypeUtils::IsComplex(ColumnType type) {
 // ============================================================
 
 std::vector<Column> GetDefinedColumns() {
+	// Spec 02-object-table-schema.mdx, "Reserved columns": this is the leading
+	// (head) run of the reserved order, up to but not including `bbox` -- callers
+	// splice geometry columns after this and LODTableUtils::GetTrailingColumns()
+	// (`template`, `other`) after that, before any attribute column.
 	return {
 	    Column("id", ColumnType::Varchar),
 	    Column("feature_id", ColumnType::Varchar),
 	    Column("object_type", ColumnType::Varchar),
+	    Column("parents", ColumnType::VarcharArray),
 	    Column("children", ColumnType::VarcharArray),
 	    Column("children_roles", ColumnType::VarcharArray),
-	    Column("parents", ColumnType::VarcharArray),
-	    Column("other", ColumnType::Json),
+	    Column("address", ColumnType::AddressList),
 	};
 }
 
@@ -450,7 +500,8 @@ static std::string ToLowerAscii(const std::string &name) {
 
 bool IsReservedColumnName(const std::string &name) {
 	static const std::vector<std::string> reserved = {
-	    "id", "feature_id", "object_type", "children", "children_roles", "parents", "other", "bbox", "geometry"};
+	    "id",    "feature_id", "object_type", "children", "children_roles", "parents",
+	    "other", "bbox",       "geometry",    "address",  "template",       "other_attributes"};
 	const std::string lowered = ToLowerAscii(name);
 	if (std::find(reserved.begin(), reserved.end(), lowered) != reserved.end()) {
 		return true;

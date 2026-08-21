@@ -156,11 +156,17 @@ SELECT cityjson_appearance_ids('{"visual":{"values":[[[[9,1,2,3]]],[[[8,4,5,6]]]
 
 # A material referenced only by a geometry template must not be vacuumed: the
 # template sidecar carries its own appearance columns.
+#
+# id is BIGINT, matching the real geometry_templates.parquet schema
+# (cityjson_geometry_templates) -- ams.building now carries a reserved `template`
+# STRUCT(id BIGINT, ...) column (spec 02-object-table-schema.mdx), so
+# ReferencedIds compares template.id against this table's id and a VARCHAR here
+# would be a type mismatch, not merely an unrealistic fixture.
 statement ok
-CREATE TABLE ams.geometry_templates (id VARCHAR, material_lod1_0 VARCHAR);
+CREATE TABLE ams.geometry_templates (id BIGINT, material_lod1_0 VARCHAR);
 
 statement ok
-INSERT INTO ams.geometry_templates VALUES ('tree', '{"visual":{"values":[42]}}');
+INSERT INTO ams.geometry_templates VALUES (1, '{"visual":{"values":[42]}}');
 
 statement ok
 INSERT INTO ams.materials VALUES (42, 'used-only-by-a-template');
@@ -173,6 +179,15 @@ PRAGMA cityparquet_vacuum('ams');
 
 query I
 SELECT COUNT(*) FROM ams.materials WHERE id = 42;
+----
+1
+
+# The template row itself must survive too -- ams.building's `template` column
+# is always NULL (this reader does not populate it yet), so a real reference
+# to id 1 is nowhere for ReferencedIds to find. That must read as
+# "undeterminable", not "nothing references template 1".
+query I
+SELECT COUNT(*) FROM ams.geometry_templates;
 ----
 1
 

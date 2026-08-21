@@ -1,6 +1,7 @@
 #include "cityjson/cityparquet_write.hpp"
 
 #include "cityjson/cityparquet_package.hpp"
+#include "cityjson/cityparquet_sql_common.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/crs_projjson.hpp"
 #include "cityjson/json_utils.hpp"
@@ -155,6 +156,30 @@ LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, co
 	return LogicalType(LogicalTypeId::INVALID);
 }
 
+//! A COPY source list that converts any DuckDB-native GEOMETRY column back to WKB
+//! BLOB via ST_AsWKB. enable_geoparquet_conversion (on by default whenever the
+//! `parquet` extension reads a footer's `geo` key -- not gated on `spatial` being
+//! installed or loaded at all) promotes such a column to GEOMETRY on read; passing
+//! that straight through a `COPY table TO ... (FORMAT PARQUET)` lets DuckDB's own
+//! GeoParquet writer hook stamp a second `geo` key into the KV metadata alongside
+//! this extension's. Parquet permits duplicate keys silently, so a reader taking
+//! the wrong one gets a footer this writer never intended. ST_AsWKB rather than a
+//! `::BLOB` cast: the cast is registered by `spatial` only once it is loaded,
+//! whereas ST_AsWKB/ST_AsBinary ship in DuckDB core (functions.json) and need no
+//! extension at all -- so this never requires `spatial` to be installed, and never
+//! loads it, so it never re-arms this same collision one layer out for a caller's
+//! own COPY over the resulting table.
+std::string CopySourceList(ClientContext &context, const std::string &schema, const std::string &table) {
+	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	vector<string> parts;
+	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
+		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.Name());
+		const auto ref = GeometryColumnRef(quoted, column.Type());
+		parts.push_back(column.Type().id() == LogicalTypeId::GEOMETRY ? (ref + " AS " + quoted) : ref);
+	}
+	return StringUtil::Join(parts, ", ");
+}
+
 //! Run a query on the internal connection, throwing its error rather than swallowing it.
 unique_ptr<MaterializedQueryResult> Run(Connection &connection, const std::string &sql) {
 	auto result = connection.Query(sql);
@@ -240,7 +265,8 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		ColumnFacts entry;
 		entry.name = column;
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column);
-		if (ColumnDuckType(context, schema, table, column).id() == LogicalTypeId::LIST) {
+		auto col_type = ColumnDuckType(context, schema, table, column);
+		if (col_type.id() == LogicalTypeId::LIST) {
 			// Arrow-native column (INTEGER[][][][][]). The WKB probes below cannot
 			// run on it; the logical shape comes from the paired geometry_properties
 			// type instead -- the geometry_types vocabulary is encoding-independent
@@ -270,7 +296,13 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 			}
 			continue;
 		}
-		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + quoted + ") FROM " +
+		// GeometryColumnRef: the column arrives here already decoded to DuckDB's
+		// native GEOMETRY type when it was promoted -- declared in the file's
+		// GeoParquet `geo` footer (enable_geoparquet_conversion, on by default,
+		// gated only on the `parquet` extension, not on `spatial`). The underlying
+		// bytes are the same WKB either way.
+		const auto wkb_expr = GeometryColumnRef(quoted, col_type);
+		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + wkb_expr + ") FROM " +
 		                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
 		for (idx_t row = 0; row < result->RowCount(); row++) {
 			auto value = result->GetValue(0, row);
@@ -281,10 +313,10 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		if (entry.geometry_types.empty()) {
 			continue; // the column exists but no row populates it
 		}
-		auto extent = Run(connection, "SELECT min(e.min_x), min(e.min_y), min(e.min_z), max(e.max_x), max(e.max_y), "
-		                              "max(e.max_z) FROM (SELECT cityjson_wkb_extent(" +
-		                                  quoted + ") AS e FROM " + QualifiedName(schema, table) + " WHERE " + quoted +
-		                                  " IS NOT NULL) t");
+		auto extent = Run(connection, "SELECT min(e.xmin), min(e.ymin), min(e.zmin), max(e.xmax), max(e.ymax), "
+		                              "max(e.zmax) FROM (SELECT cityjson_wkb_extent(" +
+		                                  wkb_expr + ") AS e FROM " + QualifiedName(schema, table) + " WHERE " +
+		                                  quoted + " IS NOT NULL) t");
 		if (extent->RowCount() == 1 && !extent->GetValue(0, 0).IsNull()) {
 			entry.has_extent = true;
 			entry.min_x = extent->GetValue(0, 0).GetValue<double>();
@@ -569,7 +601,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 
 		const auto file = table + ".parquet";
 		const auto path = fs.JoinPath(bind_data.directory, file);
-		Run(connection, "COPY " + QualifiedName(bind_data.schema, table) + " TO " + Literal(path) +
+		Run(connection, "COPY (SELECT " + CopySourceList(context, bind_data.schema, table) + " FROM " +
+		                    QualifiedName(bind_data.schema, table) + ") TO " + Literal(path) +
 		                    " (FORMAT PARQUET, KV_METADATA {" + kv + "});");
 
 		WrittenFile written;

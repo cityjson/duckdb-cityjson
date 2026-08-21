@@ -165,12 +165,12 @@ void WKBExtentFunction(DataChunk &args, ExpressionState &state, Vector &result) 
 		}
 
 		child_list_t<Value> fields;
-		fields.emplace_back("min_x", Value::DOUBLE(extent.min_x));
-		fields.emplace_back("min_y", Value::DOUBLE(extent.min_y));
-		fields.emplace_back("min_z", Value::DOUBLE(extent.min_z));
-		fields.emplace_back("max_x", Value::DOUBLE(extent.max_x));
-		fields.emplace_back("max_y", Value::DOUBLE(extent.max_y));
-		fields.emplace_back("max_z", Value::DOUBLE(extent.max_z));
+		fields.emplace_back("xmin", Value::DOUBLE(extent.min_x));
+		fields.emplace_back("ymin", Value::DOUBLE(extent.min_y));
+		fields.emplace_back("zmin", Value::DOUBLE(extent.min_z));
+		fields.emplace_back("xmax", Value::DOUBLE(extent.max_x));
+		fields.emplace_back("ymax", Value::DOUBLE(extent.max_y));
+		fields.emplace_back("zmax", Value::DOUBLE(extent.max_z));
 		result.SetValue(i, Value::STRUCT(std::move(fields)));
 	}
 
@@ -187,12 +187,12 @@ LogicalType ExtentType() {
 	// which ODR-uses it and emits a comdat definition that collides at link time with
 	// DuckDB's own strong definition in ub_duckdb_common.cpp.
 	child_list_t<LogicalType> children;
-	children.emplace_back("min_x", LogicalType(LogicalTypeId::DOUBLE));
-	children.emplace_back("min_y", LogicalType(LogicalTypeId::DOUBLE));
-	children.emplace_back("min_z", LogicalType(LogicalTypeId::DOUBLE));
-	children.emplace_back("max_x", LogicalType(LogicalTypeId::DOUBLE));
-	children.emplace_back("max_y", LogicalType(LogicalTypeId::DOUBLE));
-	children.emplace_back("max_z", LogicalType(LogicalTypeId::DOUBLE));
+	children.emplace_back("xmin", LogicalType(LogicalTypeId::DOUBLE));
+	children.emplace_back("ymin", LogicalType(LogicalTypeId::DOUBLE));
+	children.emplace_back("zmin", LogicalType(LogicalTypeId::DOUBLE));
+	children.emplace_back("xmax", LogicalType(LogicalTypeId::DOUBLE));
+	children.emplace_back("ymax", LogicalType(LogicalTypeId::DOUBLE));
+	children.emplace_back("zmax", LogicalType(LogicalTypeId::DOUBLE));
 	return LogicalType::STRUCT(children);
 }
 

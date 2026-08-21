@@ -1,5 +1,6 @@
 #include "cityjson/reader.hpp"
 #include "cityjson/city_object_utils.hpp"
+#include "cityjson/lod_table.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -247,8 +248,13 @@ std::vector<Column> LocalCityJSONSeqReader::Columns() const {
 	std::vector<Column> attr_columns = CityObjectUtils::InferAttributeColumns(sample_features, sample_lines_);
 	std::vector<Column> geom_columns = CityObjectUtils::InferGeometryColumns(sample_features, sample_lines_);
 
-	columns.insert(columns.end(), attr_columns.begin(), attr_columns.end());
+	// Reserved columns in the spec's fixed order -- head, then bbox + geometry,
+	// then the trailing run (template, other) -- and only then every attribute
+	// column (spec 02-object-table-schema.mdx, "Reserved columns").
 	columns.insert(columns.end(), geom_columns.begin(), geom_columns.end());
+	auto trailing_columns = LODTableUtils::GetTrailingColumns();
+	columns.insert(columns.end(), trailing_columns.begin(), trailing_columns.end());
+	columns.insert(columns.end(), attr_columns.begin(), attr_columns.end());
 
 	cached_columns_ = columns;
 	return columns;

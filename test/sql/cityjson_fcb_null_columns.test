@@ -15,13 +15,14 @@ statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
 TO '__TEST_DIR__/nullcols.fcb' (FORMAT flatcitybuf);
 
-# 74 columns in, 74 columns out. Before this fix: 68.
+# 76 columns in, 76 columns out (74 plus the reserved `address` and `template`
+# columns every object table now carries -- spec 02-object-table-schema.mdx).
 query II
 SELECT
   (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))),
   (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb')));
 ----
-74	74
+76	76
 
 # Name them: these six are null in every object of the fixture, which is exactly
 # why guess_type could not type them.

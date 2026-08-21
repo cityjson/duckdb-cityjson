@@ -114,7 +114,13 @@ int64_t ParseTimestampString(const std::string &timestamp_str) {
 		if (match[8].matched && match[9].matched) {
 			int tz_hour = std::stoi(match[8].str());
 			int tz_minute = std::stoi(match[9].str());
-			int64_t tz_offset_micros = static_cast<int64_t>(tz_hour * 60 + tz_minute) * 60LL * 1000000LL;
+			// tz_hour carries the sign (the regex captures it in "[+-]\d{2}"); tz_minute
+			// does not, so it must borrow tz_hour's sign here -- otherwise a negative
+			// half-hour offset like -05:30 computes tz_hour*60 + tz_minute = -270 (4.5h)
+			// instead of -330 (5.5h), understating the true offset by a full hour.
+			int64_t tz_offset_micros =
+			    (static_cast<int64_t>(tz_hour) * 60 + static_cast<int64_t>(tz_hour < 0 ? -1 : 1) * tz_minute) * 60LL *
+			    1000000LL;
 			timestamp.value -= tz_offset_micros;
 		}
 

@@ -36,7 +36,7 @@ public:
 	std::vector<CityJSONFeature> ReadNFeatures(size_t n) const override;
 	std::vector<Column> Columns() const override;
 
-	/** Restrict reads to features whose 2D bbox intersects [min_x,min_y,max_x,max_y]. */
+	/** Restrict reads to features whose 2D bbox intersects [xmin,ymin,xmax,ymax]. */
 	void SetBBoxFilter(std::array<double, 4> bbox);
 
 	/** Restrict reads to features matching every AND-combined condition. */

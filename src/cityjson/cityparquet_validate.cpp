@@ -8,6 +8,8 @@
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/database.hpp"
 
 #include <vector>
 
@@ -17,15 +19,54 @@ namespace cityjson {
 const char *const VALIDATION_TABLE = "cityparquet_validation";
 const char *const ORPHAN_TABLE = "cityparquet_orphan_rows";
 
+namespace {
+
+//! True when `table.template.id` holds at least one real (non-NULL) value. Every
+//! reader this extension ships writes `template` as an always-NULL reserved column
+//! (spec 02-object-table-schema.mdx: present but unpopulated is not the same claim
+//! as "nothing is referenced" -- see ReferencedIds below). Runs on a fresh internal
+//! connection, like cityparquet_write.cpp's `Run` helper, so it only sees committed
+//! state -- acceptable here because a pragma's generated SQL is itself expanded
+//! from pre-batch state (TRAPS.md, "Generated SQL and the pragma layer").
+bool HasNonNullTemplateReference(ClientContext &context, const std::string &schema, const std::string &table) {
+	Connection connection(DatabaseInstance::GetDatabase(context));
+	auto result =
+	    connection.Query("SELECT COUNT(*) FROM " + QualifiedName(schema, table) + " WHERE template IS NOT NULL");
+	if (result->HasError()) {
+		// Conservative default: treat a probe failure as "no evidence", the same
+		// outcome as the column not existing at all.
+		return false;
+	}
+	return result->GetValue(0, 0).GetValue<int64_t>() > 0;
+}
+
+} // namespace
+
 std::string ReferencedIds(ClientContext &context, const std::string &schema, const std::string &sidecar) {
 	auto object_tables = ObjectTablesInSchema(context, schema);
 	std::vector<std::string> terms;
 
 	if (sidecar == "geometry_templates") {
 		// A template reference is a plain struct field, no JSON involved. A table
-		// predating the template column simply contributes no references.
+		// without the `template` column at all (predates it) contributes no
+		// references, and neither does one whose `template` column exists but has
+		// never been populated with a real value -- every reader this extension
+		// ships writes `template` as an always-NULL reserved column today (spec
+		// 02-object-table-schema.mdx: the column is present regardless of whether
+		// anything populates it). Without this second check, a WHERE template IS
+		// NOT NULL term over an all-NULL column returns zero rows, which is
+		// indistinguishable in SQL from "this table genuinely references nothing"
+		// -- and `x NOT IN (<empty set>)` is true for every row, so
+		// BuildVacuumSQL would delete every geometry_templates row in the
+		// package. Only a table that can show at least one real reference
+		// contributes a term; if none can, `terms` stays empty and the
+		// "undeterminable" fallback below fires, exactly as it does for a
+		// package with no `template` column anywhere.
 		for (const auto &table : object_tables) {
 			if (!HasColumn(context, schema, table, "template")) {
+				continue;
+			}
+			if (!HasNonNullTemplateReference(context, schema, table)) {
 				continue;
 			}
 			terms.push_back("SELECT template.id AS ref FROM " + QualifiedName(schema, table) +
@@ -58,11 +99,15 @@ std::string ReferencedIds(ClientContext &context, const std::string &schema, con
 		}
 	}
 
-	// No column anywhere in the package can hold a reference to this sidecar. That is
-	// "no information", not "nothing is referenced" -- the reader does not currently
-	// emit a `template` column at all, so reading it the other way would make vacuum
-	// silently delete every geometry template in every real package. The empty string
-	// signals "undeterminable"; callers skip the sidecar.
+	// No table contributed a term: either nothing in the package can hold a
+	// reference to this sidecar at all (no `material_lod*`/`texture_lod*` column,
+	// or -- for geometry_templates -- no `template` column), or (geometry_templates
+	// only) every `template` column that exists has never been populated with a
+	// real value. Either way that is "no information", not "nothing is
+	// referenced": reading it the other way would make vacuum silently delete
+	// every geometry template in every real package, since `x NOT IN
+	// (<empty set>)` is true for every row. The empty string signals
+	// "undeterminable"; callers skip the sidecar.
 	if (terms.empty()) {
 		return std::string();
 	}

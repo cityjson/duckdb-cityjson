@@ -1,0 +1,31 @@
+# name: test/sql/cityparquet_timestamp_tz.test
+# description: TIMESTAMP columns are written UTC-adjusted, per the spec
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 02-object-table-schema.mdx "Temporal columns": a CityJSON date-time is an
+# ISO 8601 instant, so a TIMESTAMP column MUST be marked isAdjustedToUTC. A
+# timezone-naive column denotes a wall-clock reading -- a different quantity --
+# and the reference implementation rejects it outright.
+
+statement ok
+CREATE SCHEMA ts_pkg;
+
+statement ok
+CREATE TABLE ts_pkg.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2');
+
+statement ok
+PRAGMA cityparquet_init('ts_pkg');
+
+statement ok
+SELECT * FROM cityparquet_write('ts_pkg', '__TEST_DIR__/ts_out', crs => 'EPSG:7415');
+
+query I
+SELECT count(*) FROM parquet_schema('__TEST_DIR__/ts_out/building.parquet')
+WHERE name = 'tijdstipregistratie' AND logical_type LIKE '%isAdjustedToUTC=1%';
+----
+1

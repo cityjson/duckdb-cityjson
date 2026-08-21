@@ -1,0 +1,295 @@
+# name: test/sql/cityparquet_column_order.test
+# description: Reserved object-table columns emit in the spec's fixed order before every attribute
+# group: [sql]
+
+require cityjson
+
+# CityParquet spec (02-object-table-schema.mdx, "Reserved columns"): reserved columns
+# appear, in this order, before any attribute column --
+#   id, feature_id, object_type, parents, children, children_roles, address, bbox,
+#   geometry_lod*/geometry_properties_lod*/material_lod*/texture_lod*, template, other,
+#   [other_attributes]
+# `other_attributes` is optional (spec line 34) and never synthesised by this reader, so
+# it is not asserted here. minimal.city.json carries three attributes (function,
+# measuredHeight, yearOfConstruction), which is what exercises requirement 4 below.
+#
+# Each of the three blocks below is an INDEPENDENT column-set assembly
+# (LODTableUtils for the `lod =>` block, GetDefinedColumns() + each reader's own
+# geometry/trailing splice for the other two) and runs the identical five
+# requirements, so a regression confined to just one assembly still fails here.
+
+# --- default (wide) mode: read_cityjson, no lod => -------------------------
+
+statement ok
+CREATE TABLE wide_cols AS
+SELECT column_name, row_number() OVER () AS ord
+FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json'));
+
+# 1. parents precedes children precedes children_roles
+query I
+SELECT (SELECT ord FROM wide_cols WHERE column_name = 'parents')
+     < (SELECT ord FROM wide_cols WHERE column_name = 'children')
+   AND (SELECT ord FROM wide_cols WHERE column_name = 'children')
+     < (SELECT ord FROM wide_cols WHERE column_name = 'children_roles');
+----
+true
+
+# 2. address and template exist, even though this fixture never populates either
+query I
+SELECT COUNT(*) FROM wide_cols WHERE column_name IN ('address', 'template');
+----
+2
+
+# 3. bbox precedes every geometry_lod* column
+query I
+SELECT COUNT(*) FROM wide_cols
+WHERE column_name LIKE 'geometry_lod%'
+  AND ord <= (SELECT ord FROM wide_cols WHERE column_name = 'bbox');
+----
+0
+
+# 4. every attribute column's position is greater than every reserved column's position,
+# asserted generically rather than by naming one attribute. Reserved names are the ones
+# the spec fixes plus the per-LoD structural families this fixture actually carries.
+statement ok
+CREATE TABLE wide_reserved AS
+SELECT column_name FROM wide_cols
+WHERE column_name IN ('id', 'feature_id', 'object_type', 'parents', 'children',
+                       'children_roles', 'address', 'bbox', 'template', 'other',
+                       'other_attributes')
+   OR column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
+   OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%';
+
+query I
+SELECT COUNT(*)
+FROM wide_cols attr
+WHERE attr.column_name NOT IN (SELECT column_name FROM wide_reserved)
+  AND attr.ord <= (SELECT MAX(ord) FROM wide_cols WHERE column_name IN (SELECT column_name FROM wide_reserved));
+----
+0
+
+# 5. the full reserved sequence, chained in one assertion: every named reserved
+# column and every per-LoD structural family, in the exact spec order --
+# id, feature_id, object_type, parents, children, children_roles, address, bbox,
+# the geometry group, template, other, and then (implicitly, since `other` is the
+# sequence's last named link) every attribute column. This is what would have
+# caught reverting only one of the two column-set assemblies: a regression in
+# either path breaks this query for that path alone.
+query I
+SELECT
+     (SELECT ord FROM wide_cols WHERE column_name = 'id')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'feature_id')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'feature_id')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'object_type')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'object_type')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'parents')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'parents')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'children')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'children')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'children_roles')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'children_roles')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'address')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'address')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'bbox')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'bbox')
+   < (SELECT MIN(ord) FROM wide_cols WHERE column_name LIKE 'geometry_lod%')
+ AND (SELECT MAX(ord) FROM wide_cols
+      WHERE column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
+         OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'template')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'template')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'other')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'other')
+   < (SELECT MIN(ord) FROM wide_cols attr WHERE attr.column_name NOT IN (SELECT column_name FROM wide_reserved));
+----
+true
+
+statement ok
+DROP TABLE wide_cols;
+
+statement ok
+DROP TABLE wide_reserved;
+
+# --- single-LoD `lod =>` mode: read_cityjson (LODTableUtils path) -----------
+
+statement ok
+CREATE TABLE lod_cols AS
+SELECT column_name, row_number() OVER () AS ord
+FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/minimal.city.json', lod => '2.2'));
+
+# 1. parents precedes children precedes children_roles
+query I
+SELECT (SELECT ord FROM lod_cols WHERE column_name = 'parents')
+     < (SELECT ord FROM lod_cols WHERE column_name = 'children')
+   AND (SELECT ord FROM lod_cols WHERE column_name = 'children')
+     < (SELECT ord FROM lod_cols WHERE column_name = 'children_roles');
+----
+true
+
+# 2. address and template exist, even though this fixture never populates either
+query I
+SELECT COUNT(*) FROM lod_cols WHERE column_name IN ('address', 'template');
+----
+2
+
+# 3. bbox precedes every geometry_lod* column
+query I
+SELECT COUNT(*) FROM lod_cols
+WHERE column_name LIKE 'geometry_lod%'
+  AND ord <= (SELECT ord FROM lod_cols WHERE column_name = 'bbox');
+----
+0
+
+# 4. every attribute column's position is greater than every reserved column's position,
+# asserted generically rather than by naming one attribute. Reserved names are the ones
+# the spec fixes plus the per-LoD structural families this fixture actually carries.
+statement ok
+CREATE TABLE lod_reserved AS
+SELECT column_name FROM lod_cols
+WHERE column_name IN ('id', 'feature_id', 'object_type', 'parents', 'children',
+                       'children_roles', 'address', 'bbox', 'template', 'other',
+                       'other_attributes')
+   OR column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
+   OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%';
+
+query I
+SELECT COUNT(*)
+FROM lod_cols attr
+WHERE attr.column_name NOT IN (SELECT column_name FROM lod_reserved)
+  AND attr.ord <= (SELECT MAX(ord) FROM lod_cols WHERE column_name IN (SELECT column_name FROM lod_reserved));
+----
+0
+
+# 5. the full reserved sequence, chained in one assertion: every named reserved
+# column and every per-LoD structural family, in the exact spec order --
+# id, feature_id, object_type, parents, children, children_roles, address, bbox,
+# the geometry group, template, other, and then (implicitly, since `other` is the
+# sequence's last named link) every attribute column. This is what would have
+# caught reverting only one of the two column-set assemblies: a regression in
+# either path breaks this query for that path alone.
+query I
+SELECT
+     (SELECT ord FROM lod_cols WHERE column_name = 'id')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'feature_id')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'feature_id')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'object_type')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'object_type')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'parents')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'parents')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'children')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'children')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'children_roles')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'children_roles')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'address')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'address')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'bbox')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'bbox')
+   < (SELECT MIN(ord) FROM lod_cols WHERE column_name LIKE 'geometry_lod%')
+ AND (SELECT MAX(ord) FROM lod_cols
+      WHERE column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
+         OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'template')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'template')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'other')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'other')
+   < (SELECT MIN(ord) FROM lod_cols attr WHERE attr.column_name NOT IN (SELECT column_name FROM lod_reserved));
+----
+true
+
+statement ok
+DROP TABLE lod_cols;
+
+statement ok
+DROP TABLE lod_reserved;
+
+# --- read_cityjsonseq: a different reader (LocalCityJSONSeqReader), same head/trailing accessors --
+
+statement ok
+CREATE TABLE seq_cols AS
+SELECT column_name, row_number() OVER () AS ord
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'));
+
+# 1. parents precedes children precedes children_roles
+query I
+SELECT (SELECT ord FROM seq_cols WHERE column_name = 'parents')
+     < (SELECT ord FROM seq_cols WHERE column_name = 'children')
+   AND (SELECT ord FROM seq_cols WHERE column_name = 'children')
+     < (SELECT ord FROM seq_cols WHERE column_name = 'children_roles');
+----
+true
+
+# 2. address and template exist, even though this fixture never populates either
+query I
+SELECT COUNT(*) FROM seq_cols WHERE column_name IN ('address', 'template');
+----
+2
+
+# 3. bbox precedes every geometry_lod* column
+query I
+SELECT COUNT(*) FROM seq_cols
+WHERE column_name LIKE 'geometry_lod%'
+  AND ord <= (SELECT ord FROM seq_cols WHERE column_name = 'bbox');
+----
+0
+
+# 4. every attribute column's position is greater than every reserved column's position,
+# asserted generically rather than by naming one attribute. Reserved names are the ones
+# the spec fixes plus the per-LoD structural families this fixture actually carries.
+statement ok
+CREATE TABLE seq_reserved AS
+SELECT column_name FROM seq_cols
+WHERE column_name IN ('id', 'feature_id', 'object_type', 'parents', 'children',
+                       'children_roles', 'address', 'bbox', 'template', 'other',
+                       'other_attributes')
+   OR column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
+   OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%';
+
+query I
+SELECT COUNT(*)
+FROM seq_cols attr
+WHERE attr.column_name NOT IN (SELECT column_name FROM seq_reserved)
+  AND attr.ord <= (SELECT MAX(ord) FROM seq_cols WHERE column_name IN (SELECT column_name FROM seq_reserved));
+----
+0
+
+# 5. the full reserved sequence, chained in one assertion: every named reserved
+# column and every per-LoD structural family, in the exact spec order --
+# id, feature_id, object_type, parents, children, children_roles, address, bbox,
+# the geometry group, template, other, and then (implicitly, since `other` is the
+# sequence's last named link) every attribute column. This is what would have
+# caught reverting only one of the two column-set assemblies: a regression in
+# either path breaks this query for that path alone.
+query I
+SELECT
+     (SELECT ord FROM seq_cols WHERE column_name = 'id')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'feature_id')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'feature_id')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'object_type')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'object_type')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'parents')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'parents')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'children')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'children')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'children_roles')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'children_roles')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'address')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'address')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'bbox')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'bbox')
+   < (SELECT MIN(ord) FROM seq_cols WHERE column_name LIKE 'geometry_lod%')
+ AND (SELECT MAX(ord) FROM seq_cols
+      WHERE column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
+         OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'template')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'template')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'other')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'other')
+   < (SELECT MIN(ord) FROM seq_cols attr WHERE attr.column_name NOT IN (SELECT column_name FROM seq_reserved));
+----
+true
+
+statement ok
+DROP TABLE seq_cols;
+
+statement ok
+DROP TABLE seq_reserved;

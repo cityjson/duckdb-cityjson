@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cityjson/cityparquet_sql_common.hpp"
 #include "duckdb.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -23,8 +24,11 @@ namespace cityjson {
  * Carries what the bbox phase would otherwise read from the catalog.
  */
 struct PendingTable {
-	//! The `geometry_lod*` columns the table is being created with.
-	std::vector<std::string> geometry_columns;
+	//! The `geometry_lod*` columns the table is being created with, name and type. The
+	//! type travels with the name because a pending table is not in the catalog yet --
+	//! BboxPhase cannot look it up there -- and it is what tells GeometryColumnRef
+	//! whether the column needs ST_AsWKB wrapping before cityjson_wkb_extent runs.
+	std::vector<ColumnInfo> geometry_columns;
 	//! Whether it has a `bbox` column at all. A source with no analysis geometry produces
 	//! no geometry columns and no bbox column either, and a bbox UPDATE against such a
 	//! table is a binder error rather than a no-op.

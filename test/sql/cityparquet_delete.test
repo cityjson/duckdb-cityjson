@@ -88,7 +88,7 @@ SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
 statement ok
 CREATE TABLE ams.transportation (id VARCHAR, feature_id VARCHAR, object_type VARCHAR,
   parents VARCHAR[], children VARCHAR[], children_roles VARCHAR[],
-  bbox STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE));
+  bbox STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE));
 
 statement ok
 PRAGMA cityparquet_init('ams');
@@ -146,10 +146,10 @@ true
 # --- regressions from the 2026-07-26 review --------------------------------
 
 # A struct-field predicate binds fine against the table, so table selection must
-# resolve `bbox.max_z` to its base column `bbox` rather than looking for a
-# top-level `max_z` and rejecting the delete.
+# resolve `bbox.zmax` to its base column `bbox` rather than looking for a
+# top-level `zmax` and rejecting the delete.
 statement ok
-PRAGMA cityparquet_delete('ams', 'bbox.max_z > 1000000');
+PRAGMA cityparquet_delete('ams', 'bbox.zmax > 1000000');
 
 query I
 SELECT COUNT(*) > 0 FROM ams.building;

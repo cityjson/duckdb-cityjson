@@ -51,11 +51,15 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		return roles;
 	}
 
-	if (col.name == "geographical_extent") {
-		if (!obj.geographical_extent.has_value()) {
-			return json(nullptr);
-		}
-		return obj.geographical_extent->ToJson();
+	// `address` and `template`: reserved columns the spec requires present (spec
+	// "Optional data is NULL, not an omitted column"), but nothing in CityObject
+	// parses source address members or geometry-template instance data yet. Always
+	// NULL rather than surfacing a same-named source attribute here -- CityObject
+	// carries no field for either, so there is nothing to report but NULL without
+	// inventing it. (A source attribute literally named "address" or "template" is
+	// reserved-name-colliding input; it is preserved in `other`, not here.)
+	if (col.name == "address" || col.name == "template") {
+		return json(nullptr);
 	}
 
 	if (col.name == "other") {
@@ -65,6 +69,13 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 			if (!IsPredefinedColumn(key) && !IsGeometryColumn(key)) {
 				other_attrs[key] = value;
 			}
+		}
+		// The spec's reserved-column list has no dedicated column for the source's
+		// per-object geographicalExtent (07-mapping-cityjson.mdx: `bbox` is derived
+		// from geometry rather than copied from the source extent, so the source
+		// extent is preserved here verbatim, under its source key).
+		if (obj.geographical_extent.has_value()) {
+			other_attrs["geographicalExtent"] = obj.geographical_extent->ToJson();
 		}
 		if (other_attrs.empty()) {
 			return json(nullptr);
@@ -169,11 +180,21 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 		}
 	}
 
+	// `bbox` leads the geometry group (spec 02-object-table-schema.mdx, "Reserved
+	// columns": bbox precedes every geometry_lod*), and is emitted unconditionally
+	// -- unlike the geometry_lod*/geometry_properties_lod*/material_lod*/
+	// texture_lod* family, whose per-LoD *set* genuinely is a property of the
+	// dataset (spec: "a table whose objects have no analysis geometry at all
+	// carries none of them"), bbox is not part of that per-LoD exception: it is a
+	// single reserved column like `address` or `template`, column-nullable but
+	// always present. cityparquet-rs pushes it unconditionally too.
+	std::vector<Column> result;
+	result.emplace_back("bbox", ColumnType::GeographicalExtent);
+
 	// Create per-LOD WKB geometry columns (CityParquet-style wide layout):
 	// for each LOD, a "geometry_lodX_Y" (WKB BLOB) and "geometry_properties_lodX_Y" (JSON).
 	// `lods` is a std::set, so iteration is already sorted; emit the pair per LOD so the
 	// geometry and its properties stay adjacent.
-	std::vector<Column> result;
 	for (const auto &lod : lods) {
 		std::string suffix = LODTableUtils::FormatLODAsColumnSuffix(lod);
 		result.emplace_back("geometry_" + suffix, ColumnType::GeometryWKB);
@@ -183,12 +204,6 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 		// appearance for it (nullable).
 		result.emplace_back("material_" + suffix, ColumnType::AppearanceJson);
 		result.emplace_back("texture_" + suffix, ColumnType::AppearanceJson);
-	}
-
-	// A single per-row bbox (computed from the highest-LOD geometry) completes the
-	// CityParquet wide layout. Only emitted when at least one LOD geometry exists.
-	if (!lods.empty()) {
-		result.emplace_back("bbox", ColumnType::GeographicalExtent);
 	}
 
 	return result;

@@ -34,11 +34,11 @@ std::set<std::string> ReferencedColumns(const std::string &predicate) {
 		if (expression.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
 			auto &column_ref = expression.Cast<ColumnRefExpression>();
 			// GetColumnName() returns the *last* name in the chain, which for a struct
-			// field reference like `bbox.max_z` is the field, not the column. Recording
+			// field reference like `bbox.zmax` is the field, not the column. Recording
 			// only that would make the table look as though it lacked a top-level
-			// `max_z` column and reject a predicate that binds perfectly well. Record
+			// `zmax` column and reject a predicate that binds perfectly well. Record
 			// the whole chain; a table qualifies if any one name in it is a real column,
-			// which covers both `bbox.max_z` and a table-qualified `t.col`.
+			// which covers both `bbox.zmax` and a table-qualified `t.col`.
 			std::string chain;
 			for (const auto &part : column_ref.column_names) {
 				if (!chain.empty()) {
@@ -121,7 +121,7 @@ std::vector<std::string> TablesBindingPredicate(ClientContext &context, const st
 		bool all_present = true;
 		for (const auto &chain : referenced) {
 			// A reference is satisfied when any name in its dotted chain is a real
-			// column of this table: `bbox.max_z` matches on `bbox`, `t.status` on
+			// column of this table: `bbox.zmax` matches on `bbox`, `t.status` on
 			// `status`, and a bare `status` on itself.
 			bool matched = false;
 			size_t start = 0;

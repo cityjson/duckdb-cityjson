@@ -85,7 +85,7 @@ TO 'delft.city.jsonl' (FORMAT cityjsonseq);
 All three read functions take `lod` and `sample_lines`. `read_cityjson` and
 `read_cityjsonseq` additionally take `appearance` (`'local'` / `'sidecar'`) and
 `geometry_encoding` (`'wkb'` / `'arrow-native'`); `read_flatcitybuf` instead
-takes `min_x` / `min_y` / `max_x` / `max_y` for bbox pushdown.
+takes `xmin` / `ymin` / `xmax` / `ymax` for bbox pushdown.
 
 ## Output schema in brief
 

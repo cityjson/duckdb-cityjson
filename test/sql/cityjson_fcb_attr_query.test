@@ -36,7 +36,7 @@ f3
 
 # combined bbox + attribute WHERE: only f2 is in both the bbox and height > 15
 query I
-SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb', min_x := 50, min_y := 50, max_x := 150, max_y := 150) WHERE height > 15 ORDER BY feature_id;
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/attr_query.fcb', xmin := 50, ymin := 50, xmax := 150, ymax := 150) WHERE height > 15 ORDER BY feature_id;
 ----
 f2
 
@@ -83,7 +83,7 @@ COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_string_truncation.city.jsonl
 TO '__TEST_DIR__/string_truncation.fcb' (FORMAT flatcitybuf, attr_index 'category', branching_factor 4);
 
 query I
-SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/string_truncation.fcb', min_x := 0, min_y := 0, max_x := 30, max_y := 30)
+SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/string_truncation.fcb', xmin := 0, ymin := 0, xmax := 30, ymax := 30)
 WHERE category > 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAb'
 ORDER BY feature_id;
 ----

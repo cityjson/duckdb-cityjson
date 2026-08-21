@@ -1,0 +1,14 @@
+# name: test/sql/cityjson_temporal_offset.test
+# description: a negative half-hour timezone offset is subtracted with its correct sign
+# group: [sql]
+
+require cityjson
+
+# ParseTimestampString's tz_hour * 60 + tz_minute treats tz_minute as always
+# positive, so a negative offset with a nonzero minute part mis-signs: -05:30
+# computed -270 minutes (4.5h) instead of the true -330 (5.5h), understating the
+# offset by a full hour. 10:00:00-05:30 is 15:30:00 UTC (local + 5h30m).
+query I
+SELECT recordedat FROM read_cityjson('test/data/temporal_offset.city.json');
+----
+2020-06-15 15:30:00+00

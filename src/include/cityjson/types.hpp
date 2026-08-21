@@ -29,8 +29,10 @@ enum class ColumnType {
 	// CityJSON-specific types (legacy)
 	Geometry,           // STRUCT(lod VARCHAR, type VARCHAR, boundaries VARCHAR,
 	                    //        semantics VARCHAR, material VARCHAR, texture VARCHAR)
-	GeographicalExtent, // STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE,
-	                    //        max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+	GeographicalExtent, // STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE,
+	                    //        xmax DOUBLE, ymax DOUBLE, zmax DOUBLE) -- the row-level
+	                    // `bbox` column; the metadata table's `geographical_extent`
+	                    // keeps its own separate min_x/max_x naming
 
 	// New WKB-based geometry types
 	GeometryWKB,              // BLOB - WKB-encoded geometry (3D)
@@ -47,6 +49,12 @@ enum class ColumnType {
 	// either producer's file is readable by the other.
 	GeometryArrowNative,         // solid -> shell -> face -> ring -> INTEGER vertex-pool index
 	GeometryVerticesArrowNative, // LIST(STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))
+
+	// Reserved columns the spec requires present (NULL-filled) even when nothing in
+	// this reader's data model populates them yet (02-object-table-schema.mdx).
+	AddressList,   // LIST(STRUCT(street, house_number, po_box, zip_code, city, state,
+	               //             country, free_text VARCHAR, location BLOB))
+	TemplateStruct, // STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
 };
 
 /**

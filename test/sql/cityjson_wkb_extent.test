@@ -12,7 +12,7 @@ CREATE TABLE b AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
 query T
 SELECT typeof(cityjson_wkb_extent(geometry_lod2_2)) FROM b WHERE geometry_lod2_2 IS NOT NULL;
 ----
-STRUCT(min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE)
+STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)
 
 # minimal.city.json has one object at one LoD, so its bbox — which is unioned
 # across LoDs and descendants — reduces to exactly this geometry's extent.
@@ -39,7 +39,7 @@ CREATE TABLE d AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.js
 query I
 SELECT COUNT(*) FROM d
 WHERE geometry_lod2_2 IS NOT NULL
-  AND cityjson_wkb_extent(geometry_lod2_2).min_z < cityjson_wkb_extent(geometry_lod2_2).max_z;
+  AND cityjson_wkb_extent(geometry_lod2_2).zmin < cityjson_wkb_extent(geometry_lod2_2).zmax;
 ----
 10
 
@@ -48,8 +48,8 @@ WHERE geometry_lod2_2 IS NOT NULL
 query I
 SELECT COUNT(*) FROM d
 WHERE geometry_lod2_2 IS NOT NULL
-  AND (cityjson_wkb_extent(geometry_lod2_2).min_x > bbox.min_x
-    OR cityjson_wkb_extent(geometry_lod2_2).max_x < bbox.max_x);
+  AND (cityjson_wkb_extent(geometry_lod2_2).xmin > bbox.xmin
+    OR cityjson_wkb_extent(geometry_lod2_2).xmax < bbox.xmax);
 ----
 0
 

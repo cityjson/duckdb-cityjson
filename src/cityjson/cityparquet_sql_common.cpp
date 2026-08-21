@@ -3,6 +3,7 @@
 #include "cityjson/cityparquet_package.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 
@@ -44,7 +45,8 @@ const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::
 	return nullptr;
 }
 
-LogicalType WidenedType(const LogicalType &destination, const LogicalType &source) {
+LogicalType WidenedType(const LogicalType &destination, const LogicalType &source, const std::string &function,
+                        const std::string &column_name) {
 	if (destination == source) {
 		return LogicalType(LogicalTypeId::INVALID);
 	}
@@ -58,7 +60,24 @@ LogicalType WidenedType(const LogicalType &destination, const LogicalType &sourc
 	if (d == LogicalTypeId::DOUBLE && (s == LogicalTypeId::BIGINT || s == LogicalTypeId::INTEGER)) {
 		return LogicalType(LogicalTypeId::INVALID); // destination already wider
 	}
+	const auto is_nested = [](LogicalTypeId id) {
+		return id == LogicalTypeId::STRUCT || id == LogicalTypeId::LIST || id == LogicalTypeId::MAP;
+	};
+	if (is_nested(d) || is_nested(s)) {
+		throw BinderException("%s: column '%s' cannot be widened -- the destination is %s and the incoming type "
+		                      "is %s. A nested type disagreeing in shape means the two sides disagree about the "
+		                      "package's own schema; that is not something to paper over by stringifying a "
+		                      "reserved structural column",
+		                      function, column_name, destination.ToString(), source.ToString());
+	}
 	return LogicalType(LogicalTypeId::VARCHAR);
+}
+
+std::string GeometryColumnRef(const std::string &quoted_name, const LogicalType &type) {
+	if (type.id() == LogicalTypeId::GEOMETRY) {
+		return "ST_AsWKB(" + quoted_name + ")";
+	}
+	return quoted_name;
 }
 
 namespace {

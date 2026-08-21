@@ -145,13 +145,23 @@ SELECT COUNT(*) FROM ams.vegetation WHERE object_type = 'SolitaryVegetationObjec
 ----
 2
 
-# These objects have template geometry only, so the reader emits no geometry_lod*
-# columns and no bbox for them. Reconcile must leave such a table alone rather than
-# trying to write a bbox column that does not exist.
+# These objects have template geometry only (GeometryInstance, no lod of its own),
+# so the reader emits no geometry_lod* columns for them -- but `bbox` is still a
+# reserved column, unconditional like `address`/`template` (spec
+# 02-object-table-schema.mdx), so it is present regardless.
 query I
 SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM ams.vegetation) WHERE column_name = 'bbox';
 ----
-0
+1
+
+# A GeometryInstance's `boundaries` is a single placement-point index, which
+# GetObjectExtent reads like any other boundary index -- a real, if degenerate
+# (single-point), extent, not NULL. Both instances get one.
+query I
+SELECT COUNT(*) FROM ams.vegetation
+WHERE object_type = 'SolitaryVegetationObject' AND bbox IS NOT NULL;
+----
+2
 
 # --- the package stays consistent throughout ---------------------------------
 

@@ -125,20 +125,21 @@ public:
 
 /**
  * Get predefined columns for CityJSON city objects
- * These columns are always present in the output schema
+ * The **leading (head) run** of the spec's reserved column order
+ * (02-object-table-schema.mdx, "Reserved columns") -- everything up to but not
+ * including `bbox`:
  *
- * Standard columns (in order):
- * 1. id: VARCHAR - CityObject ID (unique within feature)
- * 2. feature_id: VARCHAR - Feature ID (groups CityObjects into CityJSONFeatures)
- * 3. object_type: VARCHAR - CityObject type (Building, Road, Bridge, etc.)
- * 4. children: LIST(VARCHAR) - Child CityObject IDs
- * 5. children_roles: LIST(VARCHAR) - Roles of child CityObjects
- * 6. parents: LIST(VARCHAR) - Parent CityObject IDs
- * 7. other: JSON - Custom/extension fields not in standard attributes
+ * 1. id: VARCHAR
+ * 2. feature_id: VARCHAR
+ * 3. object_type: VARCHAR
+ * 4. parents: LIST(VARCHAR)
+ * 5. children: LIST(VARCHAR)
+ * 6. children_roles: LIST(VARCHAR)
+ * 7. address: LIST(STRUCT) -- always NULL until a reader parses source addresses
  *
- * Optional (not currently included, reserved for future):
- * - geographical_extent: STRUCT - 3D bounding box
- * - geom_lod{X}_{Y}: STRUCT - Geometry at specific LOD
+ * A caller assembles the full reserved order by inserting the geometry columns
+ * after this, then `LODTableUtils::GetTrailingColumns()` (`template`, `other`),
+ * before any attribute column.
  *
  * @return Vector of predefined Column definitions
  */

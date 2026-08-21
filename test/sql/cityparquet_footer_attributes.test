@@ -1,0 +1,31 @@
+# name: test/sql/cityparquet_footer_attributes.test
+# description: Reserved structural columns never appear in the city.attributes list
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 02-object-table-schema.mdx: a column listed in `attributes` is an attribute,
+# and every other column is reserved. `address`, `template` and `other_attributes`
+# are reserved names, so declaring them as attributes makes the footer contradict
+# the schema -- and a conformant reader then tries to decode `address` as a user
+# attribute.
+
+statement ok
+CREATE SCHEMA pkg;
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'pkg');
+
+statement ok
+SELECT * FROM cityparquet_write('pkg', '__TEST_DIR__/attrs_out');
+
+query III
+SELECT decode(value) LIKE '%"address"%',
+       decode(value) LIKE '%"template"%',
+       decode(value) LIKE '%"other_attributes"%'
+FROM parquet_kv_metadata('__TEST_DIR__/attrs_out/building.parquet')
+WHERE key::VARCHAR = 'city';
+----
+false	false	false

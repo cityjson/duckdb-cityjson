@@ -3,6 +3,7 @@
 #include "cityjson/fcb_selective_convert.hpp"
 
 #include "cityjson/column_types.hpp"
+#include "cityjson/lod_table.hpp"
 #include "cityjson/error.hpp"
 
 #include <fcb/cityjson.hpp>
@@ -330,14 +331,19 @@ bool IsGeometryDerivedColumn(const Column &column) {
 
 namespace {
 
-// Structural columns the light path fills from FlatCityBuf table fields rather than
-// from the attribute blob. Derived from GetDefinedColumns() so the list cannot drift,
-// minus `other` -- which is a defined column but is assembled from every attribute
-// the object has (CityObjectUtils::GetAttributeValue), so it is handled separately.
+// Structural columns the light path fills from FlatCityBuf table fields (or leaves
+// NULL) rather than from the attribute blob. Derived from GetDefinedColumns() (the
+// head reserved run) and LODTableUtils::GetTrailingColumns() (`template`, `other`)
+// so the list cannot drift, minus `other` -- which is a defined column but is
+// assembled from every attribute the object has (CityObjectUtils::GetAttributeValue),
+// so it is handled separately.
 const std::set<std::string> &StructuralColumnNames() {
 	static const std::set<std::string> structural = [] {
 		std::set<std::string> s;
 		for (const auto &col : GetDefinedColumns()) {
+			s.insert(col.name);
+		}
+		for (const auto &col : LODTableUtils::GetTrailingColumns()) {
 			if (col.name == "other") {
 				continue;
 			}

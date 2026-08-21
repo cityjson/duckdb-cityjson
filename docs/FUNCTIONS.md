@@ -89,7 +89,7 @@ ORDER BY b3_h_dak_max DESC LIMIT 3;
 #### `lod =>` — one LoD, same column grammar
 
 ```sql
-SELECT id, cityjson_wkb_extent(geometry_lod2_2).max_z AS ridge_height
+SELECT id, cityjson_wkb_extent(geometry_lod2_2).zmax AS ridge_height
 FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL
 LIMIT 3;
@@ -154,7 +154,7 @@ never decoded. All four bounds must be given together:
 
 ```sql
 SELECT COUNT(*) FROM read_flatcitybuf('delft.fcb',
-    min_x => 84900, min_y => 446200, max_x => 85200, max_y => 446500);
+    xmin => 84900, ymin => 446200, xmax => 85200, ymax => 446500);
 -- 58
 ```
 
@@ -322,7 +322,14 @@ simply nothing to index.
 | `geometry` / `geometry_lod*` | No | WKB `BLOB` **or** DuckDB `GEOMETRY` |
 | `geometry_properties*` | No | CityParquet STRUCT **or** JSON text |
 
-Everything else is written as a CityJSON attribute.
+Everything else is written as a CityJSON attribute, with one exception: `bbox`,
+`other`, `address` and `template` are **recognised but not round-tripped** — a
+writer neither serialises their value into the output CityJSON nor declares them
+as attribute columns. `bbox` is derived and recomputed on read, so writing it
+back would be redundant; `other`, `address` and `template` are not written yet
+(a future writer would reassemble `other`'s members onto the CityObject, and
+`address`/`template` into their respective CityJSON members, rather than
+flattening any of the three into `attributes`).
 
 **The wide CityParquet layout round-trips directly.** A Parquet object table goes
 back to CityJSON with no intermediate step, one multi-LoD CityObject per feature:
@@ -399,6 +406,17 @@ TO 'delft.parquet'
 use [`cityparquet_write`](#the-package-round-trip), which branches the footer
 shape in C++ for exactly this reason.
 
+A geometry column that DuckDB has decoded to its native `GEOMETRY` type — which
+`enable_geoparquet_conversion` does automatically for any column named in a
+source file's `geo` footer key, whether or not the `spatial` extension is
+installed or loaded — carries its own writer hook: `COPY ... TO ... (FORMAT
+PARQUET)` over such a column stamps its own `geo` entry into `KV_METADATA`
+alongside any `geo` key given explicitly above. Parquet allows duplicate keys
+silently, so the file ends up with two, and a reader that picks the wrong one
+gets a footer this COPY never intended. Convert the column back to WKB first
+(`ST_AsWKB(col)`, in DuckDB core, no extension needed) before a `COPY` that also
+supplies its own `geo` key.
+
 ---
 
 ## Appearance sidecars
@@ -474,7 +492,7 @@ a `MultiSurface`.
 SELECT cityjson_wkb_extent(geometry_lod2_2)
 FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
 WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;
---> STRUCT(min_x, min_y, min_z, max_x, max_y, max_z DOUBLE)
+--> STRUCT(xmin, ymin, zmin, xmax, ymax, zmax DOUBLE)
 ```
 
 ### `cityjson_appearance_ids(cell, kind)`
@@ -832,19 +850,24 @@ generated statements are idempotent, but two things a generator cannot do:
 
 ### Predefined columns
 
+Reserved columns appear in the order below, before every attribute column
+(CityParquet spec, "Reserved columns"):
+
 | Column | Type | Description |
 | ------ | ---- | ----------- |
 | `id` | VARCHAR | CityObject identifier |
 | `feature_id` | VARCHAR | Root-family grouping key |
 | `object_type` | VARCHAR | CityGML class name (`Building`, `Road`, …) |
+| `parents` | VARCHAR[] | Parent CityObject ids |
 | `children` | VARCHAR[] | Child CityObject ids |
 | `children_roles` | VARCHAR[] | Roles, positionally aligned with `children` |
-| `parents` | VARCHAR[] | Parent CityObject ids |
-| `other` | JSON (VARCHAR) | Attributes not mapped to their own column |
+| `address` | STRUCT[] | Reserved; always NULL — no reader parses source addresses yet |
+| `bbox` | STRUCT (`xmin … zmax DOUBLE`) | 3D extent in world coordinates (below) |
+| *(the per-LoD geometry group, below)* | | |
+| `template` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses geometry-template instances yet |
+| `other` | JSON (VARCHAR) | Source members not mapped to a reserved or attribute column |
 
-Then **dynamic attribute columns** inferred from the data, then the per-LoD
-geometry columns, and **last** a `bbox` STRUCT (`min_x … max_z DOUBLE`) in world
-coordinates.
+Then **every attribute column** inferred from the data, last.
 
 `bbox` is **unioned across every stored LoD and across the object's
 descendants** — so a parent `Building` whose 3D detail lives on its
@@ -852,10 +875,24 @@ descendants** — so a parent `Building` whose 3D detail lives on its
 single exception is `lod =>` mode, which has only the one requested LoD to work
 from.)
 
+A query selecting a reserved column **by name** is unaffected by this order; one
+selecting by ordinal position (`SELECT #4`, or a `SELECT *` a caller then indexes
+into) must be updated.
+
+**A source CityObject's own `geographicalExtent`** has no dedicated column —
+`bbox` is always derived from geometry, not copied from the source — so it
+lands in `other.geographicalExtent` verbatim instead. All three `COPY … TO`
+formats (`cityjson`, `cityjsonseq`, `flatcitybuf`) reverse this on the way out:
+a CityObject's `geographicalExtent` is taken from `other` when present,
+otherwise derived from `bbox`, otherwise omitted entirely. A CityObject with
+neither a source extent nor a `bbox` (e.g. one carrying no geometry) writes no
+`geographicalExtent` member at all.
+
 ### Geometry columns (CityParquet wide layout)
 
-One group per LoD found in the data, named after the normalised LoD. A suffix
-always carries a minor, so `2.0` becomes `geometry_lod2_0`, never `geometry_lod2`:
+`bbox` (above) leads the geometry group; then one group per LoD found in the
+data, named after the normalised LoD. A suffix always carries a minor, so `2.0`
+becomes `geometry_lod2_0`, never `geometry_lod2`:
 
 | Column | Type | Description |
 | ------ | ---- | ----------- |

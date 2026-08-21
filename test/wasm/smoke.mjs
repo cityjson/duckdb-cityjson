@@ -285,7 +285,7 @@ async function main() {
         'remote bbox read returns identified rows',
         query(
           `SELECT (count(*) > 0 AND count(*) = count(id)) AS ok FROM read_flatcitybuf('${remoteUrl}',
-             min_x := 84000, min_y := 444000, max_x := 84500, max_y := 444500)`
+             xmin := 84000, ymin := 444000, xmax := 84500, ymax := 444500)`
         ),
         [{ ok: true }]
       );

@@ -135,6 +135,28 @@ SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
 ----
 0
 
+# cityparquet_read's `read_parquet` promotes geometry_lod0_0 to DuckDB-native
+# GEOMETRY (enable_geoparquet_conversion, on whenever `parquet` is loaded --
+# gated on neither `spatial` being installed nor loaded). cityparquet_reconcile
+# must still run against it, not just the writer that produced the file.
+# (typeof() on a GEOMETRY column prints its CRS metadata inline, hence LIKE.)
+query I
+SELECT typeof(geometry_lod0_0) LIKE 'GEOMETRY%' FROM back.building LIMIT 1;
+----
+true
+
+statement ok
+CREATE TABLE back_before AS SELECT id, bbox FROM back.building;
+
+statement ok
+PRAGMA cityparquet_reconcile('back');
+
+query I
+SELECT COUNT(*) FROM back_before b JOIN back.building a USING (id)
+WHERE a.bbox IS DISTINCT FROM b.bbox;
+----
+0
+
 # --- metadata.json is the DATASET-level view ---------------------------------
 
 # The footer answers for the one file it lives in; the STAC Item answers for the

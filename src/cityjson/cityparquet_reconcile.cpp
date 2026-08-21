@@ -121,23 +121,39 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 	// NULL throughout.
 	std::vector<std::string> own_parts;
 	for (const auto &table : object_tables) {
-		// A pending table is not in the catalog yet, so its geometry columns are the ones
-		// the caller is about to create it with rather than ones to look up.
+		// A pending table is not in the catalog yet, so its geometry columns -- names
+		// AND types, the latter needed just below -- are the ones the caller is about
+		// to create it with rather than ones to look up.
 		auto found = pending.find(table);
-		auto geometry_columns =
-		    found == pending.end() ? GeometryLodColumns(context, schema, table) : found->second.geometry_columns;
+		std::vector<ColumnInfo> geometry_columns;
+		if (found == pending.end()) {
+			for (const auto &column : TableColumns(context, schema, table)) {
+				if (MatchesLodSuffix(StringUtil::Lower(column.name), "geometry_lod")) {
+					geometry_columns.push_back(column);
+				}
+			}
+		} else {
+			geometry_columns = found->second.geometry_columns;
+		}
 		if (geometry_columns.empty()) {
 			// A table with no analysis geometry contributes ids but no extents, so its
 			// rows can still receive a bbox unioned from descendants elsewhere.
-			own_parts.push_back("SELECT id, NULL::DOUBLE AS min_x, NULL::DOUBLE AS min_y, NULL::DOUBLE AS min_z, "
-			                    "NULL::DOUBLE AS max_x, NULL::DOUBLE AS max_y, NULL::DOUBLE AS max_z FROM " +
+			own_parts.push_back("SELECT id, NULL::DOUBLE AS xmin, NULL::DOUBLE AS ymin, NULL::DOUBLE AS zmin, "
+			                    "NULL::DOUBLE AS xmax, NULL::DOUBLE AS ymax, NULL::DOUBLE AS zmax FROM " +
 			                    QualifiedName(schema, table));
 			continue;
 		}
 		std::vector<std::string> extents;
 		extents.reserve(geometry_columns.size());
 		for (const auto &column : geometry_columns) {
-			extents.push_back("cityjson_wkb_extent(" + KeywordHelper::WriteOptionallyQuoted(column) + ")");
+			// A column named in the file's `geo` footer arrives here promoted to
+			// DuckDB-native GEOMETRY on a plain `read_parquet` -- enable_geoparquet_
+			// conversion, gated only on the `parquet` extension, not on `spatial` being
+			// installed or loaded. cityjson_wkb_extent is BLOB-only, so such a column
+			// needs the same ST_AsWKB conversion cityparquet_write's CopySourceList
+			// applies on the way out.
+			const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.name);
+			extents.push_back("cityjson_wkb_extent(" + GeometryColumnRef(quoted, column.type) + ")");
 		}
 		auto agg = [&](const char *fn, const char *field) {
 			std::vector<std::string> terms;
@@ -147,9 +163,9 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 			}
 			return std::string(fn) + "(" + Join(terms, ", ") + ") AS " + field;
 		};
-		own_parts.push_back("SELECT id, " + agg("LEAST", "min_x") + ", " + agg("LEAST", "min_y") + ", " +
-		                    agg("LEAST", "min_z") + ", " + agg("GREATEST", "max_x") + ", " + agg("GREATEST", "max_y") +
-		                    ", " + agg("GREATEST", "max_z") + " FROM " + QualifiedName(schema, table));
+		own_parts.push_back("SELECT id, " + agg("LEAST", "xmin") + ", " + agg("LEAST", "ymin") + ", " +
+		                    agg("LEAST", "zmin") + ", " + agg("GREATEST", "xmax") + ", " + agg("GREATEST", "ymax") +
+		                    ", " + agg("GREATEST", "zmax") + " FROM " + QualifiedName(schema, table));
 	}
 	sql += "CREATE OR REPLACE TEMP TABLE __cp_own AS\n" + Join(own_parts, "\nUNION ALL\n") + ";\n";
 
@@ -164,14 +180,16 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 	       "SELECT node, ancestor FROM anc;\n";
 
 	sql += "CREATE OR REPLACE TEMP TABLE __cp_bbox AS\n"
-	       "SELECT a.ancestor AS id, MIN(o.min_x) AS min_x, MIN(o.min_y) AS min_y, MIN(o.min_z) AS min_z, "
-	       "MAX(o.max_x) AS max_x, MAX(o.max_y) AS max_y, MAX(o.max_z) AS max_z "
+	       "SELECT a.ancestor AS id, MIN(o.xmin) AS xmin, MIN(o.ymin) AS ymin, MIN(o.zmin) AS zmin, "
+	       "MAX(o.xmax) AS xmax, MAX(o.ymax) AS ymax, MAX(o.zmax) AS zmax "
 	       "FROM __cp_anc a JOIN __cp_own o ON o.id = a.node GROUP BY a.ancestor;\n";
 
 	for (const auto &table : object_tables) {
-		// `bbox` is an optional column, and a table whose objects have no analysis
-		// geometry at all carries neither geometry columns nor a bbox. There is nothing
-		// to write there, and writing anyway is a binder error.
+		// `bbox` is column-optional at the catalog level (a table this extension's
+		// own readers produced always carries it -- spec 02-object-table-schema.mdx,
+		// unconditional like `address`/`template` -- but a hand-rolled or foreign
+		// table need not). Writing `bbox = ...` against a table that lacks the
+		// column is a binder error, so this still has to check rather than assume.
 		auto pending_entry = pending.find(table);
 		const bool has_bbox =
 		    pending_entry == pending.end() ? HasBboxColumn(context, schema, table) : pending_entry->second.has_bbox;
@@ -189,11 +207,11 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 		// clearing on it would throw away the correct bbox the reader had already put
 		// there. So a pending table keeps what it has when nothing was computed.
 		const char *absent = pending_entry == pending.end() ? "NULL" : "t.bbox";
-		sql += "UPDATE " + QualifiedName(schema, table) + " t SET bbox = CASE WHEN b.min_x IS NULL THEN " +
+		sql += "UPDATE " + QualifiedName(schema, table) + " t SET bbox = CASE WHEN b.xmin IS NULL THEN " +
 		       std::string(absent) +
 		       " ELSE "
-		       "{'min_x': b.min_x, 'min_y': b.min_y, 'min_z': b.min_z, "
-		       "'max_x': b.max_x, 'max_y': b.max_y, 'max_z': b.max_z} END "
+		       "{'xmin': b.xmin, 'ymin': b.ymin, 'zmin': b.zmin, "
+		       "'xmax': b.xmax, 'ymax': b.ymax, 'zmax': b.zmax} END "
 		       "FROM __cp_bbox b WHERE b.id = t.id;\n";
 	}
 	return sql;
