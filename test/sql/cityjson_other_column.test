@@ -70,3 +70,23 @@ COPY (
 ) TO '__TEST_DIR__/other_duplicate_key.city.jsonl' (FORMAT cityjsonseq);
 ----
 obj1
+
+# `other` text that does not parse as JSON at all is invalid input (spec
+# 02-object-table-schema.mdx, "The `other` column"): a reader must reject it rather
+# than silently drop the attributes it would have contributed.
+statement error
+COPY (
+    SELECT * FROM (VALUES ('obj2', 'obj2', 'Building', '{not json', 12)) AS t(id, feature_id, object_type, other, height)
+) TO '__TEST_DIR__/other_malformed_json.city.jsonl' (FORMAT cityjsonseq);
+----
+obj2
+
+# `other` text that parses but is not a JSON object (here, an array) is equally
+# invalid input: `other` stores an object's worth of attributes, so anything else
+# is rejected rather than silently skipped.
+statement error
+COPY (
+    SELECT * FROM (VALUES ('obj3', 'obj3', 'Building', '[1,2,3]', 12)) AS t(id, feature_id, object_type, other, height)
+) TO '__TEST_DIR__/other_non_object.city.jsonl' (FORMAT cityjsonseq);
+----
+obj3

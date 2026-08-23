@@ -1244,32 +1244,45 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 		// this, an attribute whose name collides with a reserved column is read
 		// into `other` and then written nowhere.
 		//
+		// An `other` cell that is not parseable JSON, or that parses to something
+		// other than a JSON object, is invalid input (spec 02-object-table-schema.mdx,
+		// "The `other` column"): `other` stores an object's worth of attributes, so a
+		// reader must reject a cell that cannot supply that rather than silently
+		// treating it as contributing nothing. A SQL NULL cell is unaffected -- it
+		// means "no other attributes" and stays fine.
+		//
 		// An `other` entry whose key duplicates an attribute already decoded from
-		// its own column is invalid input (spec 02-object-table-schema.mdx, "The
-		// `other` column"): the two copies cannot be reconciled without inventing
-		// a preference the format does not state, so this is an error rather than
-		// a silent keep-the-column-drop-the-other-copy resolution.
+		// its own column is likewise invalid input: the two copies cannot be
+		// reconciled without inventing a preference the format does not state, so
+		// this is an error rather than a silent keep-the-column-drop-the-other-copy
+		// resolution.
 		if (bind_data.other_col != DConstants::INVALID_INDEX) {
 			auto other_val = input.data[bind_data.other_col].GetValue(row);
 			if (!other_val.IsNull()) {
+				json other_json;
 				try {
-					json other_json = json_utils::ParseJson(other_val.ToString());
-					if (other_json.is_object()) {
-						for (auto it = other_json.begin(); it != other_json.end(); ++it) {
-							if (attributes.contains(it.key())) {
-								throw InvalidInputException(
-								    "COPY TO cityjson: object '%s' has an `other` entry for key '%s' that "
-								    "duplicates the value already decoded from its own attribute column; a "
-								    "reader must reject this rather than silently keep one copy",
-								    city_obj_id, it.key());
-							}
-							attributes[it.key()] = it.value();
-						}
+					other_json = json_utils::ParseJson(other_val.ToString());
+				} catch (const CityJSONError &e) {
+					throw InvalidInputException("COPY TO cityjson: object '%s' has an `other` cell that is not "
+					                            "valid JSON (%s); a reader must reject this rather than silently "
+					                            "treat the cell as contributing no attributes",
+					                            city_obj_id, e.what());
+				}
+				if (!other_json.is_object()) {
+					throw InvalidInputException(
+					    "COPY TO cityjson: object '%s' has an `other` cell that is not a JSON object (%s); a "
+					    "reader must reject this rather than silently treat the cell as contributing no attributes",
+					    city_obj_id, other_json.type_name());
+				}
+				for (auto it = other_json.begin(); it != other_json.end(); ++it) {
+					if (attributes.contains(it.key())) {
+						throw InvalidInputException(
+						    "COPY TO cityjson: object '%s' has an `other` entry for key '%s' that "
+						    "duplicates the value already decoded from its own attribute column; a "
+						    "reader must reject this rather than silently keep one copy",
+						    city_obj_id, it.key());
 					}
-				} catch (const CityJSONError &) {
-					// Malformed `other` text is bad input, not this
-					// reconstruction's problem to diagnose; the attributes it
-					// would have contributed are simply absent.
+					attributes[it.key()] = it.value();
 				}
 			}
 		}
