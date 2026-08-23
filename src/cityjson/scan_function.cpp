@@ -317,9 +317,14 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 			if (!chunk) {
 				break;
 			}
+			// Unwrap once, here. A span is two words, so the copy is free, and the
+			// engaged-ness check above then guards every use -- whereas `chunk->` inside
+			// the loop below reads as an unchecked optional access to clang-tidy, whose
+			// dataflow does not carry the check across the loop's back edge.
+			const auto features = *chunk;
 
-			for (; feature_idx < chunk->size() && remaining > 0; feature_idx++) {
-				const auto &feature = (*chunk)[feature_idx];
+			for (; feature_idx < features.size() && remaining > 0; feature_idx++) {
+				const auto &feature = features[feature_idx];
 
 				size_t obj_idx = 0;
 				for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
@@ -358,15 +363,16 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 			if (!chunk) {
 				break;
 			}
+			const auto features = *chunk;
 
-			if (global_state.filter_feature_idx >= chunk->size()) {
+			if (global_state.filter_feature_idx >= features.size()) {
 				global_state.filter_chunk_idx++;
 				global_state.filter_feature_idx = 0;
 				global_state.filter_obj_offset = 0;
 				continue;
 			}
 
-			const auto &feature = (*chunk)[global_state.filter_feature_idx];
+			const auto &feature = features[global_state.filter_feature_idx];
 
 			size_t obj_idx = 0;
 			for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
