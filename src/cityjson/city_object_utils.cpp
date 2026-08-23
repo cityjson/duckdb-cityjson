@@ -18,7 +18,8 @@ namespace cityjson {
 // CityObjectUtils - Attribute Extraction
 // ============================================================
 
-json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col) {
+json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col,
+                                        const std::set<std::string> &emitted_columns) {
 	// Handle predefined columns
 	if (col.name == "object_type") {
 		return json(obj.type);
@@ -63,19 +64,17 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 	}
 
 	if (col.name == "other") {
-		// Return attributes not in standard columns
+		// `other` carries only what no column of its own carries: an attribute
+		// whose name collides with a reserved column, and so never got one.
+		// Attributes that DID get a column are not repeated here -- a duplicate
+		// costs a JSON blob per row and is written nowhere on COPY TO.
+		// geographicalExtent is not included: it is carried by `bbox`, which
+		// unions it with the extent computed from the object's geometry.
 		json other_attrs = json::object();
 		for (const auto &[key, value] : obj.attributes) {
-			if (!IsPredefinedColumn(key) && !IsGeometryColumn(key)) {
+			if (emitted_columns.count(key) == 0) {
 				other_attrs[key] = value;
 			}
-		}
-		// The spec's reserved-column list has no dedicated column for the source's
-		// per-object geographicalExtent (07-mapping-cityjson.mdx: `bbox` is derived
-		// from geometry rather than copied from the source extent, so the source
-		// extent is preserved here verbatim, under its source key).
-		if (obj.geographical_extent.has_value()) {
-			other_attrs["geographicalExtent"] = obj.geographical_extent->ToJson();
 		}
 		if (other_attrs.empty()) {
 			return json(nullptr);

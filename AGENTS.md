@@ -91,8 +91,16 @@ FCB_PREFIX="$(pwd)/.vendor/prefix" test/cpp/run_encoder_tests.sh
 FCB_PREFIX="$(pwd)/.vendor/prefix" test/cpp/run_fcb_selective_tests.sh
 just test-remote               # HTTP reads + cross-format parity (~25 MB)
 just test-fcb-remote           # FCB HTTP range reads
+just test-notebook             # the docs/TESTING.md walkthrough (~120 MB; needs spatial)
 just test-wasm                 # needs `just wasm` first
 ```
+
+`just test-notebook` is [docs/TESTING.md](docs/TESTING.md) — a notebook someone drove
+by hand against real datasets — run as a test. It downloads nothing in advance: each
+fixture is read from the URL it was published at, by the query that needs it. Nothing
+in it is pinned to a row count. Every assertion relates one count to another in the
+same run, because the datasets are published by other people and a test that has to be
+re-baselined when they change is reporting on the data rather than on this extension.
 
 `FCB_PREFIX` points at a prefix holding flatcitybuf + flatbuffers — `just vendor-fcb`
 builds one at `.vendor/prefix`, and a configured tree already has one under

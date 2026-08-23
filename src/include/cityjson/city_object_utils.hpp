@@ -4,6 +4,7 @@
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/arrow_native_encoder.hpp"
 #include "cityjson/json_utils.hpp"
+#include <set>
 #include <vector>
 #include <string>
 
@@ -17,29 +18,16 @@ namespace cityjson {
 class CityObjectUtils {
 public:
 	/**
-	 * Get attribute value from CityObject for a specific column
-	 * Handles both predefined columns and dynamic attribute columns
+	 * Get attribute value from CityObject for a specific column.
 	 *
-	 * Predefined columns handled:
-	 * - "object_type" → CityObject.type
-	 * - "children" → CityObject.children
-	 * - "parents" → CityObject.parents
-	 * - "children_roles" → CityObject.children_roles
-	 * - "other" → Attributes not in predefined/dynamic columns, plus
-	 *   CityObject.geographical_extent (spec 07-mapping-cityjson.mdx: no dedicated
-	 *   reserved column for the source's per-object geographicalExtent)
-	 * - "address", "template" → always NULL; CityObject carries no field for
-	 *   either yet, so nothing is invented
-	 *
-	 * Dynamic columns:
-	 * - Looks up attribute by column name in CityObject.attributes
-	 * - Returns null JSON if attribute doesn't exist
-	 *
-	 * @param obj CityObject to extract from
-	 * @param col Column definition
-	 * @return JSON value for the column (may be null)
+	 * `emitted_columns` names every column the bound schema actually
+	 * produces. `other` is assembled from the members that have none, so it
+	 * needs the real column set rather than a static predicate: an attribute
+	 * that lost a case-insensitive dedup race has no column of its own and
+	 * must still survive in `other`.
 	 */
-	static json GetAttributeValue(const CityObject &obj, const Column &col);
+	static json GetAttributeValue(const CityObject &obj, const Column &col,
+	                              const std::set<std::string> &emitted_columns);
 
 	/**
 	 * Infer attribute columns from sample features

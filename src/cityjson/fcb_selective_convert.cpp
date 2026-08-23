@@ -334,8 +334,8 @@ namespace {
 // Structural columns the light path fills from FlatCityBuf table fields (or leaves
 // NULL) rather than from the attribute blob. Derived from GetDefinedColumns() (the
 // head reserved run) and LODTableUtils::GetTrailingColumns() (`template`, `other`)
-// so the list cannot drift, minus `other` -- which is a defined column but is
-// assembled from every attribute the object has (CityObjectUtils::GetAttributeValue),
+// so the list cannot drift, minus `other` -- which is a defined column but carries
+// only attributes with no column of their own (CityObjectUtils::GetAttributeValue),
 // so it is handled separately.
 const std::set<std::string> &StructuralColumnNames() {
 	static const std::set<std::string> structural = [] {

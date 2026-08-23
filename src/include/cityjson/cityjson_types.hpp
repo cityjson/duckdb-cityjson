@@ -9,6 +9,7 @@
 #include <optional>
 #include <array>
 #include <span>
+#include <algorithm>
 
 namespace duckdb {
 namespace cityjson {
@@ -105,6 +106,18 @@ struct GeographicalExtent {
 	 * Convert to JSON array
 	 */
 	json ToJson() const;
+
+	/** This extent widened to also cover `other`. */
+	GeographicalExtent Union(const GeographicalExtent &other) const {
+		GeographicalExtent out = *this;
+		out.min_x = std::min(out.min_x, other.min_x);
+		out.min_y = std::min(out.min_y, other.min_y);
+		out.min_z = std::min(out.min_z, other.min_z);
+		out.max_x = std::max(out.max_x, other.max_x);
+		out.max_y = std::max(out.max_y, other.max_y);
+		out.max_z = std::max(out.max_z, other.max_z);
+		return out;
+	}
 };
 
 /**

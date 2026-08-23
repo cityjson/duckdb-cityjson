@@ -359,12 +359,12 @@ std::vector<Column> FlatCityBufReader::Columns() const {
 					break;
 				}
 			}
-			// IsReservedColumnName, not IsPredefinedColumn: the latter is only the
-			// small set GetAttributeValue's `other` accumulation cares about (and
-			// deliberately omits e.g. `bbox`/`address`/`template`, which fall back
-			// into `other` on a genuine source-attribute collision). A header that
-			// declares an attribute literally named `bbox` or `address` must not
-			// duplicate this reader's own reserved column of that name.
+			// IsReservedColumnName, the full check: this reader's own `other`
+			// accumulation (GetAttributeValue) diverts any attribute whose name
+			// collides with an *emitted* column, not a fixed handful, so this
+			// header-merge check must reject every reserved name too. A header
+			// that declares an attribute literally named `bbox` or `address`
+			// must not duplicate this reader's own reserved column of that name.
 			if (already_present || IsReservedColumnName(col.name)) {
 				continue;
 			}

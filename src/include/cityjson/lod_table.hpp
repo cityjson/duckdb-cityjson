@@ -74,9 +74,6 @@ public:
 	 *   instances
 	 * - other: JSON
 	 *
-	 * `other_attributes` is deliberately not included: the spec permits a reader
-	 * omitting it entirely, and this reader never synthesises one.
-	 *
 	 * @return Vector of trailing reserved column definitions
 	 */
 	static std::vector<Column> GetTrailingColumns();

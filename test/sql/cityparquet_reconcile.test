@@ -14,10 +14,8 @@ CREATE TABLE ams.building AS
 statement ok
 PRAGMA cityparquet_init('ams');
 
-# Reconciling an already-correct package changes nothing at all — including bbox.
-# The reader and reconcile now agree on the specification's rule that bbox is
-# unioned across every stored LoD *and* across the object's descendants, so a
-# freshly-read package is already reconciled.
+# Reconciling an already-correct package changes feature_id/children/children_roles
+# nothing at all.
 statement ok
 CREATE TABLE before AS SELECT id, feature_id, children, children_roles, bbox FROM ams.building;
 
@@ -28,8 +26,23 @@ query I
 SELECT COUNT(*) FROM before b JOIN ams.building a USING (id)
 WHERE a.feature_id IS DISTINCT FROM b.feature_id
    OR a.children IS DISTINCT FROM b.children
-   OR a.children_roles IS DISTINCT FROM b.children_roles
-   OR a.bbox IS DISTINCT FROM b.bbox;
+   OR a.children_roles IS DISTINCT FROM b.children_roles;
+----
+0
+
+# bbox itself can legitimately narrow. The reader unions in the source's declared
+# per-object extent on top of the geometry-derived one (never substituting it --
+# a declared extent is not guaranteed to contain its geometry), but
+# cityparquet_reconcile's own contract is a pure recompute from stored geometry --
+# it has no declared extent to consult, and must be able to shrink a stale bbox
+# back down after an in-place geometry UPDATE (docs/FUNCTIONS.md). So reconciling
+# a freshly-read package narrows any row whose source declared extent exceeded its
+# geometry, and the invariant that holds is containment, not identity: reconcile's
+# result is always inside what the reader produced, never outside it.
+query I
+SELECT COUNT(*) FROM before b JOIN ams.building a USING (id)
+WHERE a.bbox.xmin < b.bbox.xmin OR a.bbox.ymin < b.bbox.ymin OR a.bbox.zmin < b.bbox.zmin
+   OR a.bbox.xmax > b.bbox.xmax OR a.bbox.ymax > b.bbox.ymax OR a.bbox.zmax > b.bbox.zmax;
 ----
 0
 

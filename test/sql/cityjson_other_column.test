@@ -1,0 +1,92 @@
+# name: test/sql/cityjson_other_column.test
+# description: other carries only data with no column of its own
+# group: [sql]
+
+require cityjson
+
+# Every ordinary attribute has its own column, so nothing is left for other.
+query I
+SELECT count(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE other IS NOT NULL;
+----
+0
+
+# The same holds for the non-seq reader. (FlatCityBuf is not exercised in this
+# file.)
+query I
+SELECT count(*) FROM read_cityjson('test/data/minimal.city.json') WHERE other IS NOT NULL;
+----
+0
+
+# An attribute that has its own column is never also copied into other. Checked
+# with LIKE rather than json_extract: the JSON type and its functions live in the
+# `json` extension, which this file does not require.
+query I
+SELECT count(*)
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE other IS NOT NULL AND other LIKE '%b3_h_dak_50p%';
+----
+0
+
+# bbox unions the source's declared extent, so it never sits inside the geometry.
+query I
+SELECT count(*)
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+WHERE bbox.zmax < bbox.zmin;
+----
+0
+
+# COPY TO restores other's entries as attributes rather than dropping them.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/other_roundtrip.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/other_roundtrip.city.jsonl');
+----
+20
+
+# A discriminating case: an attribute literally named "bbox" collides with the
+# reserved bbox column, so it is read into `other`, not a column of its own
+# (bbox is never eligible for one). Round-tripping through COPY TO cityjsonseq
+# must restore it into `attributes` in the output text -- previously `other`
+# was read but never written back, so a reserved-colliding attribute like this
+# vanished on the first write.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/bbox_attr_collision.city.json'))
+TO '__TEST_DIR__/bbox_attr_roundtrip.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT content LIKE '%"bbox":"attr-bbox-value"%' FROM read_text('__TEST_DIR__/bbox_attr_roundtrip.city.jsonl');
+----
+true
+
+# An `other` entry whose key duplicates an attribute already decoded from its own
+# column is invalid input (spec 02-object-table-schema.mdx, "The `other` column"):
+# the two copies cannot be reconciled, so COPY TO must error rather than silently
+# keep the column's copy and drop the `other` one.
+statement error
+COPY (
+    SELECT * FROM (VALUES ('obj1', 'obj1', 'Building', '{"height": 12}', 12)) AS t(id, feature_id, object_type, other, height)
+) TO '__TEST_DIR__/other_duplicate_key.city.jsonl' (FORMAT cityjsonseq);
+----
+obj1
+
+# `other` text that does not parse as JSON at all is invalid input (spec
+# 02-object-table-schema.mdx, "The `other` column"): a reader must reject it rather
+# than silently drop the attributes it would have contributed.
+statement error
+COPY (
+    SELECT * FROM (VALUES ('obj2', 'obj2', 'Building', '{not json', 12)) AS t(id, feature_id, object_type, other, height)
+) TO '__TEST_DIR__/other_malformed_json.city.jsonl' (FORMAT cityjsonseq);
+----
+obj2
+
+# `other` text that parses but is not a JSON object (here, an array) is equally
+# invalid input: `other` stores an object's worth of attributes, so anything else
+# is rejected rather than silently skipped.
+statement error
+COPY (
+    SELECT * FROM (VALUES ('obj3', 'obj3', 'Building', '[1,2,3]', 12)) AS t(id, feature_id, object_type, other, height)
+) TO '__TEST_DIR__/other_non_object.city.jsonl' (FORMAT cityjsonseq);
+----
+obj3

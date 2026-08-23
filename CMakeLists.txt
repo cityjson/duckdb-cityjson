@@ -131,6 +131,35 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_20)
 target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_20)
 
+# No fused multiply-add, on any platform. The writer's output must be
+# byte-identical everywhere.
+#
+# Every coordinate this extension emits -- WKB geometry, `bbox`, and the
+# `geographicalExtent` COPY TO derives from it -- comes out of
+# `Transform::Apply` (src/cityjson/cityjson_types.cpp), which computes
+# `vertex * scale + translate`. That is textbook contraction bait: a compiler
+# targeting hardware with an FMA instruction is allowed to fuse the multiply and
+# the add into one instruction that rounds once instead of twice, and clang's
+# default `-ffp-contract=on` does exactly that. The results differ in the last
+# bit -- for 3DBAG's Delft subset, index -45173 with scale 0.001 and translate
+# 45.64800262451172 is 0.47500262451171693 unfused and 0.47500262451171782
+# fused.
+#
+# Left on, that makes the same input file written on an arm64 Mac and on an
+# x86-64 Linux box two different files: different WKB bytes, different extents,
+# different content hashes. For a storage format whose whole point is that a
+# dataset can be written once and compared, deduplicated and parity-checked
+# elsewhere, a per-machine last bit is a defect, not an optimisation.
+#
+# Turning contraction off costs nothing on the platforms that were already
+# agreeing -- baseline x86-64 has no FMA instruction to fuse into, and MSVC's
+# default /fp:precise does not contract either, hence the guard. It is arm64
+# (and any future -march that admits FMA) that changes, to match everyone else.
+if(NOT MSVC)
+  target_compile_options(${EXTENSION_NAME} PRIVATE -ffp-contract=off)
+  target_compile_options(${LOADABLE_EXTENSION_NAME} PRIVATE -ffp-contract=off)
+endif()
+
 # Optional: FlatCityBuf support (native C++ library). In CI it is resolved from the
 # HideBa/vcpkg git registry (flatcitybuf@0.9.0, upstream tag cpp-v0.9.0) — see the
 # `registries` entry in vcpkg.json; local dev uses `just vendor-fcb`'s .vendor/prefix.

@@ -6,6 +6,7 @@
 #include "duckdb/logging/logger.hpp"
 #include "cityjson/copy_source_ref.hpp"
 #include "cityjson/reader.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -1238,48 +1239,72 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 				}
 			}
 		}
+		// `other` carries source data with no column of its own; the format's
+		// reader rule is that every entry is restored as an attribute. Without
+		// this, an attribute whose name collides with a reserved column is read
+		// into `other` and then written nowhere.
+		//
+		// An `other` cell that is not parseable JSON, or that parses to something
+		// other than a JSON object, is invalid input (spec 02-object-table-schema.mdx,
+		// "The `other` column"): `other` stores an object's worth of attributes, so a
+		// reader must reject a cell that cannot supply that rather than silently
+		// treating it as contributing nothing. A SQL NULL cell is unaffected -- it
+		// means "no other attributes" and stays fine.
+		//
+		// An `other` entry whose key duplicates an attribute already decoded from
+		// its own column is likewise invalid input: the two copies cannot be
+		// reconciled without inventing a preference the format does not state, so
+		// this is an error rather than a silent keep-the-column-drop-the-other-copy
+		// resolution.
+		if (bind_data.other_col != DConstants::INVALID_INDEX) {
+			auto other_val = input.data[bind_data.other_col].GetValue(row);
+			if (!other_val.IsNull()) {
+				json other_json;
+				try {
+					other_json = json_utils::ParseJson(other_val.ToString());
+				} catch (const CityJSONError &e) {
+					throw InvalidInputException("COPY TO cityjson: object '%s' has an `other` cell that is not "
+					                            "valid JSON (%s); a reader must reject this rather than silently "
+					                            "treat the cell as contributing no attributes",
+					                            city_obj_id, e.what());
+				}
+				if (!other_json.is_object()) {
+					throw InvalidInputException(
+					    "COPY TO cityjson: object '%s' has an `other` cell that is not a JSON object (%s); a "
+					    "reader must reject this rather than silently treat the cell as contributing no attributes",
+					    city_obj_id, other_json.type_name());
+				}
+				for (auto it = other_json.begin(); it != other_json.end(); ++it) {
+					if (attributes.contains(it.key())) {
+						throw InvalidInputException(
+						    "COPY TO cityjson: object '%s' has an `other` entry for key '%s' that "
+						    "duplicates the value already decoded from its own attribute column; a "
+						    "reader must reject this rather than silently keep one copy",
+						    city_obj_id, it.key());
+					}
+					attributes[it.key()] = it.value();
+				}
+			}
+		}
 		if (!attributes.empty()) {
 			city_obj["attributes"] = attributes;
 		}
 
-		// geographicalExtent: no reserved column carries the source's per-object
-		// extent (spec 07-mapping-cityjson.mdx), so reconstruct it from wherever this
-		// writer's own convention put it. `other`'s geographicalExtent is the
-		// producer's own declared extent and wins, verbatim; `bbox` (derived from
-		// geometry, spec-recomputed rather than source data) is only a fallback;
-		// absent both, the member is simply omitted. Storing it in `other` is tool
-		// behaviour, not a spec requirement, so its absence here is never an error.
-		std::optional<json> geographical_extent_out;
-		if (bind_data.other_col != DConstants::INVALID_INDEX) {
-			auto other_val = input.data[bind_data.other_col].GetValue(row);
-			if (!other_val.IsNull()) {
-				try {
-					json other_json = json_utils::ParseJson(other_val.ToString());
-					if (other_json.is_object() && other_json.contains("geographicalExtent") &&
-					    !other_json["geographicalExtent"].is_null()) {
-						geographical_extent_out = other_json["geographicalExtent"];
-					}
-				} catch (const CityJSONError &) {
-					// Malformed `other` text is not this reconstruction's problem to
-					// diagnose; fall through to the bbox fallback below.
-				}
-			}
-		}
-		if (!geographical_extent_out.has_value() && bind_data.bbox_col != DConstants::INVALID_INDEX) {
+		// `geographicalExtent` is derived from `bbox`: the format stores one
+		// spatial extent per row and `bbox` is it. `other` is no longer
+		// consulted -- it carries attributes now, not the source extent.
+		if (bind_data.bbox_col != DConstants::INVALID_INDEX) {
 			auto bbox_val = input.data[bind_data.bbox_col].GetValue(row);
 			if (!bbox_val.IsNull() && bbox_val.type().id() == LogicalTypeId::STRUCT) {
 				auto &children = StructValue::GetChildren(bbox_val);
 				if (children.size() >= 6 && !children[0].IsNull() && !children[1].IsNull() && !children[2].IsNull() &&
 				    !children[3].IsNull() && !children[4].IsNull() && !children[5].IsNull()) {
-					geographical_extent_out =
+					city_obj["geographicalExtent"] =
 					    json::array({children[0].GetValue<double>(), children[1].GetValue<double>(),
 					                 children[2].GetValue<double>(), children[3].GetValue<double>(),
 					                 children[4].GetValue<double>(), children[5].GetValue<double>()});
 				}
 			}
-		}
-		if (geographical_extent_out.has_value()) {
-			city_obj["geographicalExtent"] = geographical_extent_out.value();
 		}
 
 		// Add to local buffer

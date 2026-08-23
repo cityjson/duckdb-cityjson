@@ -2,6 +2,7 @@
 #include "cityjson/vector_writer.hpp"
 #include "cityjson/city_object_utils.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
+#include <set>
 
 namespace duckdb {
 namespace cityjson {
@@ -16,7 +17,7 @@ static const std::string &ResolvedFeatureId(const CityJSONFeature &feature, cons
 static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSONFeature &feature,
                                const std::string &city_obj_id, const CityObject &city_obj,
                                std::vector<VectorWrapper> &wrappers, const std::vector<idx_t> &projected_cols,
-                               size_t output_row) {
+                               size_t output_row, const std::set<std::string> &emitted_columns) {
 	// For WKB encoding mode, find the geometry matching the target LOD. Every geometry
 	// pointer below aims into city_obj.geometry, which this function only reads -- the
 	// vector is never resized or reassigned while a row is being written.
@@ -189,16 +190,16 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			}
 			continue;
 		} else if (col.name == "bbox") {
+			std::optional<GeographicalExtent> extent;
 			if (vertex_pool == nullptr) {
-				value = json(nullptr);
+				extent = std::nullopt;
 			} else if (bind_data.target_lod.has_value()) {
 				// Per-LOD mode restricts the table to one LoD, so the bbox describes that
 				// geometry alone -- there is no other LoD in the table to union with, and
 				// a descendant's bbox at this LoD is its own row's business.
-				auto extent = target_geom != nullptr ? CityObjectUtils::GetGeometryExtent(*target_geom, *vertex_pool,
-				                                                                          bind_data.metadata.transform)
-				                                     : std::nullopt;
-				value = extent.has_value() ? extent->ToJson() : json(nullptr);
+				extent = target_geom != nullptr ? CityObjectUtils::GetGeometryExtent(*target_geom, *vertex_pool,
+				                                                                     bind_data.metadata.transform)
+				                                : std::nullopt;
 			} else {
 				// Wide mode: the specification defines bbox as unioned across every stored
 				// LoD *and* across the object's descendants. Using only the highest LoD
@@ -206,12 +207,20 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 				// gave a Building carrying just an LoD0 footprint a flat bbox that excluded
 				// its BuildingPart's solid -- so a query pruning on the parent's bbox
 				// silently missed the building, which is the normal 3DBAG shape.
-				auto extent = CityObjectUtils::GetObjectExtent(city_obj_id, feature.city_objects, *vertex_pool,
-				                                               bind_data.metadata.transform);
-				value = extent.has_value() ? extent->ToJson() : json(nullptr);
+				extent = CityObjectUtils::GetObjectExtent(city_obj_id, feature.city_objects, *vertex_pool,
+				                                          bind_data.metadata.transform);
 			}
+			// The source's declared per-object extent is unioned in, never
+			// substituted: a declared extent is not guaranteed to contain the
+			// geometry it describes, and a box narrower than the geometry prunes
+			// the row out of queries that intersect it.
+			if (city_obj.geographical_extent.has_value()) {
+				extent = extent.has_value() ? extent->Union(city_obj.geographical_extent.value())
+				                            : city_obj.geographical_extent;
+			}
+			value = extent.has_value() ? extent->ToJson() : json(nullptr);
 		} else {
-			value = CityObjectUtils::GetAttributeValue(city_obj, col);
+			value = CityObjectUtils::GetAttributeValue(city_obj, col, emitted_columns);
 		}
 
 		// Write to vector
@@ -256,6 +265,25 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 	    local_state.projection_ids.empty() ? local_state.column_ids : local_state.projection_ids;
 	auto wrappers = CreateVectors(output, bind_data.columns, projected_cols);
 
+	// Every ATTRIBUTE column the bound schema emits, for `other`'s "what has no
+	// column" test. Built once per scan rather than per row.
+	//
+	// Filtered to non-reserved names, not the raw bind_data.columns list: a
+	// reserved/structural column (bbox, geometry_vertices_lod2_2, ...) is never
+	// populated from obj.attributes, so its presence in the schema says nothing
+	// about whether a same-named attribute has "a column of its own" -- an
+	// attribute literally called geometry_vertices_lod2_2 must still land in
+	// `other` even though a column of that exact name exists (it holds the
+	// vertex pool, not the attribute). IsReservedColumnName is the same
+	// predicate InferAttributeColumns used to decide the attribute got no
+	// column in the first place, so the two stay in lockstep.
+	std::set<std::string> emitted_columns;
+	for (const auto &c : bind_data.columns) {
+		if (!IsReservedColumnName(c.name)) {
+			emitted_columns.insert(c.name);
+		}
+	}
+
 	if (bind_data.equality_filters.empty()) {
 		// No filters: use the precomputed batch-based scan plan.
 		size_t batch_index = global_state.batch_index.fetch_add(1);
@@ -289,9 +317,14 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 			if (!chunk) {
 				break;
 			}
+			// Unwrap once, here. A span is two words, so the copy is free, and the
+			// engaged-ness check above then guards every use -- whereas `chunk->` inside
+			// the loop below reads as an unchecked optional access to clang-tidy, whose
+			// dataflow does not carry the check across the loop's back edge.
+			const auto features = *chunk;
 
-			for (; feature_idx < chunk->size() && remaining > 0; feature_idx++) {
-				const auto &feature = (*chunk)[feature_idx];
+			for (; feature_idx < features.size() && remaining > 0; feature_idx++) {
+				const auto &feature = features[feature_idx];
 
 				size_t obj_idx = 0;
 				for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
@@ -304,7 +337,8 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 						break;
 					}
 
-					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row,
+					                   emitted_columns);
 
 					output_row++;
 					remaining--;
@@ -329,15 +363,16 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 			if (!chunk) {
 				break;
 			}
+			const auto features = *chunk;
 
-			if (global_state.filter_feature_idx >= chunk->size()) {
+			if (global_state.filter_feature_idx >= features.size()) {
 				global_state.filter_chunk_idx++;
 				global_state.filter_feature_idx = 0;
 				global_state.filter_obj_offset = 0;
 				continue;
 			}
 
-			const auto &feature = (*chunk)[global_state.filter_feature_idx];
+			const auto &feature = features[global_state.filter_feature_idx];
 
 			size_t obj_idx = 0;
 			for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
@@ -349,7 +384,8 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 				global_state.filter_obj_offset = obj_idx + 1;
 
 				if (MatchesFilters(bind_data, feature, city_obj_id, city_obj)) {
-					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+					WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row,
+					                   emitted_columns);
 					output_row++;
 					break;
 				}
@@ -380,6 +416,25 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 	    local_state.projection_ids.empty() ? local_state.column_ids : local_state.projection_ids;
 	auto wrappers = CreateVectors(output, bind_data.columns, projected_cols);
 
+	// Every ATTRIBUTE column the bound schema emits, for `other`'s "what has no
+	// column" test. Built once per scan rather than per row.
+	//
+	// Filtered to non-reserved names, not the raw bind_data.columns list: a
+	// reserved/structural column (bbox, geometry_vertices_lod2_2, ...) is never
+	// populated from obj.attributes, so its presence in the schema says nothing
+	// about whether a same-named attribute has "a column of its own" -- an
+	// attribute literally called geometry_vertices_lod2_2 must still land in
+	// `other` even though a column of that exact name exists (it holds the
+	// vertex pool, not the attribute). IsReservedColumnName is the same
+	// predicate InferAttributeColumns used to decide the attribute got no
+	// column in the first place, so the two stay in lockstep.
+	std::set<std::string> emitted_columns;
+	for (const auto &c : bind_data.columns) {
+		if (!IsReservedColumnName(c.name)) {
+			emitted_columns.insert(c.name);
+		}
+	}
+
 	size_t output_row = 0;
 
 	while (output_row < STANDARD_VECTOR_SIZE) {
@@ -402,7 +457,8 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 		++global_state.streaming_obj_it;
 
 		if (bind_data.equality_filters.empty() || MatchesFilters(bind_data, feature, city_obj_id, city_obj)) {
-			WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row);
+			WriteCityObjectRow(bind_data, feature, city_obj_id, city_obj, wrappers, projected_cols, output_row,
+			                   emitted_columns);
 			output_row++;
 		}
 	}

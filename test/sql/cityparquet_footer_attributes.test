@@ -7,10 +7,13 @@ require cityjson
 require parquet
 
 # Spec 02-object-table-schema.mdx: a column listed in `attributes` is an attribute,
-# and every other column is reserved. `address`, `template` and `other_attributes`
-# are reserved names, so declaring them as attributes makes the footer contradict
-# the schema -- and a conformant reader then tries to decode `address` as a user
-# attribute.
+# and every other column is reserved. `address` and `template` are reserved names,
+# so declaring them as attributes makes the footer contradict the schema -- and a
+# conformant reader then tries to decode `address` as a user attribute.
+#
+# `other_attributes` is NOT reserved: it named a column the format no longer has,
+# so the fixture's physical column of that name (a leftover from an older
+# cityparquet-rs schema) is ordinary, like any other unrecognised column.
 
 statement ok
 CREATE SCHEMA pkg;
@@ -28,4 +31,4 @@ SELECT decode(value) LIKE '%"address"%',
 FROM parquet_kv_metadata('__TEST_DIR__/attrs_out/building.parquet')
 WHERE key::VARCHAR = 'city';
 ----
-false	false	false
+false	false	true

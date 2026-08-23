@@ -153,6 +153,21 @@ test-remote:
     CITYJSON_REMOTE_TEST=1 ./build/release/test/unittest "test/sql/cityjson_remote.test"
     CITYJSON_REMOTE_TEST=1 ./build/release/test/unittest "test/sql/cityjson_corpus_parity.test"
 
+# The docs/TESTING.md notebook walkthrough, end to end: read every format, build a
+# CityParquet package, insert a second file into it, write it out and read it back,
+# then the FlatCityBuf spatial and attribute filters. Downloads nothing in advance
+# -- every fixture is fetched by the query that needs it, which costs around 120 MB
+# of transfer for 25 MB of data, because nothing is cached between queries.
+# Opt-in; `make test` skips it.
+#
+# The geoparquet file additionally needs `spatial` (INSTALL spatial), and is the
+# one assertion with real teeth: Delft's LoD0 decoded from the Seq must equal
+# Delft's LoD0 decoded from the document. It is a separate file because `require
+# spatial` skips a whole file rather than one query.
+test-notebook:
+    CITYJSON_NOTEBOOK_TEST=1 ./build/release/test/unittest "test/sql/cityjson_notebook_e2e.test"
+    CITYJSON_NOTEBOOK_TEST=1 ./build/release/test/unittest "test/sql/cityjson_notebook_geoparquet.test"
+
 # Runtime smoke test of the wasm build under Node + @duckdb/duckdb-wasm. Opt-in like
 # the other extra harnesses (`make test` never runs it); needs `just wasm` first, and
 # network access on the first run to populate test/wasm/node_modules. Set
