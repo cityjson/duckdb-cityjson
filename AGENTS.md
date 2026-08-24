@@ -66,11 +66,20 @@ is the authority on the encoding; this repo implements it.
 ## Build and test
 
 ```sh
-GEN=ninja make                 # first configure
+just build                     # first configure + full release build
 just rebuild                   # incremental: extension + duckdb CLI + unittest
-just build                     # full release build
 make test                      # the sqllogictest suite
 ```
+
+**Configuring needs vcpkg.** `find_package(nlohmann_json REQUIRED)` and
+`find_package(flatcitybuf CONFIG REQUIRED)` in `CMakeLists.txt` are both config-only,
+and flatcitybuf resolves solely from the `HideBa/vcpkg` git registry declared in
+`vcpkg.json`. CMake reaches neither unless it is configured with vcpkg's toolchain
+file, which is what puts `VCPKG_MANIFEST_DIR` on the command line and makes the
+manifest install run at all. Export `VCPKG_ROOT` and the justfile derives
+`VCPKG_TOOLCHAIN_PATH` from it, matching what CI sets on every job; an explicit
+`VCPKG_TOOLCHAIN_PATH` wins over the derivation. Driving `make release` directly,
+outside the justfile, means setting `VCPKG_TOOLCHAIN_PATH` yourself.
 
 **`just rebuild` (or the `unittest` target) is not optional.** `make test` runs
 `build/release/test/unittest` but does **not** rebuild it, so omitting the target

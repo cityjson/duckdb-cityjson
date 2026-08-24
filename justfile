@@ -28,17 +28,32 @@ hooks:
     git config core.hooksPath .githooks
     @echo "core.hooksPath -> .githooks"
 
+# The vcpkg toolchain file, which every native configure needs.
+#
+# `find_package(nlohmann_json REQUIRED)` and `find_package(flatcitybuf CONFIG REQUIRED)`
+# in CMakeLists.txt are both config-only, and flatcitybuf resolves solely from the
+# HideBa/vcpkg git registry declared in vcpkg.json. Neither is reachable unless CMake is
+# configured with vcpkg's toolchain file, which is what puts VCPKG_MANIFEST_DIR on the
+# command line and makes the manifest install run at all. CI gets this from the
+# VCPKG_TOOLCHAIN_PATH it sets on every job; the recipes below derive the same path from
+# VCPKG_ROOT so a local `just build` mirrors CI without a per-shell export.
+#
+# An explicit VCPKG_TOOLCHAIN_PATH in the environment wins. With neither variable set
+# this is the empty string, which extension-ci-tools' Makefile treats exactly as unset.
+vcpkg_root := env_var_or_default("VCPKG_ROOT", "")
+vcpkg_toolchain := env_var_or_default("VCPKG_TOOLCHAIN_PATH", if vcpkg_root == "" { "" } else { vcpkg_root / "scripts/buildsystems/vcpkg.cmake" })
+
 # List available recipes (default).
 default:
     @just --list
 
 # Full release build (configures the project the first time; slow on a clean tree).
 build:
-    GEN=ninja make release
+    VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" GEN=ninja make release
 
 # Full debug build.
 debug:
-    GEN=ninja make debug
+    VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" GEN=ninja make debug
 
 # Fast incremental rebuild of the extension, duckdb CLI, and test binary.
 # Use this in the edit-build-test loop after `just build` has configured the tree.
@@ -47,7 +62,7 @@ rebuild:
 
 # Build with FlatCityBuf (.fcb) support enabled.
 build-fcb:
-    EXT_FLAGS="-DCITYJSON_ENABLE_FCB=ON" GEN=ninja make release
+    VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" EXT_FLAGS="-DCITYJSON_ENABLE_FCB=ON" GEN=ninja make release
 
 # Build flatbuffers + flatcitybuf (tag cpp-v0.9.0) into .vendor/prefix.
 # Re-run after a tag bump: the recipe re-checks out the pinned tag and drops the
@@ -208,7 +223,7 @@ format-fix:
 
 # clang-tidy check — matches the CI "Tidy Check" job (needs a vcpkg toolchain to configure).
 tidy:
-    make tidy-check
+    VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" make tidy-check
 
 # Reproduce the CI gates locally: format check, then build, then test.
 ci: format-check build test
