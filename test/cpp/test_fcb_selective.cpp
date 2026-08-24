@@ -629,17 +629,6 @@ static void T8_ProjectionToFieldMask() {
 		CHECK(mask.attributes->size() == 1);
 		CHECK(mask.attributes->count("height") == 1);
 	}
-
-	// Arrow-native geometry columns are geometry-derived too, by kind: their names
-	// (geometry_vertices_lod*) are not covered by the WKB grammar's other prefixes.
-	{
-		std::vector<CjColumn> arrow = {
-		    CjColumn("feature_id", CjColumnType::Varchar),
-		    CjColumn("geometry_vertices_lod2_2", CjColumnType::GeometryVerticesArrowNative),
-		};
-		auto mask = ComputeFcbFieldMask(arrow, {1});
-		CHECK(mask.geometry);
-	}
 }
 
 // ---------------------------------------------------------------------------

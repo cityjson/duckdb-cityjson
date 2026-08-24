@@ -32,16 +32,6 @@ CityJSONReadOptions ParseCityJSONReadOptions(const TableFunctionBindInput &input
 			} else {
 				throw BinderException(function_name + ": appearance must be 'local' or 'sidecar', got '" + mode + "'");
 			}
-		} else if (kv.first == "geometry_encoding") {
-			auto encoding = StringUtil::Lower(StringValue::Get(kv.second));
-			if (encoding == "wkb") {
-				options.geometry_encoding = GeometryEncoding::Wkb;
-			} else if (encoding == "arrow-native") {
-				options.geometry_encoding = GeometryEncoding::ArrowNative;
-			} else {
-				throw BinderException(function_name + ": geometry_encoding must be 'wkb' or 'arrow-native', got '" +
-				                      encoding + "'");
-			}
 		} else if (kv.first == "sample_lines") {
 			auto sample_lines = BigIntValue::Get(kv.second);
 			if (sample_lines < 0) {
@@ -107,15 +97,11 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 	// Both branches above build their column list for the default WKB encoding, in two
 	// independent derivations. Rewriting here -- the one point where either becomes
 	// bind_data.columns -- keeps them from having to agree about a second encoding too.
-	CityObjectUtils::ApplyGeometryEncoding(bind_data.columns, bind_data.geometry_encoding);
-
 	// Resolve each geometry-family column's LoD once. The scan used to run
 	// ParseLODFromGeometryColumn (a regex search) per column per row.
 	for (auto &column : bind_data.columns) {
 		switch (column.kind) {
 		case ColumnType::GeometryWKB:
-		case ColumnType::GeometryArrowNative:
-		case ColumnType::GeometryVerticesArrowNative:
 		case ColumnType::GeometryPropertiesStruct:
 		case ColumnType::AppearanceJson:
 			try {
@@ -143,7 +129,6 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 	probe.streaming = streaming;
 	probe.target_lod = options.target_lod;
 	probe.use_wkb_encoding = options.use_wkb_encoding;
-	probe.geometry_encoding = options.geometry_encoding;
 
 	CityJSONFeatureChunk all;
 	try {
@@ -199,7 +184,6 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 	auto options = ParseCityJSONReadOptions(input, function_name);
 	result.target_lod = options.target_lod;
 	result.use_wkb_encoding = options.use_wkb_encoding;
-	result.geometry_encoding = options.geometry_encoding;
 	result.sample_lines = options.sample_lines;
 
 	try {

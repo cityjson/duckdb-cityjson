@@ -28,14 +28,7 @@ namespace {
 // MultiPoint→MultiPointZ, MultiLineString→MultiLineStringZ,
 // MultiSurface/CompositeSurface→MultiPolygonZ. Solid-family types map to
 // PolyhedralSurfaceZ / GeometryCollectionZ and are excluded.
-std::string GeoParquetTypeName(const std::string &cj_type, GeometryEncoding encoding) {
-	// `geo` describes WKB columns. Legality is a property of the physical encoding
-	// first and the CityJSON type second: a MultiSurface is legal as WKB but the
-	// same type encoded arrow-native is a nested LIST of indices no GeoParquet
-	// reader can decode, so no column using it may be declared here.
-	if (encoding != GeometryEncoding::Wkb) {
-		return "";
-	}
+std::string GeoParquetTypeName(const std::string &cj_type) {
 	if (cj_type == "MultiSurface" || cj_type == "CompositeSurface") {
 		return "MultiPolygon Z";
 	}
@@ -88,8 +81,7 @@ json ResolveFileCrs(ClientContext &context, const std::optional<std::string> &re
 // `lod_types` maps a normalised LoD string to the set of CityJSON geometry types
 // seen at that LoD. `crs_value` is the resolved tri-state value above.
 std::optional<std::string> BuildGeoMetadata(const json &crs_value,
-                                            const std::map<std::string, std::set<std::string>> &lod_types,
-                                            GeometryEncoding encoding) {
+                                            const std::map<std::string, std::set<std::string>> &lod_types) {
 	// Determine the GeoParquet-legal columns first. A column is legal only if
 	// every type seen at its LoD maps to a GeoParquet-legal WKB type.
 	json columns = json::object();
@@ -99,7 +91,7 @@ std::optional<std::string> BuildGeoMetadata(const json &crs_value,
 		std::set<std::string> geometry_types;
 		bool all_legal = !types.empty();
 		for (const auto &t : types) {
-			std::string name = GeoParquetTypeName(t, encoding);
+			std::string name = GeoParquetTypeName(t);
 			if (name.empty()) {
 				all_legal = false;
 				break;
@@ -152,12 +144,12 @@ const char *CityColumnTypeName(const std::string &cj_type) {
 
 // Build the `city` footer JSON for the COPY path (spec 05-metadata.mdx, "The city
 // object"). Unlike `geo`, EVERY LoD column is declared, Solid-family included, and
-// `encoding` records the real physical encoding. `crs_value` is the shared tri-state
+// `encoding` is always "WKB". `crs_value` is the shared tri-state
 // value: an unknown or unresolvable CRS is written here as an explicit null, which the
 // spec's CRS rules require of a file that holds CRS-bearing coordinates -- omitting the
 // key would instead assert GeoParquet's OGC:CRS84 default over it.
 std::string BuildCityMetadata(const json &crs_value, const std::map<std::string, std::set<std::string>> &lod_types,
-                              GeometryEncoding encoding, const std::vector<std::string> &attributes) {
+                              const std::vector<std::string> &attributes) {
 	json columns = json::array();
 	std::string primary;
 	double primary_lod = -1.0;
@@ -175,7 +167,7 @@ std::string BuildCityMetadata(const json &crs_value, const std::map<std::string,
 		std::string col_name = "geometry_" + LODTableUtils::FormatLODAsColumnSuffix(lod);
 		json col;
 		col["name"] = col_name;
-		col["encoding"] = encoding == GeometryEncoding::ArrowNative ? "CityParquetArrowNative-v1" : "WKB";
+		col["encoding"] = "WKB";
 		col["geometry_types"] = json(geometry_types);
 		col["crs"] = crs_value;
 		col["orientation_3d"] = "right-handed";
@@ -199,10 +191,6 @@ std::string BuildCityMetadata(const json &crs_value, const std::map<std::string,
 
 struct GeoBindData : public TableFunctionData {
 	std::string file_name;
-	//! The encoding the two footer objects below were built for. Both differ by it --
-	//! `geo` declares no column at all under arrow-native -- so it is half of this bind's
-	//! identity, not an incidental parameter.
-	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb;
 	std::optional<std::string> geo; // nullopt -> emit SQL NULL
 	//! The `city` object is REQUIRED on every CityParquet file, so unlike `geo` it is
 	//! always non-empty.
@@ -211,18 +199,15 @@ struct GeoBindData : public TableFunctionData {
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<GeoBindData>();
 		result->file_name = file_name;
-		result->geometry_encoding = geometry_encoding;
 		result->geo = geo;
 		result->city = city;
 		return result;
 	}
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<GeoBindData>();
-		// `geo` and `city` are derived deterministically from these two, so comparing the
-		// inputs is sufficient and matches CityJSONBindData::Equals (bind_data.cpp).
-		// file_name alone was not: two binds of one file at different encodings compared
-		// equal, and a plan copy or a cached bind could then serve the wrong footer.
-		return file_name == other.file_name && geometry_encoding == other.geometry_encoding;
+		// `geo` and `city` are derived deterministically from the file, so comparing
+		// the input is sufficient and matches CityJSONBindData::Equals (bind_data.cpp).
+		return file_name == other.file_name;
 	}
 };
 
@@ -237,11 +222,6 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
                                  vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<GeoBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
-
-	// Routed through the shared parser so the accepted spellings and the rejection
-	// message stay identical to read_cityjson's.
-	const auto encoding = ParseCityJSONReadOptions(input, "cityjson_geoparquet_geo").geometry_encoding;
-	result->geometry_encoding = encoding;
 
 	std::unique_ptr<CityJSONReader> reader;
 	try {
@@ -283,7 +263,7 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
 	// Resolved once, for both objects: `city.crs` and every `geo` column's mirror are
 	// the same value, so they cannot drift apart.
 	const auto crs_value = ResolveFileCrs(context, reference_system);
-	result->geo = BuildGeoMetadata(crs_value, lod_types, encoding);
+	result->geo = BuildGeoMetadata(crs_value, lod_types);
 
 	std::vector<std::string> attributes;
 	for (const auto &col : reader->Columns()) {
@@ -291,7 +271,7 @@ unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput 
 			attributes.push_back(col.name);
 		}
 	}
-	result->city = BuildCityMetadata(crs_value, lod_types, encoding, attributes);
+	result->city = BuildCityMetadata(crs_value, lod_types, attributes);
 
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
 	names = {"geo", "city"};
@@ -323,8 +303,6 @@ void GeoScan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
 
 void RegisterGeoParquetTableFunctions(ExtensionLoader &loader) {
 	TableFunction func("cityjson_geoparquet_geo", {LogicalType::VARCHAR}, GeoScan, GeoBind);
-	// 'wkb' (default) or 'arrow-native': an arrow-native column is never declared.
-	func.named_parameters["geometry_encoding"] = LogicalType::VARCHAR;
 	func.init_global = GeoInitGlobal;
 	loader.RegisterFunction(func);
 }

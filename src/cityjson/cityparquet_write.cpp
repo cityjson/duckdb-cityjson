@@ -40,10 +40,8 @@ bool GeoParquetLegal(const std::string &type_name) {
 
 struct ColumnFacts {
 	std::string name;
-	//! Real physical encoding of the column: "WKB" for a BLOB column,
-	//! "CityParquetArrowNative-v1" for the arrow-native nested-LIST one
-	//! (spec 05-metadata.mdx; token vocabulary shared with cityparquet-rs
-	//! GeometryEncoding::footer_token).
+	//! Physical encoding of the column: always "WKB" (spec 05-metadata.mdx;
+	//! token vocabulary shared with cityparquet-rs GeometryEncoding).
 	std::string encoding = "WKB";
 	std::set<std::string> geometry_types;
 	bool has_extent = false;
@@ -142,9 +140,8 @@ struct WriteGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-//! DuckDB type of one column, for telling a WKB BLOB geometry column from an
-//! arrow-native LIST one. Non-templated GetEntry: the templated form ODR-uses
-//! TableCatalogEntry::Name (see cityparquet_package.cpp).
+//! DuckDB type of one column. Non-templated GetEntry: the templated form
+//! ODR-uses TableCatalogEntry::Name (see cityparquet_package.cpp).
 LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, const std::string &table,
                            const std::string &column) {
 	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
@@ -266,36 +263,6 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		entry.name = column;
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column);
 		auto col_type = ColumnDuckType(context, schema, table, column);
-		if (col_type.id() == LogicalTypeId::LIST) {
-			// Arrow-native column (INTEGER[][][][][]). The WKB probes below cannot
-			// run on it; the logical shape comes from the paired geometry_properties
-			// type instead -- the geometry_types vocabulary is encoding-independent
-			// (spec 05-metadata.mdx "city.columns entries"). No extent probe: the
-			// bbox entry is optional, and cityjson_wkb_extent is WKB-only.
-			entry.encoding = "CityParquetArrowNative-v1";
-			const auto props = KeywordHelper::WriteOptionallyQuoted("geometry_properties_" +
-			                                                        column.substr(std::string("geometry_").size()));
-			auto result = Run(connection, "SELECT DISTINCT " + props + ".\"type\" FROM " +
-			                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
-			for (idx_t row = 0; row < result->RowCount(); row++) {
-				auto value = result->GetValue(0, row);
-				if (value.IsNull()) {
-					continue;
-				}
-				try {
-					const auto *name = WKBTypeName(static_cast<uint32_t>(WKBEncoder::GetOGCType(value.ToString())));
-					if (name != nullptr) {
-						entry.geometry_types.insert(name);
-					}
-				} catch (const CityJSONError &) {
-					// A type WKB has no name for contributes nothing rather than aborting the write.
-				}
-			}
-			if (!entry.geometry_types.empty()) {
-				facts.push_back(std::move(entry));
-			}
-			continue;
-		}
 		// GeometryColumnRef: the column arrives here already decoded to DuckDB's
 		// native GEOMETRY type when it was promoted -- declared in the file's
 		// GeoParquet `geo` footer (enable_geoparquet_conversion, on by default,

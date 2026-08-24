@@ -81,10 +81,9 @@ ORDER BY b3_h_dak_max DESC LIMIT 3;
 | `lod` | VARCHAR | Restrict the schema to one LoD, e.g. `'2.2'` |
 | `sample_lines` | BIGINT | Features sampled for schema inference (default 100) |
 | `appearance` | VARCHAR | `'local'` (default) or `'sidecar'` — see [Appearance sidecars](#appearance-sidecars) |
-| `geometry_encoding` | VARCHAR | `'wkb'` (default) or `'arrow-native'` — see below |
 
-`read_flatcitybuf` shares only `lod` and `sample_lines`; it takes neither
-`appearance` nor `geometry_encoding`, and adds the four bbox bounds instead.
+`read_flatcitybuf` shares only `lod` and `sample_lines`; it takes no
+`appearance`, and adds the four bbox bounds instead.
 
 #### `lod =>` — one LoD, same column grammar
 
@@ -118,22 +117,6 @@ WHERE geometry_lod0_0 IS NOT NULL LIMIT 3;
 -- NL.IMBAG.Pand.0503100000016459 | 10.34
 -- NL.IMBAG.Pand.0503100000005156 | 99.25
 ```
-
-#### `geometry_encoding => 'arrow-native'` (experimental)
-
-Replaces the WKB `BLOB` with five nested LIST levels — solid → shell → face →
-ring → vertex-pool index — plus a sibling `geometry_vertices_lod*` of
-`STRUCT(x, y, z DOUBLE)[]` holding that row's pool:
-
-```sql
-SELECT geometry_lod2_2 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl',
-                                             geometry_encoding := 'arrow-native') LIMIT 1;
--- column type: integer[][][][][]
-```
-
-`geometry_properties_lod*` is unchanged and stays the **only** thing that says
-whether a row is a `Solid` or a `MultiSurface` — the physical nesting is uniform
-across both families, so never infer the CityJSON type from the shape.
 
 ### `read_flatcitybuf(path, …)`
 
@@ -360,7 +343,7 @@ FROM read_cityjsonseq('roundtrip.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL 
 
 ## CityParquet footers
 
-### `cityjson_geoparquet_geo(path [, geometry_encoding =>])`
+### `cityjson_geoparquet_geo(path)`
 
 Returns one row of two VARCHARs — the Parquet footer keys DuckDB core cannot
 infer from a plain `BLOB` column.

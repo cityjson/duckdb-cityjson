@@ -48,7 +48,7 @@ Dependencies point **downward**, with one acknowledged exception noted below.
 ├──────────────────────────────────────────────────────────────────┤
 │  Schema & encoding                                               │
 │    column inference  column_types, city_object_utils, lod_table  │
-│    geometry out      wkb_encoder, arrow_native_encoder           │
+│    geometry out      wkb_encoder                                 │
 │    geometry in       wkb_decoder, geometry_properties            │
 │    appearance        appearance_normalise                        │
 │    vector writing    vector_writer                               │
@@ -155,16 +155,9 @@ did not have.
 
 ## 6. Geometry: two encodings, one property struct
 
-A CityJSON geometry is nested index arrays. Two physical encodings exist:
-
-- **WKB** (default) — a `BLOB` per LoD. Universally readable; solids become
-  `PolyhedralSurface Z`. Rings are closed, source winding preserved.
-- **Arrow-native** (experimental) — five nested LIST levels (solid → shell → face
-  → ring → index) plus a sibling vertex-pool column. Rings are *not* closed.
-
-The encoding is chosen by rewriting the finished column list at a single point,
-so neither of the two places that derive geometry columns — the wide layout and
-the single-LoD layout — needs to know encodings exist.
+A CityJSON geometry is nested index arrays. It is written as **WKB** — a `BLOB`
+per LoD, universally readable, with solids becoming `PolyhedralSurface Z`. Rings
+are closed and source winding is preserved.
 
 **`geometry_properties` is invariant across encodings, and it is load-bearing.**
 Neither physical form can express the CityJSON geometry *type* — the nesting is

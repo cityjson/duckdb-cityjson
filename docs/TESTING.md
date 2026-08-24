@@ -89,14 +89,6 @@ SELECT *
 FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/Helsinki_tex.city.jsonl') limit 10;
 ```
 
-## 6 — Arrow-native column encoding
-
-```sql
--- Arrow-native column
-DESCRIBE SELECT * FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl',
-                                        lod => '2.2', geometry_encoding := 'arrow-native');"
-```
-
 ## 7 — GeoParquet `geo` metadata
 
 ```sql
