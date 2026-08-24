@@ -186,8 +186,8 @@ std::string CopySourceList(ClientContext &context, const std::string &schema, co
 			// Annotated: keep it GEOMETRY-typed through the COPY, promoting the
 			// WKB blob when the source table holds one.
 			auto expr = is_geometry ? quoted : "ST_GeomFromWKB(" + quoted + ")";
-			// The logical type's own `crs` parameter, carrying the same
-			// identifier `geo` states. Leaving it unset is not neutral: the
+			// The logical type's own `crs` parameter, carrying the same PROJJSON
+			// `geo` states. Leaving it unset is not neutral: the
 			// Parquet spec reads an absent `crs` as OGC:CRS84, so a package in
 			// RD New would announce itself as lon/lat degrees to any reader
 			// that trusts the annotation over the footer.
@@ -533,6 +533,15 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		}
 	}
 
+	// The identifier the GEOMETRY logical type carries. It is the resolved PROJJSON
+	// rather than the `crs =>` spelling, because an authority code is not stable
+	// through the write: DuckDB's CRS machinery resolves one to PROJJSON when the
+	// `spatial` extension happens to be loaded, and leaves it verbatim when it is
+	// not, so the same command would produce two different files. PROJJSON is a
+	// fixed point under that resolution, and it is what GeoParquet 2.0 asks a writer
+	// that can produce it to use.
+	const std::string crs_annotation = crs_json.is_null() ? std::string() : crs_json.dump();
+
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (!fs.DirectoryExists(bind_data.directory)) {
 		fs.CreateDirectory(bind_data.directory);
@@ -606,7 +615,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// suppressing the logical type, which follows the column's type rather
 		// than this setting. CityParquet's `geo` goes in through KV_METADATA, so
 		// the file carries exactly one, and it is this writer's.
-		Run(connection, "COPY (SELECT " + CopySourceList(context, bind_data.schema, table, legal_geometry, crs_source) +
+		Run(connection, "COPY (SELECT " + CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation) +
 		                    " FROM " + QualifiedName(bind_data.schema, table) + ") TO " + Literal(path) +
 		                    " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "});");
 
