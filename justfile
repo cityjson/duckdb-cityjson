@@ -104,23 +104,42 @@ wasm-setup:
     # manifest fails to resolve ("could not find baseline").
     git -C .vendor/vcpkg fetch --depth 1 origin {{vcpkg_baseline}}
 
-# The local equivalent of CI's wasm_mvp distribution job. Run `just wasm-setup` once
+# The local equivalent of CI's wasm distribution jobs. Run `just wasm-setup` once
 # first. The first build is slow (vcpkg compiles flatcitybuf and friends for
 # wasm32-emscripten); later builds reuse those binaries. The output lands in
-# build/wasm_mvp/extension/cityjson/cityjson.duckdb_extension.wasm and the native
+# build/<flavour>/extension/cityjson/cityjson.duckdb_extension.wasm and the native
 # build/release tree is untouched.
+#
+# Which flavour you want depends on who loads the result:
+#
+#   wasm_mvp   what `just test-wasm` asserts against, and what test/wasm/smoke.mjs
+#              offers duckdb-wasm. Cannot be loaded by an `eh` instance.
+#   wasm_eh    what a *browser* loads. duckdb-wasm's selectBundle() picks the eh
+#              bundle wherever native wasm exceptions are available, which is
+#              everywhere that matters, and an eh instance takes only eh
+#              extensions. It is also the only flavour that can report errors:
+#              the mvp bundle references `_setThrew` without defining it, so the
+#              first C++ exception surfaces as a ReferenceError rather than the
+#              actual message (see docs/TRAPS.md).
 #
 # NOTE: no GEN=ninja here, unlike every other build recipe — and CI does not set it
 # for wasm either. The wasm targets in extension-ci-tools' duckdb_extension.Makefile
-# hardcode `emmake make -j8 -Cbuild/wasm_mvp`, so a Ninja-generated tree has no
+# hardcode `emmake make -j8 -Cbuild/<flavour>`, so a Ninja-generated tree has no
 # makefile and the build dies with "No targets specified and no makefile found".
+# Recovering also needs `rm -rf build/<flavour>`, since CMake refuses to switch
+# generator in an existing cache.
 
-# Build the DuckDB-Wasm extension (wasm_mvp flavour) with the pinned emsdk + .vendor/vcpkg.
-wasm:
+# Build the DuckDB-Wasm extension with the pinned emsdk + .vendor/vcpkg.
+wasm flavour="wasm_mvp":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{flavour}}" in
+        wasm_mvp|wasm_eh|wasm_threads) ;;
+        *) echo "unknown wasm flavour: {{flavour}} (want wasm_mvp, wasm_eh or wasm_threads)" >&2; exit 2 ;;
+    esac
     source .vendor/emsdk/emsdk_env.sh
-    VCPKG_TOOLCHAIN_PATH="$(pwd)/.vendor/vcpkg/scripts/buildsystems/vcpkg.cmake" make wasm_mvp
+    VCPKG_TOOLCHAIN_PATH="$(pwd)/.vendor/vcpkg/scripts/buildsystems/vcpkg.cmake" make {{flavour}}
+    echo "-> build/{{flavour}}/extension/cityjson/cityjson.duckdb_extension.wasm"
 
 # Run the full SQL test suite (assumes a build exists; run `just rebuild` first).
 test:

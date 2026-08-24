@@ -232,11 +232,27 @@ CI builds `wasm_mvp`, `wasm_eh` and `wasm_threads`
 Locally: `just wasm-setup` once — installs the pinned emsdk and a vcpkg checkout into the
 gitignored `.vendor/` (~2 GB, ~10 min), including an explicit `git fetch` of `vcpkg.json`'s
 `builtin-baseline` commit, which a shallow clone does not contain and without which
-manifest resolution fails. Then `just wasm` sources `.vendor/emsdk/emsdk_env.sh` and runs
-`make wasm_mvp` with `VCPKG_TOOLCHAIN_PATH` pointing into `.vendor/vcpkg`. The artefact
-lands at `build/wasm_mvp/extension/cityjson/cityjson.duckdb_extension.wasm`; the native
-`build/release` tree is untouched. ~4 min clean. Pins live in justfile variables
-(`emsdk_version`, `vcpkg_baseline`). Only `wasm_mvp` is wired up.
+manifest resolution fails. Then `just wasm <flavour>` sources `.vendor/emsdk/emsdk_env.sh`
+and runs `make <flavour>` with `VCPKG_TOOLCHAIN_PATH` pointing into `.vendor/vcpkg`. The
+artefact lands at `build/<flavour>/extension/cityjson/cityjson.duckdb_extension.wasm`; the
+native `build/release` tree is untouched. ~4 min clean. Pins live in justfile variables
+(`emsdk_version`, `vcpkg_baseline`).
+
+`flavour` defaults to `wasm_mvp`, which is what `just test-wasm` asserts against. **A
+browser needs `just wasm wasm_eh`**: `selectBundle()` picks the `eh` bundle wherever
+native wasm exceptions are available, an `eh` instance can only load `eh` extensions,
+and — per the error-reporting trap below — `eh` is the only flavour that surfaces a
+DuckDB error message rather than a `ReferenceError`. The `eh` artefact loads into a
+browser DuckDB-Wasm instance from a local extension repository:
+
+```sql
+SET custom_extension_repository='http://localhost:8080/ext';  -- <repo>/v1.5.4/wasm_eh/
+INSTALL cityjson; LOAD cityjson;
+```
+
+with `allowUnsignedExtensions: true` in `db.open()`, since the artefact is not signed by
+DuckDB Labs. The build also writes that layout itself, at
+`build/<flavour>/repository/<version>/<flavour>/`.
 
 - **No `GEN=ninja` here, unlike every other build recipe.** The wasm targets in
   `extension-ci-tools/makefiles/duckdb_extension.Makefile` hardcode
