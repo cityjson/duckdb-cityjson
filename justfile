@@ -54,8 +54,8 @@ build-fcb:
 # stale build tree, so an existing .vendor/src clone upgrades instead of lingering.
 # The loadable extension is a shared object, so both static libs need PIC.
 # Point CMake at the result with -Dflatcitybuf_DIR / -Dflatbuffers_DIR (or export
-# CMAKE_PREFIX_PATH="$(pwd)/.vendor/prefix"); test/cpp/run_encoder_tests.sh wants
-# FCB_PREFIX="$(pwd)/.vendor/prefix".
+# CMAKE_PREFIX_PATH="$(pwd)/.vendor/prefix"); test/cpp/run_fcb_selective_tests.sh
+# wants FCB_PREFIX="$(pwd)/.vendor/prefix".
 vendor-fcb:
     #!/usr/bin/env bash
     set -euo pipefail

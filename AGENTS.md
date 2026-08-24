@@ -87,7 +87,6 @@ Interactive check:
 None of these run under `make test`.
 
 ```sh
-FCB_PREFIX="$(pwd)/.vendor/prefix" test/cpp/run_encoder_tests.sh
 FCB_PREFIX="$(pwd)/.vendor/prefix" test/cpp/run_fcb_selective_tests.sh
 just test-remote               # HTTP reads + cross-format parity (~25 MB)
 just test-fcb-remote           # FCB HTTP range reads

@@ -1,6 +1,6 @@
 # CityJSON extension — notebook SQL
 
-Verbatim extraction of all 22 SQL cells from the DuckDB notebook `CityJSON extension`, in notebook order. Nothing in the notebook was modified.
+Verbatim extraction of the SQL cells from the DuckDB notebook `CityJSON extension`, in notebook order. Headings keep the notebook's own cell numbers, so the sequence has a gap where a cell covered a feature this extension no longer has.
 
 > A few cells end with a stray `"` — that character is actually present in the cell source, so it is kept here.
 
@@ -10,7 +10,7 @@ Verbatim extraction of all 22 SQL cells from the DuckDB notebook `CityJSON exten
 
 | File | Covers |
 | ---- | ------ |
-| `test/sql/cityjson_notebook_e2e.test` | Cells 2–3 and 5–22 |
+| `test/sql/cityjson_notebook_e2e.test` | Cells 2–3, 5, and 7–22 |
 | `test/sql/cityjson_notebook_geoparquet.test` | Cell 4, which needs `spatial` — a `require` for it would skip a whole file rather than one query |
 
 Both are gated on `CITYJSON_NOTEBOOK_TEST` and stay out of `make test`. The notebook's

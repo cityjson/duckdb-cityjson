@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runtime smoke test of the DuckDB-Wasm extension build under Node.
 #
-# Opt-in, like test/cpp/run_encoder_tests.sh and the remote FCB test: `make test`
+# Opt-in, like test/cpp/run_fcb_selective_tests.sh and the remote FCB test: `make test`
 # never runs it. Needs `just wasm` to have produced the artifact, and network access
 # the first time (to populate test/wasm/node_modules).
 #
