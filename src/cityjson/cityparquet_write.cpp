@@ -166,13 +166,39 @@ LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, co
 //! extension at all -- so this never requires `spatial` to be installed, and never
 //! loads it, so it never re-arms this same collision one layer out for a caller's
 //! own COPY over the resulting table.
-std::string CopySourceList(ClientContext &context, const std::string &schema, const std::string &table) {
+//! `legal_geometry` names the columns this file declares in `geo`. Those, and
+//! only those, are handed to the COPY as DuckDB `GEOMETRY` so the Parquet writer
+//! annotates them with the `GEOMETRY` logical type; every other column goes out
+//! as a plain `BLOB`.
+//!
+//! The asymmetry is the spec's declaration rule, not a quirk of this writer: a
+//! solid column's `PolyhedralSurface Z` is outside DuckDB's geometry model, so
+//! `ST_GeomFromWKB` would reject it here, and a reader meeting the annotation
+//! would reject it there.
+std::string CopySourceList(ClientContext &context, const std::string &schema, const std::string &table,
+                           const std::set<std::string> &legal_geometry, const std::string &crs) {
 	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
 	vector<string> parts;
 	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.Name());
+		const auto is_geometry = column.Type().id() == LogicalTypeId::GEOMETRY;
+		if (legal_geometry.count(column.Name()) > 0) {
+			// Annotated: keep it GEOMETRY-typed through the COPY, promoting the
+			// WKB blob when the source table holds one.
+			auto expr = is_geometry ? quoted : "ST_GeomFromWKB(" + quoted + ")";
+			// The logical type's own `crs` parameter, carrying the same
+			// identifier `geo` states. Leaving it unset is not neutral: the
+			// Parquet spec reads an absent `crs` as OGC:CRS84, so a package in
+			// RD New would announce itself as lon/lat degrees to any reader
+			// that trusts the annotation over the footer.
+			if (!crs.empty()) {
+				expr = "ST_SetCRS(" + expr + ", " + Literal(crs) + ")";
+			}
+			parts.push_back(expr + " AS " + quoted);
+			continue;
+		}
 		const auto ref = GeometryColumnRef(quoted, column.Type());
-		parts.push_back(column.Type().id() == LogicalTypeId::GEOMETRY ? (ref + " AS " + quoted) : ref);
+		parts.push_back(is_geometry ? (ref + " AS " + quoted) : ref);
 	}
 	return StringUtil::Join(parts, ", ");
 }
@@ -534,8 +560,16 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		}
 
 		std::string kv;
+		// Filled from the same facts the `geo` object is built from, so the
+		// annotation and the declaration cannot disagree about a column.
+		std::set<std::string> legal_geometry;
 		if (is_object) {
 			auto facts = CollectFacts(connection, context, bind_data.schema, table);
+			for (const auto &fact : facts) {
+				if (fact.Legal()) {
+					legal_geometry.insert(fact.name);
+				}
+			}
 			std::vector<std::string> attributes;
 			auto columns = Run(connection, "SELECT column_name FROM (DESCRIBE SELECT * FROM " +
 			                                   QualifiedName(bind_data.schema, table) + ")");
@@ -568,9 +602,13 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 
 		const auto file = table + ".parquet";
 		const auto path = fs.JoinPath(bind_data.directory, file);
-		Run(connection, "COPY (SELECT " + CopySourceList(context, bind_data.schema, table) + " FROM " +
-		                    QualifiedName(bind_data.schema, table) + ") TO " + Literal(path) +
-		                    " (FORMAT PARQUET, KV_METADATA {" + kv + "});");
+		// GEOPARQUET_VERSION 'none' suppresses DuckDB's own `geo` key without
+		// suppressing the logical type, which follows the column's type rather
+		// than this setting. CityParquet's `geo` goes in through KV_METADATA, so
+		// the file carries exactly one, and it is this writer's.
+		Run(connection, "COPY (SELECT " + CopySourceList(context, bind_data.schema, table, legal_geometry, crs_source) +
+		                    " FROM " + QualifiedName(bind_data.schema, table) + ") TO " + Literal(path) +
+		                    " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "});");
 
 		WrittenFile written;
 		written.file = file;
