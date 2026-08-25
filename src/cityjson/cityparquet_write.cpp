@@ -615,7 +615,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// suppressing the logical type, which follows the column's type rather
 		// than this setting. CityParquet's `geo` goes in through KV_METADATA, so
 		// the file carries exactly one, and it is this writer's.
-		Run(connection, "COPY (SELECT " + CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation) +
+		Run(connection, "COPY (SELECT " +
+		                    CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation) +
 		                    " FROM " + QualifiedName(bind_data.schema, table) + ") TO " + Literal(path) +
 		                    " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "});");
 
