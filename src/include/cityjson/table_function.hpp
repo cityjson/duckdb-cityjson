@@ -26,15 +26,14 @@ namespace cityjson {
  * Contains file information, metadata, chunks, and schema
  */
 struct CityJSONBindData : public TableFunctionData {
-	std::string file_name;                                      // Path to CityJSON file
-	CityJSON metadata;                                          // CityJSON metadata
-	CityJSONFeatureChunk chunks;                                // All data divided into chunks
-	CityJSONScanPlan scan_plan;                                 // Precomputed batch -> source position mapping
-	std::vector<Column> columns;                                // Complete column schema
-	std::optional<std::string> target_lod;                      // Optional: filter to specific LOD
-	bool use_wkb_encoding = false;                              // Use WKB geometry encoding (when lod specified)
-	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb; // Physical geometry encoding
-	bool streaming = false; // True when data is loaded during scan init instead of bind
+	std::string file_name;                 // Path to CityJSON file
+	CityJSON metadata;                     // CityJSON metadata
+	CityJSONFeatureChunk chunks;           // All data divided into chunks
+	CityJSONScanPlan scan_plan;            // Precomputed batch -> source position mapping
+	std::vector<Column> columns;           // Complete column schema
+	std::optional<std::string> target_lod; // Optional: filter to specific LOD
+	bool use_wkb_encoding = false;         // Use WKB geometry encoding (when lod specified)
+	bool streaming = false;                // True when data is loaded during scan init instead of bind
 	// The factory this bind opened its reader with, and the sampling depth it opened it
 	// at. A streaming scan re-opens the file in init_global and must reproduce both, or
 	// it can end up reading the same path through a different reader than the one whose
@@ -62,7 +61,6 @@ struct CityJSONReadOptions {
 	bool sidecar_appearance = false;
 	std::optional<std::string> target_lod;
 	bool use_wkb_encoding = false;
-	GeometryEncoding geometry_encoding = GeometryEncoding::Wkb;
 	size_t sample_lines = 100;
 };
 

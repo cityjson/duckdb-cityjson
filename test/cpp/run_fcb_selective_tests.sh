@@ -2,7 +2,7 @@
 # Compile and run the FlatCityBuf selective-deserialisation assertions
 # (FcbFieldMask / ConvertFeatureLight / DecodeAttributesFiltered).
 #
-# Like run_encoder_tests.sh next to it, this is NOT wired into `make test`: it
+# This is NOT wired into `make test`: it
 # needs a built build/release (for libduckdb) and the flatcitybuf install prefix
 # that build was configured with. Run it directly, from the repo root:
 #

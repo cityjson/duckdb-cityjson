@@ -161,41 +161,6 @@ columns, never the definitions.
 - **`lod=` keeps the suffixed column grammar** (`geometry_lod2_2`, not a bare `geometry`),
   which is what keeps the LoD recoverable on export.
 
-## Arrow-native geometry encoding (opt-in)
-
-`read_cityjson[seq](..., geometry_encoding := 'wkb' | 'arrow-native')` selects the
-physical encoding; `'wkb'` is the default.
-
-- `geometry_lod*` becomes `INTEGER[][][][][]` — five LIST levels, solid → shell → face →
-  ring → vertex-pool index — with a sibling `geometry_vertices_lod*` of
-  `STRUCT(x, y, z DOUBLE)[]` holding that row's pool, paired by name only, as
-  `geometry_properties_lod*` already is.
-- **`geometry_properties_lod*` is the only source of the CityJSON geometry type.** The
-  physical nesting is uniform across families, so **never infer the type from the shape**.
-  A surface type pads the outer two levels to length 1; for a real `Solid` the shell level
-  is genuine structure.
-- A `Solid`'s shells are **flattened into one padded shell**, matching `cityparquet-rs`
-  (`push_padded_solid`) and the WKB path's single PolyhedralSurface. The real partition
-  lives only in `geometry_properties.shells`. Describing it twice makes
-  `duckdb-3d`'s `ST_3DFromArrowNative` reject the row.
-- The pool compacts **distinct source indices**, never coordinate values — CityJSON
-  permits two indices to carry identical coordinates and they must stay two entries.
-- Rings keep CityJSON's winding and do **not** repeat the closing vertex, unlike the WKB
-  path, which preserves source order but closes them.
-- `cityjson_geoparquet_geo` declares **no** column in `geo` under `arrow-native`:
-  legality is a property of the encoding, not the CM type. Its `city` object still
-  declares every geometry column, with `encoding` set to `CityParquetArrowNative-v1`.
-- **The geometry column list is derived twice.** `LODTableUtils::GetGeometryColumns`
-  serves the `lod=` path; the wide layout goes through
-  `CityObjectUtils::InferGeometryColumns`. The encoding is applied by rewriting the
-  finished list in `InferCityJSONColumns` (`CityObjectUtils::ApplyGeometryEncoding`) —
-  the single point where either derivation becomes `bind_data.columns`, so neither has to
-  know about encodings.
-- **A nested `ListVector` child's data pointer is valid only after the `Reserve` that
-  sizes it.** Each level's writer fetches its own child pointer rather than receiving one,
-  and is fully reserved before its children are visited. Same rule for the vertex pool's
-  `STRUCT` children.
-
 ## FlatCityBuf
 
 `flatcitybuf` is a released vcpkg port resolved from a git registry scoped to that single
@@ -267,11 +232,27 @@ CI builds `wasm_mvp`, `wasm_eh` and `wasm_threads`
 Locally: `just wasm-setup` once — installs the pinned emsdk and a vcpkg checkout into the
 gitignored `.vendor/` (~2 GB, ~10 min), including an explicit `git fetch` of `vcpkg.json`'s
 `builtin-baseline` commit, which a shallow clone does not contain and without which
-manifest resolution fails. Then `just wasm` sources `.vendor/emsdk/emsdk_env.sh` and runs
-`make wasm_mvp` with `VCPKG_TOOLCHAIN_PATH` pointing into `.vendor/vcpkg`. The artefact
-lands at `build/wasm_mvp/extension/cityjson/cityjson.duckdb_extension.wasm`; the native
-`build/release` tree is untouched. ~4 min clean. Pins live in justfile variables
-(`emsdk_version`, `vcpkg_baseline`). Only `wasm_mvp` is wired up.
+manifest resolution fails. Then `just wasm <flavour>` sources `.vendor/emsdk/emsdk_env.sh`
+and runs `make <flavour>` with `VCPKG_TOOLCHAIN_PATH` pointing into `.vendor/vcpkg`. The
+artefact lands at `build/<flavour>/extension/cityjson/cityjson.duckdb_extension.wasm`; the
+native `build/release` tree is untouched. ~4 min clean. Pins live in justfile variables
+(`emsdk_version`, `vcpkg_baseline`).
+
+`flavour` defaults to `wasm_mvp`, which is what `just test-wasm` asserts against. **A
+browser needs `just wasm wasm_eh`**: `selectBundle()` picks the `eh` bundle wherever
+native wasm exceptions are available, an `eh` instance can only load `eh` extensions,
+and — per the error-reporting trap below — `eh` is the only flavour that surfaces a
+DuckDB error message rather than a `ReferenceError`. The `eh` artefact loads into a
+browser DuckDB-Wasm instance from a local extension repository:
+
+```sql
+SET custom_extension_repository='http://localhost:8080/ext';  -- <repo>/v1.5.4/wasm_eh/
+INSTALL cityjson; LOAD cityjson;
+```
+
+with `allowUnsignedExtensions: true` in `db.open()`, since the artefact is not signed by
+DuckDB Labs. The build also writes that layout itself, at
+`build/<flavour>/repository/<version>/<flavour>/`.
 
 - **No `GEN=ninja` here, unlike every other build recipe.** The wasm targets in
   `extension-ci-tools/makefiles/duckdb_extension.Makefile` hardcode

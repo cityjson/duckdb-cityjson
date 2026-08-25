@@ -83,9 +83,8 @@ TO 'delft.city.jsonl' (FORMAT cityjsonseq);
 | `PRAGMA cityparquet_*` / `insert_*` | Load and transactionally mutate a CityParquet package |
 
 All three read functions take `lod` and `sample_lines`. `read_cityjson` and
-`read_cityjsonseq` additionally take `appearance` (`'local'` / `'sidecar'`) and
-`geometry_encoding` (`'wkb'` / `'arrow-native'`); `read_flatcitybuf` instead
-takes `xmin` / `ymin` / `xmax` / `ymax` for bbox pushdown.
+`read_cityjsonseq` additionally take `appearance` (`'local'` / `'sidecar'`);
+`read_flatcitybuf` instead takes `xmin` / `ymin` / `xmax` / `ymax` for bbox pushdown.
 
 ## Output schema in brief
 

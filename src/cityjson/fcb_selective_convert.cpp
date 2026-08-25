@@ -317,8 +317,6 @@ bool IsGeometryDerivedColumn(const Column &column) {
 	case ColumnType::GeometryWKB:
 	case ColumnType::GeometryPropertiesStruct:
 	case ColumnType::AppearanceJson:
-	case ColumnType::GeometryArrowNative:
-	case ColumnType::GeometryVerticesArrowNative:
 		return true;
 	default:
 		break;

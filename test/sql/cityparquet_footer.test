@@ -40,42 +40,6 @@ WHERE decode(key) = 'city'
 ----
 1
 
-# An arrow-native package declares the REAL encoding token, not "WKB". delft_subset
-# carries a MultiSurface at LoD0 -- a GeoParquet-legal *type* -- so this also pins
-# that legality is a property of the physical encoding first: the nested-LIST column
-# no GeoParquet reader can decode must keep the file out of `geo` entirely.
-statement ok
-CREATE SCHEMA an;
-
-statement ok
-CREATE TABLE an.building AS
-  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', geometry_encoding := 'arrow-native');
-
-statement ok
-PRAGMA cityparquet_init('an');
-
-statement ok
-SELECT COUNT(*) FROM cityparquet_write('an', '__TEST_DIR__/arrow_native', crs => 'EPSG:7415');
-
-query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/arrow_native/building.parquet')
-WHERE decode(key) = 'geo';
-----
-0
-
-# geometry_types stays the encoding-independent WKB vocabulary (spec 05-metadata.mdx),
-# so the arrow-native MultiSurface column still reads "MultiPolygon Z" -- never a
-# CityJSON type name such as "Solid".
-query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/arrow_native/building.parquet')
-WHERE decode(key) = 'city'
-  AND decode(value) LIKE '%"encoding":"CityParquetArrowNative-v1"%'
-  AND decode(value) NOT LIKE '%"encoding":"WKB"%'
-  AND decode(value) LIKE '%"name":"geometry_lod0_0"%'
-  AND decode(value) LIKE '%MultiPolygon Z%'
-  AND decode(value) LIKE '%PolyhedralSurface Z%';
-----
-1
 
 # ---------------------------------------------------------------------------
 # The tri-state `crs` (spec 05-metadata.mdx, "CRS rules")
@@ -219,3 +183,53 @@ WHERE decode(key) = 'city'
   AND decode(value) LIKE '%Amersfoort%';
 ----
 1
+
+# The GEOMETRY logical type follows the same rule as the `geo` declaration:
+# annotated if and only if declared. `ms` is a MultiSolid table, so no column
+# is legal — its PolyhedralSurface Z is outside DuckDB's geometry model, and
+# annotating one would make the column unreadable rather than richer.
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM read_parquet('__TEST_DIR__/msolid/building.parquet'))
+WHERE column_name LIKE 'geometry_lod%' AND column_type <> 'BLOB';
+----
+0
+
+# A table WITH a GeoParquet-legal footprint gets exactly one annotated column,
+# and it carries the CRS: an absent `crs` on the logical type is read as
+# OGC:CRS84, which would announce an RD New package as lon/lat degrees.
+statement ok
+CREATE SCHEMA fp;
+
+statement ok
+CREATE TABLE fp.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('fp');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('fp', '__TEST_DIR__/fp', crs => 'EPSG:7415');
+
+# Exactly one `geo` key: GEOPARQUET_VERSION 'none' suppresses DuckDB's own, so
+# the only one present is the CityParquet writer's, carried via KV_METADATA.
+query I
+SELECT count(*) FROM parquet_kv_metadata('__TEST_DIR__/fp/building.parquet') WHERE decode(key) = 'geo';
+----
+1
+
+# The declared footprint is the annotated column, and the Solid LoDs beside it
+# are not.
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM read_parquet('__TEST_DIR__/fp/building.parquet'))
+WHERE column_name LIKE 'geometry_lod%' AND column_type LIKE 'GEOMETRY%';
+----
+1
+
+# ...and the annotation names RD New rather than defaulting to OGC:CRS84. Read
+# from the Parquet side, because DESCRIBE renders the CRS differently depending
+# on whether `spatial` is loaded to resolve it.
+query II
+SELECT count(*) FILTER (WHERE logical_type IS NOT NULL),
+       count(*) FILTER (WHERE logical_type LIKE '%7415%')
+FROM parquet_schema('__TEST_DIR__/fp/building.parquet') WHERE name LIKE 'geometry_lod%';
+----
+1	1
