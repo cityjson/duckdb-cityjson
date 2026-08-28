@@ -70,6 +70,13 @@ std::vector<std::string> SidecarTablesInSchema(ClientContext &context, const std
 //! Quoted "schema"."table", safe to concatenate into generated SQL.
 std::string QualifiedName(const std::string &schema, const std::string &table);
 
+//! Quoted "catalog"."schema"."table", for SQL that runs somewhere the caller's search
+//! path does not reach — a connection of the extension's own, which resolves an
+//! unqualified schema against the default catalog. Each part is quoted separately, so a
+//! dotted "catalog.schema" handed to the two-argument overload is one identifier and
+//! resolves to nothing; pass the parts.
+std::string QualifiedName(const std::string &catalog, const std::string &schema, const std::string &table);
+
 //! Single-quoted SQL string literal (KeywordHelper::WriteQuoted). SQLString is a
 //! formatting wrapper, not a quoting function -- never use it for this.
 std::string Literal(const std::string &text);

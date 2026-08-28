@@ -110,6 +110,11 @@ std::string QualifiedName(const std::string &schema, const std::string &table) {
 	return KeywordHelper::WriteOptionallyQuoted(schema) + "." + KeywordHelper::WriteOptionallyQuoted(table);
 }
 
+std::string QualifiedName(const std::string &catalog, const std::string &schema, const std::string &table) {
+	return KeywordHelper::WriteOptionallyQuoted(catalog) + "." + KeywordHelper::WriteOptionallyQuoted(schema) + "." +
+	       KeywordHelper::WriteOptionallyQuoted(table);
+}
+
 std::string Literal(const std::string &text) {
 	return KeywordHelper::WriteQuoted(text, '\'');
 }

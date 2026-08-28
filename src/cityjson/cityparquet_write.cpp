@@ -9,6 +9,7 @@
 #include "cityjson/wkb_encoder.hpp"
 #include "cityjson/wkb_extent.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -62,6 +63,10 @@ struct ColumnFacts {
 
 struct WriteBindData : public TableFunctionData {
 	std::string schema;
+	//! The catalog the caller's search path resolved `schema` in. The queries
+	//! below run on a connection of our own, which never saw that search path,
+	//! so every generated name must say the catalog outright.
+	std::string catalog;
 	std::string directory;
 	std::string crs;
 	std::string source_format;
@@ -69,6 +74,7 @@ struct WriteBindData : public TableFunctionData {
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<WriteBindData>();
 		result->schema = schema;
+		result->catalog = catalog;
 		result->directory = directory;
 		result->crs = crs;
 		result->source_format = source_format;
@@ -76,7 +82,7 @@ struct WriteBindData : public TableFunctionData {
 	}
 	bool Equals(const FunctionData &other) const override {
 		auto &o = other.Cast<WriteBindData>();
-		return schema == o.schema && directory == o.directory;
+		return catalog == o.catalog && schema == o.schema && directory == o.directory;
 	}
 };
 
@@ -213,9 +219,9 @@ unique_ptr<MaterializedQueryResult> Run(Connection &connection, const std::strin
 }
 
 //! Fold one object table into the package-level inventory.
-void CollectInventory(Connection &connection, const std::string &schema, const std::string &table, int64_t rows,
-                      const std::vector<ColumnFacts> &facts, const std::vector<std::string> &attributes,
-                      PackageInventory &inventory) {
+void CollectInventory(Connection &connection, const std::string &catalog, const std::string &schema,
+                      const std::string &table, int64_t rows, const std::vector<ColumnFacts> &facts,
+                      const std::vector<std::string> &attributes, PackageInventory &inventory) {
 	inventory.city_objects += rows;
 	for (const auto &attribute : attributes) {
 		inventory.attributes.insert(attribute);
@@ -234,7 +240,7 @@ void CollectInventory(Connection &connection, const std::string &schema, const s
 
 	// The source type vocabulary, per the specification: the STAC Item mirrors the
 	// source model's inventory, not the by-module routing that put the rows in this file.
-	auto types = Run(connection, "SELECT DISTINCT object_type FROM " + QualifiedName(schema, table) +
+	auto types = Run(connection, "SELECT DISTINCT object_type FROM " + QualifiedName(catalog, schema, table) +
 	                                 " WHERE object_type IS NOT NULL");
 	for (idx_t row = 0; row < types->RowCount(); row++) {
 		inventory.co_types.insert(types->GetValue(0, row).ToString());
@@ -245,7 +251,7 @@ void CollectInventory(Connection &connection, const std::string &schema, const s
 	}
 	for (const auto &column : facts) {
 		const auto properties = "geometry_properties_" + column.name.substr(std::string("geometry_").size());
-		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(schema, table) + " WHERE " +
+		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(catalog, schema, table) + " WHERE " +
 		                                   KeywordHelper::WriteOptionallyQuoted(properties) + ".surfaces IS NOT NULL");
 		if (present->GetValue(0, 0).GetValue<int64_t>() > 0) {
 			inventory.semantic_surfaces = true;
@@ -257,8 +263,8 @@ void CollectInventory(Connection &connection, const std::string &schema, const s
 //! The geometry_templates sidecar's contribution to the package inventory: its LoDs and
 //! whether any template carries semantic surfaces. Templates are stored in local,
 //! unplaced coordinates, so they contribute no extent.
-void CollectTemplateInventory(Connection &connection, ClientContext &context, const std::string &schema,
-                              const std::string &table, PackageInventory &inventory) {
+void CollectTemplateInventory(Connection &connection, ClientContext &context, const std::string &catalog,
+                              const std::string &schema, const std::string &table, PackageInventory &inventory) {
 	for (const auto &column : GeometryLodColumns(context, schema, table)) {
 		const auto suffix = column.substr(std::string("geometry_").size());
 		auto lod = LODTableUtils::ParseLODFromSuffix(suffix);
@@ -268,7 +274,7 @@ void CollectTemplateInventory(Connection &connection, ClientContext &context, co
 		if (inventory.semantic_surfaces) {
 			continue;
 		}
-		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(schema, table) + " WHERE " +
+		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(catalog, schema, table) + " WHERE " +
 		                                   KeywordHelper::WriteOptionallyQuoted("geometry_properties_" + suffix) +
 		                                   ".surfaces IS NOT NULL");
 		if (present->GetValue(0, 0).GetValue<int64_t>() > 0) {
@@ -281,8 +287,8 @@ void CollectTemplateInventory(Connection &connection, ClientContext &context, co
 //! recomputed from the data every time, never carried: GeoParquet legality flips in both
 //! directions under mutation, so a stale `geo` can declare a column that now holds a
 //! solid, which is data-corruption-adjacent rather than merely untidy.
-std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &context, const std::string &schema,
-                                      const std::string &table) {
+std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &context, const std::string &catalog,
+                                      const std::string &schema, const std::string &table) {
 	std::vector<ColumnFacts> facts;
 	for (const auto &column : GeometryLodColumns(context, schema, table)) {
 		ColumnFacts entry;
@@ -296,7 +302,7 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		// bytes are the same WKB either way.
 		const auto wkb_expr = GeometryColumnRef(quoted, col_type);
 		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + wkb_expr + ") FROM " +
-		                                  QualifiedName(schema, table) + " WHERE " + quoted + " IS NOT NULL");
+		                                  QualifiedName(catalog, schema, table) + " WHERE " + quoted + " IS NOT NULL");
 		for (idx_t row = 0; row < result->RowCount(); row++) {
 			auto value = result->GetValue(0, row);
 			if (!value.IsNull()) {
@@ -308,8 +314,8 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		}
 		auto extent = Run(connection, "SELECT min(e.xmin), min(e.ymin), min(e.zmin), max(e.xmax), max(e.ymax), "
 		                              "max(e.zmax) FROM (SELECT cityjson_wkb_extent(" +
-		                                  wkb_expr + ") AS e FROM " + QualifiedName(schema, table) + " WHERE " +
-		                                  quoted + " IS NOT NULL) t");
+		                                  wkb_expr + ") AS e FROM " + QualifiedName(catalog, schema, table) +
+		                                  " WHERE " + quoted + " IS NOT NULL) t");
 		if (extent->RowCount() == 1 && !extent->GetValue(0, 0).IsNull()) {
 			entry.has_extent = true;
 			entry.min_x = extent->GetValue(0, 0).GetValue<double>();
@@ -418,6 +424,10 @@ static unique_ptr<FunctionData> WriteBind(ClientContext &context, TableFunctionB
                                           vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<WriteBindData>();
 	result->schema = StringValue::Get(input.inputs[0]);
+	// Resolve through the caller's context, exactly as the column helpers do, then keep
+	// the catalog it landed in.
+	auto &schema_entry = Catalog::GetSchema(context, INVALID_CATALOG, result->schema);
+	result->catalog = schema_entry.catalog.GetName();
 	result->directory = StringValue::Get(input.inputs[1]);
 	for (auto &entry : input.named_parameters) {
 		if (entry.first == "crs") {
@@ -451,8 +461,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 
 	// The carried footer, per table.
 	std::map<std::string, std::string> carried;
-	auto bookkeeping =
-	    connection.Query("SELECT table_name, city FROM " + QualifiedName(bind_data.schema, "__cityparquet"));
+	auto bookkeeping = connection.Query("SELECT table_name, city FROM " +
+	                                    QualifiedName(bind_data.catalog, bind_data.schema, "__cityparquet"));
 	if (!bookkeeping->HasError()) {
 		for (idx_t row = 0; row < bookkeeping->RowCount(); row++) {
 			auto city = bookkeeping->GetValue(1, row);
@@ -550,7 +560,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 	PackageInventory inventory;
 
 	auto write_table = [&](const std::string &table, bool is_object) {
-		auto count = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(bind_data.schema, table));
+		auto count =
+		    Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(bind_data.catalog, bind_data.schema, table));
 		const auto rows = count->GetValue(0, 0).GetValue<int64_t>();
 		if (rows == 0 && is_object) {
 			// "No file for a module with no rows."
@@ -565,7 +576,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			// populated geometry_lod* column in any object table -- its LoDs live here.
 			// city3d:lods is the union across every file in the package, so leaving the
 			// sidecar out would report an empty LoD set for a perfectly valid package.
-			CollectTemplateInventory(connection, context, bind_data.schema, table, inventory);
+			CollectTemplateInventory(connection, context, bind_data.catalog, bind_data.schema, table, inventory);
 		}
 
 		std::string kv;
@@ -573,7 +584,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// annotation and the declaration cannot disagree about a column.
 		std::set<std::string> legal_geometry;
 		if (is_object) {
-			auto facts = CollectFacts(connection, context, bind_data.schema, table);
+			auto facts = CollectFacts(connection, context, bind_data.catalog, bind_data.schema, table);
 			for (const auto &fact : facts) {
 				if (fact.Legal()) {
 					legal_geometry.insert(fact.name);
@@ -581,14 +592,15 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			}
 			std::vector<std::string> attributes;
 			auto columns = Run(connection, "SELECT column_name FROM (DESCRIBE SELECT * FROM " +
-			                                   QualifiedName(bind_data.schema, table) + ")");
+			                                   QualifiedName(bind_data.catalog, bind_data.schema, table) + ")");
 			for (idx_t row = 0; row < columns->RowCount(); row++) {
 				const auto name = columns->GetValue(0, row).ToString();
 				if (!IsReservedColumnName(name)) {
 					attributes.push_back(name);
 				}
 			}
-			CollectInventory(connection, bind_data.schema, table, rows, facts, attributes, inventory);
+			CollectInventory(connection, bind_data.catalog, bind_data.schema, table, rows, facts, attributes,
+			                 inventory);
 			auto carried_entry = carried.find(table);
 			const auto city = BuildCityJson(carried_entry == carried.end() ? std::string() : carried_entry->second,
 			                                crs_json, facts, attributes, bind_data.source_format);
@@ -617,8 +629,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// the file carries exactly one, and it is this writer's.
 		Run(connection, "COPY (SELECT " +
 		                    CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation) +
-		                    " FROM " + QualifiedName(bind_data.schema, table) + ") TO " + Literal(path) +
-		                    " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "});");
+		                    " FROM " + QualifiedName(bind_data.catalog, bind_data.schema, table) + ") TO " +
+		                    Literal(path) + " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "});");
 
 		WrittenFile written;
 		written.file = file;

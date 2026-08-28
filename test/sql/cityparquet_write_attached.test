@@ -1,0 +1,41 @@
+# name: test/sql/cityparquet_write_attached.test
+# description: cityparquet_write reaches a schema in an attached catalog
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# The function runs its queries on its own connection, which has never seen the
+# caller's search path. Unless it qualifies names with the caller's catalog, a
+# package that lives anywhere but the default catalog is unreachable.
+statement ok
+ATTACH '__TEST_DIR__/side.db' AS side;
+
+statement ok
+CREATE SCHEMA side.pkg;
+
+statement ok
+CREATE TABLE side.pkg.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+SET search_path='side.pkg';
+
+statement ok
+PRAGMA cityparquet_init('pkg');
+
+statement ok
+SELECT * FROM cityparquet_write('pkg', '__TEST_DIR__/attached_out', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/attached_out/building.parquet');
+----
+20
+
+# The footer is regenerated as usual — reaching the catalog changes nothing else.
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/attached_out/building.parquet')
+WHERE decode(key) = 'city';
+----
+1
