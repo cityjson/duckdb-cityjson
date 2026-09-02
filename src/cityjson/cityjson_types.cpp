@@ -497,6 +497,35 @@ Material Material::FromJson(const json &obj) {
 	return result;
 }
 
+json Material::ToJson() const {
+	json out = other.is_object() ? other : json::object();
+	if (name) {
+		out["name"] = *name;
+	}
+	if (ambient_intensity) {
+		out["ambientIntensity"] = *ambient_intensity;
+	}
+	if (diffuse_color) {
+		out["diffuseColor"] = *diffuse_color;
+	}
+	if (specular_color) {
+		out["specularColor"] = *specular_color;
+	}
+	if (emissive_color) {
+		out["emissiveColor"] = *emissive_color;
+	}
+	if (transparency) {
+		out["transparency"] = *transparency;
+	}
+	if (shininess) {
+		out["shininess"] = *shininess;
+	}
+	if (is_smooth) {
+		out["isSmooth"] = *is_smooth;
+	}
+	return out;
+}
+
 Texture Texture::FromJson(const json &obj) {
 	Texture result;
 	if (!obj.is_object()) {
@@ -512,6 +541,26 @@ Texture Texture::FromJson(const json &obj) {
 	result.border_color = AppearanceDoubleArray(obj, "borderColor");
 	result.other = AppearanceOther(obj, {"image", "type", "wrapMode", "textureType", "borderColor"});
 	return result;
+}
+
+json Texture::ToJson() const {
+	json out = other.is_object() ? other : json::object();
+	if (image_uri) {
+		out["image"] = *image_uri;
+	}
+	if (image_type) {
+		out["type"] = *image_type;
+	}
+	if (wrap_mode) {
+		out["wrapMode"] = *wrap_mode;
+	}
+	if (texture_type) {
+		out["textureType"] = *texture_type;
+	}
+	if (border_color) {
+		out["borderColor"] = *border_color;
+	}
+	return out;
 }
 
 GeometryTemplates GeometryTemplates::FromJson(const json &obj) {
@@ -563,6 +612,29 @@ Appearance Appearance::FromJson(const json &obj) {
 		}
 	}
 	return result;
+}
+
+json Appearance::ToJson() const {
+	json out = json::object();
+	if (!materials.empty()) {
+		out["materials"] = json::array();
+		for (const auto &m : materials) {
+			out["materials"].push_back(m.ToJson());
+		}
+	}
+	if (!textures.empty()) {
+		out["textures"] = json::array();
+		for (const auto &t : textures) {
+			out["textures"].push_back(t.ToJson());
+		}
+	}
+	if (!vertices_texture.empty()) {
+		out["vertices-texture"] = json::array();
+		for (const auto &uv : vertices_texture) {
+			out["vertices-texture"].push_back(json::array({uv[0], uv[1]}));
+		}
+	}
+	return out;
 }
 
 CityJSONFeature CityJSONFeature::FromJson(const json &obj) {

@@ -5,6 +5,7 @@
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "cityjson/copy_source_ref.hpp"
+#include "cityjson/obj_reader.hpp"
 #include "cityjson/reader.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -318,6 +319,18 @@ static uint16_t ParseTreeTuningOption(const Value &val, const std::string &optio
 // and dereferencing it again here would be an unchecked access.
 static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref,
                                  CityJSONCopyBindData &bind_data) {
+	if (source_ref.is_obj) {
+		// No JSON to lift a block from: re-emit the reader's definitions as CityJSON.
+		OBJReadOptions obj_options;
+		obj_options.lod = "0.0";
+		OBJReader reader(context, source_ref.path, obj_options);
+		auto header = reader.ReadMetadata();
+		if (header.appearance.has_value() && !header.appearance->Empty()) {
+			bind_data.source_appearance_header = header.appearance->ToJson();
+		}
+		return;
+	}
+
 	auto content = json_utils::ReadFileContent(context, source_ref.path);
 
 	auto take_appearance = [](const json &doc) -> std::optional<json> {
@@ -464,6 +477,7 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 		ref.path = explicit_metadata_from;
 		ref.is_seq = bind_data->is_seq;
 		ref.is_fcb = bind_data->is_fcb;
+		ref.is_obj = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".obj");
 		bind_data->source_ref = std::move(ref);
 	} else if (input.info.select_statement) {
 		bind_data->source_ref = FindCopySourceRef(*input.info.select_statement);
@@ -481,7 +495,14 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
 		const auto &source_ref = *bind_data->source_ref;
 		try {
-			auto reader = OpenAnyCityJSONFile(context, source_ref.path, 1);
+			std::unique_ptr<CityJSONReader> reader;
+			if (source_ref.is_obj) {
+				OBJReadOptions obj_options;
+				obj_options.lod = "0.0"; // the definitions are file-global; any LoD serves
+				reader = std::make_unique<OBJReader>(context, source_ref.path, obj_options);
+			} else {
+				reader = OpenAnyCityJSONFile(context, source_ref.path, 1);
+			}
 			auto source_meta = reader->ReadMetadata();
 
 			// Only fill what the user did not state. An explicit crs must win, so it

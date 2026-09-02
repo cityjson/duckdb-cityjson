@@ -246,6 +246,7 @@ struct Material {
 	json other; // members this mapping does not cover
 
 	static Material FromJson(const json &obj);
+	json ToJson() const;
 };
 
 /**
@@ -265,6 +266,7 @@ struct Texture {
 	json other;
 
 	static Texture FromJson(const json &obj);
+	json ToJson() const;
 };
 
 /**
@@ -305,6 +307,7 @@ struct Appearance {
 	}
 
 	static Appearance FromJson(const json &obj);
+	json ToJson() const;
 };
 
 /**

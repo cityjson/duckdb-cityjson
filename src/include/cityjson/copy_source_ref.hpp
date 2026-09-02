@@ -13,6 +13,8 @@ struct CopySourceRef {
 	std::string path;
 	bool is_seq = false;
 	bool is_fcb = false;
+	//! read_obj: metadata and appearance come from an OBJReader, not a CityJSON file.
+	bool is_obj = false;
 };
 
 //! Walk a parsed query node for exactly one read_cityjson / read_cityjsonseq /

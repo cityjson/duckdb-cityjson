@@ -177,3 +177,14 @@ SELECT texture_lod1_0 LIKE '%[0,[0.3,0.7],[0.3,0.7],[0.3,0.7]]%'
 FROM read_obj('test/data/obj/precise.obj', lod := '1', appearance := 'sidecar');
 ----
 true
+
+# --- OBJ -> CityJSON keeps geometry, semantics and appearance refs intact on the way out.
+statement ok
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2')) TO '__TEST_DIR__/cube.city.json' (FORMAT cityjson);
+
+query III
+SELECT id, geometry_properties_lod2_2.type, material_lod2_2
+FROM read_cityjson('__TEST_DIR__/cube.city.json', lod := '2.2') ORDER BY id;
+----
+cube	Solid	{"visual":{"values":[[0,1,1,1,1,2]]}}
+slab	MultiSurface	{"visual":{"values":[2]}}

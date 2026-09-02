@@ -33,6 +33,8 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 			found.is_seq = true;
 		} else if (call.function_name == "read_flatcitybuf") {
 			found.is_fcb = true;
+		} else if (call.function_name == "read_obj") {
+			found.is_obj = true;
 		} else {
 			return;
 		}
