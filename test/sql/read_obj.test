@@ -1,0 +1,49 @@
+# name: test/sql/read_obj.test
+# description: read_obj maps Wavefront OBJ objects, groups and materials onto the object-table schema
+# group: [sql]
+
+require cityjson
+
+# --- Schema: the standard wide layout with exactly one LoD group and no attributes.
+query II
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
+WHERE column_name LIKE 'geometry%' OR column_name LIKE 'material%' OR column_name LIKE 'texture%';
+----
+geometry_lod2_2	BLOB
+geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+material_lod2_2	VARCHAR
+texture_lod2_2	VARCHAR
+
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
+WHERE column_name NOT IN ('id','feature_id','object_type','parents','children','children_roles','address','bbox',
+                          'geometry_lod2_2','geometry_properties_lod2_2','material_lod2_2','texture_lod2_2',
+                          'template','other');
+----
+0
+
+# --- One row per `o`, in file order; id doubles as feature_id; object_type from the parameter.
+query III
+SELECT id, feature_id, object_type FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	cube	Building
+slab	slab	Building
+
+query I
+SELECT DISTINCT object_type FROM read_obj('test/data/obj/cube.obj', lod := '2', object_type := 'BuildingPart');
+----
+BuildingPart
+
+# --- lod is normalised the way every other reader normalises it.
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2'))
+WHERE column_name LIKE 'geometry_lod%';
+----
+geometry_lod2_0
+
+# --- lod is required: an OBJ carries none, and the value names the columns.
+statement error
+SELECT * FROM read_obj('test/data/obj/cube.obj');
+----
+read_obj: lod is required

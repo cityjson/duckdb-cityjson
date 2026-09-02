@@ -15,6 +15,7 @@
 #include "cityjson/cityparquet_appearance.hpp"
 #include "cityjson/appearance_table_function.hpp"
 #include "cityjson/copy_function.hpp"
+#include "cityjson/obj_table_function.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_table_function.hpp"
 #endif
@@ -68,6 +69,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register the CityParquet appearance sidecar readers
 	cityjson::RegisterAppearanceTableFunctions(loader);
+
+	// Register Wavefront OBJ input (read_obj, obj_metadata)
+	cityjson::RegisterOBJTableFunctions(loader);
 
 	// Register COPY TO functions (cityjson and cityjsonseq formats)
 	cityjson::RegisterCityJSONCopyFunction(loader);
