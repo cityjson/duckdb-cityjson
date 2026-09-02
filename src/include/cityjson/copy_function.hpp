@@ -46,10 +46,18 @@ CopyColumnRole DetectColumnRole(const std::string &name);
 // Bind data for COPY TO
 // ============================================================
 
+//! The output format a COPY TO was bound with. One enum, not a boolean per format:
+//! every dispatch site names the format it handles, and a new format cannot fall
+//! through an `else` into the CityJSON writer.
+enum class CopyFormat : uint8_t { CityJSON, CityJSONSeq, FlatCityBuf, Obj, Gltf, Glb };
+
+inline bool IsMeshFormat(CopyFormat format) {
+	return format == CopyFormat::Obj || format == CopyFormat::Gltf || format == CopyFormat::Glb;
+}
+
 struct CityJSONCopyBindData : public FunctionData {
 	std::string file_path;
-	bool is_seq = false; // true for cityjsonseq format
-	bool is_fcb = false; // true for flatcitybuf format
+	CopyFormat format = CopyFormat::CityJSON;
 
 	// FlatCityBuf write-only options (COPY TO ... FORMAT flatcitybuf).
 	std::vector<std::string> fcb_attr_index_columns; // parsed from attr_index, empty = none

@@ -91,8 +91,7 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	auto result = make_uniq<CityJSONCopyBindData>();
 	result->file_path = file_path;
-	result->is_seq = is_seq;
-	result->is_fcb = is_fcb;
+	result->format = format;
 	result->version = version;
 	result->crs = crs;
 	result->transform = transform;
@@ -124,7 +123,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 
 bool CityJSONCopyBindData::Equals(const FunctionData &other) const {
 	auto &o = other.Cast<CityJSONCopyBindData>();
-	return file_path == o.file_path && is_seq == o.is_seq && is_fcb == o.is_fcb;
+	return file_path == o.file_path && format == o.format;
 }
 
 // ============================================================
@@ -419,8 +418,13 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
                                                    const vector<string> &names, const vector<LogicalType> &sql_types) {
 	auto bind_data = make_uniq<CityJSONCopyBindData>();
 	bind_data->file_path = input.info.file_path;
-	bind_data->is_seq = (input.info.format == "cityjsonseq");
-	bind_data->is_fcb = (input.info.format == "flatcitybuf");
+	const auto &fmt = input.info.format;
+	bind_data->format = fmt == "cityjsonseq"   ? CopyFormat::CityJSONSeq
+	                    : fmt == "flatcitybuf" ? CopyFormat::FlatCityBuf
+	                    : fmt == "obj"         ? CopyFormat::Obj
+	                    : fmt == "gltf"        ? CopyFormat::Gltf
+	                    : fmt == "glb"         ? CopyFormat::Glb
+	                                           : CopyFormat::CityJSON;
 
 	// Explicit metadata wins over anything inherited from the source, so record
 	// which of them the user actually supplied.
@@ -506,8 +510,8 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	if (!explicit_metadata_from.empty()) {
 		CopySourceRef ref;
 		ref.path = explicit_metadata_from;
-		ref.is_seq = bind_data->is_seq;
-		ref.is_fcb = bind_data->is_fcb;
+		ref.is_fcb = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".fcb");
+		ref.is_seq = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".jsonl");
 		ref.is_obj = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".obj");
 		bind_data->source_ref = std::move(ref);
 	} else if (input.info.select_statement) {
@@ -1399,11 +1403,13 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 	// Write to the temp file path — DuckDB will rename it to the final path after Finalize
 	auto &output_path = gstate.temp_file_path;
 
-	if (bind_data.is_seq) {
+	switch (bind_data.format) {
+	case CopyFormat::CityJSONSeq:
 		CityJSONWriter::WriteCityJSONSeq(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
+		break;
 #ifdef CITYJSON_HAS_FCB
-	} else if (bind_data.is_fcb) {
+	case CopyFormat::FlatCityBuf: {
 		// The relation's attribute columns, not the ones that happened to carry a
 		// value. An attribute that is NULL in every row is omitted from the JSON by
 		// the sink above, so without this list the FCB header never learns it exists
@@ -1417,10 +1423,20 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.fcb_attr_index_columns, bind_data.fcb_branching_factor,
 		                                 bind_data.fcb_index_node_size, declared_attr_columns);
+		break;
+	}
+#else
+	case CopyFormat::FlatCityBuf:
+		throw InternalException("flatcitybuf COPY format bound without FCB support");
 #endif
-	} else {
+	case CopyFormat::Obj:
+	case CopyFormat::Gltf:
+	case CopyFormat::Glb:
+		throw InternalException("mesh COPY format bound without a writer");
+	case CopyFormat::CityJSON:
 		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                              bind_data.source_appearance_header);
+		break;
 	}
 }
 
