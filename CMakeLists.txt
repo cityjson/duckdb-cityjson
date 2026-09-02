@@ -91,6 +91,8 @@ set(EXTENSION_SOURCES
     src/cityjson/cityparquet_appearance.cpp
     src/cityjson/appearance_normalise.cpp
     src/cityjson/appearance_table_function.cpp
+    # Mesh interchange (OBJ / glTF writers)
+    src/cityjson/face_triangulation.cpp
 )
 
 # Declared here rather than next to the find_package below, because the wasm block
