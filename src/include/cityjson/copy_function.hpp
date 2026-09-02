@@ -2,6 +2,7 @@
 
 #include "cityjson/copy_source_ref.hpp"
 
+#include "cityjson/appearance_source.hpp"
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb.hpp"
@@ -63,6 +64,19 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::vector<std::string> fcb_attr_index_columns; // parsed from attr_index, empty = none
 	std::optional<uint16_t> fcb_branching_factor;
 	std::optional<uint16_t> fcb_index_node_size;
+
+	// Mesh write options (COPY TO ... FORMAT obj | gltf | glb).
+	std::optional<std::string> mesh_lod; // normalised; nullopt = highest per object
+	std::string mesh_origin = "auto";    // 'auto' | 'none' | 'x,y,z'
+	bool obj_triangulate = false;
+	int obj_precision = 17;
+	bool gltf_attributes = false;
+	// Sidecar-form appearance definitions; their presence declares the form (spec appearance).
+	std::optional<std::string> materials_query;
+	std::optional<std::string> textures_query;
+	// Resolved at bind for mesh formats (from the queries, or the source's local blocks),
+	// so a bad query fails before a single row is sunk -- as metadata_query does.
+	std::optional<AppearanceSource> appearance_source;
 
 	// Metadata (from options or metadata_query)
 	std::string version = "2.0";
@@ -165,6 +179,9 @@ struct CityJSONCopyLocalState : public LocalFunctionData {
 // ============================================================
 
 void RegisterCityJSONCopyFunction(ExtensionLoader &loader);
+//! COPY TO for the mesh interchange formats. One function per format name, all bound
+//! by the same bind/sink/finalize: `obj` today, `gltf`/`glb` alongside it.
+void RegisterMeshCopyFunctions(ExtensionLoader &loader);
 void RegisterCityJSONSeqCopyFunction(ExtensionLoader &loader);
 
 #ifdef CITYJSON_HAS_FCB

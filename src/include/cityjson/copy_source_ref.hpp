@@ -15,6 +15,9 @@ struct CopySourceRef {
 	bool is_fcb = false;
 	//! read_obj: metadata and appearance come from an OBJReader, not a CityJSON file.
 	bool is_obj = false;
+	//! The reader call was `appearance := 'sidecar'`: its material/texture cells hold
+	//! dataset-global ids, not indices into the file's own blocks.
+	bool sidecar_appearance = false;
 };
 
 //! Walk a parsed query node for exactly one read_cityjson / read_cityjsonseq /

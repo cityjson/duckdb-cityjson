@@ -1,11 +1,15 @@
 #include "cityjson/copy_function.hpp"
+#include "cityjson/appearance_source.hpp"
 #include "cityjson/cityjson_writer.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "cityjson/copy_source_ref.hpp"
+#include "cityjson/lod_table.hpp"
+#include "cityjson/mesh_model.hpp"
 #include "cityjson/obj_reader.hpp"
+#include "cityjson/obj_writer.hpp"
 #include "cityjson/reader.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -17,6 +21,7 @@
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
+#include <fstream>
 #include <limits>
 
 namespace duckdb {
@@ -92,6 +97,14 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	auto result = make_uniq<CityJSONCopyBindData>();
 	result->file_path = file_path;
 	result->format = format;
+	result->mesh_lod = mesh_lod;
+	result->mesh_origin = mesh_origin;
+	result->obj_triangulate = obj_triangulate;
+	result->obj_precision = obj_precision;
+	result->gltf_attributes = gltf_attributes;
+	result->materials_query = materials_query;
+	result->textures_query = textures_query;
+	result->appearance_source = appearance_source;
 	result->version = version;
 	result->crs = crs;
 	result->transform = transform;
@@ -414,6 +427,99 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 	}
 }
 
+// ============================================================
+// Mesh formats: shared preparation
+// ============================================================
+
+struct MeshTargets {
+	std::string final_dir;  // directory of the final output path ("" = cwd)
+	std::string final_stem; // "campus" for "campus.obj"
+	std::string source_dir; // where relative image URIs resolve ("" = unknown)
+};
+
+static MeshTargets ResolveMeshTargets(const CityJSONCopyBindData &bind_data) {
+	MeshTargets t;
+	const auto &p = bind_data.file_path;
+	auto slash = p.find_last_of("/\\");
+	t.final_dir = slash == std::string::npos ? "" : p.substr(0, slash);
+	std::string base = slash == std::string::npos ? p : p.substr(slash + 1);
+	auto dot = base.rfind('.');
+	t.final_stem = dot == std::string::npos ? base : base.substr(0, dot);
+	if (bind_data.source_ref.has_value()) {
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		const auto &source_path = bind_data.source_ref->path;
+		auto ss = source_path.find_last_of("/\\");
+		t.source_dir = ss == std::string::npos ? "" : source_path.substr(0, ss);
+	}
+	return t;
+}
+
+static std::string JoinDir(const std::string &dir, const std::string &name) {
+	return dir.empty() ? name : dir + "/" + name;
+}
+
+// Where a mesh COPY's material/texture references resolve: the sidecar queries when
+// either is given (their presence is what declares the sidecar form), else the
+// discovered source's own appearance blocks.
+static AppearanceSource BuildAppearanceSource(ClientContext &context, const CityJSONCopyBindData &bind_data) {
+	if (bind_data.materials_query.has_value() || bind_data.textures_query.has_value()) {
+		return AppearanceSource::FromQueries(context, bind_data.materials_query, bind_data.textures_query);
+	}
+	return AppearanceSource::FromLocal(bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
+}
+
+// Copies texture `id`'s bytes beside the final output under the image's own basename;
+// returns false (and logs) when the bytes cannot be had.
+static bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int64_t texture_id,
+                             const MeshTargets &targets, std::string &basename) {
+	std::string warning;
+	if (!appearance.LoadImage(context, texture_id, targets.source_dir, warning)) {
+		DUCKDB_LOG_WARNING(context, "cityjson: " + warning + "; faces fall back to the material colour");
+		return false;
+	}
+	auto &tex = appearance.Textures().at(texture_id);
+	auto slash = tex.image_uri.find_last_of("/\\");
+	basename = slash == std::string::npos ? tex.image_uri : tex.image_uri.substr(slash + 1);
+	if (basename.empty()) {
+		basename = "texture_" + std::to_string(texture_id) + "." + StringUtil::Lower(tex.image_type);
+	}
+	std::ofstream img(JoinDir(targets.final_dir, basename), std::ios::binary);
+	if (!img.is_open()) {
+		DUCKDB_LOG_WARNING(context, "cityjson: could not write texture image '" + basename + "'");
+		return false;
+	}
+	img.write(reinterpret_cast<const char *>(tex.image_data.data()),
+	          static_cast<std::streamsize>(tex.image_data.size()));
+	return static_cast<bool>(img);
+}
+
+static void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate) {
+	auto targets = ResolveMeshTargets(bind_data);
+	if (!bind_data.appearance_source.has_value()) {
+		// The bind resolves this for every mesh format; reaching Finalize without it
+		// means the bind and the finalize disagree about what a mesh format is.
+		throw InternalException("obj COPY finalized without an appearance source");
+	}
+	// A copy: LoadImage fills texture bytes, and the bind data must stay as bound.
+	// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+	AppearanceSource appearance = bind_data.appearance_source.value();
+	MeshBuildOptions build;
+	build.lod = bind_data.mesh_lod;
+	build.origin = bind_data.mesh_origin;
+	auto model = BuildMeshModel(gstate.feature_objects, gstate.feature_order, appearance, build, bind_data.crs);
+	for (const auto &w : model.warnings) {
+		DUCKDB_LOG_WARNING(context, "cityjson: " + w);
+	}
+	OBJWriteOptions options;
+	options.triangulate = bind_data.obj_triangulate;
+	options.precision = bind_data.obj_precision;
+	const std::string mtl_basename = targets.final_stem + ".mtl";
+	WriteOBJ(model, appearance, gstate.temp_file_path, JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
+	         [&](int64_t texture_id, std::string &basename) {
+		         return CopyTextureImage(context, appearance, texture_id, targets, basename);
+	         });
+}
+
 static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
                                                    const vector<string> &names, const vector<LogicalType> &sql_types) {
 	auto bind_data = make_uniq<CityJSONCopyBindData>();
@@ -493,6 +599,28 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 			bind_data->fcb_branching_factor = ParseTreeTuningOption(val, "branching_factor");
 		} else if (loption == "index_node_size") {
 			bind_data->fcb_index_node_size = ParseTreeTuningOption(val, "index_node_size");
+		} else if (loption == "lod") {
+			bind_data->mesh_lod = LODTableUtils::NormalizeLOD(val.ToString());
+		} else if (loption == "origin") {
+			auto text = val.ToString();
+			if (text != "auto" && text != "none" && !ParseOriginOption(text).has_value()) {
+				throw BinderException("origin must be 'auto', 'none' or 'x,y,z', got '" + text + "'");
+			}
+			bind_data->mesh_origin = text;
+		} else if (loption == "triangulate") {
+			bind_data->obj_triangulate = val.GetValue<bool>();
+		} else if (loption == "precision") {
+			auto p = val.GetValue<int64_t>();
+			if (p < 1 || p > 17) {
+				throw BinderException("precision must be between 1 and 17 significant digits");
+			}
+			bind_data->obj_precision = static_cast<int>(p);
+		} else if (loption == "attributes") {
+			bind_data->gltf_attributes = val.GetValue<bool>();
+		} else if (loption == "materials_query") {
+			bind_data->materials_query = val.ToString();
+		} else if (loption == "textures_query") {
+			bind_data->textures_query = val.ToString();
 		}
 	}
 
@@ -574,6 +702,28 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 		DUCKDB_LOG_WARNING(context, "cityjson: could not determine the source file for this COPY, so no metadata "
 		                            "(including the CRS) is carried across; pass metadata_from or crs to set it "
 		                            "explicitly");
+	}
+
+	// Mesh formats must be told which appearance form the cells are in: material cells
+	// look identical in both, and resolving sidecar ids against the source's local
+	// blocks would silently recolour every face.
+	if (IsMeshFormat(bind_data->format) && !bind_data->materials_query.has_value() &&
+	    !bind_data->textures_query.has_value() && bind_data->source_ref.has_value()) {
+		// Bound once, as above: clang-tidy's optional model does not carry the
+		// has_value() across the unique_ptr deref.
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		const auto &source_ref = *bind_data->source_ref;
+		if (source_ref.sidecar_appearance) {
+			throw BinderException(
+			    "COPY TO " + input.info.format +
+			    ": the source was read with appearance := 'sidecar', so its material/texture cells hold "
+			    "sidecar ids; pass materials_query / textures_query (e.g. materials_query 'SELECT * FROM "
+			    "cityjson_materials(''" +
+			    source_ref.path + "'')') so they can be resolved");
+		}
+	}
+	if (IsMeshFormat(bind_data->format)) {
+		bind_data->appearance_source = BuildAppearanceSource(context, *bind_data);
 	}
 
 	// Default quantisation: when neither an explicit transform_scale/translate nor a
@@ -1430,6 +1580,8 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 		throw InternalException("flatcitybuf COPY format bound without FCB support");
 #endif
 	case CopyFormat::Obj:
+		FinalizeObj(context, bind_data, gstate);
+		break;
 	case CopyFormat::Gltf:
 	case CopyFormat::Glb:
 		throw InternalException("mesh COPY format bound without a writer");
@@ -1454,6 +1606,18 @@ void RegisterCityJSONCopyFunction(ExtensionLoader &loader) {
 	function.copy_to_combine = CityJSONCopyToCombine;
 	function.copy_to_finalize = CityJSONCopyToFinalize;
 	loader.RegisterFunction(function);
+}
+
+void RegisterMeshCopyFunctions(ExtensionLoader &loader) {
+	CopyFunction obj("obj");
+	obj.extension = "obj";
+	obj.copy_to_bind = CityJSONCopyToBind;
+	obj.copy_to_initialize_global = CityJSONCopyToInitGlobal;
+	obj.copy_to_initialize_local = CityJSONCopyToInitLocal;
+	obj.copy_to_sink = CityJSONCopyToSink;
+	obj.copy_to_combine = CityJSONCopyToCombine;
+	obj.copy_to_finalize = CityJSONCopyToFinalize;
+	loader.RegisterFunction(obj);
 }
 
 void RegisterCityJSONSeqCopyFunction(ExtensionLoader &loader) {

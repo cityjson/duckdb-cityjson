@@ -77,6 +77,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	cityjson::RegisterCityJSONCopyFunction(loader);
 	cityjson::RegisterCityJSONSeqCopyFunction(loader);
 
+	// Register mesh interchange COPY TO functions (obj; gltf/glb)
+	cityjson::RegisterMeshCopyFunctions(loader);
+
 #ifdef CITYJSON_HAS_FCB
 	// Register FlatCityBuf functions
 	cityjson::RegisterFlatCityBufTableFunction(loader);
