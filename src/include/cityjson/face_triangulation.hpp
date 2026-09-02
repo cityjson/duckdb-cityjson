@@ -14,7 +14,12 @@ Vertex3 NewellNormal(const std::vector<Vertex3> &vertices, const std::vector<uin
 
 //! Triangulate one planar face. `rings[0]` is the outer ring, the rest are holes; every
 //! ring is a list of indices into `vertices`, unclosed. Returns index triples into
-//! `vertices`, wound like the outer ring. Degenerate input returns empty.
+//! `vertices`, wound like the outer ring. Degenerate input (fewer than 3 outer vertices,
+//! zero-area normal) returns empty.
+//!
+//! Two preconditions are assumed, not checked: every ring index is in range for
+//! `vertices`, and a hole lies inside the outer ring -- one that does not is silently
+//! dropped from the triangulation.
 std::vector<uint32_t> TriangulateFace(const std::vector<Vertex3> &vertices,
                                       const std::vector<std::vector<uint32_t>> &rings);
 

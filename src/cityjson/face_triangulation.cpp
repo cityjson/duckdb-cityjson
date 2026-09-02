@@ -3,6 +3,7 @@
 #include <mapbox/earcut.hpp>
 
 #include <cmath>
+#include <utility>
 
 namespace duckdb {
 namespace cityjson {
@@ -33,8 +34,12 @@ std::vector<uint32_t> TriangulateFace(const std::vector<Vertex3> &vertices,
 	if (ax == 0.0 && ay == 0.0 && az == 0.0) {
 		return out;
 	}
-	// Drop the dominant axis; keep a right-handed (u, v) pair so the projected outer
-	// ring's orientation matches its 3D orientation as seen along the normal.
+	// Drop the dominant axis. |n[axis]| / 2 is the area of the ring's projection onto the
+	// plane perpendicular to that axis, so dropping the largest component keeps that area
+	// at its maximum, |A_uv| = max(ax, ay, az) / 2 > 0 -- guaranteeing a non-degenerate 2D
+	// polygon for earcut. It says nothing about which way (u, v) winds relative to the 3D
+	// ring; the per-triangle re-wind below, not this choice, is what enforces the "wound
+	// like the outer ring" contract.
 	int u;
 	int v;
 	if (az >= ax && az >= ay) {
