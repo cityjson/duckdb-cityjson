@@ -236,7 +236,14 @@ std::optional<std::array<double, 2>> AppearanceSource::UV(const std::string &fea
 		                            "read the source with appearance := 'sidecar', or drop the *_query options",
 		                            feature_id, uv_ref.dump());
 	}
-	auto idx = uv_ref.get<int64_t>();
+	// An integral float outside int64_t's exactly-representable range (e.g. `1e20`)
+	// must not reach the double -> int64_t cast below, which is undefined behaviour
+	// there; 2^53 is the largest magnitude every double still represents exactly.
+	auto as_double = uv_ref.get<double>();
+	if (as_double < 0.0 || as_double > 9007199254740992.0) { // 2^53
+		return std::nullopt;
+	}
+	auto idx = static_cast<int64_t>(as_double);
 	const std::vector<std::array<double, 2>> *pool = &header_uv_pool_;
 	auto it = uv_pool_by_feature_.find(feature_id);
 	if (it != uv_pool_by_feature_.end() && !it->second.empty()) {
