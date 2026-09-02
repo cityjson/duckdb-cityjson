@@ -57,9 +57,11 @@ GroundSurface
 brick
 RoofSurface
 
-# Each Seq feature carries its own vertices-texture pool (the OBJ reader's texture refs
-# are file-global indices, so every feature line that resolves one needs the pool that
-# index points into) rather than relying on the header block a feature line never sees.
+# Each Seq feature that resolves a texture carries its own vertices-texture pool (the
+# OBJ reader's texture refs are file-global indices into the one `vt` pool, so the
+# feature line needs the pool that index points into) rather than relying on the header
+# block a feature line never sees. A feature with no texture is stamped with nothing:
+# the untextured `slab` would otherwise carry the whole file's UV pool for nothing.
 query II
 SELECT count(*) FILTER (line LIKE '%"texture"%'),
        count(*) FILTER (line LIKE '%"texture"%' AND line LIKE '%"vertices-texture"%')
@@ -67,6 +69,14 @@ FROM (SELECT UNNEST(string_split(content, chr(10))) AS line
       FROM read_text('__TEST_DIR__/cube_from_obj.city.jsonl'));
 ----
 1	1
+
+query II
+SELECT count(*) FILTER (line LIKE '%"id":"cube"%' AND line LIKE '%"vertices-texture"%'),
+       count(*) FILTER (line LIKE '%"id":"slab"%' AND line LIKE '%"vertices-texture"%')
+FROM (SELECT UNNEST(string_split(content, chr(10))) AS line
+      FROM read_text('__TEST_DIR__/cube_from_obj.city.jsonl'));
+----
+1	0
 
 # The texture's own identity travels too.
 query II

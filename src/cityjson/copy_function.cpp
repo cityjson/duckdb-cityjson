@@ -333,17 +333,31 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 		// An OBJ's texture refs are file-global indices into the one `vt` pool tinyobj
 		// produced, and the reader never renumbers them per object -- unlike position
 		// vertices, which do get a per-feature-local pool. So the whole pool, verbatim,
-		// serves every object's feature line: index i means the same UV coordinate in
-		// each copy. Every object gets the same block whether or not it uses textures;
-		// an unused pool is harmless, and the reader's own parse (memoised on `reader`)
-		// is not repeated to find out which objects do.
+		// serves the feature line of every object that resolves a texture: index i means
+		// the same UV coordinate in each copy. Only those objects get it -- stamping the
+		// file's whole pool onto every feature multiplies the output by the object count
+		// for a pool most of them never index into.
 		auto vt_it = appearance_json.find("vertices-texture");
 		if (vt_it == appearance_json.end()) {
 			return;
 		}
 		json feature_appearance = json {{"vertices-texture", *vt_it}};
 		for (const auto &feature : reader.ReadAllChunks().records) {
-			bind_data.source_appearance_by_feature[feature.id] = feature_appearance;
+			bool textured = false;
+			for (const auto &entry : feature.city_objects) {
+				for (const auto &geometry : entry.second.geometry) {
+					if (geometry.texture.has_value()) {
+						textured = true;
+						break;
+					}
+				}
+				if (textured) {
+					break;
+				}
+			}
+			if (textured) {
+				bind_data.source_appearance_by_feature[feature.id] = feature_appearance;
+			}
 		}
 		return;
 	}

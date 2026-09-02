@@ -125,10 +125,13 @@ columns, never the definitions.
   same path is never constructed, since the first one memoises its parse and
   `ReadAllChunks` on it is free. The reader never renumbers a face's texture-coordinate
   indices per object — they stay file-global into the one `vt` pool tinyobj produced —
-  so the fix is to copy that whole pool, verbatim, onto every object's own
-  `vertices-texture` block rather than slicing it: index *i* then means the same UV
-  coordinate in every copy, at the cost of carrying the unused rest of the pool on
-  objects that reference none of it.
+  so that whole pool travels verbatim onto the `vertices-texture` block of each feature
+  whose geometry carries a `texture`, rather than being sliced: index *i* means the same
+  UV coordinate in every copy. A feature with no texture is stamped with nothing; the
+  pool is one size for every object, so stamping it on all of them inflates the output by
+  the object count. The pool is **not compacted per feature** — a textured feature
+  carries the whole file's UVs, including the ones it never indexes; writer-side
+  compaction (a per-feature pool with the refs renumbered against it) is a follow-up.
 - **Appearance blocks are per-feature and their refs are feature-local.** In CityJSONSeq
   every feature carries its own `appearance`, and its material/texture indices are local
   to that block, exactly as its boundary indices are local to its own `vertices` pool.
