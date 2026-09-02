@@ -95,6 +95,7 @@ set(EXTENSION_SOURCES
     src/cityjson/face_triangulation.cpp
     src/cityjson/appearance_source.cpp
     src/cityjson/mesh_model.cpp
+    src/cityjson/obj_writer.cpp
 )
 
 # Declared here rather than next to the find_package below, because the wasm block
