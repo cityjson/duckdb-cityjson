@@ -37,7 +37,7 @@ SELECT id, other FROM obj_materials('test/data/obj/cube.obj');
 # fixture might reach for, because 0.9 and 250 happen to parse identically under
 # tinyobjloader's not-correctly-rounded number parser and under strtod: only a value
 # like 0.7 makes the two parses printably disagree, so only a value like this can catch
-# a regression in ReparseMtlNumbersCorrectlyRounded's `d`/`Ns` branches.
+# a regression in ReparseMtl's `d`/`Ns` branches.
 # RoofSurface states `Tr 0.3`, which is transparency directly -- a 1 - (1 - Tr) round
 # trip through tinyobjloader's `dissolve` would print 0.30000000000000004 here.
 query III

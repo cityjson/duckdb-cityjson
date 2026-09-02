@@ -58,9 +58,9 @@ struct ParseState {
 	std::array<double, 3> origin {0.0, 0.0, 0.0};
 	std::string error; // first structural error; LoadObjWithCallback has no way to abort
 
-	// `v` / `vt` reals, parsed correctly-rounded ahead of tinyobjloader by the pre-scan
-	// in OBJReader::Load (see ReparseMtlNumbersCorrectlyRounded for why); VertexCb and
-	// TexcoordCb consume these in order instead of tinyobjloader's own parse.
+	// `v` / `vt` reals, parsed correctly-rounded ahead of tinyobjloader by the pre-scan in
+	// OBJReader::Load (see ReparseMtl for why); VertexCb and TexcoordCb consume these in
+	// order instead of tinyobjloader's own parse.
 	std::vector<std::array<double, 3>> precise_vertices;
 	std::vector<std::array<double, 2>> precise_texcoords;
 	size_t next_vertex = 0;
@@ -201,10 +201,10 @@ size_t ParseReals(const char *begin, const char *end, double *out, size_t n) {
 
 // What one `newmtl` block actually states. Absence is the whole point of the struct: a
 // directive the file omits has no value, and `tinyobj::material_t` -- every field
-// default-initialised, none of them flagged as set -- cannot say so, which is how an
-// unstated `Ks` used to be reported as a black specular colour. tinyobjloader's own
-// record is therefore consulted only for `newmtl` (the name) and `map_Kd` (the texture);
-// every value below comes from ReparseMtl.
+// default-initialised, none of them flagged as set -- cannot say so; this struct's
+// `optional`s keep an unstated `Ks` absent instead of reporting it as a black specular
+// colour. tinyobjloader's own record is therefore consulted only for `newmtl` (the name)
+// and `map_Kd` (the texture); every value below comes from ReparseMtl.
 struct MtlValues {
 	std::optional<std::array<double, 3>> ambient;  // Ka
 	std::optional<std::array<double, 3>> diffuse;  // Kd
@@ -375,14 +375,18 @@ public:
 			        " named material(s) but tinyobjloader produced " + std::to_string(added) +
 			        "; a 'newmtl' name or duplicate has thrown the positional join out of step\n";
 		}
-		// A `.mtl` that leaves nothing accumulated has to report failure: tinyobjloader
-		// answers a successful read with `materials.at(0)` to drive `mtllib_cb`, which
-		// throws on an empty vector. Reporting failure makes it try the next filename on
-		// the `mtllib` line instead, and say so.
+		// The warning is about this file: added == 0 means this particular mtllib
+		// declared nothing, regardless of what earlier ones (across every mtllib in the
+		// file) contributed.
+		if (added == 0 && warn != nullptr) {
+			*warn += "mtllib '" + mat_id + "' declares no material\n";
+		}
+		// The failure is about the accumulated vector: a `.mtl` that leaves nothing
+		// accumulated at all has to report failure here, because tinyobjloader answers a
+		// successful read with `materials.at(0)` to drive `mtllib_cb`, which throws on an
+		// empty vector. Reporting failure makes it try the next filename on the `mtllib`
+		// line instead.
 		if (materials->empty()) {
-			if (warn != nullptr) {
-				*warn += "mtllib '" + mat_id + "' declares no material\n";
-			}
 			return false;
 		}
 		return true;
@@ -535,11 +539,11 @@ const OBJReader::Parsed &OBJReader::Load() const {
 	ParseState st;
 	st.default_object_name = FileStem(file_path_);
 
-	// tinyobjloader's own number parser (see ReparseMtlNumbersCorrectlyRounded above)
-	// accumulates digits in double arithmetic and is not correctly rounded, so every
-	// real in the file is parsed here, in this single line-by-line pre-scan, with
-	// strtod, and kept as the source of truth for `v` / `vt`; tinyobjloader is kept only
-	// for structure -- o/g/usemtl/mtllib dispatch and face tokenising. This pass also
+	// tinyobjloader's own number parser (see ReparseMtl above) accumulates digits in
+	// double arithmetic and is not correctly rounded, so every real in the file is parsed
+	// here, in this single line-by-line pre-scan, with strtod, and kept as the source of
+	// truth for `v` / `vt`; tinyobjloader is kept only for structure -- o/g/usemtl/mtllib
+	// dispatch and face tokenising. This pass also
 	// still catches backslash line continuation, which the parser library does not
 	// implement; refuse rather than silently mis-parse the joined line.
 	{
