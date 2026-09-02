@@ -47,3 +47,63 @@ statement error
 SELECT * FROM read_obj('test/data/obj/cube.obj');
 ----
 read_obj: lod is required
+
+# --- Geometry: closed → Solid with one shell; open → MultiSurface. Face order is file order.
+query IIII
+SELECT id, geometry_properties_lod2_2.type, geometry_properties_lod2_2.shells,
+       cityjson_wkb_geometry_type(geometry_lod2_2)
+FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	Solid	[[6]]	PolyhedralSurface Z
+slab	MultiSurface	NULL	MultiPolygon Z
+
+query II
+SELECT id, cityjson_wkb_extent(geometry_lod2_2) FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	{'xmin': 0.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 1.0, 'ymax': 1.0, 'zmax': 1.0}
+slab	{'xmin': 10.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 12.0, 'ymax': 2.0, 'zmax': 0.0}
+
+query II
+SELECT id, bbox FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	{'xmin': 0.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 1.0, 'ymax': 1.0, 'zmax': 1.0}
+slab	{'xmin': 10.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 12.0, 'ymax': 2.0, 'zmax': 0.0}
+
+# --- Semantics from usemtl / g names that are surface types, in first-use order.
+#     The slab inherits RoofSurface: OBJ state persists across `o`.
+query III
+SELECT id, geometry_properties_lod2_2.surfaces, geometry_properties_lod2_2.face_semantics
+FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	[{"type":"GroundSurface"},{"type":"WallSurface"},{"type":"RoofSurface"}]	[0, 1, 1, 1, 1, 2]
+slab	[{"type":"RoofSurface"}]	[0]
+
+# --- The negative-index roof face resolved to vertices 5..8: the cube's top ring is at z = 1.
+query I
+SELECT list_count(geometry_properties_lod2_2.face_semantics) = 6 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'cube';
+----
+true
+
+# --- No `o`, no materials: one object named after the file stem, open → MultiSurface, no semantics.
+query IIII
+SELECT id, geometry_properties_lod2_2.type, geometry_properties_lod2_2.surfaces, material_lod2_2
+FROM read_obj('test/data/obj/open_roof.obj', lod := '2.2');
+----
+open_roof	MultiSurface	NULL	NULL
+
+# --- geometry_type forces the family; forcing Solid on an open mesh is allowed.
+query II
+SELECT id, geometry_properties_lod2_2.type FROM read_obj('test/data/obj/cube.obj', lod := '2.2', geometry_type := 'MultiSurface');
+----
+cube	MultiSurface
+slab	MultiSurface
+
+query II
+SELECT id, geometry_properties_lod2_2.shells FROM read_obj('test/data/obj/open_roof.obj', lod := '2.2', geometry_type := 'Solid');
+----
+open_roof	[[2]]
+
+statement error
+SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', geometry_type := 'CompositeSolid');
+----
+geometry_type must be 'auto', 'Solid' or 'MultiSurface'
