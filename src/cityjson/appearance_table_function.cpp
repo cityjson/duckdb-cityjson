@@ -15,8 +15,6 @@ namespace cityjson {
 
 namespace {
 
-enum class SidecarKind { MATERIALS, TEXTURES, TEMPLATES };
-
 struct AppearanceBindData : public TableFunctionData {
 	std::string file_name;
 	SidecarKind kind;
@@ -78,16 +76,27 @@ Value OtherOrNull(const json &other) {
 	return Value(other.dump());
 }
 
+struct AppearanceFunctionInfo : public TableFunctionInfo {
+	std::string function_name;
+	SidecarKind kind;
+	ReaderOpener opener;
+	AppearanceFunctionInfo(std::string function_name, SidecarKind kind, ReaderOpener opener)
+	    : function_name(std::move(function_name)), kind(kind), opener(std::move(opener)) {
+	}
+};
+
 unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names, SidecarKind kind,
-                                        const char *function_name) {
+                                        vector<LogicalType> &return_types, vector<string> &names) {
+	auto &info = input.info->Cast<AppearanceFunctionInfo>();
+	const SidecarKind kind = info.kind;
+	const char *function_name = info.function_name.c_str();
 	auto result = make_uniq<AppearanceBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 	result->kind = kind;
 
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		reader = OpenAnyCityJSONFile(context, result->file_name);
+		reader = info.opener(context, result->file_name);
 		auto metadata = reader->ReadMetadata();
 		if (kind == SidecarKind::TEMPLATES) {
 			// Geometry templates are document-level and live entirely in the header, and
@@ -126,21 +135,6 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 		return_types.push_back(sidecar_types[i]);
 	}
 	return std::move(result);
-}
-
-unique_ptr<FunctionData> MaterialsBind(ClientContext &context, TableFunctionBindInput &input,
-                                       vector<LogicalType> &return_types, vector<string> &names) {
-	return AppearanceBind(context, input, return_types, names, SidecarKind::MATERIALS, "cityjson_materials");
-}
-
-unique_ptr<FunctionData> TemplatesBind(ClientContext &context, TableFunctionBindInput &input,
-                                       vector<LogicalType> &return_types, vector<string> &names) {
-	return AppearanceBind(context, input, return_types, names, SidecarKind::TEMPLATES, "cityjson_geometry_templates");
-}
-
-unique_ptr<FunctionData> TexturesBind(ClientContext &context, TableFunctionBindInput &input,
-                                      vector<LogicalType> &return_types, vector<string> &names) {
-	return AppearanceBind(context, input, return_types, names, SidecarKind::TEXTURES, "cityjson_textures");
 }
 
 unique_ptr<GlobalTableFunctionState> AppearanceInitGlobal(ClientContext &, TableFunctionInitInput &) {
@@ -316,19 +310,20 @@ void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std
 	}
 }
 
+TableFunction CreateAppearanceTableFunction(const std::string &name, SidecarKind kind, ReaderOpener opener) {
+	TableFunction func(name, {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, AppearanceBind);
+	func.init_global = AppearanceInitGlobal;
+	func.function_info = make_shared_ptr<AppearanceFunctionInfo>(name, kind, std::move(opener));
+	return func;
+}
+
 void RegisterAppearanceTableFunctions(ExtensionLoader &loader) {
-	TableFunction materials("cityjson_materials", {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, MaterialsBind);
-	materials.init_global = AppearanceInitGlobal;
-	loader.RegisterFunction(materials);
-
-	TableFunction textures("cityjson_textures", {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, TexturesBind);
-	textures.init_global = AppearanceInitGlobal;
-	loader.RegisterFunction(textures);
-
-	TableFunction templates("cityjson_geometry_templates", {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan,
-	                        TemplatesBind);
-	templates.init_global = AppearanceInitGlobal;
-	loader.RegisterFunction(templates);
+	ReaderOpener any = [](ClientContext &context, const std::string &path) {
+		return OpenAnyCityJSONFile(context, path);
+	};
+	loader.RegisterFunction(CreateAppearanceTableFunction("cityjson_materials", SidecarKind::MATERIALS, any));
+	loader.RegisterFunction(CreateAppearanceTableFunction("cityjson_textures", SidecarKind::TEXTURES, any));
+	loader.RegisterFunction(CreateAppearanceTableFunction("cityjson_geometry_templates", SidecarKind::TEMPLATES, any));
 }
 
 } // namespace cityjson

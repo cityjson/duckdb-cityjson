@@ -1,5 +1,6 @@
 #include "cityjson/obj_table_function.hpp"
 
+#include "cityjson/appearance_table_function.hpp"
 #include "cityjson/error.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/table_function.hpp"
@@ -67,6 +68,15 @@ void RegisterOBJTableFunctions(ExtensionLoader &loader) {
 	read_obj.filter_pushdown = false;
 	read_obj.pushdown_complex_filter = CityJSONPushdownComplexFilter;
 	loader.RegisterFunction(read_obj);
+
+	// Sidecars need no LoD: the materials are file-global. Any lod satisfies the reader.
+	ReaderOpener obj_opener = [](ClientContext &context, const std::string &path) {
+		OBJReadOptions options;
+		options.lod = "0.0";
+		return std::unique_ptr<CityJSONReader>(std::make_unique<OBJReader>(context, path, options));
+	};
+	loader.RegisterFunction(CreateAppearanceTableFunction("obj_materials", SidecarKind::MATERIALS, obj_opener));
+	loader.RegisterFunction(CreateAppearanceTableFunction("obj_textures", SidecarKind::TEXTURES, obj_opener));
 }
 
 } // namespace cityjson

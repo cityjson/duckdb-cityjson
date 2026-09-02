@@ -1,0 +1,29 @@
+# name: test/sql/obj_sidecars.test
+# description: obj_materials and obj_textures expose the .mtl as CityParquet sidecar rows
+# group: [sql]
+
+require cityjson
+
+query IIIIII
+SELECT id, name, diffuseColor, specularColor, transparency, shininess FROM obj_materials('test/data/obj/cube.obj');
+----
+0	GroundSurface	[0.3, 0.3, 0.3]	[0.0, 0.0, 0.0]	0.0	0.001
+1	brick	[0.7, 0.3, 0.2]	[0.1, 0.1, 0.1]	0.1	0.25
+2	RoofSurface	[0.9, 0.06, 0.09]	[0.0, 0.0, 0.0]	0.0	0.001
+
+# Same columns, same order, as cityjson_materials -- a package writer must not care which produced them.
+query I
+SELECT list_aggregate(list(column_name ORDER BY column_index), 'string_agg', ',')
+FROM (SELECT column_name, row_number() OVER () AS column_index FROM (DESCRIBE SELECT * FROM obj_materials('test/data/obj/cube.obj')));
+----
+id,name,ambientIntensity,diffuseColor,specularColor,emissiveColor,transparency,shininess,isSmooth,other
+
+query IIIIII
+SELECT id, image_uri, image_data, image_type, wrapMode, textureType FROM obj_textures('test/data/obj/cube.obj');
+----
+0	brick.png	NULL	PNG	wrap	unknown
+
+query I
+SELECT COUNT(*) FROM obj_materials('test/data/obj/open_roof.obj');
+----
+0
