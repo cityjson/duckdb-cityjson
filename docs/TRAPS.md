@@ -170,6 +170,18 @@ columns, never the definitions.
   and geometry boundary indices reference those, not the header's.
 - **`lod=` keeps the suffixed column grammar** (`geometry_lod2_2`, not a bare `geometry`),
   which is what keeps the LoD recoverable on export.
+- **tinyobjloader's mainline `LoadObj` collapses `o` and `g` into one name.**
+  Every real in the OBJ and MTL is parsed by this extension with `strtod`
+  (correctly rounded), because tinyobjloader's own number parser is not; it is
+  kept only for structure — `o`/`g`/`usemtl`/`mtllib` dispatch, face tokenising.
+  `OBJReader` uses tinyobjloader's callback API rather than `LoadObj`, so the
+  `o`/`g` collapse never happens; the callbacks hand over raw face tokens
+  (1-based, negative = relative, 0 = absent), so index resolution is ours. Its
+  `mtllib` handling stops at the first file of a line that loads, and it does
+  not implement backslash continuation — the reader refuses such lines rather
+  than mis-parse them.
+- **OBJ state persists across `o`.** A `usemtl` or `g` before an `o` still
+  governs the faces after it. `cube.obj`'s slab pins this.
 
 ## FlatCityBuf
 

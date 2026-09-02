@@ -34,6 +34,7 @@ LOAD cityjson;
 - [Appearance sidecars](#appearance-sidecars) — `cityjson_materials`, `cityjson_textures`, `cityjson_geometry_templates`
 - [Scalar helpers](#scalar-helpers) — `cityjson_wkb_extent`, `cityjson_appearance_ids`
 - [CityParquet packages](#cityparquet-packages) — the `cityparquet_*` / `insert_*` pragmas
+- [Mesh interchange](#mesh-interchange) — `read_obj`, `obj_materials`, `obj_textures`, `obj_metadata`
 - [Output schema](#output-schema) — column grammar in detail
 
 ---
@@ -839,6 +840,103 @@ generated statements are idempotent, but two things a generator cannot do:
   `cityparquet_validate` will.
 - **Cross-file derived state settles on the last reconcile**, covering the tables
   that generator knew about.
+
+---
+
+## Mesh interchange
+
+### `read_obj(path, lod := …)`
+
+Reads a Wavefront OBJ into the object-table schema. An OBJ carries no level of
+detail, class, or CRS, so the caller supplies them: `lod` is required and names
+the geometry columns; `object_type` (default `'Building'`) is every object's
+class; the CRS lives on `obj_metadata` (below), because a row has nowhere to
+carry it.
+
+```sql
+SELECT id, object_type, geometry_properties_lod2_2.type AS geom, geometry_properties_lod2_2.surfaces
+FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+-- cube | Building | Solid        | [{"type":"GroundSurface"},{"type":"WallSurface"},{"type":"RoofSurface"}]
+-- slab | Building | MultiSurface | [{"type":"RoofSurface"}]
+```
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `lod` | VARCHAR | **Required.** Normalised like every reader: `'2'` yields `geometry_lod2_0` |
+| `object_type` | VARCHAR | CityGML class for every object (default `Building`) |
+| `geometry_type` | VARCHAR | `'auto'` (default): `Solid` when every edge is shared by exactly two faces, else `MultiSurface`; or force `'Solid'` / `'MultiSurface'` |
+| `appearance` | VARCHAR | `'local'` (default) or `'sidecar'`, as on the other readers |
+| `sample_lines` | BIGINT | Accepted for uniformity; the whole file is parsed regardless |
+
+Mapping:
+
+- Each `o` is one object; its name is `id` and `feature_id`. A file without `o`
+  is one object named after the file stem. A repeated `o` name resumes that
+  object.
+- All faces of an object form one geometry, one outer ring each, in file order
+  and with the file's winding. OBJ cannot express holes.
+- A `usemtl` name that is a CityJSON semantic surface type (`RoofSurface`,
+  `WallSurface`, `GroundSurface`, …, or any `+`-prefixed extension name) is the
+  face's surface; failing that, the `g` name under the same rule. `usemtl`/`g`
+  state persists across `o`, as OBJ specifies.
+- `.mtl` materials are the appearance definitions in `mtllib` order
+  (`obj_materials`); a material with `map_Kd` is also a texture
+  (`obj_textures`), and faces under it with `v/vt` indices carry
+  `texture_lod*` rings that index the file's `vt` list (`'sidecar'` inlines
+  them). Faces without UVs carry `[null]`.
+- Positive and negative (relative) indices; `v` with a fourth component; `vn`
+  ignored. A line ending in `\` (continuation) is refused. A missing `.mtl`
+  is a warning and the geometry still reads.
+- Coordinates are taken as written, Z-up, no axis swap — what cjio, 3dfier and
+  geoflow write. A `# origin x y z` header comment, as the OBJ writer emits, is
+  added back.
+
+### `obj_materials(path)` / `obj_textures(path)`
+
+The `.mtl` as `materials.parquet` / `textures.parquet` rows, same columns as
+`cityjson_materials` / `cityjson_textures`. `Kd`→`diffuseColor`, `Ks`→`specularColor`,
+`Ke`→`emissiveColor`, mean `Ka`→`ambientIntensity`, `1 − d`→`transparency`,
+`Ns / 1000`→`shininess`; `map_Kd`→`image_uri` with `image_type` from the extension,
+`wrapMode` `wrap`, `textureType` `unknown`, `image_data` NULL.
+
+```sql
+SELECT id, name, diffuseColor, transparency, shininess
+FROM obj_materials('test/data/obj/cube.obj');
+-- 0 | GroundSurface | [0.3, 0.3, 0.3]   | 0.0                 | 0.001
+-- 1 | brick         | [0.7, 0.3, 0.2]   | 0.30000000000000004 | 0.0007
+-- 2 | RoofSurface   | [0.9, 0.06, 0.09] | 0.0                 | 0.001
+
+SELECT id, image_uri, image_type, wrapMode, textureType
+FROM obj_textures('test/data/obj/cube.obj');
+-- 0 | brick.png | PNG | wrap | unknown
+```
+
+### `obj_metadata(path [, crs := …])`
+
+One row in `cityjson_metadata`'s shape: `geographical_extent` from every vertex,
+`reference_system` from `crs` (`EPSG:7415`, the URN or the OGC URL; anything else
+is an error), everything else NULL. `features_count` equals `city_objects_count`
+— one `o` group is one feature.
+
+```sql
+SELECT reference_system, city_objects_count, features_count
+FROM obj_metadata('test/data/obj/cube.obj', crs := 'EPSG:7415');
+-- {'base_url': 'https://www.opengis.net/def/crs/', 'authority': EPSG, 'version': 0, 'code': 7415} | 2 | 2
+```
+
+This is where the CRS of an OBJ enters the stack: a `read_obj` source's
+materials and textures already travel automatically as a `COPY` source (see
+[Writing](#writing)), but its CRS exists nowhere in the file, so
+`metadata_query` must supply it from `obj_metadata`:
+
+```sql
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2')) TO 'cube_out.city.jsonl'
+(FORMAT cityjsonseq,
+ metadata_query 'SELECT reference_system AS crs FROM obj_metadata(''test/data/obj/cube.obj'', crs := ''EPSG:7415'')');
+
+SELECT reference_system.code FROM cityjsonseq_metadata('cube_out.city.jsonl');
+-- 7415
+```
 
 ---
 

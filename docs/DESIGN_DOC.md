@@ -130,6 +130,16 @@ reader is a forward cursor: its "read the next feature" operation deliberately
 does *not* rewind, because that is the streaming scan's position. The bulk
 operations rewind so they can be asked more than once.
 
+`OBJReader` is the fourth reader and the first for a non-CityJSON source. It
+parses the file once into `CityJSONFeature` records — one per `o`, each with its
+own vertex pool — and a `CityJSON` header holding the `.mtl` materials, the
+textured ones as textures, and the `vt` list as the UV pool, so the generic bind
+and scan (WKB, `geometry_properties`, `bbox`, sidecar normalisation) apply
+unchanged. What an OBJ cannot say is asked of the caller (`lod`, `object_type`,
+`geometry_type`) or resolved by convention (semantic surfaces from `usemtl` / `g`
+names). The appearance sidecar functions take their reader from a
+`TableFunctionInfo`, which is what lets one bind serve both input formats.
+
 ## 5. The scan path
 
 DuckDB's table function lifecycle — **bind → init global → init local → scan**,
