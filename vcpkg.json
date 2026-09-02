@@ -3,7 +3,13 @@
         "dependencies": [
                 "nlohmann-json",
                 "flatbuffers",
-                "flatcitybuf"
+                "flatcitybuf",
+                { "name": "tinyobjloader", "features": ["double"] },
+                "tinygltf",
+                "earcut-hpp"
+        ],
+        "overrides": [
+                { "name": "tinygltf", "version": "2.9.7" }
         ],
         "vcpkg-configuration": {
                 "registries": [
@@ -15,7 +21,8 @@
                         }
                 ],
                 "overlay-ports": [
-                        "./extension-ci-tools/vcpkg_ports"
+                        "./extension-ci-tools/vcpkg_ports",
+                        "./vcpkg_ports"
                 ],
                 "overlay-triplets": [
                         "./extension-ci-tools/toolchains"

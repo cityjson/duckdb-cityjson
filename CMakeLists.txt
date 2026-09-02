@@ -9,6 +9,16 @@ set(TARGET_NAME cityjson)
 # Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
 find_package(nlohmann_json REQUIRED)
 
+# Three header-only uses. tinyobjloader's port also builds a static library, but the
+# header carries the implementation behind TINYOBJLOADER_IMPLEMENTATION, and compiling
+# it into our own objects is what keeps the wasm side-module link free of a second
+# archive to hand over (see the flatcitybuf block below for what that costs). The port
+# has already patched the header for double precision (feature `double`).
+find_path(TINYOBJLOADER_INCLUDE_DIR tiny_obj_loader.h REQUIRED)
+find_path(TINYGLTF_INCLUDE_DIR tiny_gltf.h REQUIRED)
+find_path(EARCUT_INCLUDE_DIR mapbox/earcut.hpp REQUIRED)
+include_directories(${TINYOBJLOADER_INCLUDE_DIR} ${TINYGLTF_INCLUDE_DIR} ${EARCUT_INCLUDE_DIR})
+
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
@@ -35,6 +45,8 @@ set(EXTENSION_SOURCES
     src/cityjson/local_cityjson_reader.cpp
     src/cityjson/local_cityjsonseq_reader.cpp
     src/cityjson/reader_factory.cpp
+    # Third-party single-header implementations (one TU, see the file)
+    src/cityjson/third_party_impl.cpp
     # Geometry encoding layer
     src/cityjson/wkb_encoder.cpp
     src/cityjson/wkb_decoder.cpp
