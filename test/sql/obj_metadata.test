@@ -1,0 +1,44 @@
+# name: test/sql/obj_metadata.test
+# description: obj_metadata reports the vertex extent and the caller-supplied CRS in cityjson_metadata's shape
+# group: [sql]
+
+require cityjson
+
+# Same columns as cityjson_metadata: what COPY's metadata_query and cityparquet_write consume.
+query I
+SELECT list_aggregate(list(column_name ORDER BY column_index), 'string_agg', ',')
+FROM (SELECT column_name, row_number() OVER () AS column_index FROM (DESCRIBE SELECT * FROM obj_metadata('test/data/obj/cube.obj')));
+----
+id,version,identifier,title,reference_date,transform_scale,transform_translate,geographical_extent,reference_system,point_of_contact,city_objects_count,features_count
+
+query III
+SELECT geographical_extent, reference_system, city_objects_count FROM obj_metadata('test/data/obj/cube.obj');
+----
+{'min_x': 0.0, 'min_y': 0.0, 'min_z': 0.0, 'max_x': 12.0, 'max_y': 2.0, 'max_z': 1.0}	NULL	2
+
+# Short, URN and OGC forms all resolve; the struct is the OGC decomposition.
+query I
+SELECT reference_system FROM obj_metadata('test/data/obj/cube.obj', crs := 'EPSG:7415');
+----
+{'base_url': 'https://www.opengis.net/def/crs/', 'authority': EPSG, 'version': 0, 'code': 7415}
+
+query I
+SELECT reference_system.code FROM obj_metadata('test/data/obj/cube.obj', crs := 'https://www.opengis.net/def/crs/EPSG/0/28992');
+----
+28992
+
+statement error
+SELECT * FROM obj_metadata('test/data/obj/cube.obj', crs := 'Amersfoort');
+----
+obj_metadata: crs 'Amersfoort' is not an EPSG reference
+
+# The CRS reaches a writer the way any source's does: through metadata_query.
+statement ok
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
+TO '__TEST_DIR__/cube_from_obj.city.jsonl'
+(FORMAT cityjsonseq, metadata_query 'SELECT reference_system AS crs FROM obj_metadata(''test/data/obj/cube.obj'', crs := ''EPSG:7415'')');
+
+query I
+SELECT reference_system.code FROM cityjsonseq_metadata('__TEST_DIR__/cube_from_obj.city.jsonl');
+----
+7415
