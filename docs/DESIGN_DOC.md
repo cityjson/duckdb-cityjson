@@ -239,16 +239,18 @@ and invalidate nothing.
 
 ## 9. Writing
 
-One shared sink serves all three output formats, so format-independent concerns —
-reassembling CityObjects from rows, the CityGML-to-CityJSON type mapping,
-quantising vertices against the transform — are implemented once. The formats
-differ only in how they lay out what the sink produces: one document with a
-global vertex pool, one line per feature with local pools, or a binary file with
-indices.
+One shared sink serves all four output formats, so format-independent concerns —
+reassembling CityObjects from rows, the CityGML-to-CityJSON type mapping — are
+implemented once. The three CityJSON-family formats differ only in how they lay
+out what the sink produces: one document with a global vertex pool, one line per
+feature with local pools, or a binary file with indices. The fourth, `obj`, takes
+the same objects down a different path (below).
 
-Vertices are quantised to integers against the transform on the way out, so the
-transform's scale *is* the output precision. The default is chosen so round trips
-stay lossless for large projected national coordinates.
+Vertices are quantised to integers against the transform on the way out of those
+three, so the transform's scale *is* the output precision. The default is chosen
+so round trips stay lossless for large projected national coordinates. The mesh
+writers do not quantise: they carry the coordinates as they came, and `precision`
+governs how many digits reach the file.
 
 The mesh writers share the CityJSON writers' bind, sink and combine: the sink
 already rebuilds each row as a CityJSON object with coordinates, semantics and

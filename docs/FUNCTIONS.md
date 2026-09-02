@@ -1024,6 +1024,25 @@ f 1 2 3 4
 | `materials_query`, `textures_query` | none | SQL returning `materials.parquet` / `textures.parquet`-shaped rows. **Their presence declares the cells to be sidecar-form.** Absent, refs are local-form and resolve against the discovered source or `metadata_from`. The missing-form refusal (below) only fires for a **discovered** source — `COPY my_table TO … (FORMAT obj)` never sees the `read_cityjson[seq](…, appearance := 'sidecar')` call that produced `my_table`, so the cells silently resolve as local-form instead of being refused |
 | `metadata_from` | discovered | As for the CityJSON writers |
 
+Three things the table cannot say in a cell:
+
+- **`materials_query` and `textures_query` see committed state.** Each runs on a fresh
+  connection, as `metadata_query` does, so a table created in an open transaction that
+  has not been committed is not visible to them:
+
+  ```sql
+  BEGIN;
+  CREATE TABLE mats AS SELECT 0 AS id, 'brick' AS name;
+  COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar'))
+  TO 'tx.obj' (FORMAT obj, materials_query 'SELECT * FROM mats');
+  -- Binder Error: materials_query failed: Catalog Error: Table with name mats does not exist!
+  ```
+
+- **An `o` name is one OBJ token.** Whitespace in an id is replaced by `_`, so an id
+  carrying a space does not round-trip through `read_obj`.
+- **One theme is written.** A material or texture cell may carry several themes
+  (`{"visual": …, "winter": …}`); the mesh writers take the alphabetically first.
+
 Remote output paths are not supported for mesh formats: the `.obj`, `.mtl` and any
 copied images are written with local file streams, never through DuckDB's own
 filesystem abstraction, so `COPY … TO 's3://…/x.obj'` fails opening the output
@@ -1096,8 +1115,9 @@ COPY (SELECT * FROM read_cityjson('test/data/duplicate_material_name.city.json',
 TO 'twins.obj' (FORMAT obj);
 ```
 
+`twins.mtl`:
+
 ```text
-# twins.mtl
 # Written by duckdb-cityjson
 newmtl brick
 Kd 0.8 0.3 0.2
@@ -1108,8 +1128,9 @@ Kd 0.2 0.3 0.8
 d 1
 ```
 
+and the faces of `twins.obj`:
+
 ```text
-# twins.obj, faces
 g default
 usemtl brick
 f 1 2 3 4
@@ -1120,9 +1141,10 @@ f 5 6 7 8
 A texture is part of an entry's identity only once its image has been found. A
 face whose texture could not be loaded keeps its material colour and writes no
 `map_Kd` — exactly what a face of the same material carrying no texture writes —
-so the two share one entry rather than being written twice under two names. That
-leaves `_default` reachable only where a semantic surface type and an object
-class render to the same string.
+so the two share one entry rather than being written twice under two names.
+`_default` is therefore reached only through a genuine name clash: a
+default-coloured face whose label a material has already claimed, or a semantic
+surface type that reads the same as an object class.
 
 A material or texture cell also comes in two **shapes**, independently of which
 form it is in: the CityParquet spec's flat, per-WKB-face shape, or this

@@ -185,8 +185,11 @@ columns, never the definitions.
   `mtllib` references the final basename. Naming them from the temp path
   produces a file that references a name that never exists. A rename failure
   after a successful finalize therefore leaves the `.mtl` (and any copied
-  images) sitting beside a final path that was never created; `WriteOBJ` writes
-  the `.obj` before the `.mtl`, so a failure mid-write leaves nothing at all.
+  images) sitting beside a final path that was never created. Images are copied
+  lazily, inside the face loop, so a failure part-way through the write can
+  leave copied images in the output directory with no `.obj` and no `.mtl`
+  beside them: `WriteOBJ` closes the `.obj` after that loop and writes the
+  `.mtl` after that again.
 
 ## Readers
 

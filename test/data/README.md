@@ -58,3 +58,13 @@ where both materials are named `brick` and differ only in `diffuseColor`. It exi
 `copy_obj.test` can pin the `_<id>` suffix: a `.mtl` entry is keyed by identity, not by
 the name it renders to, so the second material gets `newmtl brick_1` rather than
 overwriting the first.
+
+## solid_texture.city.json
+
+The same unit-cube `Solid` as `solid_material.city.json`, textured instead: one PNG
+texture and a four-pair `vertices-texture` pool, with every one of the six faces
+carrying the same UV ring. It exists so `copy_obj.test` can pin that a *texture* cell
+is honoured in both shapes it reaches the mesh writers in -- the reader's per-shell
+`values` and the spec's per-WKB-face one, which for a texture nest one level deeper
+than a material's. The image it names is deliberately not on disk: the `vt` and
+`f v/vt` lines are the point, not `map_Kd`.
