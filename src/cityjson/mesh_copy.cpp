@@ -8,6 +8,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <fstream>
+#include <map>
 
 namespace duckdb {
 namespace cityjson {
@@ -41,7 +42,8 @@ AppearanceSource BuildAppearanceSource(ClientContext &context, const CityJSONCop
 }
 
 bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int64_t texture_id,
-                      const MeshTargets &targets, std::string &basename) {
+                      const MeshTargets &targets, std::map<std::string, int64_t> &basename_owner,
+                      std::string &basename) {
 	std::string warning;
 	if (!appearance.LoadImage(context, texture_id, targets.source_dir, warning)) {
 		DUCKDB_LOG_WARNING(context, "cityjson: " + warning + "; faces fall back to the material colour");
@@ -51,8 +53,21 @@ bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int6
 	auto slash = tex.image_uri.find_last_of("/\\");
 	basename = slash == std::string::npos ? tex.image_uri : tex.image_uri.substr(slash + 1);
 	if (basename.empty()) {
-		basename = "texture_" + std::to_string(texture_id) + "." + StringUtil::Lower(tex.image_type);
+		// No URI to name the file after. The extension is what a viewer reads the format
+		// from, so it is appended only when the row declares one -- never a trailing dot.
+		basename = "texture_" + std::to_string(texture_id);
+		if (!tex.image_type.empty()) {
+			basename += "." + StringUtil::Lower(tex.image_type);
+		}
 	}
+	// Images are copied flat beside the output, so two URIs differing only in their
+	// directory ("a/x.png", "b/x.png") arrive under one name and the second would
+	// overwrite the first, silently re-texturing its faces. Qualify the later one.
+	auto owner = basename_owner.find(basename);
+	if (owner != basename_owner.end() && owner->second != texture_id) {
+		basename = "texture_" + std::to_string(texture_id) + "_" + basename;
+	}
+	basename_owner[basename] = texture_id;
 	std::ofstream img(JoinDir(targets.final_dir, basename), std::ios::binary);
 	if (!img.is_open()) {
 		DUCKDB_LOG_WARNING(context, "cityjson: could not write texture image '" + basename + "'");
@@ -85,10 +100,11 @@ void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJS
 	options.precision = bind_data.obj_precision;
 	const std::string mtl_basename = targets.final_stem + ".mtl";
 	std::vector<std::string> write_warnings;
+	std::map<std::string, int64_t> basename_owner; // copied image name -> the texture that claimed it
 	WriteOBJ(
 	    model, appearance, gstate.temp_file_path, JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
 	    [&](int64_t texture_id, std::string &basename) {
-		    return CopyTextureImage(context, appearance, texture_id, targets, basename);
+		    return CopyTextureImage(context, appearance, texture_id, targets, basename_owner, basename);
 	    },
 	    write_warnings);
 	for (const auto &w : write_warnings) {

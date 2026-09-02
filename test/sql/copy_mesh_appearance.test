@@ -105,3 +105,31 @@ SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM
 WHERE line = 'newmtl brick__tex0';
 ----
 1
+
+# --- Two textures can share a basename; two files beside the OBJ cannot. The image
+#     URIs below differ only in their directory, which the copy does not reproduce, so
+#     the second one written is qualified by its id rather than overwriting the first.
+statement ok
+CREATE TABLE clash_defs AS
+SELECT 2 AS id, 'a/x.png' AS image_uri, '\x89PNG'::BLOB AS image_data, 'PNG' AS image_type, 'wrap' AS wrapMode
+UNION ALL
+SELECT 3, 'b/x.png', '\x89PNG\x0D\x0A'::BLOB, 'PNG', 'wrap';
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/clash.obj' (FORMAT obj, lod '3',
+    materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')',
+    textures_query 'SELECT * FROM clash_defs');
+
+query II
+SELECT parse_filename(filename), size FROM read_blob('__TEST_DIR__/*x.png') ORDER BY 1;
+----
+texture_3_x.png	6
+x.png	4
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/clash.mtl'))
+WHERE line LIKE 'map_Kd%' ORDER BY line;
+----
+map_Kd texture_3_x.png
+map_Kd x.png
