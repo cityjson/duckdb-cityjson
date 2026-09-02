@@ -178,10 +178,20 @@ struct CityJSONCopyLocalState : public LocalFunctionData {
 // Registration
 // ============================================================
 
+//! The COPY TO callbacks, shared by every format this extension writes -- the mesh
+//! formats register themselves elsewhere (mesh_copy.hpp) over these same five.
+unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
+                                            const vector<string> &names, const vector<LogicalType> &sql_types);
+unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
+                                                        const string &file_path);
+unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context, FunctionData &bind_data);
+void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+                        LocalFunctionData &lstate, DataChunk &input);
+void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+                           LocalFunctionData &lstate);
+void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate);
+
 void RegisterCityJSONCopyFunction(ExtensionLoader &loader);
-//! COPY TO for the mesh interchange formats. One function per format name, all bound
-//! by the same bind/sink/finalize: `obj` today, `gltf`/`glb` alongside it.
-void RegisterMeshCopyFunctions(ExtensionLoader &loader);
 void RegisterCityJSONSeqCopyFunction(ExtensionLoader &loader);
 
 #ifdef CITYJSON_HAS_FCB

@@ -7,9 +7,9 @@
 #include "duckdb/logging/logger.hpp"
 #include "cityjson/copy_source_ref.hpp"
 #include "cityjson/lod_table.hpp"
+#include "cityjson/mesh_copy.hpp"
 #include "cityjson/mesh_model.hpp"
 #include "cityjson/obj_reader.hpp"
-#include "cityjson/obj_writer.hpp"
 #include "cityjson/reader.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -427,107 +427,8 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 	}
 }
 
-// ============================================================
-// Mesh formats: shared preparation
-// ============================================================
-
-struct MeshTargets {
-	std::string final_dir;  // directory of the final output path ("" = cwd)
-	std::string final_stem; // "campus" for "campus.obj"
-	std::string source_dir; // where relative image URIs resolve ("" = unknown)
-};
-
-static MeshTargets ResolveMeshTargets(const CityJSONCopyBindData &bind_data) {
-	MeshTargets t;
-	const auto &p = bind_data.file_path;
-	auto slash = p.find_last_of("/\\");
-	t.final_dir = slash == std::string::npos ? "" : p.substr(0, slash);
-	std::string base = slash == std::string::npos ? p : p.substr(slash + 1);
-	auto dot = base.rfind('.');
-	t.final_stem = dot == std::string::npos ? base : base.substr(0, dot);
-	if (bind_data.source_ref.has_value()) {
-		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-		const auto &source_path = bind_data.source_ref->path;
-		auto ss = source_path.find_last_of("/\\");
-		t.source_dir = ss == std::string::npos ? "" : source_path.substr(0, ss);
-	}
-	return t;
-}
-
-static std::string JoinDir(const std::string &dir, const std::string &name) {
-	return dir.empty() ? name : dir + "/" + name;
-}
-
-// Where a mesh COPY's material/texture references resolve: the sidecar queries when
-// either is given (their presence is what declares the sidecar form), else the
-// discovered source's own appearance blocks.
-static AppearanceSource BuildAppearanceSource(ClientContext &context, const CityJSONCopyBindData &bind_data) {
-	if (bind_data.materials_query.has_value() || bind_data.textures_query.has_value()) {
-		return AppearanceSource::FromQueries(context, bind_data.materials_query, bind_data.textures_query);
-	}
-	return AppearanceSource::FromLocal(bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
-}
-
-// Copies texture `id`'s bytes beside the final output under the image's own basename;
-// returns false (and logs) when the bytes cannot be had.
-static bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int64_t texture_id,
-                             const MeshTargets &targets, std::string &basename) {
-	std::string warning;
-	if (!appearance.LoadImage(context, texture_id, targets.source_dir, warning)) {
-		DUCKDB_LOG_WARNING(context, "cityjson: " + warning + "; faces fall back to the material colour");
-		return false;
-	}
-	auto &tex = appearance.Textures().at(texture_id);
-	auto slash = tex.image_uri.find_last_of("/\\");
-	basename = slash == std::string::npos ? tex.image_uri : tex.image_uri.substr(slash + 1);
-	if (basename.empty()) {
-		basename = "texture_" + std::to_string(texture_id) + "." + StringUtil::Lower(tex.image_type);
-	}
-	std::ofstream img(JoinDir(targets.final_dir, basename), std::ios::binary);
-	if (!img.is_open()) {
-		DUCKDB_LOG_WARNING(context, "cityjson: could not write texture image '" + basename + "'");
-		return false;
-	}
-	img.write(reinterpret_cast<const char *>(tex.image_data.data()),
-	          static_cast<std::streamsize>(tex.image_data.size()));
-	return static_cast<bool>(img);
-}
-
-static void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate) {
-	auto targets = ResolveMeshTargets(bind_data);
-	if (!bind_data.appearance_source.has_value()) {
-		// The bind resolves this for every mesh format; reaching Finalize without it
-		// means the bind and the finalize disagree about what a mesh format is.
-		throw InternalException("obj COPY finalised without an appearance source");
-	}
-	// A copy: LoadImage fills texture bytes, and the bind data must stay as bound.
-	// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-	AppearanceSource appearance = bind_data.appearance_source.value();
-	MeshBuildOptions build;
-	build.lod = bind_data.mesh_lod;
-	build.origin = bind_data.mesh_origin;
-	auto model = BuildMeshModel(gstate.feature_objects, gstate.feature_order, appearance, build, bind_data.crs);
-	for (const auto &w : model.warnings) {
-		DUCKDB_LOG_WARNING(context, "cityjson: " + w);
-	}
-	OBJWriteOptions options;
-	options.triangulate = bind_data.obj_triangulate;
-	options.precision = bind_data.obj_precision;
-	const std::string mtl_basename = targets.final_stem + ".mtl";
-	std::vector<std::string> write_warnings;
-	WriteOBJ(
-	    model, appearance, gstate.temp_file_path, JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
-	    [&](int64_t texture_id, std::string &basename) {
-		    return CopyTextureImage(context, appearance, texture_id, targets, basename);
-	    },
-	    write_warnings);
-	for (const auto &w : write_warnings) {
-		DUCKDB_LOG_WARNING(context, "cityjson: " + w);
-	}
-}
-
-static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
-                                                   const vector<string> &names, const vector<LogicalType> &sql_types) {
+unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
+                                            const vector<string> &names, const vector<LogicalType> &sql_types) {
 	auto bind_data = make_uniq<CityJSONCopyBindData>();
 	bind_data->file_path = input.info.file_path;
 	const auto &fmt = input.info.format;
@@ -824,8 +725,8 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 // COPY TO Initialize Global
 // ============================================================
 
-static unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
-                                                               const string &file_path) {
+unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
+                                                        const string &file_path) {
 	auto gstate = make_uniq<CityJSONCopyGlobalState>();
 	gstate->temp_file_path = file_path;
 	return std::move(gstate);
@@ -835,7 +736,7 @@ static unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &co
 // COPY TO Initialize Local
 // ============================================================
 
-static unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context, FunctionData &bind_data) {
+unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context, FunctionData &bind_data) {
 	return make_uniq<CityJSONCopyLocalState>();
 }
 
@@ -1134,8 +1035,8 @@ static json RenestBoundaries(const std::string &type, const json &boundaries, co
 // COPY TO Sink
 // ============================================================
 
-static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
-                               LocalFunctionData &lstate_p, DataChunk &input) {
+void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
+                        LocalFunctionData &lstate_p, DataChunk &input) {
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &lstate = lstate_p.Cast<CityJSONCopyLocalState>();
 
@@ -1526,8 +1427,8 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 // COPY TO Combine
 // ============================================================
 
-static void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
-                                  LocalFunctionData &lstate_p) {
+void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
+                           LocalFunctionData &lstate_p) {
 	auto &gstate = gstate_p.Cast<CityJSONCopyGlobalState>();
 	auto &lstate = lstate_p.Cast<CityJSONCopyLocalState>();
 
@@ -1552,7 +1453,7 @@ static void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_
 // COPY TO Finalize
 // ============================================================
 
-static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p) {
+void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p) {
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &gstate = gstate_p.Cast<CityJSONCopyGlobalState>();
 
@@ -1623,18 +1524,6 @@ void RegisterCityJSONCopyFunction(ExtensionLoader &loader) {
 	function.copy_to_combine = CityJSONCopyToCombine;
 	function.copy_to_finalize = CityJSONCopyToFinalize;
 	loader.RegisterFunction(function);
-}
-
-void RegisterMeshCopyFunctions(ExtensionLoader &loader) {
-	CopyFunction obj("obj");
-	obj.extension = "obj";
-	obj.copy_to_bind = CityJSONCopyToBind;
-	obj.copy_to_initialize_global = CityJSONCopyToInitGlobal;
-	obj.copy_to_initialize_local = CityJSONCopyToInitLocal;
-	obj.copy_to_sink = CityJSONCopyToSink;
-	obj.copy_to_combine = CityJSONCopyToCombine;
-	obj.copy_to_finalize = CityJSONCopyToFinalize;
-	loader.RegisterFunction(obj);
 }
 
 void RegisterCityJSONSeqCopyFunction(ExtensionLoader &loader) {

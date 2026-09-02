@@ -15,6 +15,7 @@
 #include "cityjson/cityparquet_appearance.hpp"
 #include "cityjson/appearance_table_function.hpp"
 #include "cityjson/copy_function.hpp"
+#include "cityjson/mesh_copy.hpp"
 #include "cityjson/obj_table_function.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_table_function.hpp"
