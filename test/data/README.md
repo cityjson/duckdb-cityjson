@@ -22,3 +22,21 @@ that inherits the cube's last `g`/`usemtl` state -- OBJ state persists across `o
 the fixture pins that. `open_roof.obj` has no `o` line and no materials. `continuation.obj`
 ends a line with a backslash, which the reader refuses. The expected values in the tests
 are derived by hand from these files, not from the reader.
+
+## holed_face.city.json
+
+A hand-written LoD 2.2 `MultiSurface` for the `COPY ... (FORMAT obj)` tests: one roof
+face carrying an inner ring (wound opposite the outer, as CityJSON requires) plus a
+plain wall face, over twelve vertices of which two are duplicates the wall shares with
+the roof. Every expectation in `copy_obj.test` -- ten `v` lines, the eight roof
+triangles, `f 9 10 2 1` for the wall, `# origin 84500 446300 0` -- is derived by hand
+from these coordinates.
+
+## solid_material.city.json
+
+A hand-written unit-cube `Solid` (one shell, six faces) with `RoofSurface` /
+`WallSurface` / `GroundSurface` semantics and three materials of distinct
+`diffuseColor`. It exists so `copy_obj.test` can pin that a Solid's material cell is
+honoured in both shapes it reaches the mesh writers in: the reader's CityJSON-NESTED
+`values` (one list per shell) and the spec's FLAT `values` (one id per WKB face), the
+latter substituted with a SQL `REPLACE` so no reader produced it.

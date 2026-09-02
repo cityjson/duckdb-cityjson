@@ -1,0 +1,29 @@
+{
+  "type": "CityJSON",
+  "version": "2.0",
+  "transform": {"scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]},
+  "metadata": {"referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/7415"},
+  "CityObjects": {
+    "courtyard": {
+      "type": "Building",
+      "attributes": {"name": "ring"},
+      "geometry": [{
+        "type": "MultiSurface",
+        "lod": "2.2",
+        "boundaries": [
+          [[0, 1, 2, 3], [4, 5, 6, 7]],
+          [[8, 9, 10, 11]]
+        ],
+        "semantics": {
+          "surfaces": [{"type": "RoofSurface"}, {"type": "WallSurface"}],
+          "values": [0, 1]
+        }
+      }]
+    }
+  },
+  "vertices": [
+    [84500.0, 446300.0, 10.0], [84504.0, 446300.0, 10.0], [84504.0, 446304.0, 10.0], [84500.0, 446304.0, 10.0],
+    [84501.0, 446301.0, 10.0], [84501.0, 446303.0, 10.0], [84503.0, 446303.0, 10.0], [84503.0, 446301.0, 10.0],
+    [84500.0, 446300.0, 0.0], [84504.0, 446300.0, 0.0], [84504.0, 446300.0, 10.0], [84500.0, 446300.0, 10.0]
+  ]
+}
