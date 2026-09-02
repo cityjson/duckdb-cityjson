@@ -2,10 +2,10 @@
 
 #include "cityjson/city_object_utils.hpp"
 #include "cityjson/column_types.hpp"
-#include "cityjson/crs_projjson.hpp"
 #include "cityjson/error.hpp"
 #include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
+#include "duckdb/logging/logger.hpp"
 
 #include <tiny_obj_loader.h>
 
@@ -14,7 +14,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <map>
 #include <set>
 #include <sstream>
@@ -46,6 +45,10 @@ struct ParseState {
 	std::vector<std::array<double, 3>> vertices;
 	std::vector<std::array<double, 2>> texcoords;
 	std::vector<ObjectRec> objects;
+	// Name -> index into `objects`, so a repeated `o` resumes its object in constant
+	// time. A national tile runs to hundreds of thousands of `o` lines and a linear
+	// scan per line makes the parse quadratic.
+	std::unordered_map<std::string, size_t> object_index;
 	std::vector<tinyobj::material_t> materials;
 	std::string current_group;
 	std::string current_usemtl;
@@ -70,6 +73,7 @@ struct ParseState {
 ObjectRec &CurrentObject(ParseState &st) {
 	if (st.objects.empty()) {
 		st.objects.push_back(ObjectRec {st.default_object_name, {}});
+		st.object_index.emplace(st.default_object_name, 0);
 		st.current_object = 0;
 	}
 	return st.objects[st.current_object];
@@ -160,14 +164,14 @@ void ObjectCb(void *user, const char *name) {
 	std::string n = name != nullptr ? name : "";
 	// A repeated `o` resumes that object: cjio writes one `o <id>` per geometry, so a
 	// multi-geometry object arrives as several blocks under one name.
-	for (size_t i = 0; i < st.objects.size(); i++) {
-		if (st.objects[i].name == n) {
-			st.current_object = i;
-			return;
-		}
+	auto it = st.object_index.find(n);
+	if (it != st.object_index.end()) {
+		st.current_object = it->second;
+		return;
 	}
 	st.objects.push_back(ObjectRec {n, {}});
 	st.current_object = st.objects.size() - 1;
+	st.object_index.emplace(n, st.current_object);
 }
 
 // Reads up to `n` whitespace-separated reals from [begin, end) with strtod (correctly
@@ -195,59 +199,77 @@ size_t ParseReals(const char *begin, const char *end, double *out, size_t n) {
 	return count;
 }
 
-// tinyobjloader's own numeric parser (`tryParseDouble` in the vendored header) accumulates
-// the decimal part digit by digit in double arithmetic rather than converting the decimal
-// literal to binary correctly-rounded, so e.g. "0.3" comes back one ULP off. `real_t` is
-// `double` in the vendored copy regardless of TINYOBJLOADER_USE_DOUBLE, so nothing narrows
-// that error away downstream. Re-parse the numeric directives ourselves with `strtod`,
-// which is correctly rounded, and overwrite what `tinyobj::LoadMtl` already stored --
-// mirroring its own `d`-wins-over-`Tr` rule so the two parses never disagree on which
-// value won, only on its last bit.
+// What one `newmtl` block actually states. Absence is the whole point of the struct: a
+// directive the file omits has no value, and `tinyobj::material_t` -- every field
+// default-initialised, none of them flagged as set -- cannot say so, which is how an
+// unstated `Ks` used to be reported as a black specular colour. tinyobjloader's own
+// record is therefore consulted only for `newmtl` (the name) and `map_Kd` (the texture);
+// every value below comes from ReparseMtl.
+struct MtlValues {
+	std::optional<std::array<double, 3>> ambient;  // Ka
+	std::optional<std::array<double, 3>> diffuse;  // Kd
+	std::optional<std::array<double, 3>> specular; // Ks
+	std::optional<std::array<double, 3>> emission; // Ke
+	std::optional<double> shininess;               // Ns, unscaled
+	std::optional<double> transparency;            // 1 - d, or Tr as written
+	std::map<std::string, std::string> other;      // every other directive, verbatim
+};
+
+// Reads the whole of a `.mtl` ourselves, one block at a time.
+//
+// Two reasons the file is walked again rather than read off tinyobjloader's parse.
+//
+// Numbers: tinyobjloader's own parser (`tryParseDouble` in the vendored header)
+// accumulates the decimal part digit by digit in double arithmetic rather than
+// converting the decimal literal to binary correctly-rounded, so e.g. "0.3" comes back
+// one ULP off. `real_t` is `double` in the vendored copy regardless of
+// TINYOBJLOADER_USE_DOUBLE, so nothing narrows that error away downstream. `strtod` is
+// correctly rounded. tinyobjloader's `d`-wins-over-`Tr` rule is mirrored, so the two
+// parses never disagree about which directive won.
+//
+// Coverage: tinyobjloader parses `illum`, `Ni`, `Tf`, `map_Ka`, `map_Ks`, `map_bump`,
+// `disp`, `refl` and more into typed fields of its own and reaches `unknown_parameter`
+// only for what it does not model, so harvesting `other` from `unknown_parameter` would
+// silently drop most of the file. Every directive that is not one of the nine mapped
+// here (`newmtl`, `Ka`, `Kd`, `Ks`, `Ke`, `Ns`, `d`, `Tr`, `map_Kd`) goes into `other`
+// verbatim, key and rest of line.
 //
 // Joins positionally, not by name: tinyobj's `parseString` truncates a `newmtl` name at
 // the first space/tab, so a trailing space or extra token on the line would make a
 // name-keyed lookup miss silently, and duplicate names (one file, or two `mtllib`s
 // sharing the accumulated map) would make it write the wrong material. tinyobjloader
-// pushes materials in file order and drops a `newmtl` block whose name is empty (the
-// block is parsed but never flushed to `materials`), so the Nth non-empty `newmtl` in
-// this content is `(*materials)[base + n]`. Returns how many such blocks it visited, so
-// the caller can confirm that matches how many materials tinyobjloader actually added
-// for this file -- if it does not, the join has gone out of step and the numbers this
-// function "corrected" may belong to the wrong material.
-size_t ReparseMtlNumbersCorrectlyRounded(const std::string &content, size_t base,
-                                         std::vector<tinyobj::material_t> *materials) {
-	auto starts_with_directive = [](const std::string &line, const char *key) {
-		size_t len = std::strlen(key);
-		return line.size() > len && line.compare(0, len, key) == 0 &&
-		       std::isspace(static_cast<unsigned char>(line[len])) != 0;
-	};
-	auto parse3 = [](const std::string &line, size_t skip, tinyobj::real_t out[3]) {
+// pushes materials in file order, so the Nth `newmtl` in this content is
+// `values[base + n]`. Returns how many blocks it visited, so the caller can confirm that
+// matches how many materials tinyobjloader actually added for this file -- if it does
+// not, the join has gone out of step and these values may belong to the wrong material.
+size_t ReparseMtl(const std::string &content, size_t base, std::vector<MtlValues> &values) {
+	auto parse3 = [](const std::string &rest) -> std::optional<std::array<double, 3>> {
 		double tmp[3];
-		size_t got = ParseReals(line.c_str() + skip, line.c_str() + line.size(), tmp, 3);
-		for (size_t i = 0; i < got; i++) {
-			out[i] = static_cast<tinyobj::real_t>(tmp[i]);
+		if (ParseReals(rest.data(), rest.data() + rest.size(), tmp, 3) < 3) {
+			return std::nullopt;
 		}
+		return std::array<double, 3> {tmp[0], tmp[1], tmp[2]};
 	};
-	auto parse1 = [](const std::string &line, size_t skip) {
-		double tmp;
-		ParseReals(line.c_str() + skip, line.c_str() + line.size(), &tmp, 1);
+	auto parse1 = [](const std::string &rest) -> std::optional<double> {
+		double tmp = 0.0;
+		if (ParseReals(rest.data(), rest.data() + rest.size(), &tmp, 1) < 1) {
+			return std::nullopt;
+		}
 		return tmp;
 	};
 
 	std::istringstream in(content);
 	std::string line;
-	int current = -1; // index into *materials, or -1 while no block is open
+	int current = -1; // index into `values`, or -1 while no block is open
 	size_t visited = 0;
 	bool has_d = false;
 	while (std::getline(in, line)) {
 		if (!line.empty() && line.back() == '\r') {
 			line.pop_back();
 		}
-		// Trim trailing whitespace too, matching tinyobjloader's own line preprocessing:
-		// otherwise a bare "newmtl" with nothing after it but spaces would recognise here
-		// as a (dropped) empty-named block while tinyobjloader -- which trims first, so
-		// its own `IS_SPACE(token[6])` check never sees the space -- does not see a
-		// `newmtl` directive there at all and simply leaves the previous block open.
+		// Trailing whitespace goes first, matching tinyobjloader's own line preprocessing:
+		// it trims before its `IS_SPACE(token[6])` check, so a "newmtl" followed by nothing
+		// but spaces is not a `newmtl` directive to it at all.
 		size_t trailing = line.find_last_not_of(" \t");
 		line = trailing == std::string::npos ? "" : line.substr(0, trailing + 1);
 		size_t start = line.find_first_not_of(" \t");
@@ -255,43 +277,58 @@ size_t ReparseMtlNumbersCorrectlyRounded(const std::string &content, size_t base
 			continue;
 		}
 		line = line.substr(start);
+		if (line[0] == '#') {
+			continue;
+		}
 
-		if (line.compare(0, 6, "newmtl") == 0 &&
-		    (line.size() == 6 || std::isspace(static_cast<unsigned char>(line[6])) != 0)) {
-			std::string name = line.substr(6);
-			size_t name_start = name.find_first_not_of(" \t");
-			name = name_start == std::string::npos ? "" : name.substr(name_start);
-			if (name.empty()) {
-				// tinyobjloader parses this block but never flushes it to `materials` --
-				// there is no index to write into.
-				current = -1;
-			} else {
-				size_t idx = base + visited;
-				current = idx < materials->size() ? static_cast<int>(idx) : -1;
-				visited++;
+		size_t key_end = line.find_first_of(" \t");
+		std::string key = line.substr(0, key_end);
+		std::string rest;
+		if (key_end != std::string::npos) {
+			size_t rest_start = line.find_first_not_of(" \t", key_end);
+			rest = rest_start == std::string::npos ? "" : line.substr(rest_start);
+		}
+
+		if (key == "newmtl") {
+			if (rest.empty()) {
+				// tinyobjloader does not recognise a nameless `newmtl` as a directive and
+				// leaves the block it is in open, so neither does this.
+				continue;
 			}
+			size_t idx = base + visited;
+			current = idx < values.size() ? static_cast<int>(idx) : -1;
+			visited++;
 			has_d = false;
 			continue;
 		}
 		if (current < 0) {
 			continue;
 		}
-		auto &m = (*materials)[static_cast<size_t>(current)];
-		if (starts_with_directive(line, "Ka")) {
-			parse3(line, 2, m.ambient);
-		} else if (starts_with_directive(line, "Kd")) {
-			parse3(line, 2, m.diffuse);
-		} else if (starts_with_directive(line, "Ks")) {
-			parse3(line, 2, m.specular);
-		} else if (starts_with_directive(line, "Ke")) {
-			parse3(line, 2, m.emission);
-		} else if (starts_with_directive(line, "Ns")) {
-			m.shininess = static_cast<tinyobj::real_t>(parse1(line, 2));
-		} else if (line.size() > 1 && line[0] == 'd' && std::isspace(static_cast<unsigned char>(line[1])) != 0) {
-			m.dissolve = static_cast<tinyobj::real_t>(parse1(line, 1));
-			has_d = true;
-		} else if (starts_with_directive(line, "Tr") && !has_d) {
-			m.dissolve = static_cast<tinyobj::real_t>(1.0 - parse1(line, 2));
+		auto &v = values[static_cast<size_t>(current)];
+		if (key == "Ka") {
+			v.ambient = parse3(rest);
+		} else if (key == "Kd") {
+			v.diffuse = parse3(rest);
+		} else if (key == "Ks") {
+			v.specular = parse3(rest);
+		} else if (key == "Ke") {
+			v.emission = parse3(rest);
+		} else if (key == "Ns") {
+			v.shininess = parse1(rest);
+		} else if (key == "d") {
+			auto d = parse1(rest);
+			if (d.has_value()) {
+				v.transparency = 1.0 - d.value();
+				has_d = true;
+			}
+		} else if (key == "Tr") {
+			// Transparency as written, not 1 - (1 - Tr): the round trip through a dissolve
+			// costs a rounding step ("0.3" would print as 0.30000000000000004).
+			if (!has_d) {
+				v.transparency = parse1(rest);
+			}
+		} else if (key != "map_Kd") {
+			v.other[key] = rest;
 		}
 	}
 	return visited;
@@ -320,19 +357,47 @@ public:
 		std::istringstream in(content);
 		size_t base = materials->size();
 		tinyobj::LoadMtl(mat_map, materials, &in, warn, err);
+		// tinyobjloader flushes a `newmtl` block mid-file only when its name is non-empty
+		// but flushes the last one unconditionally, so a `.mtl` that declares no material
+		// at all -- empty, or nothing but comments -- comes back as one material with an
+		// empty name. Drop it before anything counts it.
+		if (materials->size() > base && materials->back().name.empty()) {
+			materials->pop_back();
+			if (mat_map != nullptr) {
+				mat_map->erase("");
+			}
+		}
 		size_t added = materials->size() - base;
-		size_t visited = ReparseMtlNumbersCorrectlyRounded(content, base, materials);
+		values_.resize(materials->size());
+		size_t visited = ReparseMtl(content, base, values_);
 		if (visited != added && err != nullptr) {
-			*err += "mtllib '" + mat_id + "': the correctly-rounded re-parse found " + std::to_string(visited) +
+			*err += "mtllib '" + mat_id + "': the re-parse found " + std::to_string(visited) +
 			        " named material(s) but tinyobjloader produced " + std::to_string(added) +
 			        "; a 'newmtl' name or duplicate has thrown the positional join out of step\n";
 		}
+		// A `.mtl` that leaves nothing accumulated has to report failure: tinyobjloader
+		// answers a successful read with `materials.at(0)` to drive `mtllib_cb`, which
+		// throws on an empty vector. Reporting failure makes it try the next filename on
+		// the `mtllib` line instead, and say so.
+		if (materials->empty()) {
+			if (warn != nullptr) {
+				*warn += "mtllib '" + mat_id + "' declares no material\n";
+			}
+			return false;
+		}
 		return true;
+	}
+
+	//! What each material's `.mtl` block stated, positionally aligned with the material
+	//! vector tinyobjloader accumulates across every `mtllib`.
+	const std::vector<MtlValues> &Values() const {
+		return values_;
 	}
 
 private:
 	ClientContext &context_;
 	std::string base_dir_;
+	std::vector<MtlValues> values_;
 };
 
 std::string FileStem(const std::string &path) {
@@ -440,6 +505,11 @@ std::optional<std::array<double, 3>> OBJReader::ParseOriginComment(const std::st
 		auto eol = content.find('\n', pos);
 		auto line = content.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
 		pos = eol == std::string::npos ? content.size() : eol + 1;
+		// A CRLF file's blank line is "\r", not "": without this it reads as the first
+		// non-comment line and ends the header before a later `# origin` is reached.
+		if (!line.empty() && line.back() == '\r') {
+			line.pop_back();
+		}
 		if (line.rfind("# origin ", 0) != 0) {
 			if (!line.empty() && line[0] != '#') {
 				return std::nullopt; // the header block is over
@@ -539,6 +609,12 @@ const OBJReader::Parsed &OBJReader::Load() const {
 	std::string warn;
 	std::string err;
 	bool ok = tinyobj::LoadObjWithCallback(in, cb, &st, &mat_reader, &warn, &err);
+	// Everything tinyobjloader and DuckDBMaterialReader consider survivable -- an
+	// unreadable `mtllib` above all -- arrives here and nowhere else. The parse is
+	// memoised, so this fires once per reader.
+	if (!warn.empty()) {
+		DUCKDB_LOG_WARNING(context_, "read_obj: " + warn);
+	}
 	if (!ok || !err.empty()) {
 		throw CityJSONError::Parse(err.empty() ? "tinyobjloader failed" : err, file_path_);
 	}
@@ -568,19 +644,40 @@ const OBJReader::Parsed &OBJReader::Load() const {
 	// --- Appearance definitions: the MTL materials, and a texture per textured material.
 	Appearance appearance;
 	std::vector<int> texture_of_material(st.materials.size(), -1);
+	// A directive the `.mtl` does not state stays unset all the way to the sidecar row,
+	// where it is SQL NULL: a material with only `Kd` says nothing about its specular
+	// colour, and reporting the black one tinyobjloader default-initialises would be
+	// inventing a value the file never gave.
+	static const MtlValues kNoValues;
+	const auto &mtl_values = mat_reader.Values();
+	auto colour = [](const std::optional<std::array<double, 3>> &c) -> std::optional<std::vector<double>> {
+		std::optional<std::vector<double>> out;
+		if (c.has_value()) {
+			const auto &v = c.value();
+			out = std::vector<double> {v[0], v[1], v[2]};
+		}
+		return out;
+	};
 	for (size_t i = 0; i < st.materials.size(); i++) {
 		const auto &m = st.materials[i];
+		const auto &vals = i < mtl_values.size() ? mtl_values[i] : kNoValues;
 		Material mat;
 		mat.name = m.name;
-		mat.diffuse_color = std::vector<double> {m.diffuse[0], m.diffuse[1], m.diffuse[2]};
-		mat.specular_color = std::vector<double> {m.specular[0], m.specular[1], m.specular[2]};
-		mat.emissive_color = std::vector<double> {m.emission[0], m.emission[1], m.emission[2]};
-		mat.ambient_intensity = (m.ambient[0] + m.ambient[1] + m.ambient[2]) / 3.0;
-		mat.transparency = 1.0 - m.dissolve;
-		mat.shininess = std::min(1.0, std::max(0.0, static_cast<double>(m.shininess) / 1000.0));
-		if (!m.unknown_parameter.empty()) {
+		mat.diffuse_color = colour(vals.diffuse);
+		mat.specular_color = colour(vals.specular);
+		mat.emissive_color = colour(vals.emission);
+		if (vals.ambient.has_value()) {
+			const auto &ka = vals.ambient.value();
+			mat.ambient_intensity = (ka[0] + ka[1] + ka[2]) / 3.0;
+		}
+		mat.transparency = vals.transparency;
+		if (vals.shininess.has_value()) {
+			// MTL's Ns runs to 1000; CityJSON's shininess is [0, 1].
+			mat.shininess = std::min(1.0, std::max(0.0, vals.shininess.value() / 1000.0));
+		}
+		if (!vals.other.empty()) {
 			mat.other = json::object();
-			for (const auto &kv : m.unknown_parameter) {
+			for (const auto &kv : vals.other) {
 				mat.other[kv.first] = kv.second;
 			}
 		}

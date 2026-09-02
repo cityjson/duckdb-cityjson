@@ -42,9 +42,16 @@ WHERE column_name LIKE 'geometry_lod%';
 ----
 geometry_lod2_0
 
-# --- lod is required: an OBJ carries none, and the value names the columns.
+# --- lod is required: an OBJ carries none, and the value names the columns. An empty
+#     string is the same absence and gets the same message, not the generic bind's
+#     "LOD '' not found in file".
 statement error
 SELECT * FROM read_obj('test/data/obj/cube.obj');
+----
+read_obj: lod is required
+
+statement error
+SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '');
 ----
 read_obj: lod is required
 
@@ -78,7 +85,9 @@ FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
 cube	[{"type":"GroundSurface"},{"type":"WallSurface"},{"type":"RoofSurface"}]	[0, 1, 1, 1, 1, 2]
 slab	[{"type":"RoofSurface"}]	[0]
 
-# --- The negative-index roof face resolved to vertices 5..8: the cube's top ring is at z = 1.
+# --- Every face of the cube survives as its own ring: six `f` lines, six semantics
+#     entries. The `Solid` row above is what pins the negative-index roof face -- an
+#     unresolved `-4 -3 -2 -1` would leave the shell open and the type MultiSurface.
 query I
 SELECT list_count(geometry_properties_lod2_2.face_semantics) = 6 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'cube';
 ----
@@ -143,6 +152,13 @@ SELECT bbox FROM read_obj('test/data/obj/with_origin.obj', lod := '0');
 ----
 {'xmin': 84500.5, 'ymin': 446300.25, 'zmin': 0.0, 'xmax': 84501.5, 'ymax': 446301.25, 'zmax': 0.0}
 
+# The same header with CRLF endings and a blank line before the `# origin`: a bare "\r"
+# is a blank comment-block line, not the first non-comment line that ends the header.
+query I
+SELECT bbox FROM read_obj('test/data/obj/with_origin_crlf.obj', lod := '0');
+----
+{'xmin': 84500.5, 'ymin': 446300.25, 'zmin': 0.0, 'xmax': 84501.5, 'ymax': 446301.25, 'zmax': 0.0}
+
 # --- Documented limitation: backslash continuation is refused, not mis-parsed.
 statement error
 SELECT * FROM read_obj('test/data/obj/continuation.obj', lod := '1');
@@ -161,10 +177,47 @@ SELECT COUNT(*), COUNT(material_lod1_0) FROM read_obj('test/data/obj/missing_mtl
 ----
 1	0
 
+# The warning is emitted, not swallowed: tinyobjloader's `warn` reaches duckdb_logs.
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET logging_level = 'WARNING';
+
+statement ok
+SELECT COUNT(*) FROM read_obj('test/data/obj/missing_mtl.obj', lod := '1');
+
+query I
+SELECT COUNT(*) > 0 FROM duckdb_logs WHERE message LIKE '%read_obj%' AND message LIKE '%missing.mtl%';
+----
+true
+
+statement ok
+SET enable_logging = false;
+
+# --- A .mtl with no `newmtl` at all defines nothing: tinyobjloader's unconditional
+#     final flush must not leak an empty-named material into the count.
+query II
+SELECT COUNT(*), COUNT(material_lod1_0) FROM read_obj('test/data/obj/empty_mtl.obj', lod := '1');
+----
+1	0
+
+# --- A repeated `o` resumes its object rather than starting a new one, at a scale where
+#     a linear scan of the objects seen so far would dominate the parse: 4 000 `o` lines,
+#     2 000 distinct names, two faces each.
+query II
+SELECT COUNT(*), COUNT(*) FILTER (list_count(geometry_properties_lod1_0.face_semantics) = 2)
+FROM read_obj('test/data/obj/many_objects.obj', lod := '1');
+----
+2000	2000
+
 # --- `v` / `vt` reals are parsed correctly-rounded, not through tinyobjloader's own
 # not-correctly-rounded number parser: a millimetre-precision RD coordinate round-trips
 # to its exact shortest text, not one ULP off. bbox is DOUBLE, which sqllogictest
 # compares approximately, so pin the exact digits through a VARCHAR cast instead.
+# Of the three, only `0.475` discriminates the two parsers: the other two coordinates
+# happen to land on the same double either way, so a regression would show up here
+# alone.
 query III
 SELECT bbox.xmin::VARCHAR, bbox.ymin::VARCHAR, bbox.zmin::VARCHAR FROM read_obj('test/data/obj/precise.obj', lod := '1');
 ----
@@ -179,6 +232,10 @@ FROM read_obj('test/data/obj/precise.obj', lod := '1', appearance := 'sidecar');
 true
 
 # --- OBJ -> CityJSON keeps geometry, semantics and appearance refs intact on the way out.
+#     Circular oracle by construction: this writes with our writer and reads back with
+#     our reader, so it pins that the OBJ shape survives the round trip and nothing
+#     more. The CityJSON encoding itself is pinned against upstream-produced fixtures
+#     in cityjson_corpus_parity.test.
 statement ok
 COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2')) TO '__TEST_DIR__/cube.city.json' (FORMAT cityjson);
 

@@ -1,0 +1,7 @@
+# Hand-written fixture: a .mtl that defines nothing. tinyobjloader's final flush is
+# unconditional, so this file is what proves the empty-named material never escapes.
+mtllib empty.mtl
+v 0 0 0
+v 1 0 0
+v 1 1 0
+f 1 2 3

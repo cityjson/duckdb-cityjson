@@ -7,7 +7,6 @@
 #include "cityjson/metadata_table.hpp"
 #include "cityjson/table_function.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 namespace cityjson {
@@ -17,8 +16,11 @@ OBJReadOptions ParseOBJReadOptions(const TableFunctionBindInput &input, const st
 	bool has_lod = false;
 	for (auto &kv : input.named_parameters) {
 		if (kv.first == "lod") {
+			// An empty string is the same absence as no `lod` at all, and is caught here
+			// rather than left to the generic bind, which would report it as "LOD '' not
+			// found in file" -- a message about the file, for a mistake in the call.
+			has_lod = !StringValue::Get(kv.second).empty();
 			options.lod = LODTableUtils::NormalizeLOD(StringValue::Get(kv.second));
-			has_lod = true;
 		} else if (kv.first == "object_type") {
 			options.object_type = StringValue::Get(kv.second);
 			if (options.object_type.empty()) {

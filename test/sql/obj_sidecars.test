@@ -4,12 +4,31 @@
 
 require cityjson
 
-query IIIIII
-SELECT id, name, diffuseColor, specularColor, transparency, shininess FROM obj_materials('test/data/obj/cube.obj');
+# A directive the .mtl does not carry is NULL, not an invented zero: GroundSurface
+# states only `Kd`, so its `Ks`, `Ke`, `Ka`, `d`/`Tr` and `Ns` columns are unknown.
+query IIIIIII
+SELECT id, name, ambientIntensity, diffuseColor, specularColor, transparency, shininess
+FROM obj_materials('test/data/obj/cube.obj');
 ----
-0	GroundSurface	[0.3, 0.3, 0.3]	[0.0, 0.0, 0.0]	0.0	0.001
-1	brick	[0.7, 0.3, 0.2]	[0.1, 0.1, 0.1]	0.3	0.0007
-2	RoofSurface	[0.9, 0.06, 0.09]	[0.0, 0.0, 0.0]	0.0	0.001
+0	GroundSurface	NULL	[0.3, 0.3, 0.3]	NULL	NULL	NULL
+1	brick	NULL	[0.7, 0.3, 0.2]	[0.1, 0.1, 0.1]	0.3	0.0007
+2	RoofSurface	NULL	[0.9, 0.06, 0.09]	NULL	0.3	NULL
+
+query II
+SELECT id, emissiveColor FROM obj_materials('test/data/obj/cube.obj');
+----
+0	NULL
+1	NULL
+2	NULL
+
+# Every directive this mapping does not cover lands in `other` verbatim, whether or not
+# tinyobjloader has a typed field of its own for it (`illum` and `map_Ks` both do).
+query II
+SELECT id, other FROM obj_materials('test/data/obj/cube.obj');
+----
+0	NULL
+1	{"illum":"2","map_Ks":"spec.png"}
+2	NULL
 
 # transparency/shininess are DOUBLE, which sqllogictest compares approximately (a
 # 0.09999999999999998-for-0.1 drift would still pass above), so pin the exact
@@ -19,12 +38,14 @@ SELECT id, name, diffuseColor, specularColor, transparency, shininess FROM obj_m
 # tinyobjloader's not-correctly-rounded number parser and under strtod: only a value
 # like 0.7 makes the two parses printably disagree, so only a value like this can catch
 # a regression in ReparseMtlNumbersCorrectlyRounded's `d`/`Ns` branches.
+# RoofSurface states `Tr 0.3`, which is transparency directly -- a 1 - (1 - Tr) round
+# trip through tinyobjloader's `dissolve` would print 0.30000000000000004 here.
 query III
 SELECT id, transparency::VARCHAR, shininess::VARCHAR FROM obj_materials('test/data/obj/cube.obj');
 ----
-0	0.0	0.001
+0	NULL	NULL
 1	0.30000000000000004	0.0007
-2	0.0	0.001
+2	0.3	NULL
 
 # Same columns, same order, as cityjson_materials -- a package writer must not care which produced them.
 query I
@@ -40,5 +61,12 @@ SELECT id, image_uri, image_data, image_type, wrapMode, textureType FROM obj_tex
 
 query I
 SELECT COUNT(*) FROM obj_materials('test/data/obj/open_roof.obj');
+----
+0
+
+# A .mtl holding nothing but a comment defines no material: tinyobjloader's
+# unconditional final flush would otherwise hand back one with an empty name.
+query I
+SELECT COUNT(*) FROM obj_materials('test/data/obj/empty_mtl.obj');
 ----
 0
