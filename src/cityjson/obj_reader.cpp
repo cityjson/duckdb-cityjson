@@ -54,6 +54,17 @@ struct ParseState {
 	size_t current_object = 0;
 	std::array<double, 3> origin {0.0, 0.0, 0.0};
 	std::string error; // first structural error; LoadObjWithCallback has no way to abort
+
+	// `v` / `vt` reals, parsed correctly-rounded ahead of tinyobjloader by the pre-scan
+	// in OBJReader::Load (see ReparseMtlNumbersCorrectlyRounded for why); VertexCb and
+	// TexcoordCb consume these in order instead of tinyobjloader's own parse.
+	std::vector<std::array<double, 3>> precise_vertices;
+	std::vector<std::array<double, 2>> precise_texcoords;
+	size_t next_vertex = 0;
+	size_t next_texcoord = 0;
+	// Set when tinyobjloader's callback count disagrees with the pre-scan's -- a parser
+	// disagreement distinct from `error` above, which is for structural face problems.
+	std::string line_count_error;
 };
 
 ObjectRec &CurrentObject(ParseState &st) {
@@ -64,14 +75,23 @@ ObjectRec &CurrentObject(ParseState &st) {
 	return st.objects[st.current_object];
 }
 
-void VertexCb(void *user, tinyobj::real_t x, tinyobj::real_t y, tinyobj::real_t z, tinyobj::real_t /*w*/) {
+void VertexCb(void *user, tinyobj::real_t /*x*/, tinyobj::real_t /*y*/, tinyobj::real_t /*z*/, tinyobj::real_t /*w*/) {
 	auto &st = *static_cast<ParseState *>(user);
-	st.vertices.push_back({x + st.origin[0], y + st.origin[1], z + st.origin[2]});
+	if (st.next_vertex >= st.precise_vertices.size()) {
+		st.line_count_error = "tinyobjloader reported a 'v' line the pre-scan did not see";
+		return;
+	}
+	const auto &v = st.precise_vertices[st.next_vertex++];
+	st.vertices.push_back({v[0] + st.origin[0], v[1] + st.origin[1], v[2] + st.origin[2]});
 }
 
-void TexcoordCb(void *user, tinyobj::real_t u, tinyobj::real_t v, tinyobj::real_t /*w*/) {
+void TexcoordCb(void *user, tinyobj::real_t /*u*/, tinyobj::real_t /*v*/, tinyobj::real_t /*w*/) {
 	auto &st = *static_cast<ParseState *>(user);
-	st.texcoords.push_back({u, v});
+	if (st.next_texcoord >= st.precise_texcoords.size()) {
+		st.line_count_error = "tinyobjloader reported a 'vt' line the pre-scan did not see";
+		return;
+	}
+	st.texcoords.push_back(st.precise_texcoords[st.next_texcoord++]);
 }
 
 // tinyobjloader's callback API hands over the RAW face tokens: 1-based, negative =
@@ -219,6 +239,30 @@ void ReparseMtlNumbersCorrectlyRounded(const std::string &content, const std::ma
 			m.dissolve = static_cast<tinyobj::real_t>(1.0 - std::strtod(line.c_str() + 2, nullptr));
 		}
 	}
+}
+
+// Reads up to `max_values` whitespace-separated reals off the front of `line` with
+// strtod (correctly rounded); stops at the first token that is not a number. Used for
+// the reals after a `v` / `vt` keyword -- see the pre-scan comment in OBJReader::Load.
+std::vector<double> ParseObjReals(const std::string &line, size_t max_values) {
+	std::vector<double> values;
+	const char *p = line.c_str();
+	while (*p != '\0' && values.size() < max_values) {
+		while (*p == ' ' || *p == '\t') {
+			p++;
+		}
+		if (*p == '\0') {
+			break;
+		}
+		char *next = nullptr;
+		double value = std::strtod(p, &next);
+		if (next == p) {
+			break;
+		}
+		values.push_back(value);
+		p = next;
+	}
+	return values;
 }
 
 // `.mtl` files named by `mtllib`, resolved against the OBJ's directory and read through
@@ -379,7 +423,15 @@ const OBJReader::Parsed &OBJReader::Load() const {
 	}
 	std::string content = json_utils::ReadFileContent(context_, file_path_);
 
-	// Backslash line continuation is legal OBJ that the parser library does not
+	ParseState st;
+	st.default_object_name = FileStem(file_path_);
+
+	// tinyobjloader's own number parser (see ReparseMtlNumbersCorrectlyRounded above)
+	// accumulates digits in double arithmetic and is not correctly rounded, so every
+	// real in the file is parsed here, in this single line-by-line pre-scan, with
+	// strtod, and kept as the source of truth for `v` / `vt`; tinyobjloader is kept only
+	// for structure -- o/g/usemtl/mtllib dispatch and face tokenising. This pass also
+	// still catches backslash line continuation, which the parser library does not
 	// implement; refuse rather than silently mis-parse the joined line.
 	{
 		size_t pos = 0;
@@ -396,13 +448,38 @@ const OBJReader::Parsed &OBJReader::Load() const {
 				                               " ends with a backslash; line continuation is not supported",
 				                           file_path_);
 			}
+
+			size_t line_start = pos;
+			while (line_start < last && (content[line_start] == ' ' || content[line_start] == '\t')) {
+				line_start++;
+			}
+			if (last - line_start >= 2 && content[line_start] == 'v' && content[line_start + 1] == 't' &&
+			    (last - line_start == 2 || std::isspace(static_cast<unsigned char>(content[line_start + 2])) != 0)) {
+				// vt: u [v] [w] -- only u and v are used; a missing v defaults to 0.
+				auto reals = ParseObjReals(content.substr(line_start + 2, last - (line_start + 2)), 3);
+				if (reals.empty()) {
+					throw CityJSONError::Parse("line " + std::to_string(line_no) + " 'vt' has no u coordinate",
+					                           file_path_);
+				}
+				st.precise_texcoords.push_back({reals[0], reals.size() > 1 ? reals[1] : 0.0});
+			} else if (last - line_start >= 1 && content[line_start] == 'v' &&
+			           (last - line_start == 1 ||
+			            std::isspace(static_cast<unsigned char>(content[line_start + 1])) != 0)) {
+				// v: x y z [w] or the vertex-color extension x y z r g b -- only the first
+				// three (the position) are ever used.
+				auto reals = ParseObjReals(content.substr(line_start + 1, last - (line_start + 1)), 3);
+				if (reals.size() < 3) {
+					throw CityJSONError::Parse(
+					    "line " + std::to_string(line_no) + " 'v' has fewer than three coordinates", file_path_);
+				}
+				st.precise_vertices.push_back({reals[0], reals[1], reals[2]});
+			}
+
 			pos = eol == std::string::npos ? content.size() : eol + 1;
 			line_no++;
 		}
 	}
 
-	ParseState st;
-	st.default_object_name = FileStem(file_path_);
 	if (auto origin = ParseOriginComment(content)) {
 		st.origin = origin.value();
 	}
@@ -426,6 +503,19 @@ const OBJReader::Parsed &OBJReader::Load() const {
 	}
 	if (!st.error.empty()) {
 		throw CityJSONError::InvalidGeometry(st.error, file_path_);
+	}
+	if (!st.line_count_error.empty()) {
+		throw CityJSONError::Parse(st.line_count_error, file_path_);
+	}
+	if (st.next_vertex != st.precise_vertices.size()) {
+		throw CityJSONError::Parse("pre-scan found " + std::to_string(st.precise_vertices.size()) +
+		                               " 'v' line(s) but tinyobjloader reported " + std::to_string(st.next_vertex),
+		                           file_path_);
+	}
+	if (st.next_texcoord != st.precise_texcoords.size()) {
+		throw CityJSONError::Parse("pre-scan found " + std::to_string(st.precise_texcoords.size()) +
+		                               " 'vt' line(s) but tinyobjloader reported " + std::to_string(st.next_texcoord),
+		                           file_path_);
 	}
 
 	auto parsed = std::make_shared<Parsed>();

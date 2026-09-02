@@ -1,0 +1,5 @@
+# Hand-written fixture for precise.obj -- a textured material so the one face gets a
+# texture_lod* column to pin the vt precision through.
+newmtl brick
+Kd 0.7 0.3 0.2
+map_Kd brick.png

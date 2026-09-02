@@ -160,3 +160,20 @@ query II
 SELECT COUNT(*), COUNT(material_lod1_0) FROM read_obj('test/data/obj/missing_mtl.obj', lod := '1');
 ----
 1	0
+
+# --- `v` / `vt` reals are parsed correctly-rounded, not through tinyobjloader's own
+# not-correctly-rounded number parser: a millimetre-precision RD coordinate round-trips
+# to its exact shortest text, not one ULP off. bbox is DOUBLE, which sqllogictest
+# compares approximately, so pin the exact digits through a VARCHAR cast instead.
+query III
+SELECT bbox.xmin::VARCHAR, bbox.ymin::VARCHAR, bbox.zmin::VARCHAR FROM read_obj('test/data/obj/precise.obj', lod := '1');
+----
+84593.249625	446461.355	0.475
+
+# --- Same for `vt`: the sidecar form inlines the UV pair per face-vertex, so its exact
+# digits are visible in the printed JSON (the local form only carries an index).
+query I
+SELECT texture_lod1_0 LIKE '%[0,[0.3,0.7],[0.3,0.7],[0.3,0.7]]%'
+FROM read_obj('test/data/obj/precise.obj', lod := '1', appearance := 'sidecar');
+----
+true
