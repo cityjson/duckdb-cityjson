@@ -192,6 +192,28 @@ newmtl Bridge
 newmtl UUID_0794715b-1334-4855-83d3-8e8270c11e78
 newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
 
+# An explicit metadata_from must not disarm the rule. It replaces the *discovered*
+# source ref, but what it cannot know is the form the reader was asked for -- so the
+# form is still taken from the SELECT, and this refuses exactly as the plain case does.
+statement error
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/sidecar_mf.obj' (FORMAT obj, metadata_from 'test/data/railway_appearance.city.jsonl');
+----
+read with appearance := 'sidecar'
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/sidecar_mf_ok.obj' (FORMAT obj, metadata_from 'test/data/railway_appearance.city.jsonl',
+    materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/sidecar_mf_ok.mtl'))
+WHERE line LIKE 'newmtl %' ORDER BY line;
+----
+newmtl Bridge
+newmtl UUID_0794715b-1334-4855-83d3-8e8270c11e78
+newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
+
 # --- A texture whose image cannot be read is not fatal: the face keeps its material
 #     colour and the .mtl carries no map_Kd. cube.mtl names `brick.png`, which is not
 #     in test/data/obj -- so this also pins that relative image URIs are resolved

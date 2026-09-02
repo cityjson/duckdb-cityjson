@@ -498,7 +498,7 @@ static void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data,
 	if (!bind_data.appearance_source.has_value()) {
 		// The bind resolves this for every mesh format; reaching Finalize without it
 		// means the bind and the finalize disagree about what a mesh format is.
-		throw InternalException("obj COPY finalized without an appearance source");
+		throw InternalException("obj COPY finalised without an appearance source");
 	}
 	// A copy: LoadImage fills texture bytes, and the bind data must stay as bound.
 	// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
@@ -635,15 +635,26 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	// (a plain table, a join, a computed path).
 	//
 	// Precedence: crs / metadata_query  >  metadata_from  >  discovered source.
+	//
+	// The SELECT is walked either way. metadata_from overrides which FILE the metadata
+	// and appearance definitions come from, but it cannot know which appearance FORM
+	// the reader was asked for -- that is a property of the reader call, not of a path.
+	// Taking `sidecar_appearance` from the discovered ref regardless is what keeps
+	// metadata_from from disarming the mesh refusal rule below.
+	std::optional<CopySourceRef> discovered;
+	if (input.info.select_statement) {
+		discovered = FindCopySourceRef(*input.info.select_statement);
+	}
 	if (!explicit_metadata_from.empty()) {
 		CopySourceRef ref;
 		ref.path = explicit_metadata_from;
 		ref.is_fcb = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".fcb");
 		ref.is_seq = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".jsonl");
 		ref.is_obj = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".obj");
+		ref.sidecar_appearance = discovered.has_value() && discovered->sidecar_appearance;
 		bind_data->source_ref = std::move(ref);
-	} else if (input.info.select_statement) {
-		bind_data->source_ref = FindCopySourceRef(*input.info.select_statement);
+	} else {
+		bind_data->source_ref = std::move(discovered);
 	}
 
 	if (bind_data->source_ref.has_value()) {
