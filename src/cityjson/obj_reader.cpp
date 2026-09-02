@@ -170,38 +170,86 @@ void ObjectCb(void *user, const char *name) {
 	st.current_object = st.objects.size() - 1;
 }
 
+// Reads up to `n` whitespace-separated reals from [begin, end) with strtod (correctly
+// rounded), stopping at the first token that is not a number or that would overrun
+// `end`; writes them into `out` and returns how many were read. Shared by the MTL
+// directive re-parse below and the `v`/`vt` pre-scan in OBJReader::Load.
+size_t ParseReals(const char *begin, const char *end, double *out, size_t n) {
+	const char *p = begin;
+	size_t count = 0;
+	while (p < end && count < n) {
+		while (p < end && (*p == ' ' || *p == '\t')) {
+			p++;
+		}
+		if (p >= end) {
+			break;
+		}
+		char *next = nullptr;
+		double value = std::strtod(p, &next);
+		if (next == p || next > end) {
+			break;
+		}
+		out[count++] = value;
+		p = next;
+	}
+	return count;
+}
+
 // tinyobjloader's own numeric parser (`tryParseDouble` in the vendored header) accumulates
 // the decimal part digit by digit in double arithmetic rather than converting the decimal
 // literal to binary correctly-rounded, so e.g. "0.3" comes back one ULP off. `real_t` is
 // `double` in the vendored copy regardless of TINYOBJLOADER_USE_DOUBLE, so nothing narrows
 // that error away downstream. Re-parse the numeric directives ourselves with `strtod`,
 // which is correctly rounded, and overwrite what `tinyobj::LoadMtl` already stored --
-// mirroring its own `d`-wins-over-`Tr` rule so the two parses never disagree on which value
-// won, only on its last bit.
-void ReparseMtlNumbersCorrectlyRounded(const std::string &content, const std::map<std::string, int> &mat_map,
-                                       std::vector<tinyobj::material_t> *materials) {
+// mirroring its own `d`-wins-over-`Tr` rule so the two parses never disagree on which
+// value won, only on its last bit.
+//
+// Joins positionally, not by name: tinyobj's `parseString` truncates a `newmtl` name at
+// the first space/tab, so a trailing space or extra token on the line would make a
+// name-keyed lookup miss silently, and duplicate names (one file, or two `mtllib`s
+// sharing the accumulated map) would make it write the wrong material. tinyobjloader
+// pushes materials in file order and drops a `newmtl` block whose name is empty (the
+// block is parsed but never flushed to `materials`), so the Nth non-empty `newmtl` in
+// this content is `(*materials)[base + n]`. Returns how many such blocks it visited, so
+// the caller can confirm that matches how many materials tinyobjloader actually added
+// for this file -- if it does not, the join has gone out of step and the numbers this
+// function "corrected" may belong to the wrong material.
+size_t ReparseMtlNumbersCorrectlyRounded(const std::string &content, size_t base,
+                                         std::vector<tinyobj::material_t> *materials) {
 	auto starts_with_directive = [](const std::string &line, const char *key) {
 		size_t len = std::strlen(key);
 		return line.size() > len && line.compare(0, len, key) == 0 &&
 		       std::isspace(static_cast<unsigned char>(line[len])) != 0;
 	};
-	auto parse3 = [](const std::string &rest, tinyobj::real_t out[3]) {
-		const char *p = rest.c_str();
-		char *end = nullptr;
-		for (int i = 0; i < 3; i++) {
-			out[i] = static_cast<tinyobj::real_t>(std::strtod(p, &end));
-			p = end;
+	auto parse3 = [](const std::string &line, size_t skip, tinyobj::real_t out[3]) {
+		double tmp[3];
+		size_t got = ParseReals(line.c_str() + skip, line.c_str() + line.size(), tmp, 3);
+		for (size_t i = 0; i < got; i++) {
+			out[i] = static_cast<tinyobj::real_t>(tmp[i]);
 		}
+	};
+	auto parse1 = [](const std::string &line, size_t skip) {
+		double tmp;
+		ParseReals(line.c_str() + skip, line.c_str() + line.size(), &tmp, 1);
+		return tmp;
 	};
 
 	std::istringstream in(content);
 	std::string line;
-	int current = -1;
+	int current = -1; // index into *materials, or -1 while no block is open
+	size_t visited = 0;
 	bool has_d = false;
 	while (std::getline(in, line)) {
 		if (!line.empty() && line.back() == '\r') {
 			line.pop_back();
 		}
+		// Trim trailing whitespace too, matching tinyobjloader's own line preprocessing:
+		// otherwise a bare "newmtl" with nothing after it but spaces would recognise here
+		// as a (dropped) empty-named block while tinyobjloader -- which trims first, so
+		// its own `IS_SPACE(token[6])` check never sees the space -- does not see a
+		// `newmtl` directive there at all and simply leaves the previous block open.
+		size_t trailing = line.find_last_not_of(" \t");
+		line = trailing == std::string::npos ? "" : line.substr(0, trailing + 1);
 		size_t start = line.find_first_not_of(" \t");
 		if (start == std::string::npos) {
 			continue;
@@ -213,56 +261,40 @@ void ReparseMtlNumbersCorrectlyRounded(const std::string &content, const std::ma
 			std::string name = line.substr(6);
 			size_t name_start = name.find_first_not_of(" \t");
 			name = name_start == std::string::npos ? "" : name.substr(name_start);
-			auto it = mat_map.find(name);
-			current = it != mat_map.end() ? it->second : -1;
+			if (name.empty()) {
+				// tinyobjloader parses this block but never flushes it to `materials` --
+				// there is no index to write into.
+				current = -1;
+			} else {
+				size_t idx = base + visited;
+				current = idx < materials->size() ? static_cast<int>(idx) : -1;
+				visited++;
+			}
 			has_d = false;
 			continue;
 		}
-		if (current < 0 || current >= static_cast<int>(materials->size())) {
+		if (current < 0) {
 			continue;
 		}
 		auto &m = (*materials)[static_cast<size_t>(current)];
 		if (starts_with_directive(line, "Ka")) {
-			parse3(line.substr(2), m.ambient);
+			parse3(line, 2, m.ambient);
 		} else if (starts_with_directive(line, "Kd")) {
-			parse3(line.substr(2), m.diffuse);
+			parse3(line, 2, m.diffuse);
 		} else if (starts_with_directive(line, "Ks")) {
-			parse3(line.substr(2), m.specular);
+			parse3(line, 2, m.specular);
 		} else if (starts_with_directive(line, "Ke")) {
-			parse3(line.substr(2), m.emission);
+			parse3(line, 2, m.emission);
 		} else if (starts_with_directive(line, "Ns")) {
-			m.shininess = static_cast<tinyobj::real_t>(std::strtod(line.c_str() + 2, nullptr));
+			m.shininess = static_cast<tinyobj::real_t>(parse1(line, 2));
 		} else if (line.size() > 1 && line[0] == 'd' && std::isspace(static_cast<unsigned char>(line[1])) != 0) {
-			m.dissolve = static_cast<tinyobj::real_t>(std::strtod(line.c_str() + 1, nullptr));
+			m.dissolve = static_cast<tinyobj::real_t>(parse1(line, 1));
 			has_d = true;
 		} else if (starts_with_directive(line, "Tr") && !has_d) {
-			m.dissolve = static_cast<tinyobj::real_t>(1.0 - std::strtod(line.c_str() + 2, nullptr));
+			m.dissolve = static_cast<tinyobj::real_t>(1.0 - parse1(line, 2));
 		}
 	}
-}
-
-// Reads up to `max_values` whitespace-separated reals off the front of `line` with
-// strtod (correctly rounded); stops at the first token that is not a number. Used for
-// the reals after a `v` / `vt` keyword -- see the pre-scan comment in OBJReader::Load.
-std::vector<double> ParseObjReals(const std::string &line, size_t max_values) {
-	std::vector<double> values;
-	const char *p = line.c_str();
-	while (*p != '\0' && values.size() < max_values) {
-		while (*p == ' ' || *p == '\t') {
-			p++;
-		}
-		if (*p == '\0') {
-			break;
-		}
-		char *next = nullptr;
-		double value = std::strtod(p, &next);
-		if (next == p) {
-			break;
-		}
-		values.push_back(value);
-		p = next;
-	}
-	return values;
+	return visited;
 }
 
 // `.mtl` files named by `mtllib`, resolved against the OBJ's directory and read through
@@ -286,8 +318,15 @@ public:
 			return false;
 		}
 		std::istringstream in(content);
+		size_t base = materials->size();
 		tinyobj::LoadMtl(mat_map, materials, &in, warn, err);
-		ReparseMtlNumbersCorrectlyRounded(content, *mat_map, materials);
+		size_t added = materials->size() - base;
+		size_t visited = ReparseMtlNumbersCorrectlyRounded(content, base, materials);
+		if (visited != added && err != nullptr) {
+			*err += "mtllib '" + mat_id + "': the correctly-rounded re-parse found " + std::to_string(visited) +
+			        " named material(s) but tinyobjloader produced " + std::to_string(added) +
+			        "; a 'newmtl' name or duplicate has thrown the positional join out of step\n";
+		}
 		return true;
 	}
 
@@ -456,19 +495,21 @@ const OBJReader::Parsed &OBJReader::Load() const {
 			if (last - line_start >= 2 && content[line_start] == 'v' && content[line_start + 1] == 't' &&
 			    (last - line_start == 2 || std::isspace(static_cast<unsigned char>(content[line_start + 2])) != 0)) {
 				// vt: u [v] [w] -- only u and v are used; a missing v defaults to 0.
-				auto reals = ParseObjReals(content.substr(line_start + 2, last - (line_start + 2)), 3);
-				if (reals.empty()) {
+				double reals[2];
+				size_t got = ParseReals(content.data() + line_start + 2, content.data() + last, reals, 2);
+				if (got == 0) {
 					throw CityJSONError::Parse("line " + std::to_string(line_no) + " 'vt' has no u coordinate",
 					                           file_path_);
 				}
-				st.precise_texcoords.push_back({reals[0], reals.size() > 1 ? reals[1] : 0.0});
+				st.precise_texcoords.push_back({reals[0], got > 1 ? reals[1] : 0.0});
 			} else if (last - line_start >= 1 && content[line_start] == 'v' &&
 			           (last - line_start == 1 ||
 			            std::isspace(static_cast<unsigned char>(content[line_start + 1])) != 0)) {
 				// v: x y z [w] or the vertex-color extension x y z r g b -- only the first
 				// three (the position) are ever used.
-				auto reals = ParseObjReals(content.substr(line_start + 1, last - (line_start + 1)), 3);
-				if (reals.size() < 3) {
+				double reals[3];
+				size_t got = ParseReals(content.data() + line_start + 1, content.data() + last, reals, 3);
+				if (got < 3) {
 					throw CityJSONError::Parse(
 					    "line " + std::to_string(line_no) + " 'v' has fewer than three coordinates", file_path_);
 				}
@@ -501,9 +542,10 @@ const OBJReader::Parsed &OBJReader::Load() const {
 	if (!ok || !err.empty()) {
 		throw CityJSONError::Parse(err.empty() ? "tinyobjloader failed" : err, file_path_);
 	}
-	if (!st.error.empty()) {
-		throw CityJSONError::InvalidGeometry(st.error, file_path_);
-	}
+	// Checked before `st.error`: a `v`/`vt` count disagreement between the pre-scan and
+	// tinyobjloader's own callbacks can itself produce a short `st.vertices` and a
+	// downstream face-index error there, and the parser-disagreement message is the one
+	// the user needs to see, not the symptom it causes.
 	if (!st.line_count_error.empty()) {
 		throw CityJSONError::Parse(st.line_count_error, file_path_);
 	}
@@ -516,6 +558,9 @@ const OBJReader::Parsed &OBJReader::Load() const {
 		throw CityJSONError::Parse("pre-scan found " + std::to_string(st.precise_texcoords.size()) +
 		                               " 'vt' line(s) but tinyobjloader reported " + std::to_string(st.next_texcoord),
 		                           file_path_);
+	}
+	if (!st.error.empty()) {
+		throw CityJSONError::InvalidGeometry(st.error, file_path_);
 	}
 
 	auto parsed = std::make_shared<Parsed>();

@@ -2,11 +2,14 @@
 newmtl GroundSurface
 Kd 0.3 0.3 0.3
 
+# brick's `d` and `Ns` are single fractional digits chosen (not 0.9/250) because those
+# happen to parse identically under tinyobjloader's not-correctly-rounded number parser
+# and strtod -- these do not, so obj_sidecars.test can actually tell the two apart.
 newmtl brick
 Kd 0.7 0.3 0.2
 Ks 0.1 0.1 0.1
-d 0.9
-Ns 250
+d 0.7
+Ns 0.7
 map_Kd brick.png
 
 newmtl RoofSurface

@@ -8,8 +8,23 @@ query IIIIII
 SELECT id, name, diffuseColor, specularColor, transparency, shininess FROM obj_materials('test/data/obj/cube.obj');
 ----
 0	GroundSurface	[0.3, 0.3, 0.3]	[0.0, 0.0, 0.0]	0.0	0.001
-1	brick	[0.7, 0.3, 0.2]	[0.1, 0.1, 0.1]	0.1	0.25
+1	brick	[0.7, 0.3, 0.2]	[0.1, 0.1, 0.1]	0.3	0.0007
 2	RoofSurface	[0.9, 0.06, 0.09]	[0.0, 0.0, 0.0]	0.0	0.001
+
+# transparency/shininess are DOUBLE, which sqllogictest compares approximately (a
+# 0.09999999999999998-for-0.1 drift would still pass above), so pin the exact
+# correctly-rounded digits through a VARCHAR cast instead -- the way read_obj.test pins
+# bbox. brick's `d`/`Ns` are single fractional digits (0.7), not the round 0.9/250 a
+# fixture might reach for, because 0.9 and 250 happen to parse identically under
+# tinyobjloader's not-correctly-rounded number parser and under strtod: only a value
+# like 0.7 makes the two parses printably disagree, so only a value like this can catch
+# a regression in ReparseMtlNumbersCorrectlyRounded's `d`/`Ns` branches.
+query III
+SELECT id, transparency::VARCHAR, shininess::VARCHAR FROM obj_materials('test/data/obj/cube.obj');
+----
+0	0.0	0.001
+1	0.30000000000000004	0.0007
+2	0.0	0.001
 
 # Same columns, same order, as cityjson_materials -- a package writer must not care which produced them.
 query I
