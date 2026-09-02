@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 using duckdb::cityjson::TriangulateFace;
+using duckdb::cityjson::TriangulateFaceCorners;
 using duckdb::cityjson::Vertex3;
 
 static int failures = 0;
@@ -51,6 +52,36 @@ int main() {
 		area_rev += a;
 	}
 	CHECK(std::fabs(area_rev + 12.0) < 1e-9);
+
+	// The corner form: triples of positions in the flattened ring order (ring 0's
+	// vertices, then ring 1's), which is what a writer with a per-corner attribute
+	// stream indexes. The reversed-outer square is the case where a corner and the
+	// vertex it names differ (corner 0 is vertex 3), so mapping one onto the other
+	// is a real check rather than an identity.
+	std::vector<std::vector<uint32_t>> holed_rev = {{3, 2, 1, 0}, {4, 5, 6, 7}};
+	auto corners = TriangulateFaceCorners(v, holed_rev);
+	auto by_vertex = TriangulateFace(v, holed_rev);
+	std::vector<uint32_t> flat;
+	for (const auto &ring : holed_rev) {
+		for (uint32_t idx : ring) {
+			flat.push_back(idx);
+		}
+	}
+	CHECK(flat.size() == 8);
+	CHECK(corners.size() == by_vertex.size());
+	bool in_range = true;
+	bool maps_back = corners.size() == by_vertex.size();
+	for (size_t i = 0; i < corners.size(); i++) {
+		if (corners[i] >= flat.size()) {
+			in_range = false;
+			continue;
+		}
+		if (i < by_vertex.size() && flat[corners[i]] != by_vertex[i]) {
+			maps_back = false;
+		}
+	}
+	CHECK(in_range);
+	CHECK(maps_back);
 
 	// A vertical wall (normal along -Y): projection must not collapse it.
 	std::vector<Vertex3> wall = {{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}};

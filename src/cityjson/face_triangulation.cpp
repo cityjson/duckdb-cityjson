@@ -21,8 +21,8 @@ Vertex3 NewellNormal(const std::vector<Vertex3> &vertices, const std::vector<uin
 	return n;
 }
 
-std::vector<uint32_t> TriangulateFace(const std::vector<Vertex3> &vertices,
-                                      const std::vector<std::vector<uint32_t>> &rings) {
+std::vector<uint32_t> TriangulateFaceCorners(const std::vector<Vertex3> &vertices,
+                                             const std::vector<std::vector<uint32_t>> &rings) {
 	std::vector<uint32_t> out;
 	if (rings.empty() || rings[0].size() < 3) {
 		return out;
@@ -58,7 +58,6 @@ std::vector<uint32_t> TriangulateFace(const std::vector<Vertex3> &vertices,
 	const Vertex3 &o = vertices[rings[0][0]];
 	using Point = std::array<double, 2>;
 	std::vector<std::vector<Point>> polygon;
-	std::vector<uint32_t> flat; // earcut index -> vertex index
 	polygon.reserve(rings.size());
 	for (const auto &ring : rings) {
 		std::vector<Point> pts;
@@ -66,7 +65,6 @@ std::vector<uint32_t> TriangulateFace(const std::vector<Vertex3> &vertices,
 		for (uint32_t idx : ring) {
 			const auto &p = vertices[idx];
 			pts.push_back({p[u] - o[u], p[v] - o[v]});
-			flat.push_back(idx);
 		}
 		polygon.push_back(std::move(pts));
 	}
@@ -101,9 +99,22 @@ std::vector<uint32_t> TriangulateFace(const std::vector<Vertex3> &vertices,
 		if ((area < 0) != (outer_area < 0)) {
 			std::swap(b, c);
 		}
-		out.push_back(flat[a]);
-		out.push_back(flat[b]);
-		out.push_back(flat[c]);
+		out.push_back(a);
+		out.push_back(b);
+		out.push_back(c);
+	}
+	return out;
+}
+
+std::vector<uint32_t> TriangulateFace(const std::vector<Vertex3> &vertices,
+                                      const std::vector<std::vector<uint32_t>> &rings) {
+	std::vector<uint32_t> flat; // corner position -> vertex index
+	for (const auto &ring : rings) {
+		flat.insert(flat.end(), ring.begin(), ring.end());
+	}
+	std::vector<uint32_t> out = TriangulateFaceCorners(vertices, rings);
+	for (auto &corner : out) {
+		corner = flat[corner];
 	}
 	return out;
 }
