@@ -1,0 +1,9 @@
+# Written by duckdb-cityjson
+# crs EPSG:7415
+# origin 84500 446300 0
+o NL.1
+v 0.5 0.25 0
+v 1.5 0.25 0
+v 1.5 1.25 0
+v 0.5 1.25 0
+f 1 2 3 4

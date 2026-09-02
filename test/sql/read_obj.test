@@ -136,3 +136,27 @@ query I
 SELECT material_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar') WHERE id = 'cube';
 ----
 {"visual":{"values":[[0,1,1,1,1,2]]}}
+
+# --- `# origin` written by our exporter is added back, so a round trip is exact.
+query I
+SELECT bbox FROM read_obj('test/data/obj/with_origin.obj', lod := '0');
+----
+{'xmin': 84500.5, 'ymin': 446300.25, 'zmin': 0.0, 'xmax': 84501.5, 'ymax': 446301.25, 'zmax': 0.0}
+
+# --- Documented limitation: backslash continuation is refused, not mis-parsed.
+statement error
+SELECT * FROM read_obj('test/data/obj/continuation.obj', lod := '1');
+----
+line 3 ends with a backslash; line continuation is not supported
+
+# --- A face pointing past the vertex list is an error naming the offending index.
+statement error
+SELECT * FROM read_obj('test/data/obj/bad_index.obj', lod := '1');
+----
+face references vertex 9 but 2 vertices have been declared
+
+# --- A missing .mtl is a warning, not an error: the geometry still reads, with no materials.
+query II
+SELECT COUNT(*), COUNT(material_lod1_0) FROM read_obj('test/data/obj/missing_mtl.obj', lod := '1');
+----
+1	0
