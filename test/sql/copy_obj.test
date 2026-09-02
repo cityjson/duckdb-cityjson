@@ -165,6 +165,46 @@ SELECT (SELECT content FROM read_text('__TEST_DIR__/solid_nested.mtl'))
 ----
 true	true
 
+# --- A leading `null` is one face with no texture, not a differently shaped cell.
+#     The shape is measured from the first entry that carries something -- a `null` (or
+#     an empty array, which reads as a ring in its own right) says nothing about the
+#     nesting below it, and measuring from one classifies the whole cell wrongly and
+#     drops the geometry's appearance in silence.
+query I
+SELECT texture_lod2_2 FROM read_cityjson('test/data/null_lead_texture.city.json', lod := '2.2');
+----
+{"visual":{"values":[null,[[0,0,1,2,3]]]}}
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/null_lead_texture.city.json', lod := '2.2'))
+TO '__TEST_DIR__/null_lead.obj' (FORMAT obj);
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/null_lead.obj'))
+WHERE line LIKE 'vt %' OR line LIKE 'f %';
+----
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1 2 3 4
+f 5/1 6/2 7/3 8/4
+
+# --- Sidecar form inlines every UV pair, so a UV *index* in a cell under a declared
+#     sidecar form is a form mistake and is refused. materials_query alone declares the
+#     form -- and is the case where local indices would otherwise be resolved as global
+#     ids -- so the refusal must not wait on a texture id resolving.
+statement error
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
+TO '__TEST_DIR__/uv_refused.obj' (FORMAT obj, materials_query 'SELECT 0 AS id');
+----
+carries a UV index
+
+query I
+SELECT COUNT(*) FROM glob('__TEST_DIR__/uv_refused.*');
+----
+0
+
 # --- The source-ref rule: a source read with appearance := 'sidecar' carries
 #     dataset-global ids in its material/texture cells, which are indistinguishable
 #     from local indices into the file's own blocks. Resolving them there would

@@ -36,6 +36,20 @@ bool IsRingLeaf(const json &node) {
 	return node.is_array() && (node.empty() || !node[0].is_array());
 }
 
+// The element a level can be measured from: the first that carries something. A `null`
+// says nothing about the nesting below it, and an empty array reads as a ring in its
+// own right (IsRingLeaf), so a cell whose first face has no appearance -- a texture
+// `[null, [[0, 0, 1, 2, 3]]]`, a MultiSolid material `[null, [[0, ...]]]` -- is
+// measured from its second. nullptr when the level holds nothing measurable at all.
+const json *FirstMeasurable(const json &values) {
+	for (const auto &element : values) {
+		if (!element.is_null() && !(element.is_array() && element.empty())) {
+			return &element;
+		}
+	}
+	return nullptr;
+}
+
 // Number of array levels from `values` down to (and including) the level whose
 // members satisfy `is_leaf` -- 1 for a flat `[id, id, ...]`, one more per nesting
 // level below that. 0 when `values` isn't uniformly shaped that way at any depth
@@ -45,15 +59,15 @@ int ValuesDepth(const json &values, bool (*is_leaf)(const json &)) {
 		return 0;
 	}
 	int depth = 1;
-	const json *node = &values[0];
-	while (!is_leaf(*node)) {
+	const json *node = FirstMeasurable(values);
+	while (node != nullptr && !is_leaf(*node)) {
 		if (!node->is_array() || node->empty()) {
 			return 0;
 		}
-		node = &(*node)[0];
+		node = FirstMeasurable(*node);
 		depth++;
 	}
-	return depth;
+	return node == nullptr ? 0 : depth;
 }
 
 enum class ValuesShape { Absent, Flat, Nested };
@@ -400,25 +414,30 @@ MeshModel BuildMeshModel(const std::map<std::string, std::vector<std::pair<std::
 				            if (tex_node != nullptr && tex_node->is_array() && !tex_node->empty() &&
 				                (*tex_node)[0].is_array() && !(*tex_node)[0].empty() &&
 				                (*tex_node)[0][0].is_number_integer()) {
-					            auto tid = appearance.ResolveTexture(feature_id, (*tex_node)[0][0].get<int64_t>());
-					            if (tid.has_value()) {
-						            std::vector<std::vector<std::array<double, 2>>> uvs;
-						            bool complete = true;
-						            for (size_t r = 0; r < face.rings.size() && complete; r++) {
-							            const json &tring = r < tex_node->size() ? (*tex_node)[r] : EmptyJson();
-							            std::vector<std::array<double, 2>> ring_uv;
-							            for (size_t k = 1; tring.is_array() && k < tring.size(); k++) {
-								            if (auto uv = appearance.UV(feature_id, tring[k])) {
-									            ring_uv.push_back(*uv);
-								            }
+					            // The UVs are read before the texture id is resolved, because
+					            // reading them is what enforces spec rule 1: sidecar form
+					            // inlines every pair, so AppearanceSource::UV throws on an
+					            // index. materials_query on its own declares the form and
+					            // defines no texture at all -- exactly the case where local
+					            // indices would otherwise be resolved as global ids -- so the
+					            // refusal must not wait on an id resolving.
+					            std::vector<std::vector<std::array<double, 2>>> uvs;
+					            bool complete = true;
+					            for (size_t r = 0; r < face.rings.size() && complete; r++) {
+						            const json &tring = r < tex_node->size() ? (*tex_node)[r] : EmptyJson();
+						            std::vector<std::array<double, 2>> ring_uv;
+						            for (size_t k = 1; tring.is_array() && k < tring.size(); k++) {
+							            if (auto uv = appearance.UV(feature_id, tring[k])) {
+								            ring_uv.push_back(*uv);
 							            }
-							            complete = ring_uv.size() == face.rings[r].size();
-							            uvs.push_back(std::move(ring_uv));
 						            }
-						            if (complete) {
-							            face.texture = *tid;
-							            face.uvs = std::move(uvs);
-						            }
+						            complete = ring_uv.size() == face.rings[r].size();
+						            uvs.push_back(std::move(ring_uv));
+					            }
+					            auto tid = appearance.ResolveTexture(feature_id, (*tex_node)[0][0].get<int64_t>());
+					            if (tid.has_value() && complete) {
+						            face.texture = *tid;
+						            face.uvs = std::move(uvs);
 					            }
 				            }
 				            object.faces.push_back(std::move(face));

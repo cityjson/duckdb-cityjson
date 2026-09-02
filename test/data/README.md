@@ -40,3 +40,13 @@ A hand-written unit-cube `Solid` (one shell, six faces) with `RoofSurface` /
 honoured in both shapes it reaches the mesh writers in: the reader's CityJSON-NESTED
 `values` (one list per shell) and the spec's FLAT `values` (one id per WKB face), the
 latter substituted with a SQL `REPLACE` so no reader produced it.
+
+## null_lead_texture.city.json
+
+A hand-written LoD 2.2 `MultiSurface` of two disjoint unit squares whose texture
+`values` are `[null, [[0, 0, 1, 2, 3]]]`: the first face carries no texture, the second
+a full ring of UV indices. It exists so `copy_obj.test` can pin that a cell's shape is
+measured from the first entry that carries something -- measuring from the leading
+`null` classifies the cell as a shape it is not, and the geometry loses its appearance
+without a warning. The image it names (`brick.png`) is deliberately not on disk: the
+`vt` and `f v/vt` lines are what the test is about, not `map_Kd`.
