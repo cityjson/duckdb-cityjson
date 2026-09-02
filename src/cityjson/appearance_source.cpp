@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 
 namespace duckdb {
 namespace cityjson {
@@ -51,6 +52,12 @@ std::optional<std::array<double, 3>> TripleFromList(const Value &v) {
 	if (children.size() < 3) {
 		return std::nullopt;
 	}
+	// A NULL component is reachable from a user-typed *_query (e.g. [0.5, NULL, 0.2]);
+	// Value::GetValue on a NULL throws InternalException, which DuckDB treats as
+	// database-invalidating, so refuse rather than let one through.
+	if (children[0].IsNull() || children[1].IsNull() || children[2].IsNull()) {
+		return std::nullopt;
+	}
 	return std::array<double, 3> {children[0].GetValue<double>(), children[1].GetValue<double>(),
 	                              children[2].GetValue<double>()};
 }
@@ -86,6 +93,9 @@ AppearanceSource AppearanceSource::FromLocal(const std::optional<json> &header,
 AppearanceSource AppearanceSource::FromQueries(ClientContext &context,
                                                const std::optional<std::string> &materials_query,
                                                const std::optional<std::string> &textures_query) {
+	// At least one of materials_query / textures_query is expected to be set -- the
+	// caller (Task 6's bind) only reaches FromQueries when one of the *_query COPY
+	// options is present. Neither present yields an empty (still valid) sidecar source.
 	AppearanceSource src;
 	src.sidecar_ = true;
 	// A separate connection: the COPY bind holds the current one (see ParseMetadataFromQuery).
@@ -171,6 +181,15 @@ AppearanceSource AppearanceSource::FromQueries(ClientContext &context,
 				t.wrap_mode = wrap.IsNull() ? "wrap" : wrap.ToString();
 				auto data = get(*chunk, c_data, row);
 				if (!data.IsNull()) {
+					// StringValue::Get only D_ASSERTs the physical type before
+					// dereferencing: a non-BLOB/VARCHAR value (an INTEGER column, say)
+					// either null-derefs in a release build or throws InternalException
+					// (database-invalidating). Refuse with an ordinary user-facing error
+					// instead -- reachable straight from a user-typed textures_query.
+					if (data.type().InternalType() != PhysicalType::VARCHAR) {
+						throw InvalidInputException("textures_query: image_data must be BLOB, got %s",
+						                            data.type().ToString());
+					}
 					auto &blob = StringValue::Get(data);
 					t.image_data.assign(blob.begin(), blob.end());
 				}
@@ -201,7 +220,11 @@ std::optional<std::array<double, 2>> AppearanceSource::UV(const std::string &fea
 	if (uv_ref.is_array() && uv_ref.size() >= 2 && uv_ref[0].is_number() && uv_ref[1].is_number()) {
 		return std::array<double, 2> {uv_ref[0].get<double>(), uv_ref[1].get<double>()};
 	}
-	if (!uv_ref.is_number_integer()) {
+	// An index may arrive as a JSON float that happens to be integral (e.g. `3.0`,
+	// produced by some encoders/query engines) -- treat it the same as a genuine
+	// integer rather than silently returning nullopt (which would hide a sidecar-form
+	// mistake that should throw below).
+	if (!uv_ref.is_number() || uv_ref.get<double>() != std::floor(uv_ref.get<double>())) {
 		return std::nullopt;
 	}
 	if (sidecar_) {
@@ -233,6 +256,14 @@ bool AppearanceSource::LoadImage(ClientContext &context, int64_t texture_id, con
 		return false;
 	}
 	auto &tex = it->second;
+	// Inferred ahead of the early returns below: a texture row can carry bytes already
+	// (sidecar image_data) but no image_type, and it should still get one from the URI.
+	if (tex.image_type.empty() && !tex.image_uri.empty()) {
+		auto dot = tex.image_uri.rfind('.');
+		std::string ext = dot == std::string::npos ? "" : tex.image_uri.substr(dot + 1);
+		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::toupper(c); });
+		tex.image_type = ext == "JPEG" ? "JPG" : ext;
+	}
 	if (!tex.image_data.empty()) {
 		return true;
 	}
@@ -245,15 +276,12 @@ bool AppearanceSource::LoadImage(ClientContext &context, int64_t texture_id, con
 	try {
 		auto content = json_utils::ReadFileContent(context, path);
 		tex.image_data.assign(content.begin(), content.end());
-	} catch (const CityJSONError &e) {
+	} catch (const std::exception &e) {
+		// Catches CityJSONError (OpenFile failures) and every plain DuckDB exception
+		// ReadFileContent lets through uncaught -- httpfs autoload, GetFileSize, Read --
+		// so a remote or otherwise-unreadable image_uri warns instead of aborting the COPY.
 		warning = "texture " + std::to_string(texture_id) + ": could not read '" + path + "': " + e.what();
 		return false;
-	}
-	if (tex.image_type.empty()) {
-		auto dot = tex.image_uri.rfind('.');
-		std::string ext = dot == std::string::npos ? "" : tex.image_uri.substr(dot + 1);
-		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::toupper(c); });
-		tex.image_type = ext == "JPEG" ? "JPG" : ext;
 	}
 	return true;
 }
