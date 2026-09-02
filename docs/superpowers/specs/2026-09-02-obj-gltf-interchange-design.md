@@ -305,7 +305,8 @@ f 5 6 7 8
   `emissiveColor`, `d` = `1 - transparency`, `Ns` = `shininess * 1000`,
   `map_Kd <image>` for textured materials. Default-colour surfaces get
   `newmtl RoofSurface` etc. Texture images are copied beside the OBJ under
-  their original basename (de-duplicated by `id`).
+  their original basename (de-duplicated by `id`). A material whose name
+  collides with another entry's has `_<id>` appended.
 
 ### glTF / GLB output
 
