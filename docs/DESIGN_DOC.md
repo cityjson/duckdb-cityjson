@@ -250,6 +250,21 @@ Vertices are quantised to integers against the transform on the way out, so the
 transform's scale *is* the output precision. The default is chosen so round trips
 stay lossless for large projected national coordinates.
 
+The mesh writers share the CityJSON writers' bind, sink and combine: the sink
+already rebuilds each row as a CityJSON object with coordinates, semantics and
+appearance refs, and only `Finalize` differs. `BuildMeshModel` flattens those
+objects into per-object vertex pools and faces (rings, surface, material,
+texture, UVs) once per COPY; `AppearanceSource` resolves refs either through the
+source's own blocks (local form) or through the two query options (sidecar
+form), and the writer never sees the difference. A material or texture cell
+itself reaches `BuildMeshModel` in either of two shapes, orthogonally to form —
+the CityParquet spec's flat, per-WKB-face shape, or this extension's reader's
+nested, per-shell shape — and it classifies which by nesting depth, so both
+shapes colour the same faces. Faces with holes are
+triangulated with earcut after projection onto their Newell normal, shifted to
+the ring's first vertex so the signed-area tests do not drown at projected
+magnitudes.
+
 ## 10. CRS handling
 
 CRSs are compared as **PROJJSON**, never as strings: a Parquet footer holds

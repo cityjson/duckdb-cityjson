@@ -34,7 +34,7 @@ LOAD cityjson;
 - [Appearance sidecars](#appearance-sidecars) — `cityjson_materials`, `cityjson_textures`, `cityjson_geometry_templates`
 - [Scalar helpers](#scalar-helpers) — `cityjson_wkb_extent`, `cityjson_appearance_ids`
 - [CityParquet packages](#cityparquet-packages) — the `cityparquet_*` / `insert_*` pragmas
-- [Mesh interchange](#mesh-interchange) — `read_obj`, `obj_materials`, `obj_textures`, `obj_metadata`
+- [Mesh interchange](#mesh-interchange) — `read_obj`, `obj_materials`, `obj_textures`, `obj_metadata`, `COPY … TO (FORMAT obj)`
 - [Output schema](#output-schema) — column grammar in detail
 
 ---
@@ -942,6 +942,243 @@ COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2')) TO 'cube_o
 
 SELECT reference_system.code FROM cityjsonseq_metadata('cube_out.city.jsonl');
 -- 7415
+```
+
+### `COPY … TO 'x.obj' (FORMAT obj)`
+
+Writes any relation the CityJSON writers accept (`id`, `feature_id`,
+`object_type`, `geometry_lod*` and companions) as Wavefront OBJ, following what
+cjio, 3dfier and geoflow write: one `o` per object, `g` per semantic surface,
+`usemtl` per material, Z-up, no axis swap.
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO 'holed.obj' (FORMAT obj, lod '2.2');
+```
+
+```text
+# Written by duckdb-cityjson
+# crs https://www.opengis.net/def/crs/EPSG/0/7415
+# origin 84500 446300 0
+mtllib holed.mtl
+o courtyard
+v 0 0 10
+v 4 0 10
+v 4 4 10
+v 0 4 10
+v 1 1 10
+v 1 3 10
+v 3 3 10
+v 3 1 10
+v 0 0 0
+v 4 0 0
+g RoofSurface
+usemtl RoofSurface
+f 1 5 6
+f 8 5 1
+f 4 1 6
+f 8 1 2
+f 3 4 6
+f 7 8 2
+f 3 6 7
+f 7 2 3
+g WallSurface
+usemtl WallSurface
+f 9 10 2 1
+```
+
+The roof has a hole, which OBJ cannot express, so it is triangulated by earcut —
+eight 3-vertex faces rather than one 8-vertex n-gon. (Which eight triangles
+earcut picks is an implementation detail; the invariant is the count.)
+
+Every `o` block opens with its own `g` and `usemtl` lines, even when the object
+carries only one surface: OBJ lets `usemtl`/`g` persist across an `o` with
+nothing to say (`read_obj`, above, relies on exactly that), so this writer
+restates both on every object rather than counting on a reader to carry state
+forward correctly. A face with no semantic surface is in group `default`:
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json', lod := '2.2'))
+TO 'minimal.obj' (FORMAT obj);
+```
+
+```text
+# Written by duckdb-cityjson
+mtllib minimal.mtl
+o building1
+v 0 0 0
+v 10 0 0
+v 10 10 0
+v 0 10 0
+g default
+usemtl Building
+f 1 2 3 4
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `lod` | highest per object | Which `geometry_lodX_Y` to export; objects with nothing there are skipped (a warning, not an error — see below) |
+| `origin` | `'auto'` | Subtract the extent's minimum corner (`'auto'`), nothing (`'none'`), or `'x,y,z'`. Recorded as `# origin x y z`, which `read_obj` adds back |
+| `triangulate` | `false` | Hole-free faces stay n-gons; faces with holes are always triangulated (OBJ cannot express holes) |
+| `precision` | `17` | Significant digits; 17 is the shortest text that round-trips |
+| `materials_query`, `textures_query` | none | SQL returning `materials.parquet` / `textures.parquet`-shaped rows. **Their presence declares the cells to be sidecar-form.** Absent, refs are local-form and resolve against the discovered source or `metadata_from`. The missing-form refusal (below) only fires for a **discovered** source — `COPY my_table TO … (FORMAT obj)` never sees the `read_cityjson[seq](…, appearance := 'sidecar')` call that produced `my_table`, so the cells silently resolve as local-form instead of being refused |
+| `metadata_from` | discovered | As for the CityJSON writers |
+
+Remote output paths are not supported for mesh formats: the `.obj`, `.mtl` and any
+copied images are written with local file streams, never through DuckDB's own
+filesystem abstraction, so `COPY … TO 's3://…/x.obj'` fails opening the output
+rather than reaching object storage:
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO 's3://nonexistent-bucket-cityjson-test/x.obj' (FORMAT obj);
+-- Invalid Error: Failed to open output file: s3://nonexistent-bucket-cityjson-test/x.obj
+```
+
+A `.mtl` named after the OBJ is written beside it: `Kd`/`Ks`/`Ke`/`d`/`Ns` from the
+CityJSON material, `map_Kd` when the face carries a texture whose bytes could be
+found (`image_data`, else `image_uri` relative to the source), copied beside the OBJ
+under its own basename. A textured face gets its own entry (`brick__tex0`) because
+OBJ ties images to materials — `test/data/obj/cube.obj`'s `brick` material becomes
+two `.mtl` entries once a texture is supplied for it:
+
+```sql
+CREATE TABLE tex_rows AS
+    SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar');
+CREATE TABLE tex_defs AS
+    SELECT id, image_uri, '\x89PNG\x0D\x0A\x1A\x0A'::BLOB AS image_data,
+           image_type, wrapMode, textureType, borderColor, other
+    FROM obj_textures('test/data/obj/cube.obj');
+
+COPY (SELECT * FROM tex_rows) TO 'textured.obj'
+(FORMAT obj, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')',
+             textures_query 'SELECT * FROM tex_defs');
+```
+
+```text
+newmtl GroundSurface
+Kd 0.3 0.3 0.3
+d 1
+
+newmtl brick__tex0
+Kd 0.7 0.3 0.2
+Ks 0.1 0.1 0.1
+d 0.7
+Ns 0.7
+map_Kd brick.png
+
+newmtl RoofSurface
+Kd 0.9 0.06 0.09
+d 0.7
+```
+
+The `.obj`'s faces carry `v/vt` pairs wherever a texture is resolved, plain `v`
+otherwise (the first face is untextured, the next two are):
+
+```text
+f 1 2 3 4
+f 1/1 4/2 5/3 6/4
+f 4/1 3/2 7/3 5/4
+…
+```
+
+Faces without a material are named after their semantic surface type, else their
+class, with a fixed palette. `.mtl` entries are keyed by **identity**, not by the
+rendered name string, so two distinct identities that would render to the same
+label — a material and a default-coloured face sharing a name, two materials
+sharing a name, or (as below) two default-coloured identities that differ only
+in what texture they tried and failed to carry — get distinct entries, and the
+later one is suffixed: `_<id>` for a colliding CityJSON material, `_default` for
+a colliding default-colour entry. `railway_appearance.city.jsonl` has two
+untextured-in-practice `Bridge` faces that collide this way — one carries a
+texture reference whose image cannot be loaded, one carries none at all, and
+both fall back to the same class default colour:
+
+```sql
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO 'railway.obj' (FORMAT obj, lod '3');
+
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('railway.mtl'))
+WHERE line LIKE 'newmtl Bridge%' OR line LIKE 'Kd%' LIMIT 4;
+-- newmtl Bridge
+-- Kd 0.6 0.4 0.7
+-- newmtl Bridge_default
+-- Kd 0.6 0.4 0.7
+```
+
+A CityJSON-material collision looks the same but suffixes with the colliding
+material's id instead: two source materials both named `"brick"` (ids `0` and
+`1` — no committed fixture happens to have this, so this is a small inline
+CityJSON document) land as `newmtl brick` / `newmtl brick_1`.
+
+A material or texture cell also comes in two **shapes**, independently of which
+form it is in: the CityParquet spec's flat, per-WKB-face shape, or this
+extension's own reader's nested, per-shell shape — the reader always emits the
+nested shape when it re-serialises a row, but a spec-conformant writer emits the
+flat one, so the mesh writer accepts either, classifying by nesting depth:
+
+```sql
+SELECT material_lod2_2 FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
+-- {"visual":{"values":[[0,1,1,1,1,2]]}}      ← nested: one array per shell
+```
+
+Which **form** — local or sidecar — a cell is in is a separate question, and
+cannot be told from the cell itself (`{"visual":{"values":[2,…]}}` either way
+regardless of form). So a source that was read with `appearance := 'sidecar'`
+and no `*_query` is refused rather than guessed:
+
+```sql
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO 'refused.obj' (FORMAT obj, lod '3');
+-- Binder Error: COPY TO obj: the source was read with appearance := 'sidecar', so its
+-- material/texture cells hold sidecar ids; pass materials_query / textures_query
+-- (e.g. materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')')
+-- so they can be resolved
+
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO 'accepted.obj' (FORMAT obj, lod '3',
+    materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
+
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('accepted.mtl'))
+WHERE line LIKE 'newmtl%';
+-- newmtl Bridge
+-- newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
+-- newmtl UUID_0794715b-1334-4855-83d3-8e8270c11e78
+```
+
+A texture whose bytes cannot be found is not fatal — the face keeps its material
+colour, no `map_Kd` is written, and a warning is logged. `railway_appearance.city.jsonl`
+references two images that are not on disk beside the fixture, so this is a live
+example rather than a contrived one:
+
+```sql
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO 'railway.obj' (FORMAT obj, lod '3');
+-- WARNING: cityjson: texture 2: could not read 'test/data/appearances/Bruecke-Schotter.jpg':
+--          Failed to open file: test/data/appearances/Bruecke-Schotter.jpg; faces fall back to the material colour
+-- WARNING: cityjson: texture 3: could not read 'test/data/appearances/Bruecke-Beton.jpg':
+--          Failed to open file: test/data/appearances/Bruecke-Beton.jpg; faces fall back to the material colour
+
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('railway.mtl'))
+WHERE line LIKE 'map_Kd%';
+-- 0
+```
+
+Objects the writer skips — no geometry, nothing at the requested `lod`, missing
+`boundaries`, a degenerate ring, or the legacy `geom_lod*` STRUCT layout whose
+`boundaries` are vertex indices rather than `[x,y,z]` coordinates — produce a
+warning in `duckdb_logs`, not an error, so one malformed object does not fail the
+whole COPY:
+
+```sql
+SET enable_logging = true;
+SET logging_storage = 'memory';
+
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO 'delft_lod12.obj' (FORMAT obj, lod '1.2');
+
+SELECT message FROM duckdb_logs() WHERE message LIKE 'cityjson:%' LIMIT 1;
+-- cityjson: object NL.IMBAG.Pand.0503100000012869: no geometry at lod '1.2'
 ```
 
 ---

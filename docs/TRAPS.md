@@ -163,6 +163,30 @@ columns, never the definitions.
   call should not pay for, and a NULL is honest where a plausible wrong number is not. All
   three metadata functions share the schema, which is why the column is NULLed rather than
   dropped.
+- **Local and sidecar material cells are indistinguishable.** Only texture cells
+  differ (`[id, 5, 6]` vs `[id, [u,v], …]`). Mesh COPY is therefore *told* the
+  form: `materials_query`/`textures_query` present means sidecar. A source read
+  with `appearance := 'sidecar'` is refused without them; `FindCopySourceRef`
+  carries that flag. The refusal only fires for a **discovered** source — a
+  materialised table (`COPY my_table TO … (FORMAT obj)`) hides the
+  `read_cityjson[seq](…, appearance := 'sidecar')` call that produced it, so the
+  form cannot be told and the cells silently resolve as local-form instead of
+  being refused.
+- **A material/texture cell also comes in two *shapes*, orthogonally to form.**
+  This extension's own reader always re-serialises a row's material/texture
+  column as the nested, per-shell form; the CityParquet spec defines the flat,
+  per-WKB-face form. `BuildMeshModel` accepts both by inspecting nesting depth,
+  because a mesh COPY source is not always this extension's own reader — a
+  spec-conformant Parquet writer emits the flat shape, and both must colour the
+  same faces.
+- **Sidecar files and the temp-rename.** `Finalize` writes the main file to
+  DuckDB's temp path, which is renamed afterwards. The `.mtl` and copied images
+  are not covered: they are written directly under the *final* stem, and
+  `mtllib` references the final basename. Naming them from the temp path
+  produces a file that references a name that never exists. A rename failure
+  after a successful finalize therefore leaves the `.mtl` (and any copied
+  images) sitting beside a final path that was never created; `WriteOBJ` writes
+  the `.obj` before the `.mtl`, so a failure mid-write leaves nothing at all.
 
 ## Readers
 
