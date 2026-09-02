@@ -13,6 +13,8 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <map>
 #include <set>
 #include <sstream>
@@ -148,6 +150,77 @@ void ObjectCb(void *user, const char *name) {
 	st.current_object = st.objects.size() - 1;
 }
 
+// tinyobjloader's own numeric parser (`tryParseDouble` in the vendored header) accumulates
+// the decimal part digit by digit in double arithmetic rather than converting the decimal
+// literal to binary correctly-rounded, so e.g. "0.3" comes back one ULP off. `real_t` is
+// `double` in the vendored copy regardless of TINYOBJLOADER_USE_DOUBLE, so nothing narrows
+// that error away downstream. Re-parse the numeric directives ourselves with `strtod`,
+// which is correctly rounded, and overwrite what `tinyobj::LoadMtl` already stored --
+// mirroring its own `d`-wins-over-`Tr` rule so the two parses never disagree on which value
+// won, only on its last bit.
+void ReparseMtlNumbersCorrectlyRounded(const std::string &content, const std::map<std::string, int> &mat_map,
+                                       std::vector<tinyobj::material_t> *materials) {
+	auto starts_with_directive = [](const std::string &line, const char *key) {
+		size_t len = std::strlen(key);
+		return line.size() > len && line.compare(0, len, key) == 0 &&
+		       std::isspace(static_cast<unsigned char>(line[len])) != 0;
+	};
+	auto parse3 = [](const std::string &rest, tinyobj::real_t out[3]) {
+		const char *p = rest.c_str();
+		char *end = nullptr;
+		for (int i = 0; i < 3; i++) {
+			out[i] = static_cast<tinyobj::real_t>(std::strtod(p, &end));
+			p = end;
+		}
+	};
+
+	std::istringstream in(content);
+	std::string line;
+	int current = -1;
+	bool has_d = false;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r') {
+			line.pop_back();
+		}
+		size_t start = line.find_first_not_of(" \t");
+		if (start == std::string::npos) {
+			continue;
+		}
+		line = line.substr(start);
+
+		if (line.compare(0, 6, "newmtl") == 0 &&
+		    (line.size() == 6 || std::isspace(static_cast<unsigned char>(line[6])) != 0)) {
+			std::string name = line.substr(6);
+			size_t name_start = name.find_first_not_of(" \t");
+			name = name_start == std::string::npos ? "" : name.substr(name_start);
+			auto it = mat_map.find(name);
+			current = it != mat_map.end() ? it->second : -1;
+			has_d = false;
+			continue;
+		}
+		if (current < 0 || current >= static_cast<int>(materials->size())) {
+			continue;
+		}
+		auto &m = (*materials)[static_cast<size_t>(current)];
+		if (starts_with_directive(line, "Ka")) {
+			parse3(line.substr(2), m.ambient);
+		} else if (starts_with_directive(line, "Kd")) {
+			parse3(line.substr(2), m.diffuse);
+		} else if (starts_with_directive(line, "Ks")) {
+			parse3(line.substr(2), m.specular);
+		} else if (starts_with_directive(line, "Ke")) {
+			parse3(line.substr(2), m.emission);
+		} else if (starts_with_directive(line, "Ns")) {
+			m.shininess = static_cast<tinyobj::real_t>(std::strtod(line.c_str() + 2, nullptr));
+		} else if (line.size() > 1 && line[0] == 'd' && std::isspace(static_cast<unsigned char>(line[1])) != 0) {
+			m.dissolve = static_cast<tinyobj::real_t>(std::strtod(line.c_str() + 1, nullptr));
+			has_d = true;
+		} else if (starts_with_directive(line, "Tr") && !has_d) {
+			m.dissolve = static_cast<tinyobj::real_t>(1.0 - std::strtod(line.c_str() + 2, nullptr));
+		}
+	}
+}
+
 // `.mtl` files named by `mtllib`, resolved against the OBJ's directory and read through
 // DuckDB's FileSystem -- tinyobjloader's own MaterialFileReader would std::ifstream them
 // and lose every remote path.
@@ -170,6 +243,7 @@ public:
 		}
 		std::istringstream in(content);
 		tinyobj::LoadMtl(mat_map, materials, &in, warn, err);
+		ReparseMtlNumbersCorrectlyRounded(content, *mat_map, materials);
 		return true;
 	}
 
