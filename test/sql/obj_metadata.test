@@ -56,3 +56,36 @@ SELECT name FROM cityjson_materials('__TEST_DIR__/cube_from_obj.city.jsonl') ORD
 GroundSurface
 brick
 RoofSurface
+
+# Each Seq feature carries its own vertices-texture pool (the OBJ reader's texture refs
+# are file-global indices, so every feature line that resolves one needs the pool that
+# index points into) rather than relying on the header block a feature line never sees.
+query II
+SELECT count(*) FILTER (line LIKE '%"texture"%'),
+       count(*) FILTER (line LIKE '%"texture"%' AND line LIKE '%"vertices-texture"%')
+FROM (SELECT UNNEST(string_split(content, chr(10))) AS line
+      FROM read_text('__TEST_DIR__/cube_from_obj.city.jsonl'));
+----
+1	1
+
+# The texture's own identity travels too.
+query II
+SELECT image_uri, image_type FROM cityjson_textures('__TEST_DIR__/cube_from_obj.city.jsonl');
+----
+brick.png	PNG
+
+# metadata_from names an OBJ source explicitly, for a query the discoverer cannot
+# resolve on its own (a plain table, here) -- the ".obj" suffix is what tells the
+# copy function this is is_obj rather than a CityJSON(Seq) path.
+statement ok
+CREATE TABLE cube_rows AS SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+
+statement ok
+COPY (SELECT * FROM cube_rows) TO '__TEST_DIR__/cube_metadata_from.city.jsonl'
+(FORMAT cityjsonseq, metadata_from 'test/data/obj/cube.obj');
+
+query II
+SELECT (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/cube_metadata_from.city.jsonl')),
+       (SELECT COUNT(*) FROM cityjson_textures('__TEST_DIR__/cube_metadata_from.city.jsonl'));
+----
+3	1

@@ -277,6 +277,10 @@ SELECT reference_system.code FROM cityjsonseq_metadata('delft_out.city.jsonl');
 -- 7415
 ```
 
+A `read_obj` source is discovered the same way: its `.mtl` materials and
+textures, and the `vt` UV pool they reference, travel into the written
+`appearance` block just as a CityJSON(Seq) source's would.
+
 This needs the source to be **statically discoverable**. `COPY my_table TO …`, a
 join across two sources, and a computed path are not; an ambiguous source is
 refused rather than guessed at, because stamping the wrong CRS onto georeferenced

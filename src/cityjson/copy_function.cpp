@@ -317,16 +317,33 @@ static uint16_t ParseTreeTuningOption(const Value &val, const std::string &optio
 // The source ref arrives as its own parameter rather than being read back out of
 // bind_data.source_ref: the caller has already established the optional holds a value,
 // and dereferencing it again here would be an unchecked access.
-static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref,
-                                 CityJSONCopyBindData &bind_data) {
+// `reader` and `source_meta` are the caller's already-open reader and its already-read
+// metadata: an OBJ source has no JSON to lift a per-feature block from, so its branch
+// reuses them rather than opening a second OBJReader over the same path and parsing
+// the whole file again.
+static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref, CityJSONReader &reader,
+                                 const CityJSON &source_meta, CityJSONCopyBindData &bind_data) {
 	if (source_ref.is_obj) {
-		// No JSON to lift a block from: re-emit the reader's definitions as CityJSON.
-		OBJReadOptions obj_options;
-		obj_options.lod = "0.0";
-		OBJReader reader(context, source_ref.path, obj_options);
-		auto header = reader.ReadMetadata();
-		if (header.appearance.has_value() && !header.appearance->Empty()) {
-			bind_data.source_appearance_header = header.appearance->ToJson();
+		if (!source_meta.appearance.has_value() || source_meta.appearance->Empty()) {
+			return;
+		}
+		auto appearance_json = source_meta.appearance->ToJson();
+		bind_data.source_appearance_header = appearance_json;
+
+		// An OBJ's texture refs are file-global indices into the one `vt` pool tinyobj
+		// produced, and the reader never renumbers them per object -- unlike position
+		// vertices, which do get a per-feature-local pool. So the whole pool, verbatim,
+		// serves every object's feature line: index i means the same UV coordinate in
+		// each copy. Every object gets the same block whether or not it uses textures;
+		// an unused pool is harmless, and the reader's own parse (memoised on `reader`)
+		// is not repeated to find out which objects do.
+		auto vt_it = appearance_json.find("vertices-texture");
+		if (vt_it == appearance_json.end()) {
+			return;
+		}
+		json feature_appearance = json {{"vertices-texture", *vt_it}};
+		for (const auto &feature : reader.ReadAllChunks().records) {
+			bind_data.source_appearance_by_feature[feature.id] = feature_appearance;
 		}
 		return;
 	}
@@ -528,7 +545,7 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 					bind_data->point_of_contact = source_meta.metadata->point_of_contact;
 				}
 			}
-			LoadSourceAppearance(context, source_ref, *bind_data);
+			LoadSourceAppearance(context, source_ref, *reader, source_meta, *bind_data);
 		} catch (const std::exception &e) {
 			// An unreadable source is not fatal -- the rows are what is being copied,
 			// and the metadata is a bonus. Warn rather than fail the whole COPY.

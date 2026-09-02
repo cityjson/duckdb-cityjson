@@ -111,14 +111,24 @@ columns, never the definitions.
 
 - **`COPY` recovers its source from the parsed SELECT.** `FindCopySourceRef`
   (`copy_source_ref.cpp`) walks `CopyInfo::select_statement` for exactly one
-  `read_cityjson[seq]` / `read_flatcitybuf` call; it survives to our bind because
-  `bind_copy.cpp:97` copies rather than moves it and `:118` hands the whole `CopyInfo` to
-  `CopyFunctionBindInput`. **An ambiguous query — no reader call, more than one, or a
-  non-literal path — returns `nullopt`, never a guess**: stamping a wrong CRS onto
-  georeferenced output is worse than stamping none. `COPY my_table TO …` is not
+  `read_cityjson[seq]` / `read_flatcitybuf` / `read_obj` call; it survives to our bind
+  because `bind_copy.cpp:97` copies rather than moves it and `:118` hands the whole
+  `CopyInfo` to `CopyFunctionBindInput`. **An ambiguous query — no reader call, more than
+  one, or a non-literal path — returns `nullopt`, never a guess**: stamping a wrong CRS
+  onto georeferenced output is worse than stamping none. `COPY my_table TO …` is not
   discoverable, which is what `metadata_from` is for; a `DUCKDB_LOG_WARNING` fires when
   neither applies. Precedence: `crs` / `metadata_query` > `metadata_from` > discovered
   source.
+- **An OBJ source has no JSON block to lift `appearance` from.** `LoadSourceAppearance`
+  builds it instead from the same `OBJReader` the bind already opened for metadata
+  (`ReadMetadata`), re-emitted via `Appearance::ToJson`; a second `OBJReader` over the
+  same path is never constructed, since the first one memoises its parse and
+  `ReadAllChunks` on it is free. The reader never renumbers a face's texture-coordinate
+  indices per object — they stay file-global into the one `vt` pool tinyobj produced —
+  so the fix is to copy that whole pool, verbatim, onto every object's own
+  `vertices-texture` block rather than slicing it: index *i* then means the same UV
+  coordinate in every copy, at the cost of carrying the unused rest of the pool on
+  objects that reference none of it.
 - **Appearance blocks are per-feature and their refs are feature-local.** In CityJSONSeq
   every feature carries its own `appearance`, and its material/texture indices are local
   to that block, exactly as its boundary indices are local to its own `vertices` pool.

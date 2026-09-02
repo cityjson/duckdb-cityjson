@@ -18,7 +18,7 @@ struct CopySourceRef {
 };
 
 //! Walk a parsed query node for exactly one read_cityjson / read_cityjsonseq /
-//! read_flatcitybuf call and return the file it names.
+//! read_flatcitybuf / read_obj call and return the file it names.
 //!
 //! COPY binds a relation, not a file, so anything the source carries at FILE level
 //! -- its metadata header (the CRS above all) and its appearance definitions -- is
