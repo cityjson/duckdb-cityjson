@@ -31,7 +31,7 @@ struct MeshObject {
 	std::string lod;
 	json attributes; // object or null
 	std::vector<Vertex3> vertices;
-	std::vector<std::string> surfaces; // semantic surface types, in first-use order
+	std::vector<std::string> surfaces; // semantic surface types, in the source's `semantics.surfaces` order
 	std::vector<MeshFace> faces;
 };
 
