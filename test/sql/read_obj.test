@@ -107,3 +107,32 @@ statement error
 SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', geometry_type := 'CompositeSolid');
 ----
 geometry_type must be 'auto', 'Solid' or 'MultiSurface'
+
+# --- material_lod*: one theme "visual", values per face in WKB face order; ids are MTL ordinals.
+query II
+SELECT id, material_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	{"visual":{"values":[[0,1,1,1,1,2]]}}
+slab	{"visual":{"values":[2]}}
+
+# --- texture_lod* in local form: [texId, vtIdx…] per ring for the four textured walls, [null] elsewhere.
+query I
+SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'cube';
+----
+{"visual":{"values":[[[[null]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[null]]]]}}
+
+query I
+SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'slab';
+----
+NULL
+
+# --- appearance := 'sidecar' inlines the UVs; ids are unchanged (one file, one definition set).
+query I
+SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar') WHERE id = 'cube';
+----
+{"visual":{"values":[[[[null]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[null]]]]}}
+
+query I
+SELECT material_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar') WHERE id = 'cube';
+----
+{"visual":{"values":[[0,1,1,1,1,2]]}}
