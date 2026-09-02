@@ -112,8 +112,8 @@ other source.
   `WaterGroundSurface`, `TrafficArea`, `AuxiliaryTrafficArea`, `+…`
   extension names) becomes that surface; the face's `face_semantics` entry
   points at it and `surfaces` holds one `{"type": …}` per distinct name.
-  Any other `usemtl` name is a material, not a surface. When no `usemtl`
-  governs a face, the innermost `g` name is used under the same rule. Faces
+  Any other `usemtl` name is a material, not a surface. When the `usemtl`
+  name is not a surface type, the innermost `g` name is used under the same rule. Faces
   that match neither get NULL semantics. This is the Obj2CityGML convention
   (surface types from group and material names) and the inverse of what the
   writer below emits, so a round trip preserves semantics.

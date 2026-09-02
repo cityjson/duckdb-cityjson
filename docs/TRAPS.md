@@ -185,6 +185,22 @@ columns, never the definitions.
   than mis-parse them.
 - **OBJ state persists across `o`.** A `usemtl` or `g` before an `o` still
   governs the faces after it. `cube.obj`'s slab pins this.
+- **A repeated `o` resumes its object**, so the reader keeps a name → index map
+  beside the object list. Resolving each `o` by scanning the objects seen so far
+  makes the parse quadratic in the object count, which a national tile
+  (hundreds of thousands of `o` lines) feels as tens of seconds.
+- **`tinyobj::material_t` cannot say a directive was absent.** Every field is
+  default-initialised, so an unstated `Ks` is indistinguishable from a black one,
+  and tinyobjloader parses `illum`, `Ni`, `map_Ks`, `map_bump` and more into typed
+  fields of its own, reaching `unknown_parameter` only for what it does not model.
+  `ReparseMtl` therefore reads the `.mtl` itself, records what each block states as
+  optionals, and harvests every unmapped directive verbatim into `other`;
+  `material_t` is consulted only for the `newmtl` name and `map_Kd`. Its own flush
+  is a trap in the same place: mid-file it flushes a block only when the name is
+  non-empty, at EOF unconditionally, so a `.mtl` with no `newmtl` at all yields one
+  empty-named material. The reader pops it — and then has to report the read as a
+  failure when nothing is left accumulated, because tinyobjloader answers a
+  successful `mtllib` with `materials.at(0)`.
 
 ## FlatCityBuf
 

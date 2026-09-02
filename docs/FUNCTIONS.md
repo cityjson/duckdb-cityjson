@@ -885,8 +885,9 @@ Mapping:
   `texture_lod*` rings that index the file's `vt` list (`'sidecar'` inlines
   them). Faces without UVs carry `[null]`.
 - Positive and negative (relative) indices; `v` with a fourth component; `vn`
-  ignored. A line ending in `\` (continuation) is refused. A missing `.mtl`
-  is a warning and the geometry still reads.
+  ignored. A line ending in `\` (continuation) is refused. A missing `.mtl`, or
+  one that declares no material, is a warning in `duckdb_logs` and the geometry
+  still reads.
 - Coordinates are taken as written, Z-up, no axis swap — what cjio, 3dfier and
   geoflow write. A `# origin x y z` header comment, as the OBJ writer emits, is
   added back.
@@ -895,16 +896,21 @@ Mapping:
 
 The `.mtl` as `materials.parquet` / `textures.parquet` rows, same columns as
 `cityjson_materials` / `cityjson_textures`. `Kd`→`diffuseColor`, `Ks`→`specularColor`,
-`Ke`→`emissiveColor`, mean `Ka`→`ambientIntensity`, `1 − d`→`transparency`,
-`Ns / 1000`→`shininess`; `map_Kd`→`image_uri` with `image_type` from the extension,
-`wrapMode` `wrap`, `textureType` `unknown`, `image_data` NULL.
+`Ke`→`emissiveColor`, mean `Ka`→`ambientIntensity`, `1 − d` — or `Tr` as written, in a
+block that has no `d` — →`transparency`, `Ns / 1000`→`shininess`; every other directive
+(`illum`, `Ni`, `map_Ks`, `map_bump`, …) into `other`, key and rest of line verbatim.
+`map_Kd`→`image_uri` with `image_type` from the extension, `wrapMode` `wrap`,
+`textureType` `unknown`, `image_data` NULL.
+
+A directive the block does not state is **NULL**, not a default: a material declaring
+only `Kd` says nothing about its specular colour, and reports nothing.
 
 ```sql
-SELECT id, name, diffuseColor, transparency, shininess
+SELECT id, name, diffuseColor, transparency, shininess, other
 FROM obj_materials('test/data/obj/cube.obj');
--- 0 | GroundSurface | [0.3, 0.3, 0.3]   | 0.0                 | 0.001
--- 1 | brick         | [0.7, 0.3, 0.2]   | 0.30000000000000004 | 0.0007
--- 2 | RoofSurface   | [0.9, 0.06, 0.09] | 0.0                 | 0.001
+-- 0 | GroundSurface | [0.3, 0.3, 0.3]   | NULL                | NULL   | NULL
+-- 1 | brick         | [0.7, 0.3, 0.2]   | 0.30000000000000004 | 0.0007 | {"illum":"2","map_Ks":"spec.png"}
+-- 2 | RoofSurface   | [0.9, 0.06, 0.09] | 0.3                 | NULL   | NULL
 
 SELECT id, image_uri, image_type, wrapMode, textureType
 FROM obj_textures('test/data/obj/cube.obj');
