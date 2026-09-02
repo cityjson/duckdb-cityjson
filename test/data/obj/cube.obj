@@ -1,0 +1,37 @@
+# Hand-written fixture: a closed unit cube and an open slab.
+# Exercises: mtllib, o, g, usemtl (semantic-surface names and a plain material),
+# v with a 4th w component, vt with v/vt faces, negative (relative) indices,
+# a comment line and a blank line.
+mtllib cube.mtl
+
+o cube
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+v 0 0 1 1.0
+v 1 0 1
+v 1 1 1
+v 0 1 1
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+g GroundSurface
+usemtl GroundSurface
+f 1 4 3 2
+g WallSurface
+usemtl brick
+f 1/1 2/2 6/3 5/4
+f 2/1 3/2 7/3 6/4
+f 3/1 4/2 8/3 7/4
+f 4/1 1/2 5/3 8/4
+g RoofSurface
+usemtl RoofSurface
+f -4 -3 -2 -1
+o slab
+v 10 0 0
+v 12 0 0
+v 12 2 0
+v 10 2 0
+f 9 10 11 12
