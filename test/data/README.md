@@ -50,3 +50,11 @@ measured from the first entry that carries something -- measuring from the leadi
 `null` classifies the cell as a shape it is not, and the geometry loses its appearance
 without a warning. The image it names (`brick.png`) is deliberately not on disk: the
 `vt` and `f v/vt` lines are what the test is about, not `map_Kd`.
+
+## duplicate_material_name.city.json
+
+A hand-written LoD 2.2 `MultiSurface` of two disjoint unit squares, one material each,
+where both materials are named `brick` and differ only in `diffuseColor`. It exists so
+`copy_obj.test` can pin the `_<id>` suffix: a `.mtl` entry is keyed by identity, not by
+the name it renders to, so the second material gets `newmtl brick_1` rather than
+overwriting the first.

@@ -514,10 +514,16 @@ static void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data,
 	options.triangulate = bind_data.obj_triangulate;
 	options.precision = bind_data.obj_precision;
 	const std::string mtl_basename = targets.final_stem + ".mtl";
-	WriteOBJ(model, appearance, gstate.temp_file_path, JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
-	         [&](int64_t texture_id, std::string &basename) {
-		         return CopyTextureImage(context, appearance, texture_id, targets, basename);
-	         });
+	std::vector<std::string> write_warnings;
+	WriteOBJ(
+	    model, appearance, gstate.temp_file_path, JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
+	    [&](int64_t texture_id, std::string &basename) {
+		    return CopyTextureImage(context, appearance, texture_id, targets, basename);
+	    },
+	    write_warnings);
+	for (const auto &w : write_warnings) {
+		DUCKDB_LOG_WARNING(context, "cityjson: " + w);
+	}
 }
 
 static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,

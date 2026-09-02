@@ -22,6 +22,16 @@ WHERE line = 'Kd 0.597656 0.597656 0.597656';
 ----
 true
 
+# One entry per referenced material, and one for the class default. A texture whose
+# image could not be loaded is not part of an entry's identity: the face falls back to
+# its colour, which is exactly what a face that referenced no texture writes, so the
+# two share an entry rather than being written twice under different names.
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+WHERE line LIKE 'newmtl Bridge%';
+----
+newmtl Bridge
+
 # Textured faces: the images are not on disk beside the fixture, so no map_Kd is written and
 # the faces fall back to colour -- the COPY still succeeds (a warning is logged).
 query I

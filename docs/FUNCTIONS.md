@@ -1085,31 +1085,44 @@ f 4/1 3/2 7/3 5/4
 Faces without a material are named after their semantic surface type, else their
 class, with a fixed palette. `.mtl` entries are keyed by **identity**, not by the
 rendered name string, so two distinct identities that would render to the same
-label — a material and a default-coloured face sharing a name, two materials
-sharing a name, or (as below) two default-coloured identities that differ only
-in what texture they tried and failed to carry — get distinct entries, and the
-later one is suffixed: `_<id>` for a colliding CityJSON material, `_default` for
-a colliding default-colour entry. `railway_appearance.city.jsonl` has two
-untextured-in-practice `Bridge` faces that collide this way — one carries a
-texture reference whose image cannot be loaded, one carries none at all, and
-both fall back to the same class default colour:
+label — two materials sharing a name, or a material and a default-coloured face
+sharing one — get distinct entries, and the later one is suffixed: `_<id>` for a
+colliding CityJSON material, `_default` for a colliding default-colour entry.
+`duplicate_material_name.city.json` has two materials both named `brick`, ids `0`
+and `1`, one on each face of a `MultiSurface`:
 
 ```sql
-COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
-TO 'railway.obj' (FORMAT obj, lod '3');
-
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('railway.mtl'))
-WHERE line LIKE 'newmtl Bridge%' OR line LIKE 'Kd%' LIMIT 4;
--- newmtl Bridge
--- Kd 0.6 0.4 0.7
--- newmtl Bridge_default
--- Kd 0.6 0.4 0.7
+COPY (SELECT * FROM read_cityjson('test/data/duplicate_material_name.city.json', lod := '2.2'))
+TO 'twins.obj' (FORMAT obj);
 ```
 
-A CityJSON-material collision looks the same but suffixes with the colliding
-material's id instead: two source materials both named `"brick"` (ids `0` and
-`1` — no committed fixture happens to have this, so this is a small inline
-CityJSON document) land as `newmtl brick` / `newmtl brick_1`.
+```text
+# twins.mtl
+# Written by duckdb-cityjson
+newmtl brick
+Kd 0.8 0.3 0.2
+d 1
+
+newmtl brick_1
+Kd 0.2 0.3 0.8
+d 1
+```
+
+```text
+# twins.obj, faces
+g default
+usemtl brick
+f 1 2 3 4
+usemtl brick_1
+f 5 6 7 8
+```
+
+A texture is part of an entry's identity only once its image has been found. A
+face whose texture could not be loaded keeps its material colour and writes no
+`map_Kd` — exactly what a face of the same material carrying no texture writes —
+so the two share one entry rather than being written twice under two names. That
+leaves `_default` reachable only where a semantic surface type and an object
+class render to the same string.
 
 A material or texture cell also comes in two **shapes**, independently of which
 form it is in: the CityParquet spec's flat, per-WKB-face shape, or this

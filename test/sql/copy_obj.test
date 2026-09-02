@@ -254,6 +254,25 @@ newmtl Bridge
 newmtl UUID_0794715b-1334-4855-83d3-8e8270c11e78
 newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
 
+# --- Two materials can share a name; a .mtl entry cannot. Entries are keyed by
+#     identity, so the second material gets its own entry under a name suffixed with
+#     its id, and the faces name the two apart.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/duplicate_material_name.city.json', lod := '2.2'))
+TO '__TEST_DIR__/twins.obj' (FORMAT obj);
+
+query I
+SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/twins.mtl');
+----
+# Written by duckdb-cityjson|newmtl brick|Kd 0.8 0.3 0.2|d 1||newmtl brick_1|Kd 0.2 0.3 0.8|d 1||
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/twins.obj'))
+WHERE line LIKE 'usemtl %';
+----
+usemtl brick
+usemtl brick_1
+
 # --- A texture whose image cannot be read is not fatal: the face keeps its material
 #     colour and the .mtl carries no map_Kd. cube.mtl names `brick.png`, which is not
 #     in test/data/obj -- so this also pins that relative image URIs are resolved

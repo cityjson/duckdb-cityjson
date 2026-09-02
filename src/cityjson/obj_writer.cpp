@@ -73,7 +73,8 @@ std::string Sanitise(const std::string &name) {
 
 void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::string &obj_path,
               const std::string &mtl_path, const std::string &mtl_basename, const OBJWriteOptions &options,
-              const std::function<bool(int64_t texture_id, std::string &basename)> &image_writer) {
+              const std::function<bool(int64_t texture_id, std::string &basename)> &image_writer,
+              std::vector<std::string> &warnings) {
 	std::ofstream out(obj_path);
 	if (!out.is_open()) {
 		throw CityJSONError::FileWrite("Failed to open output file: " + obj_path);
@@ -106,7 +107,10 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 		}
 
 		MtlKey key;
-		key.texture_id = face.texture;
+		// A texture whose bytes could not be had leaves the face with its colour and no
+		// map_Kd -- which is what an untextured face writes -- so it must not key an
+		// entry of its own, or the same contents are written twice under two names.
+		key.texture_id = map.empty() ? -1 : face.texture;
 		auto mit = face.material >= 0 ? appearance.Materials().find(face.material) : appearance.Materials().end();
 		bool has_material = mit != appearance.Materials().end();
 		if (has_material) {
@@ -194,7 +198,8 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 		std::string faces;
 		std::string current_group = "\x01";
 		std::string current_material = "\x01";
-		for (const auto &face : object.faces) {
+		for (size_t face_ordinal = 0; face_ordinal < object.faces.size(); face_ordinal++) {
+			const auto &face = object.faces[face_ordinal];
 			std::string surface_type = face.surface >= 0 && static_cast<size_t>(face.surface) < object.surfaces.size()
 			                               ? Sanitise(object.surfaces[face.surface])
 			                               : "";
@@ -221,6 +226,13 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 			};
 			if (face.rings.size() > 1 || options.triangulate) {
 				auto tris = TriangulateFace(object.vertices, face.rings);
+				if (tris.empty()) {
+					// A face whose outer ring has no plane normal (every vertex collinear,
+					// or coincident) cannot be triangulated, and OBJ has no way to say so.
+					warnings.push_back("object " + object.id + ": face " + std::to_string(face_ordinal) +
+					                   " has no plane normal and could not be triangulated, skipped");
+					continue;
+				}
 				// UV per vertex index (a vertex has one UV within a face).
 				std::map<uint32_t, std::array<double, 2>> uv_at;
 				if (textured) {
