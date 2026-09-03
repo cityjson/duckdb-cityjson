@@ -1,5 +1,7 @@
 #include "cityjson/face_triangulation.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -55,14 +57,27 @@ int main() {
 
 	// The corner form: triples of positions in the flattened ring order (ring 0's
 	// vertices, then ring 1's), which is what a writer with a per-corner attribute
-	// stream indexes. The reversed-outer square is the case where a corner and the
-	// vertex it names differ (corner 0 is vertex 3), so mapping one onto the other
-	// is a real check rather than an identity.
-	std::vector<std::vector<uint32_t>> holed_rev = {{3, 2, 1, 0}, {4, 5, 6, 7}};
-	auto corners = TriangulateFaceCorners(v, holed_rev);
-	auto by_vertex = TriangulateFace(v, holed_rev);
+	// stream indexes -- distinct from TriangulateFace's triples of vertex ids. A ring
+	// naming vertices 0..7 (as every other case in this file does) cannot tell the two
+	// apart: corner positions and vertex ids happen to occupy the same range, so a
+	// TriangulateFaceCorners that mistakenly returned vertex ids would pass unnoticed.
+	// Here the ring references only vertices 8..15 -- the same 4x4-square-with-a-2x2-hole
+	// geometry as the very first triangulation above, offset by 8 -- so corner positions
+	// (0..7) and vertex ids (8..15) occupy disjoint ranges and a mix-up is visible.
+	std::vector<Vertex3> v16(16, Vertex3 {0, 0, 0});
+	v16[8] = {0, 0, 0};
+	v16[9] = {4, 0, 0};
+	v16[10] = {4, 4, 0};
+	v16[11] = {0, 4, 0};
+	v16[12] = {1, 1, 0};
+	v16[13] = {1, 3, 0};
+	v16[14] = {3, 3, 0};
+	v16[15] = {3, 1, 0};
+	std::vector<std::vector<uint32_t>> holed_offset = {{8, 9, 10, 11}, {12, 13, 14, 15}};
+	auto corners = TriangulateFaceCorners(v16, holed_offset);
+	auto by_vertex = TriangulateFace(v16, holed_offset);
 	std::vector<uint32_t> flat;
-	for (const auto &ring : holed_rev) {
+	for (const auto &ring : holed_offset) {
 		for (uint32_t idx : ring) {
 			flat.push_back(idx);
 		}
@@ -70,18 +85,32 @@ int main() {
 	CHECK(flat.size() == 8);
 	CHECK(corners.size() == by_vertex.size());
 	bool in_range = true;
-	bool maps_back = corners.size() == by_vertex.size();
-	for (size_t i = 0; i < corners.size(); i++) {
-		if (corners[i] >= flat.size()) {
+	for (uint32_t c : corners) {
+		if (c >= flat.size()) { // a ring position, never a raw vertex id (8..15)
 			in_range = false;
-			continue;
-		}
-		if (i < by_vertex.size() && flat[corners[i]] != by_vertex[i]) {
-			maps_back = false;
 		}
 	}
 	CHECK(in_range);
-	CHECK(maps_back);
+
+	// Mapping every corner through the flattened ring order must reproduce the same set
+	// of triangles TriangulateFace names by vertex id -- as triangles, not as an ordered
+	// sequence, since nothing about the corner form promises the same per-triangle order.
+	auto sorted_triples = [](const std::vector<uint32_t> &tri) {
+		std::vector<std::array<uint32_t, 3>> triples;
+		for (size_t i = 0; i + 2 < tri.size(); i += 3) {
+			std::array<uint32_t, 3> t {tri[i], tri[i + 1], tri[i + 2]};
+			std::sort(t.begin(), t.end());
+			triples.push_back(t);
+		}
+		std::sort(triples.begin(), triples.end());
+		return triples;
+	};
+	std::vector<uint32_t> mapped;
+	mapped.reserve(corners.size());
+	for (uint32_t c : corners) {
+		mapped.push_back(c < flat.size() ? flat[c] : 0);
+	}
+	CHECK(sorted_triples(mapped) == sorted_triples(by_vertex));
 
 	// A vertical wall (normal along -Y): projection must not collapse it.
 	std::vector<Vertex3> wall = {{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}};

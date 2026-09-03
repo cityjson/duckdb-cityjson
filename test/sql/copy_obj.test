@@ -231,6 +231,24 @@ vt 0 1
 f 1 2 3 4
 f 5/1 6/2 7/3 8/4
 
+# --- A Solid whose *first face* is `[null]` (not a bare `null`) is the same case one
+#     level further in: "carries nothing" is recursive, so `[null]`, `[[null]]` and
+#     `[[]]` all read as nothing at every level FirstMeasurable is applied, and the
+#     cell is measured from its second face, a textured one, instead.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/solid_null_first_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/solid_null_first_face.obj' (FORMAT obj);
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_null_first_face.obj'))
+WHERE line LIKE 'vt %' OR line LIKE 'f %/%';
+----
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 5/1 6/2 2/3 1/4
+
 # --- Sidecar form inlines every UV pair, so a UV *index* in a cell under a declared
 #     sidecar form is a form mistake and is refused. materials_query alone declares the
 #     form -- and is the case where local indices would otherwise be resolved as global

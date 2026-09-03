@@ -51,6 +51,17 @@ measured from the first entry that carries something -- measuring from the leadi
 without a warning. The image it names (`brick.png`) is deliberately not on disk: the
 `vt` and `f v/vt` lines are what the test is about, not `map_Kd`.
 
+## solid_null_first_face.city.json
+
+A hand-written unit-cube `Solid` (one shell, six faces) whose texture `values` is
+`[[[null], [[0, 0, 1, 2, 3]], [[null]], [[null]], [[null]], [[null]]]]`: the first face
+carries no texture -- spelled `[null]`, not the bare `null` `null_lead_texture.city.json`
+uses -- the second a full ring of UV indices, and the remaining four are `[[null]]`. It
+exists so `copy_obj.test` can pin that "carries nothing" is recursive: an all-null
+substructure reads the same as a bare `null` at every level `FirstMeasurable` measures
+from, not only the outermost. The image it names (`brick.png`) is deliberately not on
+disk.
+
 ## duplicate_material_name.city.json
 
 A hand-written LoD 2.2 `MultiSurface` of two disjoint unit squares, one material each,

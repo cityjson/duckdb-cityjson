@@ -36,14 +36,34 @@ bool IsRingLeaf(const json &node) {
 	return node.is_array() && (node.empty() || !node[0].is_array());
 }
 
+// A value carries nothing if it is `null`, or an array all of whose elements
+// (recursively) carry nothing -- so `[]`, `[null]`, `[[null]]` and `[[]]` all carry
+// nothing, exactly like a bare `null` at that position. CityJSON's own shorthand
+// collapses an all-null substructure to `null`, but nothing requires a producer to
+// take that shortcut, so both spellings must be recognised.
+bool CarriesNothing(const json &node) {
+	if (node.is_null()) {
+		return true;
+	}
+	if (!node.is_array()) {
+		return false;
+	}
+	for (const auto &element : node) {
+		if (!CarriesNothing(element)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 // The element a level can be measured from: the first that carries something. A `null`
-// says nothing about the nesting below it, and an empty array reads as a ring in its
-// own right (IsRingLeaf), so a cell whose first face has no appearance -- a texture
+// (or an all-null substructure spelled out instead, see CarriesNothing) says nothing
+// about the nesting below it, so a cell whose first face has no appearance -- a texture
 // `[null, [[0, 0, 1, 2, 3]]]`, a MultiSolid material `[null, [[0, ...]]]` -- is
 // measured from its second. nullptr when the level holds nothing measurable at all.
 const json *FirstMeasurable(const json &values) {
 	for (const auto &element : values) {
-		if (!element.is_null() && !(element.is_array() && element.empty())) {
+		if (!CarriesNothing(element)) {
 			return &element;
 		}
 	}
