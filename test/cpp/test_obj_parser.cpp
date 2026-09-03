@@ -9,6 +9,7 @@
 
 using duckdb::cityjson::CityJSONError;
 using duckdb::cityjson::MtlDocument;
+using duckdb::cityjson::MtlSource;
 using duckdb::cityjson::ObjDocument;
 using duckdb::cityjson::ParseMtl;
 using duckdb::cityjson::ParseObj;
@@ -36,11 +37,14 @@ static std::string ErrorOf(F body) {
 static void TestObj() {
 	// One `.mtl`, named twice: the second `mtllib` of a name already loaded adds nothing,
 	// so `brick` keeps ordinal 0.
-	auto loader = [](const std::string &name) -> std::optional<std::string> {
+	auto loader = [](const std::string &name) -> MtlSource {
+		MtlSource source;
 		if (name == "t.mtl") {
-			return std::string("newmtl brick\nKd 0.7 0.3 0.2\n");
+			source.text = std::string("newmtl brick\nKd 0.7 0.3 0.2\n");
+		} else {
+			source.error = "no such file";
 		}
-		return std::nullopt;
+		return source;
 	};
 
 	const std::string text = "# a hand-written fixture\n"
@@ -86,13 +90,27 @@ static void TestObj() {
 		CHECK(second.material_index == 0);
 	}
 
-	CHECK(doc.mtllibs == (std::vector<std::string> {"t.mtl", "missing.mtl"}));
 	CHECK(doc.materials.materials.size() == 1);
-	CHECK(doc.warnings.size() == 1); // the unreadable second file of the `mtllib` line
+	// The unreadable second file of the `mtllib` line, named with the reason the loader
+	// gave -- and nothing else: every `usemtl` here resolves.
+	CHECK(doc.warnings.size() == 1);
+	if (doc.warnings.size() == 1) {
+		CHECK(doc.warnings[0] == "mtllib 'missing.mtl' could not be read: no such file");
+	}
+
+	// A comment ending in a backslash does not continue: joining it would make the `#`
+	// swallow the line after it, and an exporter writing a Windows path into a comment
+	// is not asking for that.
+	ObjDocument commented = ParseObj("# exported from C:\\models\\\nv 9 9 9\nv 0 0 0\nv 1 1 0\nf 1 2 3\n", "stem",
+	                                 [](const std::string &) { return MtlSource {}; });
+	CHECK(commented.vertices.size() == 3);
+	if (commented.vertices.size() == 3) {
+		CHECK(commented.vertices[0] == (std::array<double, 3> {9, 9, 9}));
+	}
 
 	// No `o` at all: one object under the caller's default name.
 	ObjDocument bare =
-	    ParseObj("v 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 3\n", "stem", [](const std::string &) { return std::nullopt; });
+	    ParseObj("v 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 3\n", "stem", [](const std::string &) { return MtlSource {}; });
 	CHECK(bare.objects.size() == 1);
 	CHECK(bare.objects[0].name == "stem");
 	CHECK(bare.objects[0].faces.size() == 1);
@@ -100,7 +118,7 @@ static void TestObj() {
 
 	// Structural errors, with the exact messages the SQL suites pin.
 	auto loader_none = [](const std::string &) {
-		return std::optional<std::string>();
+		return MtlSource {};
 	};
 	CHECK(ErrorOf([&] { ParseObj("v 0 0 0\nv 1 0 0\nf 1 2 9\n", "stem", loader_none); }) ==
 	      "face references vertex 9 but 2 vertices have been declared");
@@ -110,6 +128,96 @@ static void TestObj() {
 	      "face references texture coordinate 4 but 0 have been declared");
 	CHECK(ErrorOf([&] { ParseObj("v 0 0\n", "stem", loader_none); }) == "line 1 'v' has fewer than three coordinates");
 	CHECK(ErrorOf([&] { ParseObj("v 0 0 0\nvt\n", "stem", loader_none); }) == "line 2 'vt' has no u coordinate");
+}
+
+//! The grammar's corners: line endings, whitespace, face field forms, and the names
+//! `g` / `o` / `newmtl` take.
+static void TestQuirks() {
+	auto none = [](const std::string &) {
+		return MtlSource {};
+	};
+
+	// CRLF throughout, tabs as separators, and a continuation whose line ends CRLF.
+	ObjDocument crlf = ParseObj("# header\r\n"
+	                            "v\t0\t0\t0\r\n"
+	                            "v 1 0 0\r\n"
+	                            "v 1 1 \\\r\n"
+	                            "0\r\n"
+	                            "f\t1\t2\t3\r\n",
+	                            "stem", none);
+	CHECK(crlf.vertices.size() == 3);
+	if (crlf.vertices.size() == 3) {
+		CHECK(crlf.vertices[2] == (std::array<double, 3> {1, 1, 0}));
+	}
+	CHECK(crlf.objects.size() == 1 && crlf.objects[0].faces.size() == 1);
+
+	// Face fields: v//vn carries no texture coordinate, v/vt/vn does.
+	const std::string faces = "v 0 0 0\nv 1 0 0\nv 1 1 0\nvt 0 0\n"
+	                          "f 1//1 2//2 3//3\n"
+	                          "f 1/1/1 2/1/2 3/1/3\n"
+	                          "f \n"; // an `f` with nothing after it declares no face
+	ObjDocument fielded = ParseObj(faces, "stem", none);
+	CHECK(fielded.objects.size() == 1);
+	if (fielded.objects.size() == 1) {
+		CHECK(fielded.objects[0].faces.size() == 2);
+		if (fielded.objects[0].faces.size() == 2) {
+			CHECK(fielded.objects[0].faces[0].vt == (std::vector<int> {-1, -1, -1}));
+			CHECK(fielded.objects[0].faces[1].vt == (std::vector<int> {0, 0, 0}));
+		}
+	}
+
+	// 0 is not an index OBJ has a vertex for, and neither is a token that is not a number.
+	CHECK(ErrorOf([&] { ParseObj("v 0 0 0\nv 1 0 0\nv 1 1 0\nf 0 1 2\n", "stem", none); }) ==
+	      "face references vertex 0 but 3 vertices have been declared");
+
+	// `g a b` is group `b` (the last token); an `o` name may hold spaces.
+	ObjDocument named = ParseObj("v 0 0 0\nv 1 0 0\nv 1 1 0\ng a b\no my  house \nf 1 2 3\n", "stem", none);
+	CHECK(named.objects.size() == 1);
+	if (named.objects.size() == 1) {
+		CHECK(named.objects[0].name == "my  house");
+		CHECK(named.objects[0].faces.size() == 1 && named.objects[0].faces[0].group == "b");
+	}
+
+	// A `usemtl` naming nothing declared is a warning, once per distinct name however
+	// many faces stand under it -- including a `usemtl` that precedes its `mtllib`.
+	auto brick = [](const std::string &) {
+		MtlSource source;
+		source.text = std::string("newmtl brick\nKd 1 0 0\n");
+		return source;
+	};
+	ObjDocument early = ParseObj("v 0 0 0\nv 1 0 0\nv 1 1 0\n"
+	                             "usemtl brick\nf 1 2 3\n"
+	                             "mtllib t.mtl\n"
+	                             "usemtl ghost\nf 1 2 3\nusemtl ghost\nf 1 2 3\n",
+	                             "stem", brick);
+	CHECK(early.materials.materials.size() == 1);
+	CHECK(early.objects.size() == 1 && early.objects[0].faces.size() == 3);
+	if (early.objects.size() == 1 && early.objects[0].faces.size() == 3) {
+		CHECK(early.objects[0].faces[0].material_index == -1); // the mtllib came later
+	}
+	CHECK(early.warnings.size() == 2);
+	if (early.warnings.size() == 2) {
+		CHECK(early.warnings[0] == "usemtl 'brick' names no material declared by any mtllib");
+		CHECK(early.warnings[1] == "usemtl 'ghost' names no material declared by any mtllib");
+	}
+
+	// A `usemtl` matching a duplicated `newmtl` name takes the first declaration.
+	auto twice = [](const std::string &) {
+		MtlSource source;
+		source.text = std::string("newmtl a\nKd 1 0 0\nnewmtl a\nKd 0 1 0\n");
+		return source;
+	};
+	ObjDocument dup = ParseObj("mtllib t.mtl\nv 0 0 0\nv 1 0 0\nv 1 1 0\nusemtl a\nf 1 2 3\n", "stem", twice);
+	CHECK(dup.materials.materials.size() == 2);
+	CHECK(dup.warnings.empty());
+	if (dup.objects.size() == 1 && dup.objects[0].faces.size() == 1) {
+		CHECK(dup.objects[0].faces[0].material_index == 0);
+	}
+
+	// A backslash on the very last line has nothing to continue onto, so it stays part
+	// of the line and the line is judged as it stands.
+	CHECK(ErrorOf([&] { ParseObj("v 0 0 0\nv 1 1 \\", "stem", none); }) ==
+	      "line 2 'v' has fewer than three coordinates");
 }
 
 static void TestMtl() {
@@ -170,6 +278,24 @@ static void TestMtl() {
 	// round trip, which would print 0.30000000000000004.
 	CHECK(doc.materials[2].transparency == std::optional<double> {0.3});
 
+	// MTL's texture options come before the file name and are dropped; a name may hold
+	// spaces, so what is left is taken to the end of the line.
+	MtlDocument mapped = ParseMtl("newmtl a\nmap_Kd -s 1 1 1 -o 0 0 0 brick.png\n"
+	                              "newmtl b\nmap_Kd my file.png\n");
+	CHECK(mapped.materials.size() == 2);
+	if (mapped.materials.size() == 2) {
+		CHECK(mapped.materials[0].map_kd == "brick.png");
+		CHECK(mapped.materials[1].map_kd == "my file.png");
+	}
+
+	// A colour directive with too few components states nothing.
+	MtlDocument short_kd = ParseMtl("newmtl a\nKd 0.5 0.5\nNs\n");
+	CHECK(short_kd.materials.size() == 1);
+	if (short_kd.materials.size() == 1) {
+		CHECK(!short_kd.materials[0].diffuse.has_value());
+		CHECK(!short_kd.materials[0].shininess.has_value());
+	}
+
 	// A file with no `newmtl` at all declares nothing.
 	CHECK(ParseMtl("# nothing but this comment\n").materials.empty());
 	CHECK(ParseMtl("").materials.empty());
@@ -184,6 +310,7 @@ static void TestMtl() {
 
 int main() {
 	TestObj();
+	TestQuirks();
 	TestMtl();
 	if (failures == 0) {
 		std::printf("obj_parser: all checks passed\n");

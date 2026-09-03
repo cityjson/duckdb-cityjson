@@ -870,9 +870,10 @@ FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
 
 Mapping:
 
-- Each `o` is one object; its name is `id` and `feature_id`. A file without `o`
-  is one object named after the file stem. A repeated `o` name resumes that
-  object.
+- Each `o` is one object; its name is `id` and `feature_id`, taken as the rest of
+  the line with surrounding whitespace trimmed (as `usemtl` and `newmtl` names
+  are). A file without `o` is one object named after the file stem. A repeated
+  `o` name resumes that object.
 - All faces of an object form one geometry, one outer ring each, in file order
   and with the file's winding. OBJ cannot express holes.
 - A `usemtl` name that is a CityJSON semantic surface type (`RoofSurface`,
@@ -883,7 +884,9 @@ Mapping:
   (`obj_materials`); a material with `map_Kd` is also a texture
   (`obj_textures`), and faces under it with `v/vt` indices carry
   `texture_lod*` rings that index the file's `vt` list (`'sidecar'` inlines
-  them). Faces without UVs carry `[null]`.
+  them). Faces without UVs carry `[null]`. A `usemtl` naming a material no
+  `mtllib` declared leaves the face without one, and warns in `duckdb_logs` once
+  per name.
 - Positive and negative (relative) indices; `v` with a fourth component; `vn`
   ignored. A line ending in `\` continues on the next one. A `mtllib` naming
   several files loads every one of them, in order. A missing `.mtl`, or one that
@@ -901,7 +904,8 @@ The `.mtl` as `materials.parquet` / `textures.parquet` rows, same columns as
 block that has no `d` — →`transparency`, `Ns / 1000`→`shininess`; every other directive
 (`illum`, `Ni`, `map_Ks`, `map_bump`, …) into `other`, key and rest of line verbatim.
 `map_Kd`→`image_uri` with `image_type` from the extension, `wrapMode` `wrap`,
-`textureType` `unknown`, `image_data` NULL.
+`textureType` `unknown`, `image_data` NULL; texture options before the file name
+(`-s`, `-o`, …) are dropped.
 
 A directive the block does not state is **NULL**, not a default: a material declaring
 only `Kd` says nothing about its specular colour, and reports nothing.

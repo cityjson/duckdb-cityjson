@@ -226,11 +226,14 @@ columns, never the definitions.
   so a decimal literal becomes the correctly-rounded double rather than a
   digit-by-digit accumulation one ULP off; a line whose last non-blank character
   is `\` continues on the next, joined with a single space before anything
-  tokenises it; a `mtllib` naming several files loads every one of them, in
-  order, and a name it has already attempted is skipped; `o`, `usemtl` and
-  `newmtl` name whatever the rest of the line holds, trimmed, while `g` takes the
-  *last* whitespace token (`g a b` is group `b`); `map_Kd` is the rest of its
-  line verbatim, so MTL's texture options are not stripped. The MTL is read line
+  tokenises it — **except a comment**, which never continues, because the `#` on
+  the joined line would then swallow whatever followed and an exporter writing a
+  Windows path into its header would silently lose a line; a `mtllib` naming
+  several files loads every one of them, in order, and a name it has already
+  attempted is skipped; `o`, `usemtl` and `newmtl` name whatever the rest of the
+  line holds, trimmed, while `g` takes the *last* whitespace token (`g a b` is
+  group `b`); `map_Kd` drops the texture options before the file name and keeps
+  the rest of the line, so a name holding spaces survives. The MTL is read line
   by line with no continuation: a `map_Kd` naming a Windows path ends in a
   backslash often enough that joining there would cost more than it buys.
 - **A face's indices are raw as written** — 1-based, negative = relative to the
@@ -252,7 +255,9 @@ columns, never the definitions.
   goes into `other` verbatim, key and rest of line. A block is created only by a
   `newmtl` with a name, so a `.mtl` that is empty or nothing but comments
   declares no material at all rather than one with an empty name; that is the
-  case `mtllib '…' declares no material` warns about.
+  case `mtllib '…' declares no material` warns about. A `usemtl` that matches
+  nothing declared warns too, once per distinct name — the parse carries on with
+  the face unmaterialled, since a missing `.mtl` must not cost the geometry.
 
 ## FlatCityBuf
 

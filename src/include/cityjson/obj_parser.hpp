@@ -49,25 +49,30 @@ struct MtlDocument {
 //! Parses a Wavefront `.mtl`. Every real is read with `strtod`, so a decimal literal
 //! becomes the correctly-rounded double. Unparseable and unnamed directives are skipped;
 //! nothing here throws.
-MtlDocument ParseMtl(std::string_view text);
+MtlDocument ParseMtl(const std::string &text);
 
-//! A `.mtl` named by `mtllib`: its text, or nullopt when it cannot be read.
-using MtlLoader = std::function<std::optional<std::string>(const std::string &mtl_name)>;
+//! What a `mtllib` name resolved to: the file's text, or nothing plus why not. The
+//! reason travels so the warning can name it.
+struct MtlSource {
+	std::optional<std::string> text;
+	std::string error;
+};
+
+//! Reads the file a `mtllib` names. The caller owns path resolution and I/O.
+using MtlLoader = std::function<MtlSource(const std::string &mtl_name)>;
 
 struct ObjDocument {
 	std::vector<std::array<double, 3>> vertices;
 	std::vector<std::array<double, 2>> texcoords;
 	std::vector<ObjObject> objects;
-	std::vector<std::string> mtllibs;  // every name a `mtllib` gave, in order, once each
 	MtlDocument materials;             // accumulated over every loaded `mtllib`
 	std::vector<std::string> warnings; // survivable problems, one per line, for the caller to log
 };
 
 //! Parses a Wavefront `.obj`. Faces with no `o` in force land in one object named
-//! `default_object_name`. `load_mtl` reads the files `mtllib` names, so the caller owns
-//! path resolution and I/O. Throws CityJSONError (without context) on a malformed
-//! vertex line or an unresolvable face index.
-ObjDocument ParseObj(std::string_view text, std::string_view default_object_name, const MtlLoader &load_mtl);
+//! `default_object_name`. Throws CityJSONError (without context) on a malformed vertex
+//! line or an unresolvable face index.
+ObjDocument ParseObj(const std::string &text, const std::string &default_object_name, const MtlLoader &load_mtl);
 
 } // namespace cityjson
 } // namespace duckdb

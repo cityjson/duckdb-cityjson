@@ -157,13 +157,15 @@ const OBJReader::Parsed &OBJReader::Load() const {
 	// through DuckDB's FileSystem, so remote paths work. An unreadable one is not fatal:
 	// the parser turns the nullopt into a warning and carries on without its materials.
 	const std::string base_dir = DirectoryOf(file_path_);
-	auto load_mtl = [&](const std::string &mtl_name) -> std::optional<std::string> {
+	auto load_mtl = [&](const std::string &mtl_name) -> MtlSource {
 		std::string path = base_dir.empty() ? mtl_name : base_dir + "/" + mtl_name;
+		MtlSource source;
 		try {
-			return json_utils::ReadFileContent(context_, path);
-		} catch (const CityJSONError &) {
-			return std::nullopt;
+			source.text = json_utils::ReadFileContent(context_, path);
+		} catch (const CityJSONError &e) {
+			source.error = e.what();
 		}
+		return source;
 	};
 
 	ObjDocument doc;

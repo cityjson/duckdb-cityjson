@@ -96,6 +96,8 @@ Interactive check:
 None of these run under `make test`.
 
 ```sh
+test/cpp/run_obj_parser_tests.sh          # the OBJ/MTL parser kernel
+test/cpp/run_face_triangulation_tests.sh  # the face triangulator kernel
 FCB_PREFIX="$(pwd)/.vendor/prefix" test/cpp/run_fcb_selective_tests.sh
 just test-remote               # HTTP reads + cross-format parity (~25 MB)
 just test-fcb-remote           # FCB HTTP range reads

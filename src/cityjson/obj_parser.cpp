@@ -135,6 +135,24 @@ std::vector<std::string_view> Tokenise(std::string_view s) {
 	return tokens;
 }
 
+//! A `map_*` value with MTL's texture options dropped: an option is a token starting
+//! with `-` and its arguments are the tokens after it that are not options, so what is
+//! left is the file name -- taken to the end of the line, since one may hold spaces.
+std::string_view TextureName(std::string_view rest) {
+	auto tokens = Tokenise(rest);
+	if (tokens.empty()) {
+		return rest;
+	}
+	size_t i = 0;
+	while (i + 1 < tokens.size() && tokens[i][0] == '-') {
+		i++; // the option
+		while (i + 1 < tokens.size() && tokens[i][0] != '-') {
+			i++; // its arguments
+		}
+	}
+	return rest.substr(static_cast<size_t>(tokens[i].data() - rest.data()));
+}
+
 //! Hands out one logical line at a time, with the number of the physical line it starts
 //! on. `\r` is dropped, so a CRLF file reads like an LF one. With `join_continuations`,
 //! a line whose last non-blank character is `\` continues on the next: the backslash
@@ -151,6 +169,7 @@ public:
 		number = next_line_no_;
 		joined_.clear();
 		bool joined = false;
+		bool comment = false;
 		while (true) {
 			auto eol = text_.find('\n', pos_);
 			size_t end = eol == std::string_view::npos ? text_.size() : eol;
@@ -161,11 +180,22 @@ public:
 			pos_ = eol == std::string_view::npos ? text_.size() : eol + 1;
 			next_line_no_++;
 
+			if (!joined) {
+				// A comment ending in a backslash -- an exporter writing a Windows path into
+				// its header does -- must not continue: the `#` on the joined line would
+				// then swallow whatever followed, silently.
+				size_t first = 0;
+				while (first < physical.size() && IsSpace(physical[first])) {
+					first++;
+				}
+				comment = first < physical.size() && physical[first] == '#';
+			}
 			size_t last = physical.size();
 			while (last > 0 && IsSpace(physical[last - 1])) {
 				last--;
 			}
-			const bool continues = join_continuations_ && last > 0 && physical[last - 1] == '\\' && pos_ < text_.size();
+			const bool continues =
+			    join_continuations_ && !comment && last > 0 && physical[last - 1] == '\\' && pos_ < text_.size();
 			if (!continues) {
 				if (joined) {
 					joined_.append(physical);
@@ -198,7 +228,7 @@ bool IsDirective(std::string_view line, std::string_view name) {
 
 } // namespace
 
-MtlDocument ParseMtl(std::string_view text) {
+MtlDocument ParseMtl(const std::string &text) {
 	MtlDocument doc;
 	// The block a directive belongs to, or npos while none is open. A `.mtl` may open a
 	// block before this parser has a material for it -- a nameless `newmtl` -- and
@@ -278,7 +308,7 @@ MtlDocument ParseMtl(std::string_view text) {
 				material.transparency = parse1(rest);
 			}
 		} else if (key == "map_Kd") {
-			material.map_kd = std::string(rest);
+			material.map_kd = std::string(TextureName(rest));
 		} else {
 			material.other[std::string(key)] = std::string(rest);
 		}
@@ -286,7 +316,7 @@ MtlDocument ParseMtl(std::string_view text) {
 	return doc;
 }
 
-ObjDocument ParseObj(std::string_view text, std::string_view default_object_name, const MtlLoader &load_mtl) {
+ObjDocument ParseObj(const std::string &text, const std::string &default_object_name, const MtlLoader &load_mtl) {
 	ObjDocument doc;
 	// Name -> index into `doc.objects`, so a repeated `o` resumes its object in constant
 	// time. A national tile runs to hundreds of thousands of `o` lines and a linear scan
@@ -296,6 +326,9 @@ ObjDocument ParseObj(std::string_view text, std::string_view default_object_name
 	// cannot make a `usemtl` point at the later block.
 	std::unordered_map<std::string, int> material_index;
 	std::unordered_set<std::string> seen_mtllibs;
+	// `usemtl` names that matched no material, so each is warned about once however many
+	// faces stand under it.
+	std::unordered_set<std::string> unknown_materials;
 	std::string current_group;
 	std::string current_usemtl;
 	int current_material = -1;
@@ -303,8 +336,8 @@ ObjDocument ParseObj(std::string_view text, std::string_view default_object_name
 
 	auto current = [&]() -> ObjObject & {
 		if (doc.objects.empty()) {
-			doc.objects.push_back(ObjObject {std::string(default_object_name), {}});
-			object_index.emplace(std::string(default_object_name), 0);
+			doc.objects.push_back(ObjObject {default_object_name, {}});
+			object_index.emplace(default_object_name, 0);
 			current_object = 0;
 		}
 		return doc.objects[current_object];
@@ -412,6 +445,9 @@ ObjDocument ParseObj(std::string_view text, std::string_view default_object_name
 			current_usemtl = std::string(TrimBoth(token.substr(6)));
 			auto it = material_index.find(current_usemtl);
 			current_material = it == material_index.end() ? -1 : it->second;
+			if (current_material < 0 && !current_usemtl.empty() && unknown_materials.insert(current_usemtl).second) {
+				doc.warnings.push_back("usemtl '" + current_usemtl + "' names no material declared by any mtllib");
+			}
 			continue;
 		}
 		if (IsDirective(token, "mtllib")) {
@@ -423,13 +459,16 @@ ObjDocument ParseObj(std::string_view text, std::string_view default_object_name
 				if (!seen_mtllibs.insert(name).second) {
 					continue;
 				}
-				doc.mtllibs.push_back(name);
-				auto content = load_mtl(name);
-				if (!content.has_value()) {
-					doc.warnings.push_back("mtllib '" + name + "' could not be read");
+				MtlSource source = load_mtl(name);
+				if (!source.text.has_value()) {
+					std::string warning = "mtllib '" + name + "' could not be read";
+					if (!source.error.empty()) {
+						warning += ": " + source.error;
+					}
+					doc.warnings.push_back(std::move(warning));
 					continue;
 				}
-				MtlDocument mtl = ParseMtl(content.value());
+				MtlDocument mtl = ParseMtl(source.text.value());
 				if (mtl.materials.empty()) {
 					doc.warnings.push_back("mtllib '" + name + "' declares no material");
 					continue;
