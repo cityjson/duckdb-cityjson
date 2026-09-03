@@ -178,7 +178,7 @@ SELECT COUNT(*), COUNT(material_lod1_0) FROM read_obj('test/data/obj/missing_mtl
 ----
 1	0
 
-# The warning is emitted, not swallowed: tinyobjloader's `warn` reaches duckdb_logs.
+# The warning is emitted, not swallowed: the parser's warning reaches duckdb_logs.
 statement ok
 SET enable_logging = true;
 
@@ -196,8 +196,8 @@ true
 statement ok
 SET enable_logging = false;
 
-# --- A .mtl with no `newmtl` at all defines nothing: tinyobjloader's unconditional
-#     final flush must not leak an empty-named material into the count.
+# --- A .mtl with no `newmtl` at all defines nothing: only a `newmtl` carrying a name
+#     opens a block, so no empty-named material can reach the count.
 query II
 SELECT COUNT(*), COUNT(material_lod1_0) FROM read_obj('test/data/obj/empty_mtl.obj', lod := '1');
 ----
@@ -212,11 +212,11 @@ FROM read_obj('test/data/obj/many_objects.obj', lod := '1');
 ----
 2000	2000
 
-# --- `v` / `vt` reals are parsed correctly-rounded, not through tinyobjloader's own
-# not-correctly-rounded number parser: a millimetre-precision RD coordinate round-trips
-# to its exact shortest text, not one ULP off. bbox is DOUBLE, which sqllogictest
-# compares approximately, so pin the exact digits through a VARCHAR cast instead.
-# Of the three, only `0.475` discriminates the two parsers: the other two coordinates
+# --- `v` / `vt` reals are parsed correctly-rounded, with strtod: a millimetre-precision
+# RD coordinate round-trips to its exact shortest text, not one ULP off the way a
+# digit-by-digit accumulation in double arithmetic leaves it. bbox is DOUBLE, which
+# sqllogictest compares approximately, so pin the exact digits through a VARCHAR cast
+# instead. Of the three, only `0.475` discriminates the two: the other two coordinates
 # happen to land on the same double either way, so a regression would show up here
 # alone.
 query III

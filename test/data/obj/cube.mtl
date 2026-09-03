@@ -3,16 +3,16 @@ newmtl GroundSurface
 Kd 0.3 0.3 0.3
 
 # brick's `d` and `Ns` are single fractional digits chosen (not 0.9/250) because those
-# happen to parse identically under tinyobjloader's not-correctly-rounded number parser
-# and strtod -- these do not, so obj_sidecars.test can actually tell the two apart.
+# land on the same double whether the literal is converted correctly-rounded or
+# accumulated digit by digit -- these do not, so obj_sidecars.test can tell the two apart.
 newmtl brick
 Kd 0.7 0.3 0.2
 Ks 0.1 0.1 0.1
 d 0.7
 Ns 0.7
 map_Kd brick.png
-# illum and map_Ks are typed MTL directives tinyobjloader parses into fields of its
-# own; they are here to pin that every unmapped directive still reaches `other`.
+# illum and map_Ks are directives this mapping has no column for; they are here to pin
+# that every unmapped directive still reaches `other`.
 illum 2
 map_Ks spec.png
 

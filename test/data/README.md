@@ -19,9 +19,10 @@ Hand-written Wavefront OBJ fixtures for `read_obj`. `cube.obj` + `cube.mtl` is a
 unit cube (one `o`, three `g`/`usemtl` semantic groups, one textured plain material,
 one face with negative indices, one `v` with a `w` component) followed by an open slab
 that inherits the cube's last `g`/`usemtl` state -- OBJ state persists across `o`, and
-the fixture pins that. `open_roof.obj` has no `o` line and no materials. `continuation.obj`
-ends a line with a backslash, which the reader refuses. The expected values in the tests
-are derived by hand from these files, not from the reader.
+the fixture pins that. `open_roof.obj` has no `o` line and no materials.
+`continuation.obj` ends a `v` line with a backslash, which continues it on the next
+line -- one triangle, not two vertices and a stray coordinate. The expected values in
+the tests are derived by hand from these files, not from the reader.
 
 ## holed_face.city.json
 

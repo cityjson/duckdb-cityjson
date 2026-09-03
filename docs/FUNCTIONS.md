@@ -885,9 +885,10 @@ Mapping:
   `texture_lod*` rings that index the file's `vt` list (`'sidecar'` inlines
   them). Faces without UVs carry `[null]`.
 - Positive and negative (relative) indices; `v` with a fourth component; `vn`
-  ignored. A line ending in `\` (continuation) is refused. A missing `.mtl`, or
-  one that declares no material, is a warning in `duckdb_logs` and the geometry
-  still reads.
+  ignored. A line ending in `\` continues on the next one. A `mtllib` naming
+  several files loads every one of them, in order. A missing `.mtl`, or one that
+  declares no material, is a warning in `duckdb_logs` and the geometry still
+  reads.
 - Coordinates are taken as written, Z-up, no axis swap — what cjio, 3dfier and
   geoflow write. A `# origin x y z` header comment, as the OBJ writer emits, is
   added back.

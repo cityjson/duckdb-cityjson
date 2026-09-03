@@ -124,7 +124,7 @@ columns, never the definitions.
   (`ReadMetadata`), re-emitted via `Appearance::ToJson`; a second `OBJReader` over the
   same path is never constructed, since the first one memoises its parse and
   `ReadAllChunks` on it is free. The reader never renumbers a face's texture-coordinate
-  indices per object — they stay file-global into the one `vt` pool tinyobj produced —
+  indices per object — they stay file-global into the file's one `vt` pool —
   so that whole pool travels verbatim onto the `vertices-texture` block of each feature
   whose geometry carries a `texture`, rather than being sliced: index *i* means the same
   UV coordinate in every copy. A feature with no texture is stamped with nothing; the
@@ -220,34 +220,39 @@ columns, never the definitions.
   and geometry boundary indices reference those, not the header's.
 - **`lod=` keeps the suffixed column grammar** (`geometry_lod2_2`, not a bare `geometry`),
   which is what keeps the LoD recoverable on export.
-- **tinyobjloader's mainline `LoadObj` collapses `o` and `g` into one name.**
-  Every real in the OBJ and MTL is parsed by this extension with `strtod`
-  (correctly rounded), because tinyobjloader's own number parser is not; it is
-  kept only for structure — `o`/`g`/`usemtl`/`mtllib` dispatch, face tokenising.
-  `OBJReader` uses tinyobjloader's callback API rather than `LoadObj`, so the
-  `o`/`g` collapse never happens; the callbacks hand over raw face tokens
-  (1-based, negative = relative, 0 = absent), so index resolution is ours. Its
-  `mtllib` handling stops at the first file of a line that loads, and it does
-  not implement backslash continuation — the reader refuses such lines rather
-  than mis-parse them.
+- **The OBJ and MTL parser is this extension's own** (`obj_parser.cpp`, a pure
+  kernel with no DuckDB types, so `test/cpp/run_obj_parser_tests.sh` can compile
+  it alone). Its rules, where OBJ leaves room: every real goes through `strtod`,
+  so a decimal literal becomes the correctly-rounded double rather than a
+  digit-by-digit accumulation one ULP off; a line whose last non-blank character
+  is `\` continues on the next, joined with a single space before anything
+  tokenises it; a `mtllib` naming several files loads every one of them, in
+  order, and a name it has already attempted is skipped; `o`, `usemtl` and
+  `newmtl` name whatever the rest of the line holds, trimmed, while `g` takes the
+  *last* whitespace token (`g a b` is group `b`); `map_Kd` is the rest of its
+  line verbatim, so MTL's texture options are not stripped. The MTL is read line
+  by line with no continuation: a `map_Kd` naming a Windows path ends in a
+  backslash often enough that joining there would cost more than it buys.
+- **A face's indices are raw as written** — 1-based, negative = relative to the
+  end of the list so far, 0 or unparseable = absent — and resolving them is the
+  parser's job. The count is checked first: a two-corner `f` is reported as a
+  face with fewer than three vertices, not as a bad index.
 - **OBJ state persists across `o`.** A `usemtl` or `g` before an `o` still
   governs the faces after it. `cube.obj`'s slab pins this.
 - **A repeated `o` resumes its object**, so the reader keeps a name → index map
   beside the object list. Resolving each `o` by scanning the objects seen so far
   makes the parse quadratic in the object count, which a national tile
   (hundreds of thousands of `o` lines) feels as tens of seconds.
-- **`tinyobj::material_t` cannot say a directive was absent.** Every field is
-  default-initialised, so an unstated `Ks` is indistinguishable from a black one,
-  and tinyobjloader parses `illum`, `Ni`, `map_Ks`, `map_bump` and more into typed
-  fields of its own, reaching `unknown_parameter` only for what it does not model.
-  `ReparseMtl` therefore reads the `.mtl` itself, records what each block states as
-  optionals, and harvests every unmapped directive verbatim into `other`;
-  `material_t` is consulted only for the `newmtl` name and `map_Kd`. Its own flush
-  is a trap in the same place: mid-file it flushes a block only when the name is
-  non-empty, at EOF unconditionally, so a `.mtl` with no `newmtl` at all yields one
-  empty-named material. The reader pops it — and then has to report the read as a
-  failure when nothing is left accumulated, because tinyobjloader answers a
-  successful `mtllib` with `materials.at(0)`.
+- **A material record must be able to say a directive was absent.** Every field
+  of `MtlMaterial` that a `.mtl` may omit is an `optional`, because a
+  default-initialised one cannot tell an unstated `Ks` from a black one, and the
+  sidecar row's answer to "what does this material say about its specular
+  colour?" is SQL NULL rather than a value the file never gave. Everything the
+  mapping does not cover — `illum`, `Ni`, `map_Ks`, `map_bump`, whatever else —
+  goes into `other` verbatim, key and rest of line. A block is created only by a
+  `newmtl` with a name, so a `.mtl` that is empty or nothing but comments
+  declares no material at all rather than one with an empty name; that is the
+  case `mtllib '…' declares no material` warns about.
 
 ## FlatCityBuf
 

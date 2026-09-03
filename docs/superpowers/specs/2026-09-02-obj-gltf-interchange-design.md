@@ -24,17 +24,19 @@ holes instead of cutting them.
 
 ## Dependencies
 
-Three new vcpkg ports, all present at the pinned baseline `84bab45d`:
+Two new vcpkg ports, both present at the pinned baseline `84bab45d`:
 
 | Port | Version | Licence | Role |
 | --- | --- | --- | --- |
-| `tinyobjloader` (feature `double`) | 2.0.0rc13 | MIT | OBJ parsing via its callback API |
 | `tinygltf` | 2.9.7, **pinned with a manifest `overrides` entry** | MIT | glTF / GLB serialisation; uses the `nlohmann-json` already linked |
 | `earcut-hpp` | 2.2.4 | ISC | Hole-aware polygon triangulation |
 
-Why these and not others is recorded in the research this design came from:
-no baseline library writes OBJ with double precision, per-surface `usemtl` and
-`o`/`g` nesting, so the OBJ writer is hand-written; `cgltf` cannot write
+Reading and writing OBJ is this extension's own: no baseline library writes OBJ
+with double precision, per-surface `usemtl` and `o`/`g` nesting, and none parses
+one with correctly-rounded reals or a record that can say a directive was absent,
+so both directions are hand-written (`obj_parser.cpp`, `obj_writer.cpp`).
+Why the two ports and not others is recorded in the research this design came
+from: `cgltf` cannot write
 unknown per-object extensions and `fastgltf` has typed extensions only, which
 would block the 3D Tiles metadata extensions later; tinygltf writes `extras`
 and extension JSON verbatim. tinygltf's C++ header is deprecated upstream in
@@ -136,9 +138,8 @@ other source.
 - **Indices.** 1-based positive and negative (relative) indices are both
   honoured. `v` with a fourth `w` component ignores it; `v` with six values
   keeps the first three (vertex colours are dropped). `vn` is ignored — the
-  normal of a polygon is implied by its ring. Backslash line continuation is
-  **not** supported, a limitation of the parser library; the reader says so
-  in its error when it meets a line ending in `\`.
+  normal of a polygon is implied by its ring. A line ending in `\` continues
+  on the next one, joined before it is tokenised.
 - **Coordinates.** Doubles as parsed (the `double` feature). No axis swap
   and no translation: an OBJ produced by cjio, 3dfier or geoflow is Z-up in
   world coordinates already, and one that is not is the user's to fix with
@@ -162,14 +163,12 @@ normalisation and filter pushdown for free. The reader kind is recorded so
 All bytes come through DuckDB's `FileSystem`, never `std::ifstream`: the OBJ
 text and each `.mtl` named in `mtllib` (resolved against the OBJ's
 directory). Image files are not read: `obj_textures` leaves `image_data` NULL
-and reports `image_uri` as written, exactly as the CityJSON readers do.
-tinyobjloader's `LoadObjWithCallback` takes an `std::istream`, so the text is
-wrapped in an `std::istringstream`; a `MaterialReader` subclass hands it the
-already-loaded MTL text so it never opens a file itself. This is what keeps
+and reports `image_uri` as written, exactly as the CityJSON readers do. The
+parser is handed text, and a callback that answers a `mtllib` name with the
+MTL text, so it never opens a file itself. This is what keeps
 `read_obj('s3://…/x.obj')` working.
 
-The parse uses the callback API, not `LoadObj`: the mainline API collapses
-`o` and `g` into a single name and would lose the object id.
+`o` and `g` stay distinct names, since only `o` names an object.
 
 ## Part 2 — writing OBJ and glTF
 
@@ -370,7 +369,7 @@ Suites (`test/sql/`):
   type/surfaces/face_semantics, WKB type via `cityjson_wkb_geometry_type` and
   extent via `cityjson_wkb_extent`, materials and textures rows, sidecar-mode UV
   inlining, relative indices, `lod` normalisation, and every documented
-  error (`lod` missing, bad `geometry_type`, backslash continuation).
+  error (`lod` missing, bad `geometry_type`, an index past the vertex list).
 - `obj_metadata.test`: extent equals the vertex bbox; `crs` resolved and
   omitted.
 - `copy_obj.test`: `read_text` assertions on the OBJ and MTL — one `o` per

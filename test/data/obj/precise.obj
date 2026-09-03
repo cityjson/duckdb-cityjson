@@ -1,5 +1,5 @@
 # One triangle at RD magnitudes with millimetre decimals, to pin exact vertex/texcoord
-# doubles through tinyobjloader's not-correctly-rounded number parser.
+# doubles: a not-correctly-rounded number parser lands one ULP off on these.
 mtllib precise.mtl
 o precise
 v 84593.249625 446461.355 0.475

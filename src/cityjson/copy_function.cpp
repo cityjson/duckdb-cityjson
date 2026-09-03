@@ -342,8 +342,8 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 		auto appearance_json = source_meta.appearance->ToJson();
 		bind_data.source_appearance_header = appearance_json;
 
-		// An OBJ's texture refs are file-global indices into the one `vt` pool tinyobj
-		// produced, and the reader never renumbers them per object -- unlike position
+		// An OBJ's texture refs are file-global indices into the file's one `vt` pool,
+		// and the reader never renumbers them per object -- unlike position
 		// vertices, which do get a per-feature-local pool. So the whole pool, verbatim,
 		// serves the feature line of every object that resolves a texture: index i means
 		// the same UV coordinate in each copy. Only those objects get it -- stamping the
