@@ -198,6 +198,75 @@ test-wasm:
 test-ci:
     make test
 
+# Validate a GLB export of the Delft tile with the Khronos glTF validator (needs node/npm
+# and network for the tile). Zero errors is the bar; warnings are printed for reading.
+# The npm package "gltf-validator" ships no CLI (no `bin` in its package.json, checked
+# against 2.0.0-dev.3.10) -- `npx gltf-validator` always fails with "could not determine
+# executable to run", regardless of network. Its documented entry point is the JS
+# `validateBytes` API, so that is what this recipe drives.
+# Opt-in: not part of `make test` or `just ci`.
+test-gltf-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    OUT="build/gltf_validate"
+    mkdir -p "$OUT"
+    ./build/release/duckdb -c "INSTALL httpfs; LOAD httpfs; \
+      COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')) \
+      TO '$OUT/delft.glb' (FORMAT glb, lod '2.2', attributes true);"
+    npm install --no-save --prefix "$OUT" gltf-validator >/dev/null
+    NODE_PATH="$OUT/node_modules" node -e '
+      const fs = require("fs");
+      const { validateBytes } = require("gltf-validator");
+      validateBytes(new Uint8Array(fs.readFileSync(process.argv[1])))
+        .then((report) => fs.writeFileSync(process.argv[2], JSON.stringify(report)))
+        .catch((error) => { console.error(error); process.exit(1); });
+    ' "$OUT/delft.glb" "$OUT/report.json"
+    python3 - "$OUT/report.json" <<'EOF'
+    import json, sys
+    r = json.load(open(sys.argv[1]))
+    issues = r.get("issues", {})
+    print("errors:", issues.get("numErrors"), "warnings:", issues.get("numWarnings"))
+    for m in issues.get("messages", [])[:20]:
+        print(" ", m.get("severity"), m.get("code"), m.get("pointer"))
+    sys.exit(0 if issues.get("numErrors", 1) == 0 else 1)
+    EOF
+
+# Compare an OBJ export of the Delft tile with cjio's (pip install cjio). cjio triangulates
+# and writes world coordinates; ours is exported with `origin 'none'` so it also writes
+# world coordinates, and only the vertex sets are then comparable: both must contain the
+# same distinct (x, y, z) triples.
+#
+# Both sides are pinned to lod 2.2, and both are cleaned to just that lod's vertices:
+# cjio's OBJ writer emits the file's *entire* global vertex pool (every lod, orphans
+# included) ahead of the per-object faces, so `lod_filter 2.2 vertices_clean` first
+# restricts it to what lod 2.2 actually uses; our writer already emits only the
+# vertices the requested lod references. Full precision (the `precision` default of
+# 17, i.e. no `precision` option here) avoids rounding twice -- Delft's `.3f` cjio
+# format and this recipe's `round(…, 3)` follow from the tile's `transform.scale` of
+# 0.001; a tile with a coarser or finer scale needs that digit adjusted to match.
+# Opt-in: not part of `make test` or `just ci`.
+test-obj-cjio:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    OUT="build/obj_cjio"
+    mkdir -p "$OUT"
+    curl -sSL -o "$OUT/delft.city.json" https://cityjson.open3d.city/cityjson/delft.city.json
+    cjio "$OUT/delft.city.json" lod_filter 2.2 vertices_clean export obj "$OUT/cjio.obj"
+    ./build/release/duckdb -c "COPY (SELECT * FROM read_cityjson('$OUT/delft.city.json', lod := '2.2')) TO '$OUT/ours.obj' (FORMAT obj, origin 'none', lod '2.2');"
+    python3 - "$OUT/cjio.obj" "$OUT/ours.obj" <<'EOF'
+    import sys
+    def verts(p):
+        s = set()
+        for line in open(p):
+            if line.startswith("v "):
+                x, y, z = (round(float(t), 3) for t in line.split()[1:4])
+                s.add((x, y, z))
+        return s
+    a, b = verts(sys.argv[1]), verts(sys.argv[2])
+    print("cjio", len(a), "ours", len(b), "only-cjio", len(a - b), "only-ours", len(b - a))
+    sys.exit(0 if a == b else 1)
+    EOF
+
 # clang-format check — matches the CI "Format Check" job (scans src and test).
 format-check:
     make format-check
