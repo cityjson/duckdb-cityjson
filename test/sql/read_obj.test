@@ -159,11 +159,12 @@ SELECT bbox FROM read_obj('test/data/obj/with_origin_crlf.obj', lod := '0');
 ----
 {'xmin': 84500.5, 'ymin': 446300.25, 'zmin': 0.0, 'xmax': 84501.5, 'ymax': 446301.25, 'zmax': 0.0}
 
-# --- Documented limitation: backslash continuation is refused, not mis-parsed.
-statement error
-SELECT * FROM read_obj('test/data/obj/continuation.obj', lod := '1');
+# --- A line ending in `\` continues on the next one, joined before it is tokenised:
+#     this fixture's three `v` lines (the third split across two) are one triangle.
+query I
+SELECT bbox FROM read_obj('test/data/obj/continuation.obj', lod := '1');
 ----
-line 3 ends with a backslash; line continuation is not supported
+{'xmin': 0.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 1.0, 'ymax': 1.0, 'zmax': 0.0}
 
 # --- A face pointing past the vertex list is an error naming the offending index.
 statement error
