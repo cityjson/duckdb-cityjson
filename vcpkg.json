@@ -4,7 +4,6 @@
                 "nlohmann-json",
                 "flatbuffers",
                 "flatcitybuf",
-                { "name": "tinyobjloader", "features": ["double"] },
                 "tinygltf",
                 "earcut-hpp"
         ],
