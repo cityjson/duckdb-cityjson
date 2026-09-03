@@ -268,10 +268,14 @@ the ring's first vertex so the signed-area tests do not drown at projected
 magnitudes.
 
 The glTF writer builds a `tinygltf::Model` from the same mesh model: one
-buffer, 4-byte-aligned views, positions as float32 relative to the origin
-(float32 at projected magnitudes would lose centimetres), indices narrowed to
-u16 when a primitive has fewer than 65 535 vertices, and images as raw bytes
-in bufferViews — tinygltf is built without stb, so nothing is ever decoded.
+buffer, 4-byte-aligned views, positions as float32 relative to the origin,
+indices narrowed to u16 when a primitive has fewer than 65 535 vertices, and
+images as raw bytes in bufferViews — tinygltf is built without stb, so nothing
+is ever decoded. The origin subtraction is what the float32 rule costs or
+saves: one float32 ULP at 1e5 is 8 mm, so `origin 'none'` puts projected
+national coordinates into float32 at that resolution, while the 1e3 magnitudes
+an origin leaves resolve to 0.1 mm. A GLB is refused past 4 GiB, because its
+chunk headers are 32-bit and tinygltf casts into them unchecked.
 `TriangulateFaceCorners` triangulates each face into per-*corner* indices
 rather than per-vertex ones, because a textured face's UV is a per-corner
 attribute glTF has no way to share the way it shares `POSITION`: a vertex

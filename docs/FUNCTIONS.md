@@ -1287,7 +1287,7 @@ python3 -c "import json; print(json.dumps(json.load(open('minimal.gltf'))['asset
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `lod` | highest per object | As for `obj` |
-| `origin` | `'auto'` | As for `obj`, but there is no `# origin` header to read back from — `asset.extras.origin` is the record, in double precision |
+| `origin` | `'auto'` | As for `obj`, but there is no `# origin` header to read back from — `asset.extras.origin` is the record, in double precision. `origin 'none'` writes projected-magnitude coordinates straight into float32, where one ULP at 1e5 is 8 mm; subtracting an origin leaves magnitudes around 1e3, where it is 0.1 mm |
 | `materials_query`, `textures_query` | none | As for `obj` |
 | `metadata_from` | discovered | As for `obj` |
 | `attributes` | `false` | Every attribute column of the row, with `object_type` and `lod`, into the node's `extras` |
@@ -1297,12 +1297,18 @@ python3 -c "import json; print(json.dumps(json.load(open('minimal.gltf'))['asset
 into a tile `transform` in double precision rather than the float32 the mesh
 itself is written in.
 
-An attribute column whose value is not a plain scalar reaches `extras` as a
-**string**, never as a nested array or object: a `LIST` column comes through
-as DuckDB's own display text for the list, not JSON —
+How an attribute reaches `extras` depends on which of the two ways it arrived
+by. An attribute **column** whose value is not a plain scalar comes
+through as a **string**: a `LIST` or `STRUCT` column is rendered as DuckDB's
+own display text, not as JSON. An entry of the **`other`** column, in
+contrast, is parsed JSON by the time the writer sees it — the sink parses that
+cell and merges its members in as attributes — so it keeps whatever shape it
+had, nested objects and mixed-type arrays included:
 
 ```sql
-COPY (SELECT *, ['a', 'b']::VARCHAR[] AS tags FROM read_cityjson('test/data/minimal.city.json', lod := '2.2'))
+COPY (SELECT * REPLACE ('{"nested": {"a": [1, 2.5, "s"]}, "empty_list": [], "empty_obj": {}, "nil": null}' AS other),
+             ['a', 'b']::VARCHAR[] AS tags
+      FROM read_cityjson('test/data/minimal.city.json', lod := '2.2'))
 TO 'tagged.gltf' (FORMAT gltf, attributes true);
 ```
 
@@ -1311,14 +1317,19 @@ python3 -c "import json; print(json.dumps(json.load(open('tagged.gltf'))['nodes'
 ```
 
 ```text
-{"function": "residential", "lod": "2.2", "measuredHeight": 15.5, "object_type": "Building", "tags": "[a, b]", "yearOfConstruction": 2020}
+{"empty_list": null, "empty_obj": null, "function": "residential", "lod": "2.2", "measuredHeight": 15.5, "nested": {"a": [1, 2.5, "s"]}, "object_type": "Building", "tags": "[a, b]", "yearOfConstruction": 2020}
 ```
 
-— `"tags": "[a, b]"` is not valid JSON inside a JSON document; a consumer that
-wants a real array back has to parse it itself. A source attribute typed as
-JSON text (an object, or an array CityJSON's own attribute typing cannot give
-a native column, such as one that is empty) comes through the same way, as
-its literal JSON text in a string, e.g. `"tags": "[]"`.
+`"tags": "[a, b]"` is the column path: it is not valid JSON inside a JSON
+document, and a consumer that wants a real array back has to parse it itself.
+`"nested"` is the `other` path, and arrives as the object it is.
+
+Two shapes tinygltf will not carry through: an **empty** array or object
+becomes `null` (`"empty_list"`, `"empty_obj"` above), and a member whose value
+is JSON `null` is **dropped** entirely (`"nil"` above is absent, and so is
+`asset.extras.crs` for a source with no CRS). The two stay distinguishable —
+an empty container is a member valued `null`, a `null` is no member at all —
+but neither arrives as what the source said.
 
 Materials map `diffuseColor` to `baseColorFactor` (alpha `1 − transparency`,
 `alphaMode` `BLEND` once transparency is non-zero, else the omitted default
@@ -1457,7 +1468,11 @@ print(json.dumps(j['materials'][1]))
 ```
 
 A texture whose bytes cannot be read is skipped with a warning and the
-material keeps its colour, exactly as for `obj`. A texture whose image type
+material keeps its colour, exactly as for `obj`. A texture whose bytes were
+read but whose **file cannot be written** beside a `.gltf` is not: tinygltf
+has no way to report a partial success, so the image writer's failure fails
+the whole write and the COPY errors with `Failed writing glTF output`. `obj`
+warns and carries on there, leaving the face without its `map_Kd`. A texture whose image type
 cannot be told — no declared `image_type`, no recognisable file extension on
 its `image_uri`, and its bytes carry neither the PNG nor the JPEG magic number
 — is skipped the same way, because a GLB image with an empty `mimeType` is
@@ -1512,6 +1527,12 @@ No normals are written — viewers compute flat ones, which is what a city
 model, with no curved surfaces, wants. `EXT_mesh_features` /
 `EXT_structural_metadata` are not written; node names and `extras` carry the
 identity and the attributes instead.
+
+A GLB's chunk headers are 32-bit, so a GLB cannot exceed 4 GiB. A write whose
+geometry and embedded images would take it past that is refused rather than
+written with wrapped chunk lengths and no error — write `FORMAT gltf`, whose
+buffer is a separate file the limit does not apply to, or split the export
+with a lower `lod` or a `WHERE` clause.
 
 Under duckdb-wasm, prefer GLB: a `.gltf` needs its `.bin` and any images
 placed beside it, which the browser cannot do for a file it only hands to the

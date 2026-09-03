@@ -190,16 +190,22 @@ columns, never the definitions.
   lazily, inside the face loop, so a failure part-way through the write can
   leave copied images in the output directory with no `.obj` and no `.mtl`
   beside them: `WriteOBJ` closes the `.obj` after that loop and writes the
-  `.mtl` after that again. `gltf`'s sidecars do not have that partial-write
-  window: `WriteGltfSceneToFile` writes the `.bin` and every image only once,
-  at the end, inside `tinygltf`'s own serialisation, after the whole
-  `tinygltf::Model` is built in memory.
+  `.mtl` after that again. `gltf`'s window is smaller but not absent:
+  `WriteGltfSceneToFile` builds the whole `tinygltf::Model` in memory first,
+  then writes the `.bin`, then every image, and only then opens the main file
+  — so a main file that cannot be opened, or an image that fails after an
+  earlier one succeeded, leaves those sidecars orphaned in the output
+  directory.
 - **tinygltf without stb.** Every translation unit that includes
   `tiny_gltf.h` must see `TINYGLTF_NO_STB_IMAGE` and
   `TINYGLTF_NO_STB_IMAGE_WRITE` (compile definitions on both targets); one TU
   without them makes the `TinyGLTF` constructor reference the stb-backed
   default callbacks and the link fails. With them, the default image writer
   is absent, so the `.gltf` path installs its own (`WriteRawImage`).
+  `WriteRawImage`'s signature is tinygltf 2.9.x's eight-argument
+  `WriteImageDataFunction`; it is not a virtual override and nothing checks it
+  beyond the `SetImageWriter` call compiling, so re-check it against the
+  typedef on any tinygltf version bump.
 - **A `.gltf`'s sidecars.** tinygltf writes `buffers[0].uri` and image files
   relative to the *output path's directory*; that is DuckDB's temp path, which
   shares the final file's directory, so the names come from the final stem and
