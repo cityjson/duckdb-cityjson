@@ -199,6 +199,39 @@ SELECT regexp_extract(c, '"name":"brick","pbrMetallicRoughness":\{[^}]*"baseColo
 ----
 0
 
+# --- The V flip, pinned in bytes. CityJSON's texture origin is bottom-left and glTF's
+#     is top-left, so the writer emits `1 - v`. Every other textured fixture's UV pool
+#     is the unit square, which that flip maps onto itself -- so only a pool that is
+#     asymmetric under it can tell the two conventions apart. quad_texture.city.json's
+#     pool is [[0.1,0.2],[0.9,0.2],[0.9,0.7],[0.1,0.7]], and its image is on disk beside
+#     it so the texture actually loads and TEXCOORD_0 is written at all.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/quad_texture.city.json', lod := '2.2'))
+TO '__TEST_DIR__/quad.gltf' (FORMAT gltf);
+
+query II
+SELECT regexp_extract(c, '"images":\[\{"uri":"([^"]*)"', 1), length(regexp_extract_all(c, '"TEXCOORD_0"'))
+FROM (SELECT compact(content) AS c FROM read_text('__TEST_DIR__/quad.gltf'));
+----
+quad_texture.png	1
+
+# The UVs are wherever the buffer says they are: the TEXCOORD_0 accessor names a
+# bufferView, and that view's `byteOffset` (absent means 0 -- tinygltf omits the schema
+# default) is where its floats start. The first pair emitted is the first corner
+# earcut returns, which for this quad is texture vertex 2 -- (0.9, 0.7) in the source,
+# so (0.9, 1 - 0.7) = (0.9, 0.3) as float32 little-endian. Without the flip the same
+# eight bytes would read (0.9, 0.7).
+query II
+WITH j AS (SELECT compact(content) AS c FROM read_text('__TEST_DIR__/quad.gltf')),
+     v AS (SELECT regexp_extract(c, '"bufferView":(\d+),"componentType":5126,"count":\d+,"type":"VEC2"', 1)::INT AS uv_view,
+                  string_split(regexp_extract(c, '"bufferViews":\[(.*?)\}\]', 1) || '}', '},{') AS views FROM j),
+     o AS (SELECT COALESCE(NULLIF(regexp_extract(views[uv_view + 1], '"byteOffset":(\d+)', 1), ''), '0')::INT AS off FROM v)
+SELECT off, (SELECT content FROM read_blob('__TEST_DIR__/quad.bin'))[off + 1 : off + 8]
+     = '\x66\x66\x66\x3F\x9A\x99\x99\x3E'::BLOB
+FROM o;
+----
+48	true
+
 # --- lod selection and skipping, as for obj.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))

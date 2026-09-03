@@ -520,6 +520,26 @@ void WriteGltf(const MeshModel &model, AppearanceSource &appearance, const std::
 	gltf.scenes.push_back(scene);
 	gltf.defaultScene = 0;
 
+	if (options.binary) {
+		// A GLB's chunk headers are uint32_t, and tinygltf's WriteBinaryGltfStream casts
+		// the JSON and BIN sizes into them without checking -- so a model past 4 GiB is
+		// written with wrapped lengths and no error at all. Refuse it here instead. The
+		// JSON is not serialised yet, so a fixed allowance stands in for it; it is far
+		// larger than any plausible glTF JSON, and erring high only refuses a little
+		// early. There is no unit-level check for this: the smallest input that reaches
+		// the limit needs more than 4 GiB of buffer.
+		constexpr uint64_t GLB_MAX = (uint64_t(1) << 32) - 28; // 12-byte header + two 8-byte chunk headers
+		constexpr uint64_t JSON_ALLOWANCE = uint64_t(64) << 20;
+		const uint64_t bin_size = gltf.buffers.empty() ? 0 : gltf.buffers.front().data.size();
+		if (bin_size + JSON_ALLOWANCE >= GLB_MAX) {
+			throw CityJSONError::FileWrite(
+			    "GLB output would exceed the 4 GiB limit a GLB's 32-bit chunk headers can address (" +
+			    std::to_string(bin_size) +
+			    " bytes of geometry and images alone): write FORMAT gltf, whose buffer is a "
+			    "separate file, or split the export with a lower `lod` or a WHERE clause");
+		}
+	}
+
 	tinygltf::TinyGLTF writer;
 	writer.SetImageWriter(WriteRawImage, nullptr);
 	// .glb: images and the buffer embedded. .gltf: buffer to bin_basename and images to

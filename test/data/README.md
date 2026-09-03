@@ -79,3 +79,14 @@ is honoured in both shapes it reaches the mesh writers in -- the reader's per-sh
 `values` and the spec's per-WKB-face one, which for a texture nest one level deeper
 than a material's. The image it names is deliberately not on disk: the `vt` and
 `f v/vt` lines are the point, not `map_Kd`.
+
+## quad_texture.city.json + quad_texture.png
+
+One textured `MultiSurface` quad whose four `vertices-texture` pairs
+(`[0.1, 0.2]`, `[0.9, 0.2]`, `[0.9, 0.7]`, `[0.1, 0.7]`) are **not** symmetric under
+`v -> 1 - v`. Every other textured fixture's UV pool is the unit square, which that
+flip maps onto itself, so none of them can tell a glTF writer that flips the V axis
+from one that does not. `copy_gltf.test` reads the `TEXCOORD_0` bytes out of the
+`.bin` and compares them against the float32 pair it expects. `quad_texture.png` is a
+real 1x1 PNG and is on disk beside the fixture, because the flip is only written for
+a face whose texture image could actually be loaded.
