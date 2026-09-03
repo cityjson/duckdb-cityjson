@@ -498,16 +498,22 @@ void WriteGltf(const MeshModel &model, AppearanceSource &appearance, const std::
 		gltf.nodes[root_index].children.push_back(static_cast<int>(gltf.nodes.size() - 1));
 	}
 
-	tinygltf::Buffer buf;
-	buffer.Align();
-	buf.data = std::move(buffer.data);
-	if (!options.binary) {
-		// Non-empty and not a data URI: tinygltf writes the bytes to this name under
-		// dirname(out_path) and records the name in the JSON. Left empty for .glb, which
-		// is the condition under which tinygltf emits the BIN chunk instead.
-		buf.uri = options.bin_basename;
+	// A model with nothing in it -- no rows, or every face dropped -- gets no buffer at
+	// all. glTF allows zero buffers alongside zero bufferViews, but a buffer's byteLength
+	// has a minimum of 1, so an empty one would be invalid (and would leave an empty .bin
+	// beside the output).
+	if (!buffer.data.empty()) {
+		tinygltf::Buffer buf;
+		buffer.Align();
+		buf.data = std::move(buffer.data);
+		if (!options.binary) {
+			// Non-empty and not a data URI: tinygltf writes the bytes to this name under
+			// dirname(out_path) and records the name in the JSON. Left empty for .glb, which
+			// is the condition under which tinygltf emits the BIN chunk instead.
+			buf.uri = options.bin_basename;
+		}
+		gltf.buffers.push_back(std::move(buf));
 	}
-	gltf.buffers.push_back(std::move(buf));
 
 	tinygltf::Scene scene;
 	scene.nodes.push_back(root_index);
