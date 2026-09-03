@@ -150,6 +150,14 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_20)
 target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_20)
 
+# tinygltf configuration, on every TU that includes the header: without stb, the
+# TinyGLTF constructor must not reference the stb-backed default image callbacks, and
+# that decision is made per-TU at include time.
+foreach(tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
+  target_compile_definitions(${tgt} PRIVATE TINYGLTF_NO_STB_IMAGE TINYGLTF_NO_STB_IMAGE_WRITE
+                                            TINYGLTF_NO_EXTERNAL_IMAGE)
+endforeach()
+
 # No fused multiply-add, on any platform. The writer's output must be
 # byte-identical everywhere.
 #
