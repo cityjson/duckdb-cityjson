@@ -181,15 +181,29 @@ columns, never the definitions.
   same faces.
 - **Sidecar files and the temp-rename.** `Finalize` writes the main file to
   DuckDB's temp path, which is renamed afterwards. The `.mtl` and copied images
-  are not covered: they are written directly under the *final* stem, and
-  `mtllib` references the final basename. Naming them from the temp path
-  produces a file that references a name that never exists. A rename failure
-  after a successful finalize therefore leaves the `.mtl` (and any copied
-  images) sitting beside a final path that was never created. Images are copied
+  (`obj`), and the `.bin` buffer and images (`gltf`), are not covered: they are
+  written directly under the *final* stem, and `mtllib` / `buffers[0].uri` /
+  each image's `uri` reference the final basename. Naming them from the temp
+  path produces a file that references a name that never exists. A rename
+  failure after a successful finalize therefore leaves the sidecars sitting
+  beside a final path that was never created. For `obj`, images are copied
   lazily, inside the face loop, so a failure part-way through the write can
   leave copied images in the output directory with no `.obj` and no `.mtl`
   beside them: `WriteOBJ` closes the `.obj` after that loop and writes the
-  `.mtl` after that again.
+  `.mtl` after that again. `gltf`'s sidecars do not have that partial-write
+  window: `WriteGltfSceneToFile` writes the `.bin` and every image only once,
+  at the end, inside `tinygltf`'s own serialisation, after the whole
+  `tinygltf::Model` is built in memory.
+- **tinygltf without stb.** Every translation unit that includes
+  `tiny_gltf.h` must see `TINYGLTF_NO_STB_IMAGE` and
+  `TINYGLTF_NO_STB_IMAGE_WRITE` (compile definitions on both targets); one TU
+  without them makes the `TinyGLTF` constructor reference the stb-backed
+  default callbacks and the link fails. With them, the default image writer
+  is absent, so the `.gltf` path installs its own (`WriteRawImage`).
+- **A `.gltf`'s sidecars.** tinygltf writes `buffers[0].uri` and image files
+  relative to the *output path's directory*; that is DuckDB's temp path, which
+  shares the final file's directory, so the names come from the final stem and
+  the temp name never leaks.
 
 ## Readers
 
@@ -373,6 +387,8 @@ loading incantation is load-bearing:
   cannot be where we prove it. The harness classifies rather than skips: only that precise
   signature is XFAIL, anything else is a hard failure, so the day Node learns HTTP the
   assertion turns green on its own. `src/` carries no wasm-specific guard.
+- **Mesh output**: prefer GLB; `.gltf` and OBJ write sidecar files, which MEMFS holds but
+  the browser cannot hand to the user as a set.
 
 The `_setThrew` shim and the `Atomics.wait` hang are upstream duckdb-wasm defects,
 neither reported.

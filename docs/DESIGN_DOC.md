@@ -267,6 +267,19 @@ triangulated with earcut after projection onto their Newell normal, shifted to
 the ring's first vertex so the signed-area tests do not drown at projected
 magnitudes.
 
+The glTF writer builds a `tinygltf::Model` from the same mesh model: one
+buffer, 4-byte-aligned views, positions as float32 relative to the origin
+(float32 at projected magnitudes would lose centimetres), indices narrowed to
+u16 when a primitive has fewer than 65 535 vertices, and images as raw bytes
+in bufferViews — tinygltf is built without stb, so nothing is ever decoded.
+`TriangulateFaceCorners` triangulates each face into per-*corner* indices
+rather than per-vertex ones, because a textured face's UV is a per-corner
+attribute glTF has no way to share the way it shares `POSITION`: a vertex
+visited twice with two different UVs has to become two glTF vertices.
+tinygltf was chosen over cgltf and fastgltf because it serialises `extras` and
+arbitrary extension JSON verbatim, which keeps the 3D Tiles metadata
+extensions a data change rather than a library change.
+
 ## 10. CRS handling
 
 CRSs are compared as **PROJJSON**, never as strings: a Parquet footer holds
