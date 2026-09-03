@@ -67,6 +67,22 @@ SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/holed.mtl');
 ----
 # Written by duckdb-cityjson|newmtl RoofSurface|Kd 0.9 0.06 0.09|d 1||newmtl WallSurface|Kd 0.8 0.8 0.8|d 1||
 
+# --- Overwriting an existing target. DuckDB writes through a temp file only when the
+#     path is already there (bind_copy.cpp), so this second COPY -- and nothing before
+#     it -- hands the writer 'tmp_holed.obj'. The .mtl must still be named after the
+#     final stem and written beside the final file, not left as 'tmp_holed.mtl'.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed.obj' (FORMAT obj);
+
+query III
+SELECT (SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line
+                              FROM read_text('__TEST_DIR__/holed.obj')) WHERE line = 'mtllib holed.mtl'),
+       (SELECT COUNT(*) FROM read_text('__TEST_DIR__/holed.mtl')),
+       (SELECT COUNT(*) FROM read_text('__TEST_DIR__/tmp_holed.mtl'));
+----
+1	1	0
+
 # --- triangulate true: every face a triangle (8 + 2).
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))

@@ -14,7 +14,6 @@ struct GltfWriteOptions {
 	bool binary = false;      // .glb (one file) vs .gltf (+ .bin + images)
 	bool attributes = false;  // per-node extras with object_type, lod and the attributes
 	std::string bin_basename; // .gltf: the buffer file name, final stem + ".bin"
-	std::string image_dir;    // .gltf: directory the images are written into
 };
 
 //! Write `model` as glTF at `out_path`. For `.gltf` the buffer is written beside it as

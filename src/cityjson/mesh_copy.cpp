@@ -79,23 +79,41 @@ bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int6
 	return static_cast<bool>(img);
 }
 
-void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate) {
-	auto targets = ResolveMeshTargets(bind_data);
+//! What both mesh finalizes need before they can write: where the output goes, a private
+//! copy of the appearance (the writers' LoadImage fills texture bytes into it, and the
+//! bind data must stay as bound), and the model the sink's rows build, with the build's
+//! own warnings already logged.
+struct MeshCopyInputs {
+	MeshTargets targets;
+	AppearanceSource appearance;
+	MeshModel model;
+};
+
+static MeshCopyInputs PrepareMeshCopy(ClientContext &context, CityJSONCopyBindData &bind_data,
+                                      CityJSONCopyGlobalState &gstate, const char *format_label) {
+	MeshCopyInputs in;
+	in.targets = ResolveMeshTargets(bind_data);
 	if (!bind_data.appearance_source.has_value()) {
 		// The bind resolves this for every mesh format; reaching Finalize without it
 		// means the bind and the finalize disagree about what a mesh format is.
-		throw InternalException("obj COPY finalised without an appearance source");
+		throw InternalException(std::string(format_label) + " COPY finalised without an appearance source");
 	}
-	// A copy: LoadImage fills texture bytes, and the bind data must stay as bound.
 	// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-	AppearanceSource appearance = bind_data.appearance_source.value();
+	in.appearance = bind_data.appearance_source.value();
 	MeshBuildOptions build;
 	build.lod = bind_data.mesh_lod;
 	build.origin = bind_data.mesh_origin;
-	auto model = BuildMeshModel(gstate.feature_objects, gstate.feature_order, appearance, build, bind_data.crs);
-	for (const auto &w : model.warnings) {
+	in.model = BuildMeshModel(gstate.feature_objects, gstate.feature_order, in.appearance, build, bind_data.crs);
+	for (const auto &w : in.model.warnings) {
 		DUCKDB_LOG_WARNING(context, "cityjson: " + w);
 	}
+	return in;
+}
+
+void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate) {
+	auto in = PrepareMeshCopy(context, bind_data, gstate, "obj");
+	auto &targets = in.targets;
+	auto &appearance = in.appearance;
 	OBJWriteOptions options;
 	options.triangulate = bind_data.obj_triangulate;
 	options.precision = bind_data.obj_precision;
@@ -103,7 +121,7 @@ void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJS
 	std::vector<std::string> write_warnings;
 	std::map<std::string, int64_t> basename_owner; // copied image name -> the texture that claimed it
 	WriteOBJ(
-	    model, appearance, gstate.temp_file_path, JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
+	    in.model, appearance, gstate.temp_file_path, JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
 	    [&](int64_t texture_id, std::string &basename) {
 		    return CopyTextureImage(context, appearance, texture_id, targets, basename_owner, basename);
 	    },
@@ -114,22 +132,9 @@ void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJS
 }
 
 void FinalizeGltf(ClientContext &context, CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate) {
-	auto targets = ResolveMeshTargets(bind_data);
-	if (!bind_data.appearance_source.has_value()) {
-		// The bind resolves this for every mesh format; reaching Finalize without it
-		// means the bind and the finalize disagree about what a mesh format is.
-		throw InternalException("glTF COPY finalised without an appearance source");
-	}
-	// A copy: LoadImage fills texture bytes, and the bind data must stay as bound.
-	// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-	AppearanceSource appearance = bind_data.appearance_source.value();
-	MeshBuildOptions build;
-	build.lod = bind_data.mesh_lod;
-	build.origin = bind_data.mesh_origin;
-	auto model = BuildMeshModel(gstate.feature_objects, gstate.feature_order, appearance, build, bind_data.crs);
-	for (const auto &w : model.warnings) {
-		DUCKDB_LOG_WARNING(context, "cityjson: " + w);
-	}
+	auto in = PrepareMeshCopy(context, bind_data, gstate, "glTF");
+	auto &targets = in.targets;
+	auto &appearance = in.appearance;
 	GltfWriteOptions options;
 	options.binary = bind_data.format == CopyFormat::Glb;
 	options.attributes = bind_data.gltf_attributes;
@@ -137,10 +142,9 @@ void FinalizeGltf(ClientContext &context, CityJSONCopyBindData &bind_data, CityJ
 	// buffer and the images it writes beside it land next to the final file -- under
 	// the final stem, which the temp name does not carry.
 	options.bin_basename = targets.final_stem + ".bin";
-	options.image_dir = targets.final_dir;
 	std::vector<std::string> write_warnings;
 	WriteGltf(
-	    model, appearance, gstate.temp_file_path, options,
+	    in.model, appearance, gstate.temp_file_path, options,
 	    [&](int64_t texture_id) {
 		    std::string warning;
 		    if (!appearance.LoadImage(context, texture_id, targets.source_dir, warning)) {

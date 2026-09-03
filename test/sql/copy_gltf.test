@@ -3,15 +3,20 @@
 # group: [sql]
 
 # The json extension is not linked into this test binary, so `require json` would skip
-# the whole file and report green. The .gltf is pretty-printed JSON; each view below
-# strips the whitespace around the structural characters so one compact line can be
-# matched with core regexp functions. A string value would lose whitespace of its own
-# where it borders one of those characters; no value asserted here contains any. tinygltf serialises through nlohmann::json, whose objects are
-# key-sorted, so a pattern may rely on the alphabetical order of the keys it spans.
-# Schema defaults are omitted by tinygltf: roughnessFactor 1.0, alphaMode OPAQUE and a
-# baseColorFactor of [1,1,1,1] never reach the file.
+# the whole file and report green. The .gltf is pretty-printed JSON, so it is read with
+# read_text and compacted by the macro below into one line core regexp functions can
+# match. tinygltf serialises through nlohmann::json, whose objects are key-sorted, so a
+# pattern may rely on the alphabetical order of the keys it spans. Schema defaults are
+# omitted by tinygltf: roughnessFactor 1.0, alphaMode OPAQUE and a baseColorFactor of
+# [1,1,1,1] never reach the file.
 
 require cityjson
+
+# Only whitespace adjacent to a structural character goes. That is not string-safe in
+# general -- a value like "Delft, NL" would lose the space after its comma -- but no
+# value asserted below has whitespace bordering one of these characters.
+statement ok
+CREATE MACRO compact(s) AS regexp_replace(s, '\s*([\[\]{}:,])\s*', '\1', 'g');
 
 # --- .gltf: JSON we can inspect, .bin beside it under the final stem.
 statement ok
@@ -19,7 +24,7 @@ COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'
 TO '__TEST_DIR__/holed.gltf' (FORMAT gltf);
 
 statement ok
-CREATE VIEW holed AS SELECT regexp_replace(content, '\s*([\[\]{}:,])\s*', '\1', 'g') AS c FROM read_text('__TEST_DIR__/holed.gltf');
+CREATE VIEW holed AS SELECT compact(content) AS c FROM read_text('__TEST_DIR__/holed.gltf');
 
 query IIII
 SELECT regexp_extract(c, '"version":"([^"]*)"', 1), regexp_extract(c, '"generator":"([^"]*)"', 1),
@@ -81,6 +86,26 @@ SELECT (SELECT octet_length(content) FROM read_blob('__TEST_DIR__/holed.bin'))
 ----
 true
 
+# --- Overwriting an existing target. DuckDB only writes through a temp file when the
+#     path is already there (bind_copy.cpp), so this second COPY -- and nothing before
+#     it -- hands the writer 'tmp_holed.gltf'. The buffer must still be named after the
+#     final stem and written beside the final file: a writer that took the name from the
+#     path it was handed would leave 'tmp_holed.bin' and a .gltf pointing at it.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed.gltf' (FORMAT gltf);
+
+query IIII
+SELECT regexp_extract(c, '"buffers":\[\{"byteLength":\d+,"uri":"([^"]*)"', 1),
+       (SELECT COUNT(*) FROM read_blob('__TEST_DIR__/holed.bin')),
+       (SELECT octet_length(content) FROM read_blob('__TEST_DIR__/holed.bin'))
+     = regexp_extract(c, '"buffers":\[\{"byteLength":(\d+)', 1)::BIGINT,
+       (SELECT COUNT(*) FROM read_blob('__TEST_DIR__/tmp_holed.bin'))
+FROM holed;
+----
+holed.bin	1	true	0
+
+
 # --- attributes true: the row's attributes plus object_type and lod on the node.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
@@ -89,26 +114,28 @@ TO '__TEST_DIR__/holed_attr.gltf' (FORMAT gltf, attributes true);
 query III
 SELECT regexp_extract(c, '"extras":\{[^}]*"name":"([^"]*)"', 1), regexp_extract(c, '"extras":\{[^}]*"object_type":"([^"]*)"', 1),
        regexp_extract(c, '"extras":\{[^}]*"lod":"([^"]*)"', 1)
-FROM (SELECT regexp_replace(content, '\s*([\[\]{}:,])\s*', '\1', 'g') AS c FROM read_text('__TEST_DIR__/holed_attr.gltf'));
+FROM (SELECT compact(content) AS c FROM read_text('__TEST_DIR__/holed_attr.gltf'));
 ----
 ring	Building	2.2
 
+# Without `attributes` the only extras in the file are the asset's own.
 query I
-SELECT NOT regexp_matches(c, '"object_type"') FROM holed;
+SELECT length(regexp_extract_all(c, '"extras"')) FROM holed;
 ----
-true
+1
 
-# --- .glb: one file. Magic, version, total length; the JSON chunk starts at byte 21.
+# --- .glb: one file. Magic, version, the JSON chunk's type and its first byte at 21.
 #     A stem of its own, so the "no .bin" probe below cannot be satisfied by the .gltf export above.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
 TO '__TEST_DIR__/holed_glb.glb' (FORMAT glb);
 
-query III
-SELECT content[1:4] = 'glTF'::BLOB, content[5:8] = '\x02\x00\x00\x00'::BLOB, content[21:21] = '{'::BLOB
+query IIII
+SELECT content[1:4] = 'glTF'::BLOB, content[5:8] = '\x02\x00\x00\x00'::BLOB, content[17:20] = 'JSON'::BLOB,
+       content[21:21] = '{'::BLOB
 FROM read_blob('__TEST_DIR__/holed_glb.glb');
 ----
-true	true	true
+true	true	true	true
 
 query I
 SELECT octet_length(content) % 4 FROM read_blob('__TEST_DIR__/holed_glb.glb');
@@ -142,7 +169,7 @@ COPY (SELECT * FROM tex_rows) TO '__TEST_DIR__/cube.gltf'
 (FORMAT gltf, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')', textures_query 'SELECT * FROM tex_defs');
 
 statement ok
-CREATE VIEW cube AS SELECT regexp_replace(content, '\s*([\[\]{}:,])\s*', '\1', 'g') AS c FROM read_text('__TEST_DIR__/cube.gltf');
+CREATE VIEW cube AS SELECT compact(content) AS c FROM read_text('__TEST_DIR__/cube.gltf');
 
 # glTF gives an image either a `uri` or a `bufferView` alongside its `mimeType`, never
 # both, and tinygltf writes only the one that applies -- so the .gltf names the file it
@@ -182,7 +209,7 @@ COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
 TO '__TEST_DIR__/delft.gltf' (FORMAT gltf, lod '2.2');
 
 query I
-SELECT (SELECT length(regexp_extract_all(regexp_replace(content, '\s*([\[\]{}:,])\s*', '\1', 'g'), '"mesh":\d+')) FROM read_text('__TEST_DIR__/delft.gltf'))
+SELECT (SELECT length(regexp_extract_all(compact(content), '"mesh":\d+')) FROM read_text('__TEST_DIR__/delft.gltf'))
      = (SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL);
 ----
 true
