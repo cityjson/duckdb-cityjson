@@ -96,6 +96,7 @@ set(EXTENSION_SOURCES
     src/cityjson/appearance_source.cpp
     src/cityjson/mesh_model.cpp
     src/cityjson/obj_writer.cpp
+    src/cityjson/gltf_writer.cpp
     src/cityjson/mesh_copy.cpp
 )
 
