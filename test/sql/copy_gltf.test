@@ -1,0 +1,255 @@
+# name: test/sql/copy_gltf.test
+# description: COPY TO gltf/glb writes one node and mesh per object, Y-up via the root matrix, origin and CRS in asset.extras
+# group: [sql]
+
+# The json extension is not linked into this test binary, so `require json` would skip
+# the whole file and report green. The .gltf is pretty-printed JSON, so it is read with
+# read_text and compacted by the macro below into one line core regexp functions can
+# match. tinygltf serialises through nlohmann::json, whose objects are key-sorted, so a
+# pattern may rely on the alphabetical order of the keys it spans. Schema defaults are
+# omitted by tinygltf: roughnessFactor 1.0, alphaMode OPAQUE and a baseColorFactor of
+# [1,1,1,1] never reach the file.
+
+require cityjson
+
+# Only whitespace adjacent to a structural character goes. That is not string-safe in
+# general -- a value like "Delft, NL" would lose the space after its comma -- but no
+# value asserted below has whitespace bordering one of these characters.
+statement ok
+CREATE MACRO compact(s) AS regexp_replace(s, '\s*([\[\]{}:,])\s*', '\1', 'g');
+
+# --- .gltf: JSON we can inspect, .bin beside it under the final stem.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed.gltf' (FORMAT gltf);
+
+statement ok
+CREATE VIEW holed AS SELECT compact(content) AS c FROM read_text('__TEST_DIR__/holed.gltf');
+
+query IIII
+SELECT regexp_extract(c, '"version":"([^"]*)"', 1), regexp_extract(c, '"generator":"([^"]*)"', 1),
+       regexp_extract(c, '"origin":(\[[^\]]*\])', 1), regexp_extract(c, '"crs":"([^"]*)"', 1) FROM holed;
+----
+2.0	duckdb-cityjson	[84500.0,446300.0,0.0]	https://www.opengis.net/def/crs/EPSG/0/7415
+
+# Root node carries the Z-up -> Y-up matrix; one child per object, named after its id.
+query III
+SELECT length(regexp_extract_all(c, '"mesh":\d+')) + 1, regexp_extract(c, '"matrix":(\[[^\]]*\])', 1),
+       regexp_extract(c, '"mesh":\d+,"name":"([^"]*)"', 1) FROM holed;
+----
+2	[1.0,0.0,0.0,0.0,0.0,0.0,-1.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,0.0,1.0]	courtyard
+
+query I
+SELECT regexp_extract(c, '"scenes":\[\{"nodes":(\[[^\]]*\])', 1) FROM holed;
+----
+[0]
+
+# One primitive per surface group (RoofSurface, WallSurface), materials named after them.
+query II
+SELECT length(regexp_extract_all(c, '"mode":4')),
+       regexp_extract_all(c, '"name":"([^"]*)","pbrMetallicRoughness"', 1) FROM holed;
+----
+2	[RoofSurface, WallSurface]
+
+query I
+SELECT regexp_extract(c, '"baseColorFactor":(\[[^\]]*\])', 1) FROM holed;
+----
+[0.9,0.06,0.09,1.0]
+
+query I
+SELECT regexp_extract(c, '"doubleSided":(true|false)', 1) FROM holed;
+----
+true
+
+# Positions are float32 relative to the origin: min/max are mandatory and computed.
+query II
+SELECT regexp_extract(c, '"max":(\[[^\]]*\]),"min":\[', 1), regexp_extract(c, '"max":\[[^\]]*\],"min":(\[[^\]]*\])', 1) FROM holed;
+----
+[4.0,4.0,10.0]	[0.0,0.0,10.0]
+
+# 8 roof triangles + 2 wall triangles = 30 indices, unsigned short.
+query II
+SELECT list_sum(list_transform(regexp_extract_all(c, '"count":(\d+),"type":"SCALAR"', 1), x -> x::INT)),
+       list_distinct(regexp_extract_all(c, '"componentType":(\d+),"count":\d+,"type":"SCALAR"', 1)) FROM holed;
+----
+30	[5123]
+
+# The buffer sits beside the final file, named after it, with exactly the declared length.
+query I
+SELECT regexp_extract(c, '"buffers":\[\{"byteLength":\d+,"uri":"([^"]*)"', 1) FROM holed;
+----
+holed.bin
+
+query I
+SELECT (SELECT octet_length(content) FROM read_blob('__TEST_DIR__/holed.bin'))
+     = (SELECT regexp_extract(c, '"buffers":\[\{"byteLength":(\d+)', 1)::BIGINT FROM holed);
+----
+true
+
+# --- Overwriting an existing target. DuckDB only writes through a temp file when the
+#     path is already there (bind_copy.cpp), so this second COPY -- and nothing before
+#     it -- hands the writer 'tmp_holed.gltf'. The buffer must still be named after the
+#     final stem and written beside the final file: a writer that took the name from the
+#     path it was handed would leave 'tmp_holed.bin' and a .gltf pointing at it.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed.gltf' (FORMAT gltf);
+
+query IIII
+SELECT regexp_extract(c, '"buffers":\[\{"byteLength":\d+,"uri":"([^"]*)"', 1),
+       (SELECT COUNT(*) FROM read_blob('__TEST_DIR__/holed.bin')),
+       (SELECT octet_length(content) FROM read_blob('__TEST_DIR__/holed.bin'))
+     = regexp_extract(c, '"buffers":\[\{"byteLength":(\d+)', 1)::BIGINT,
+       (SELECT COUNT(*) FROM read_blob('__TEST_DIR__/tmp_holed.bin'))
+FROM holed;
+----
+holed.bin	1	true	0
+
+
+# --- attributes true: the row's attributes plus object_type and lod on the node.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed_attr.gltf' (FORMAT gltf, attributes true);
+
+query III
+SELECT regexp_extract(c, '"extras":\{[^}]*"name":"([^"]*)"', 1), regexp_extract(c, '"extras":\{[^}]*"object_type":"([^"]*)"', 1),
+       regexp_extract(c, '"extras":\{[^}]*"lod":"([^"]*)"', 1)
+FROM (SELECT compact(content) AS c FROM read_text('__TEST_DIR__/holed_attr.gltf'));
+----
+ring	Building	2.2
+
+# Without `attributes` the only extras in the file are the asset's own.
+query I
+SELECT length(regexp_extract_all(c, '"extras"')) FROM holed;
+----
+1
+
+# --- .glb: one file. Magic, version, the JSON chunk's type and its first byte at 21.
+#     A stem of its own, so the "no .bin" probe below cannot be satisfied by the .gltf export above.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed_glb.glb' (FORMAT glb);
+
+query IIII
+SELECT content[1:4] = 'glTF'::BLOB, content[5:8] = '\x02\x00\x00\x00'::BLOB, content[17:20] = 'JSON'::BLOB,
+       content[21:21] = '{'::BLOB
+FROM read_blob('__TEST_DIR__/holed_glb.glb');
+----
+true	true	true	true
+
+query I
+SELECT octet_length(content) % 4 FROM read_blob('__TEST_DIR__/holed_glb.glb');
+----
+0
+
+# No .bin beside a .glb. read_blob reports a missing file as no rows rather than an
+# error, so the .gltf's own buffer is counted alongside it: the same query sees one
+# there and none here.
+query II
+SELECT (SELECT COUNT(*) FROM read_blob('__TEST_DIR__/holed.bin')),
+       (SELECT COUNT(*) FROM read_blob('__TEST_DIR__/holed_glb.bin'));
+----
+1	0
+
+# --- Textures: bytes from a sidecar go into a bufferView (glb) or a file (gltf).
+statement ok
+CREATE TABLE tex_rows AS SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE tex_defs AS
+SELECT id, image_uri, '\x89PNG\x0D\x0A\x1A\x0A'::BLOB AS image_data, image_type, wrapMode, textureType, borderColor, other
+FROM obj_textures('test/data/obj/cube.obj');
+
+statement ok
+COPY (SELECT * FROM tex_rows) TO '__TEST_DIR__/cube.glb'
+(FORMAT glb, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')', textures_query 'SELECT * FROM tex_defs');
+
+statement ok
+COPY (SELECT * FROM tex_rows) TO '__TEST_DIR__/cube.gltf'
+(FORMAT gltf, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')', textures_query 'SELECT * FROM tex_defs');
+
+statement ok
+CREATE VIEW cube AS SELECT compact(content) AS c FROM read_text('__TEST_DIR__/cube.gltf');
+
+# glTF gives an image either a `uri` or a `bufferView` alongside its `mimeType`, never
+# both, and tinygltf writes only the one that applies -- so the .gltf names the file it
+# wrote beside itself and the .glb, which embeds the bytes, is where the type is stated.
+query III
+SELECT length(regexp_extract_all(regexp_extract(c, '"images":(\[[^\]]*\])', 1), '"uri"')),
+       regexp_extract(c, '"images":\[\{"uri":"([^"]*)"', 1),
+       length(regexp_extract_all(c, '"TEXCOORD_0"')) FROM cube;
+----
+1	brick.png	1
+
+query II
+SELECT strpos(hex(content), hex('"mimeType":"image/png"'::BLOB)) > 0,
+       strpos(hex(content), hex('"uri"'::BLOB)) > 0
+FROM read_blob('__TEST_DIR__/cube.glb');
+----
+true	false
+
+query I
+SELECT octet_length(content) FROM read_blob('__TEST_DIR__/brick.png');
+----
+8
+
+# The textured material references the texture; the cube's three usemtl groups plus the textured split make the primitives.
+query I
+SELECT regexp_extract(c, '"name":"brick","pbrMetallicRoughness":\{[^}]*"baseColorTexture":\{"index":(\d+)', 1)::INT FROM cube;
+----
+0
+
+# --- The V flip, pinned in bytes. CityJSON's texture origin is bottom-left and glTF's
+#     is top-left, so the writer emits `1 - v`. Every other textured fixture's UV pool
+#     is the unit square, which that flip maps onto itself -- so only a pool that is
+#     asymmetric under it can tell the two conventions apart. quad_texture.city.json's
+#     pool is [[0.1,0.2],[0.9,0.2],[0.9,0.7],[0.1,0.7]], and its image is on disk beside
+#     it so the texture actually loads and TEXCOORD_0 is written at all.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/quad_texture.city.json', lod := '2.2'))
+TO '__TEST_DIR__/quad.gltf' (FORMAT gltf);
+
+query II
+SELECT regexp_extract(c, '"images":\[\{"uri":"([^"]*)"', 1), length(regexp_extract_all(c, '"TEXCOORD_0"'))
+FROM (SELECT compact(content) AS c FROM read_text('__TEST_DIR__/quad.gltf'));
+----
+quad_texture.png	1
+
+# The UVs are wherever the buffer says they are: the TEXCOORD_0 accessor names a
+# bufferView, and that view's `byteOffset` (absent means 0 -- tinygltf omits the schema
+# default) is where its floats start. The first pair emitted is the first corner
+# earcut returns, which for this quad is texture vertex 2 -- (0.9, 0.7) in the source,
+# so (0.9, 1 - 0.7) = (0.9, 0.3) as float32 little-endian. Without the flip the same
+# eight bytes would read (0.9, 0.7).
+query II
+WITH j AS (SELECT compact(content) AS c FROM read_text('__TEST_DIR__/quad.gltf')),
+     v AS (SELECT regexp_extract(c, '"bufferView":(\d+),"componentType":5126,"count":\d+,"type":"VEC2"', 1)::INT AS uv_view,
+                  string_split(regexp_extract(c, '"bufferViews":\[(.*?)\}\]', 1) || '}', '},{') AS views FROM j),
+     o AS (SELECT COALESCE(NULLIF(regexp_extract(views[uv_view + 1], '"byteOffset":(\d+)', 1), ''), '0')::INT AS off FROM v)
+SELECT off, (SELECT content FROM read_blob('__TEST_DIR__/quad.bin'))[off + 1 : off + 8]
+     = '\x66\x66\x66\x3F\x9A\x99\x99\x3E'::BLOB
+FROM o;
+----
+48	true
+
+# --- lod selection and skipping, as for obj.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/delft.glb' (FORMAT glb, lod '2.2');
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/delft.gltf' (FORMAT gltf, lod '2.2');
+
+query I
+SELECT (SELECT length(regexp_extract_all(compact(content), '"mesh":\d+')) FROM read_text('__TEST_DIR__/delft.gltf'))
+     = (SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL);
+----
+true
+
+# --- The appearance-form refusal applies to every mesh format.
+statement error
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/refused.glb' (FORMAT glb);
+----
+read with appearance := 'sidecar'

@@ -111,14 +111,27 @@ columns, never the definitions.
 
 - **`COPY` recovers its source from the parsed SELECT.** `FindCopySourceRef`
   (`copy_source_ref.cpp`) walks `CopyInfo::select_statement` for exactly one
-  `read_cityjson[seq]` / `read_flatcitybuf` call; it survives to our bind because
-  `bind_copy.cpp:97` copies rather than moves it and `:118` hands the whole `CopyInfo` to
-  `CopyFunctionBindInput`. **An ambiguous query — no reader call, more than one, or a
-  non-literal path — returns `nullopt`, never a guess**: stamping a wrong CRS onto
-  georeferenced output is worse than stamping none. `COPY my_table TO …` is not
+  `read_cityjson[seq]` / `read_flatcitybuf` / `read_obj` call; it survives to our bind
+  because `bind_copy.cpp:97` copies rather than moves it and `:118` hands the whole
+  `CopyInfo` to `CopyFunctionBindInput`. **An ambiguous query — no reader call, more than
+  one, or a non-literal path — returns `nullopt`, never a guess**: stamping a wrong CRS
+  onto georeferenced output is worse than stamping none. `COPY my_table TO …` is not
   discoverable, which is what `metadata_from` is for; a `DUCKDB_LOG_WARNING` fires when
   neither applies. Precedence: `crs` / `metadata_query` > `metadata_from` > discovered
   source.
+- **An OBJ source has no JSON block to lift `appearance` from.** `LoadSourceAppearance`
+  builds it instead from the same `OBJReader` the bind already opened for metadata
+  (`ReadMetadata`), re-emitted via `Appearance::ToJson`; a second `OBJReader` over the
+  same path is never constructed, since the first one memoises its parse and
+  `ReadAllChunks` on it is free. The reader never renumbers a face's texture-coordinate
+  indices per object — they stay file-global into the one `vt` pool tinyobj produced —
+  so that whole pool travels verbatim onto the `vertices-texture` block of each feature
+  whose geometry carries a `texture`, rather than being sliced: index *i* means the same
+  UV coordinate in every copy. A feature with no texture is stamped with nothing; the
+  pool is one size for every object, so stamping it on all of them inflates the output by
+  the object count. The pool is **not compacted per feature** — a textured feature
+  carries the whole file's UVs, including the ones it never indexes; writer-side
+  compaction (a per-feature pool with the refs renumbered against it) is a follow-up.
 - **Appearance blocks are per-feature and their refs are feature-local.** In CityJSONSeq
   every feature carries its own `appearance`, and its material/texture indices are local
   to that block, exactly as its boundary indices are local to its own `vertices` pool.
@@ -150,6 +163,53 @@ columns, never the definitions.
   call should not pay for, and a NULL is honest where a plausible wrong number is not. All
   three metadata functions share the schema, which is why the column is NULLed rather than
   dropped.
+- **Local and sidecar material cells are indistinguishable.** Only texture cells
+  differ (`[id, 5, 6]` vs `[id, [u,v], …]`). Mesh COPY is therefore *told* the
+  form: `materials_query`/`textures_query` present means sidecar. A source read
+  with `appearance := 'sidecar'` is refused without them; `FindCopySourceRef`
+  carries that flag. The refusal only fires for a **discovered** source — a
+  materialised table (`COPY my_table TO … (FORMAT obj)`) hides the
+  `read_cityjson[seq](…, appearance := 'sidecar')` call that produced it, so the
+  form cannot be told and the cells silently resolve as local-form instead of
+  being refused.
+- **A material/texture cell also comes in two *shapes*, orthogonally to form.**
+  This extension's own reader always re-serialises a row's material/texture
+  column as the nested, per-shell form; the CityParquet spec defines the flat,
+  per-WKB-face form. `BuildMeshModel` accepts both by inspecting nesting depth,
+  because a mesh COPY source is not always this extension's own reader — a
+  spec-conformant Parquet writer emits the flat shape, and both must colour the
+  same faces.
+- **Sidecar files and the temp-rename.** `Finalize` writes the main file to
+  DuckDB's temp path, which is renamed afterwards. The `.mtl` and copied images
+  (`obj`), and the `.bin` buffer and images (`gltf`), are not covered: they are
+  written directly under the *final* stem, and `mtllib` / `buffers[0].uri` /
+  each image's `uri` reference the final basename. Naming them from the temp
+  path produces a file that references a name that never exists. A rename
+  failure after a successful finalize therefore leaves the sidecars sitting
+  beside a final path that was never created. For `obj`, images are copied
+  lazily, inside the face loop, so a failure part-way through the write can
+  leave copied images in the output directory with no `.obj` and no `.mtl`
+  beside them: `WriteOBJ` closes the `.obj` after that loop and writes the
+  `.mtl` after that again. `gltf`'s window is smaller but not absent:
+  `WriteGltfSceneToFile` builds the whole `tinygltf::Model` in memory first,
+  then writes the `.bin`, then every image, and only then opens the main file
+  — so a main file that cannot be opened, or an image that fails after an
+  earlier one succeeded, leaves those sidecars orphaned in the output
+  directory.
+- **tinygltf without stb.** Every translation unit that includes
+  `tiny_gltf.h` must see `TINYGLTF_NO_STB_IMAGE` and
+  `TINYGLTF_NO_STB_IMAGE_WRITE` (compile definitions on both targets); one TU
+  without them makes the `TinyGLTF` constructor reference the stb-backed
+  default callbacks and the link fails. With them, the default image writer
+  is absent, so the `.gltf` path installs its own (`WriteRawImage`).
+  `WriteRawImage`'s signature is tinygltf 2.9.x's eight-argument
+  `WriteImageDataFunction`; it is not a virtual override and nothing checks it
+  beyond the `SetImageWriter` call compiling, so re-check it against the
+  typedef on any tinygltf version bump.
+- **A `.gltf`'s sidecars.** tinygltf writes `buffers[0].uri` and image files
+  relative to the *output path's directory*; that is DuckDB's temp path, which
+  shares the final file's directory, so the names come from the final stem and
+  the temp name never leaks.
 
 ## Readers
 
@@ -160,6 +220,34 @@ columns, never the definitions.
   and geometry boundary indices reference those, not the header's.
 - **`lod=` keeps the suffixed column grammar** (`geometry_lod2_2`, not a bare `geometry`),
   which is what keeps the LoD recoverable on export.
+- **tinyobjloader's mainline `LoadObj` collapses `o` and `g` into one name.**
+  Every real in the OBJ and MTL is parsed by this extension with `strtod`
+  (correctly rounded), because tinyobjloader's own number parser is not; it is
+  kept only for structure — `o`/`g`/`usemtl`/`mtllib` dispatch, face tokenising.
+  `OBJReader` uses tinyobjloader's callback API rather than `LoadObj`, so the
+  `o`/`g` collapse never happens; the callbacks hand over raw face tokens
+  (1-based, negative = relative, 0 = absent), so index resolution is ours. Its
+  `mtllib` handling stops at the first file of a line that loads, and it does
+  not implement backslash continuation — the reader refuses such lines rather
+  than mis-parse them.
+- **OBJ state persists across `o`.** A `usemtl` or `g` before an `o` still
+  governs the faces after it. `cube.obj`'s slab pins this.
+- **A repeated `o` resumes its object**, so the reader keeps a name → index map
+  beside the object list. Resolving each `o` by scanning the objects seen so far
+  makes the parse quadratic in the object count, which a national tile
+  (hundreds of thousands of `o` lines) feels as tens of seconds.
+- **`tinyobj::material_t` cannot say a directive was absent.** Every field is
+  default-initialised, so an unstated `Ks` is indistinguishable from a black one,
+  and tinyobjloader parses `illum`, `Ni`, `map_Ks`, `map_bump` and more into typed
+  fields of its own, reaching `unknown_parameter` only for what it does not model.
+  `ReparseMtl` therefore reads the `.mtl` itself, records what each block states as
+  optionals, and harvests every unmapped directive verbatim into `other`;
+  `material_t` is consulted only for the `newmtl` name and `map_Kd`. Its own flush
+  is a trap in the same place: mid-file it flushes a block only when the name is
+  non-empty, at EOF unconditionally, so a `.mtl` with no `newmtl` at all yields one
+  empty-named material. The reader pops it — and then has to report the read as a
+  failure when nothing is left accumulated, because tinyobjloader answers a
+  successful `mtllib` with `materials.at(0)`.
 
 ## FlatCityBuf
 
@@ -305,6 +393,8 @@ loading incantation is load-bearing:
   cannot be where we prove it. The harness classifies rather than skips: only that precise
   signature is XFAIL, anything else is a hard failure, so the day Node learns HTTP the
   assertion turns green on its own. `src/` carries no wasm-specific guard.
+- **Mesh output**: prefer GLB; `.gltf` and OBJ write sidecar files, which MEMFS holds but
+  the browser cannot hand to the user as a set.
 
 The `_setThrew` shim and the `Atomics.wait` hang are upstream duckdb-wasm defects,
 neither reported.

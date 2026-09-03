@@ -1,5 +1,6 @@
 #include "cityjson/copy_source_ref.hpp"
 
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
@@ -33,6 +34,8 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 			found.is_seq = true;
 		} else if (call.function_name == "read_flatcitybuf") {
 			found.is_fcb = true;
+		} else if (call.function_name == "read_obj") {
+			found.is_obj = true;
 		} else {
 			return;
 		}
@@ -47,6 +50,17 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 			return;
 		}
 		found.path = StringValue::Get(constant.value);
+
+		// Named parameters are children with an alias. Only `appearance` matters here.
+		for (auto &child : call.children) {
+			if (child->alias != "appearance" || child->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+				continue;
+			}
+			auto &c = child->Cast<ConstantExpression>();
+			if (!c.value.IsNull() && c.value.type().id() == LogicalTypeId::VARCHAR) {
+				found.sidecar_appearance = StringUtil::Lower(StringValue::Get(c.value)) == "sidecar";
+			}
+		}
 		out.push_back(std::move(found));
 		return;
 	}

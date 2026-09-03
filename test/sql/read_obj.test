@@ -1,0 +1,247 @@
+# name: test/sql/read_obj.test
+# description: read_obj maps Wavefront OBJ objects, groups and materials onto the object-table schema
+# group: [sql]
+
+require cityjson
+
+# --- Schema: the standard wide layout with exactly one LoD group and no attributes.
+query II
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
+WHERE column_name LIKE 'geometry%' OR column_name LIKE 'material%' OR column_name LIKE 'texture%';
+----
+geometry_lod2_2	BLOB
+geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+material_lod2_2	VARCHAR
+texture_lod2_2	VARCHAR
+
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
+WHERE column_name NOT IN ('id','feature_id','object_type','parents','children','children_roles','address','bbox',
+                          'geometry_lod2_2','geometry_properties_lod2_2','material_lod2_2','texture_lod2_2',
+                          'template','other');
+----
+0
+
+# --- One row per `o`, in file order; id doubles as feature_id; object_type from the parameter.
+query III
+SELECT id, feature_id, object_type FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	cube	Building
+slab	slab	Building
+
+query I
+SELECT DISTINCT object_type FROM read_obj('test/data/obj/cube.obj', lod := '2', object_type := 'BuildingPart');
+----
+BuildingPart
+
+# --- lod is normalised the way every other reader normalises it.
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2'))
+WHERE column_name LIKE 'geometry_lod%';
+----
+geometry_lod2_0
+
+# --- lod is required: an OBJ carries none, and the value names the columns. An empty
+#     string is the same absence and gets the same message, not the generic bind's
+#     "LOD '' not found in file".
+statement error
+SELECT * FROM read_obj('test/data/obj/cube.obj');
+----
+read_obj: lod is required
+
+statement error
+SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '');
+----
+read_obj: lod is required
+
+# --- Geometry: closed → Solid with one shell; open → MultiSurface. Face order is file order.
+query IIII
+SELECT id, geometry_properties_lod2_2.type, geometry_properties_lod2_2.shells,
+       cityjson_wkb_geometry_type(geometry_lod2_2)
+FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	Solid	[[6]]	PolyhedralSurface Z
+slab	MultiSurface	NULL	MultiPolygon Z
+
+query II
+SELECT id, cityjson_wkb_extent(geometry_lod2_2) FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	{'xmin': 0.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 1.0, 'ymax': 1.0, 'zmax': 1.0}
+slab	{'xmin': 10.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 12.0, 'ymax': 2.0, 'zmax': 0.0}
+
+query II
+SELECT id, bbox FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	{'xmin': 0.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 1.0, 'ymax': 1.0, 'zmax': 1.0}
+slab	{'xmin': 10.0, 'ymin': 0.0, 'zmin': 0.0, 'xmax': 12.0, 'ymax': 2.0, 'zmax': 0.0}
+
+# --- Semantics from usemtl / g names that are surface types, in first-use order.
+#     The slab inherits RoofSurface: OBJ state persists across `o`.
+query III
+SELECT id, geometry_properties_lod2_2.surfaces, geometry_properties_lod2_2.face_semantics
+FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	[{"type":"GroundSurface"},{"type":"WallSurface"},{"type":"RoofSurface"}]	[0, 1, 1, 1, 1, 2]
+slab	[{"type":"RoofSurface"}]	[0]
+
+# --- Every face of the cube survives as its own ring: six `f` lines, six semantics
+#     entries. The `Solid` row above is what pins the negative-index roof face -- an
+#     unresolved `-4 -3 -2 -1` would leave the shell open and the type MultiSurface.
+query I
+SELECT list_count(geometry_properties_lod2_2.face_semantics) = 6 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'cube';
+----
+true
+
+# --- No `o`, no materials: one object named after the file stem, open → MultiSurface, no semantics.
+query IIII
+SELECT id, geometry_properties_lod2_2.type, geometry_properties_lod2_2.surfaces, material_lod2_2
+FROM read_obj('test/data/obj/open_roof.obj', lod := '2.2');
+----
+open_roof	MultiSurface	NULL	NULL
+
+# --- geometry_type forces the family; forcing Solid on an open mesh is allowed.
+query II
+SELECT id, geometry_properties_lod2_2.type FROM read_obj('test/data/obj/cube.obj', lod := '2.2', geometry_type := 'MultiSurface');
+----
+cube	MultiSurface
+slab	MultiSurface
+
+query II
+SELECT id, geometry_properties_lod2_2.shells FROM read_obj('test/data/obj/open_roof.obj', lod := '2.2', geometry_type := 'Solid');
+----
+open_roof	[[2]]
+
+statement error
+SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', geometry_type := 'CompositeSolid');
+----
+geometry_type must be 'auto', 'Solid' or 'MultiSurface'
+
+# --- material_lod*: one theme "visual", values per face in WKB face order; ids are MTL ordinals.
+query II
+SELECT id, material_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+----
+cube	{"visual":{"values":[[0,1,1,1,1,2]]}}
+slab	{"visual":{"values":[2]}}
+
+# --- texture_lod* in local form: [texId, vtIdx…] per ring for the four textured walls, [null] elsewhere.
+query I
+SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'cube';
+----
+{"visual":{"values":[[[[null]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[null]]]]}}
+
+query I
+SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'slab';
+----
+NULL
+
+# --- appearance := 'sidecar' inlines the UVs; ids are unchanged (one file, one definition set).
+query I
+SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar') WHERE id = 'cube';
+----
+{"visual":{"values":[[[[null]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[null]]]]}}
+
+query I
+SELECT material_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar') WHERE id = 'cube';
+----
+{"visual":{"values":[[0,1,1,1,1,2]]}}
+
+# --- `# origin` written by our exporter is added back, so a round trip is exact.
+query I
+SELECT bbox FROM read_obj('test/data/obj/with_origin.obj', lod := '0');
+----
+{'xmin': 84500.5, 'ymin': 446300.25, 'zmin': 0.0, 'xmax': 84501.5, 'ymax': 446301.25, 'zmax': 0.0}
+
+# The same header with CRLF endings and a blank line before the `# origin`: a bare "\r"
+# is a blank comment-block line, not the first non-comment line that ends the header.
+query I
+SELECT bbox FROM read_obj('test/data/obj/with_origin_crlf.obj', lod := '0');
+----
+{'xmin': 84500.5, 'ymin': 446300.25, 'zmin': 0.0, 'xmax': 84501.5, 'ymax': 446301.25, 'zmax': 0.0}
+
+# --- Documented limitation: backslash continuation is refused, not mis-parsed.
+statement error
+SELECT * FROM read_obj('test/data/obj/continuation.obj', lod := '1');
+----
+line 3 ends with a backslash; line continuation is not supported
+
+# --- A face pointing past the vertex list is an error naming the offending index.
+statement error
+SELECT * FROM read_obj('test/data/obj/bad_index.obj', lod := '1');
+----
+face references vertex 9 but 2 vertices have been declared
+
+# --- A missing .mtl is a warning, not an error: the geometry still reads, with no materials.
+query II
+SELECT COUNT(*), COUNT(material_lod1_0) FROM read_obj('test/data/obj/missing_mtl.obj', lod := '1');
+----
+1	0
+
+# The warning is emitted, not swallowed: tinyobjloader's `warn` reaches duckdb_logs.
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET logging_level = 'WARNING';
+
+statement ok
+SELECT COUNT(*) FROM read_obj('test/data/obj/missing_mtl.obj', lod := '1');
+
+query I
+SELECT COUNT(*) > 0 FROM duckdb_logs WHERE message LIKE '%read_obj%' AND message LIKE '%missing.mtl%';
+----
+true
+
+statement ok
+SET enable_logging = false;
+
+# --- A .mtl with no `newmtl` at all defines nothing: tinyobjloader's unconditional
+#     final flush must not leak an empty-named material into the count.
+query II
+SELECT COUNT(*), COUNT(material_lod1_0) FROM read_obj('test/data/obj/empty_mtl.obj', lod := '1');
+----
+1	0
+
+# --- A repeated `o` resumes its object rather than starting a new one, at a scale where
+#     a linear scan of the objects seen so far would dominate the parse: 4 000 `o` lines,
+#     2 000 distinct names, two faces each.
+query II
+SELECT COUNT(*), COUNT(*) FILTER (list_count(geometry_properties_lod1_0.face_semantics) = 2)
+FROM read_obj('test/data/obj/many_objects.obj', lod := '1');
+----
+2000	2000
+
+# --- `v` / `vt` reals are parsed correctly-rounded, not through tinyobjloader's own
+# not-correctly-rounded number parser: a millimetre-precision RD coordinate round-trips
+# to its exact shortest text, not one ULP off. bbox is DOUBLE, which sqllogictest
+# compares approximately, so pin the exact digits through a VARCHAR cast instead.
+# Of the three, only `0.475` discriminates the two parsers: the other two coordinates
+# happen to land on the same double either way, so a regression would show up here
+# alone.
+query III
+SELECT bbox.xmin::VARCHAR, bbox.ymin::VARCHAR, bbox.zmin::VARCHAR FROM read_obj('test/data/obj/precise.obj', lod := '1');
+----
+84593.249625	446461.355	0.475
+
+# --- Same for `vt`: the sidecar form inlines the UV pair per face-vertex, so its exact
+# digits are visible in the printed JSON (the local form only carries an index).
+query I
+SELECT texture_lod1_0 LIKE '%[0,[0.3,0.7],[0.3,0.7],[0.3,0.7]]%'
+FROM read_obj('test/data/obj/precise.obj', lod := '1', appearance := 'sidecar');
+----
+true
+
+# --- OBJ -> CityJSON keeps geometry, semantics and appearance refs intact on the way out.
+#     Circular oracle by construction: this writes with our writer and reads back with
+#     our reader, so it pins that the OBJ shape survives the round trip and nothing
+#     more. The CityJSON encoding itself is pinned against upstream-produced fixtures
+#     in cityjson_corpus_parity.test.
+statement ok
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2')) TO '__TEST_DIR__/cube.city.json' (FORMAT cityjson);
+
+query III
+SELECT id, geometry_properties_lod2_2.type, material_lod2_2
+FROM read_cityjson('__TEST_DIR__/cube.city.json', lod := '2.2') ORDER BY id;
+----
+cube	Solid	{"visual":{"values":[[0,1,1,1,1,2]]}}
+slab	MultiSurface	{"visual":{"values":[2]}}

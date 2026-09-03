@@ -2,6 +2,7 @@
 
 #include "cityjson/copy_source_ref.hpp"
 
+#include "cityjson/appearance_source.hpp"
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb.hpp"
@@ -46,15 +47,36 @@ CopyColumnRole DetectColumnRole(const std::string &name);
 // Bind data for COPY TO
 // ============================================================
 
+//! The output format a COPY TO was bound with. One enum, not a boolean per format:
+//! every dispatch site names the format it handles, and a new format cannot fall
+//! through an `else` into the CityJSON writer.
+enum class CopyFormat : uint8_t { CityJSON, CityJSONSeq, FlatCityBuf, Obj, Gltf, Glb };
+
+inline bool IsMeshFormat(CopyFormat format) {
+	return format == CopyFormat::Obj || format == CopyFormat::Gltf || format == CopyFormat::Glb;
+}
+
 struct CityJSONCopyBindData : public FunctionData {
 	std::string file_path;
-	bool is_seq = false; // true for cityjsonseq format
-	bool is_fcb = false; // true for flatcitybuf format
+	CopyFormat format = CopyFormat::CityJSON;
 
 	// FlatCityBuf write-only options (COPY TO ... FORMAT flatcitybuf).
 	std::vector<std::string> fcb_attr_index_columns; // parsed from attr_index, empty = none
 	std::optional<uint16_t> fcb_branching_factor;
 	std::optional<uint16_t> fcb_index_node_size;
+
+	// Mesh write options (COPY TO ... FORMAT obj | gltf | glb).
+	std::optional<std::string> mesh_lod; // normalised; nullopt = highest per object
+	std::string mesh_origin = "auto";    // 'auto' | 'none' | 'x,y,z'
+	bool obj_triangulate = false;
+	int obj_precision = 17;
+	bool gltf_attributes = false;
+	// Sidecar-form appearance definitions; their presence declares the form (spec appearance).
+	std::optional<std::string> materials_query;
+	std::optional<std::string> textures_query;
+	// Resolved at bind for mesh formats (from the queries, or the source's local blocks),
+	// so a bad query fails before a single row is sunk -- as metadata_query does.
+	std::optional<AppearanceSource> appearance_source;
 
 	// Metadata (from options or metadata_query)
 	std::string version = "2.0";
@@ -155,6 +177,19 @@ struct CityJSONCopyLocalState : public LocalFunctionData {
 // ============================================================
 // Registration
 // ============================================================
+
+//! The COPY TO callbacks, shared by every format this extension writes -- the mesh
+//! formats register themselves elsewhere (mesh_copy.hpp) over these same five.
+unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
+                                            const vector<string> &names, const vector<LogicalType> &sql_types);
+unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
+                                                        const string &file_path);
+unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context, FunctionData &bind_data);
+void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+                        LocalFunctionData &lstate, DataChunk &input);
+void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+                           LocalFunctionData &lstate);
+void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate);
 
 void RegisterCityJSONCopyFunction(ExtensionLoader &loader);
 void RegisterCityJSONSeqCopyFunction(ExtensionLoader &loader);

@@ -1,0 +1,9 @@
+# Hand-written fixture: one gable of two faces, no `o` line, no materials.
+v 0 0 0
+v 4 0 0
+v 4 0 3
+v 0 0 3
+v 0 2 4
+v 4 2 4
+f 1 2 3 4
+f 4 3 6 5

@@ -1,0 +1,10 @@
+# One triangle at RD magnitudes with millimetre decimals, to pin exact vertex/texcoord
+# doubles through tinyobjloader's not-correctly-rounded number parser.
+mtllib precise.mtl
+o precise
+v 84593.249625 446461.355 0.475
+v 84594.249625 446461.355 0.475
+v 84594.249625 446462.355 0.475
+vt 0.3 0.7
+usemtl brick
+f 1/1 2/1 3/1

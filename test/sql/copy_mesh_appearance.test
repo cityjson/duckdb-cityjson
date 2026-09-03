@@ -1,0 +1,135 @@
+# name: test/sql/copy_mesh_appearance.test
+# description: mesh COPY resolves local-form refs against the source and sidecar-form ids against the query options
+# group: [sql]
+
+require cityjson
+
+# --- Local form: the discovered source's own definitions colour the MTL.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO '__TEST_DIR__/railway.obj' (FORMAT obj, lod '3');
+
+# Materials named after the CityJSON material names (UUID_…), with their diffuse colours.
+query I
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+WHERE line LIKE 'newmtl UUID_%';
+----
+2
+
+query I
+SELECT COUNT(*) > 0 FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+WHERE line = 'Kd 0.597656 0.597656 0.597656';
+----
+true
+
+# One entry per referenced material, and one for the class default. A texture whose
+# image could not be loaded is not part of an entry's identity: the face falls back to
+# its colour, which is exactly what a face that referenced no texture writes, so the
+# two share an entry rather than being written twice under different names.
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+WHERE line LIKE 'newmtl Bridge%';
+----
+newmtl Bridge
+
+# Textured faces: the images are not on disk beside the fixture, so no map_Kd is written and
+# the faces fall back to colour -- the COPY still succeeds (a warning is logged).
+query I
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+WHERE line LIKE 'map_Kd%';
+----
+0
+
+# --- Sidecar form from a package: *_query resolve global ids; the source's blocks are ignored.
+statement ok
+CREATE TABLE railway_rows AS SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE railway_materials AS SELECT * FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
+
+statement ok
+COPY (SELECT * FROM railway_rows) TO '__TEST_DIR__/railway_pkg.obj'
+(FORMAT obj, lod '3', materials_query 'SELECT * FROM railway_materials');
+
+query I
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway_pkg.mtl'))
+WHERE line LIKE 'newmtl UUID_%';
+----
+2
+
+# --- The refusal: a discovered source read in sidecar mode with no *_query is an error, not a guess.
+statement error
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/refused.obj' (FORMAT obj, lod '3');
+----
+read with appearance := 'sidecar'
+
+# …and the same query with the option is accepted.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/accepted.obj'
+(FORMAT obj, lod '3', materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
+
+# --- Textures with bytes: an image_data blob is copied beside the OBJ and referenced by map_Kd.
+statement ok
+CREATE TABLE tex_rows AS
+SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE tex_defs AS
+SELECT id, image_uri, '\x89PNG\x0D\x0A\x1A\x0A'::BLOB AS image_data, image_type, wrapMode, textureType, borderColor, other
+FROM obj_textures('test/data/obj/cube.obj');
+
+statement ok
+COPY (SELECT * FROM tex_rows) TO '__TEST_DIR__/textured.obj'
+(FORMAT obj, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')', textures_query 'SELECT * FROM tex_defs');
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/textured.mtl')) WHERE line LIKE 'map_Kd%';
+----
+map_Kd brick.png
+
+query I
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/textured.obj'))
+WHERE line LIKE 'f %/%';
+----
+4
+
+query I
+SELECT octet_length(content) FROM read_blob('__TEST_DIR__/brick.png');
+----
+8
+
+query I
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/textured.mtl'))
+WHERE line = 'newmtl brick__tex0';
+----
+1
+
+# --- Two textures can share a basename; two files beside the OBJ cannot. The image
+#     URIs below differ only in their directory, which the copy does not reproduce, so
+#     the second one written is qualified by its id rather than overwriting the first.
+statement ok
+CREATE TABLE clash_defs AS
+SELECT 2 AS id, 'a/x.png' AS image_uri, '\x89PNG'::BLOB AS image_data, 'PNG' AS image_type, 'wrap' AS wrapMode
+UNION ALL
+SELECT 3, 'b/x.png', '\x89PNG\x0D\x0A'::BLOB, 'PNG', 'wrap';
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/clash.obj' (FORMAT obj, lod '3',
+    materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')',
+    textures_query 'SELECT * FROM clash_defs');
+
+query II
+SELECT parse_filename(filename), size FROM read_blob('__TEST_DIR__/*x.png') ORDER BY 1;
+----
+texture_3_x.png	6
+x.png	4
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/clash.mtl'))
+WHERE line LIKE 'map_Kd%' ORDER BY line;
+----
+map_Kd texture_3_x.png
+map_Kd x.png

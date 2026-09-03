@@ -1,10 +1,15 @@
 #include "cityjson/copy_function.hpp"
+#include "cityjson/appearance_source.hpp"
 #include "cityjson/cityjson_writer.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "cityjson/copy_source_ref.hpp"
+#include "cityjson/lod_table.hpp"
+#include "cityjson/mesh_copy.hpp"
+#include "cityjson/mesh_model.hpp"
+#include "cityjson/obj_reader.hpp"
 #include "cityjson/reader.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -16,6 +21,7 @@
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
+#include <fstream>
 #include <limits>
 
 namespace duckdb {
@@ -90,8 +96,15 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	auto result = make_uniq<CityJSONCopyBindData>();
 	result->file_path = file_path;
-	result->is_seq = is_seq;
-	result->is_fcb = is_fcb;
+	result->format = format;
+	result->mesh_lod = mesh_lod;
+	result->mesh_origin = mesh_origin;
+	result->obj_triangulate = obj_triangulate;
+	result->obj_precision = obj_precision;
+	result->gltf_attributes = gltf_attributes;
+	result->materials_query = materials_query;
+	result->textures_query = textures_query;
+	result->appearance_source = appearance_source;
 	result->version = version;
 	result->crs = crs;
 	result->transform = transform;
@@ -123,7 +136,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 
 bool CityJSONCopyBindData::Equals(const FunctionData &other) const {
 	auto &o = other.Cast<CityJSONCopyBindData>();
-	return file_path == o.file_path && is_seq == o.is_seq && is_fcb == o.is_fcb;
+	return file_path == o.file_path && format == o.format;
 }
 
 // ============================================================
@@ -316,8 +329,51 @@ static uint16_t ParseTreeTuningOption(const Value &val, const std::string &optio
 // The source ref arrives as its own parameter rather than being read back out of
 // bind_data.source_ref: the caller has already established the optional holds a value,
 // and dereferencing it again here would be an unchecked access.
-static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref,
-                                 CityJSONCopyBindData &bind_data) {
+// `reader` and `source_meta` are the caller's already-open reader and its already-read
+// metadata: an OBJ source has no JSON to lift a per-feature block from, so its branch
+// reuses them rather than opening a second OBJReader over the same path and parsing
+// the whole file again.
+static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref, CityJSONReader &reader,
+                                 const CityJSON &source_meta, CityJSONCopyBindData &bind_data) {
+	if (source_ref.is_obj) {
+		if (!source_meta.appearance.has_value() || source_meta.appearance->Empty()) {
+			return;
+		}
+		auto appearance_json = source_meta.appearance->ToJson();
+		bind_data.source_appearance_header = appearance_json;
+
+		// An OBJ's texture refs are file-global indices into the one `vt` pool tinyobj
+		// produced, and the reader never renumbers them per object -- unlike position
+		// vertices, which do get a per-feature-local pool. So the whole pool, verbatim,
+		// serves the feature line of every object that resolves a texture: index i means
+		// the same UV coordinate in each copy. Only those objects get it -- stamping the
+		// file's whole pool onto every feature multiplies the output by the object count
+		// for a pool most of them never index into.
+		auto vt_it = appearance_json.find("vertices-texture");
+		if (vt_it == appearance_json.end()) {
+			return;
+		}
+		json feature_appearance = json {{"vertices-texture", *vt_it}};
+		for (const auto &feature : reader.ReadAllChunks().records) {
+			bool textured = false;
+			for (const auto &entry : feature.city_objects) {
+				for (const auto &geometry : entry.second.geometry) {
+					if (geometry.texture.has_value()) {
+						textured = true;
+						break;
+					}
+				}
+				if (textured) {
+					break;
+				}
+			}
+			if (textured) {
+				bind_data.source_appearance_by_feature[feature.id] = feature_appearance;
+			}
+		}
+		return;
+	}
+
 	auto content = json_utils::ReadFileContent(context, source_ref.path);
 
 	auto take_appearance = [](const json &doc) -> std::optional<json> {
@@ -371,12 +427,17 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 	}
 }
 
-static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
-                                                   const vector<string> &names, const vector<LogicalType> &sql_types) {
+unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
+                                            const vector<string> &names, const vector<LogicalType> &sql_types) {
 	auto bind_data = make_uniq<CityJSONCopyBindData>();
 	bind_data->file_path = input.info.file_path;
-	bind_data->is_seq = (input.info.format == "cityjsonseq");
-	bind_data->is_fcb = (input.info.format == "flatcitybuf");
+	const auto &fmt = input.info.format;
+	bind_data->format = fmt == "cityjsonseq"   ? CopyFormat::CityJSONSeq
+	                    : fmt == "flatcitybuf" ? CopyFormat::FlatCityBuf
+	                    : fmt == "obj"         ? CopyFormat::Obj
+	                    : fmt == "gltf"        ? CopyFormat::Gltf
+	                    : fmt == "glb"         ? CopyFormat::Glb
+	                                           : CopyFormat::CityJSON;
 
 	// Explicit metadata wins over anything inherited from the source, so record
 	// which of them the user actually supplied.
@@ -445,6 +506,28 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 			bind_data->fcb_branching_factor = ParseTreeTuningOption(val, "branching_factor");
 		} else if (loption == "index_node_size") {
 			bind_data->fcb_index_node_size = ParseTreeTuningOption(val, "index_node_size");
+		} else if (loption == "lod") {
+			bind_data->mesh_lod = LODTableUtils::NormalizeLOD(val.ToString());
+		} else if (loption == "origin") {
+			auto text = val.ToString();
+			if (text != "auto" && text != "none" && !ParseOriginOption(text).has_value()) {
+				throw BinderException("origin must be 'auto', 'none' or 'x,y,z', got '" + text + "'");
+			}
+			bind_data->mesh_origin = text;
+		} else if (loption == "triangulate") {
+			bind_data->obj_triangulate = val.GetValue<bool>();
+		} else if (loption == "precision") {
+			auto p = val.GetValue<int64_t>();
+			if (p < 1 || p > 17) {
+				throw BinderException("precision must be between 1 and 17 significant digits");
+			}
+			bind_data->obj_precision = static_cast<int>(p);
+		} else if (loption == "attributes") {
+			bind_data->gltf_attributes = val.GetValue<bool>();
+		} else if (loption == "materials_query") {
+			bind_data->materials_query = val.ToString();
+		} else if (loption == "textures_query") {
+			bind_data->textures_query = val.ToString();
 		}
 	}
 
@@ -459,14 +542,26 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 	// (a plain table, a join, a computed path).
 	//
 	// Precedence: crs / metadata_query  >  metadata_from  >  discovered source.
+	//
+	// The SELECT is walked either way. metadata_from overrides which FILE the metadata
+	// and appearance definitions come from, but it cannot know which appearance FORM
+	// the reader was asked for -- that is a property of the reader call, not of a path.
+	// Taking `sidecar_appearance` from the discovered ref regardless is what keeps
+	// metadata_from from disarming the mesh refusal rule below.
+	std::optional<CopySourceRef> discovered;
+	if (input.info.select_statement) {
+		discovered = FindCopySourceRef(*input.info.select_statement);
+	}
 	if (!explicit_metadata_from.empty()) {
 		CopySourceRef ref;
 		ref.path = explicit_metadata_from;
-		ref.is_seq = bind_data->is_seq;
-		ref.is_fcb = bind_data->is_fcb;
+		ref.is_fcb = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".fcb");
+		ref.is_seq = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".jsonl");
+		ref.is_obj = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".obj");
+		ref.sidecar_appearance = discovered.has_value() && discovered->sidecar_appearance;
 		bind_data->source_ref = std::move(ref);
-	} else if (input.info.select_statement) {
-		bind_data->source_ref = FindCopySourceRef(*input.info.select_statement);
+	} else {
+		bind_data->source_ref = std::move(discovered);
 	}
 
 	if (bind_data->source_ref.has_value()) {
@@ -481,7 +576,14 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
 		const auto &source_ref = *bind_data->source_ref;
 		try {
-			auto reader = OpenAnyCityJSONFile(context, source_ref.path, 1);
+			std::unique_ptr<CityJSONReader> reader;
+			if (source_ref.is_obj) {
+				OBJReadOptions obj_options;
+				obj_options.lod = "0.0"; // the definitions are file-global; any LoD serves
+				reader = std::make_unique<OBJReader>(context, source_ref.path, obj_options);
+			} else {
+				reader = OpenAnyCityJSONFile(context, source_ref.path, 1);
+			}
 			auto source_meta = reader->ReadMetadata();
 
 			// Only fill what the user did not state. An explicit crs must win, so it
@@ -507,7 +609,7 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 					bind_data->point_of_contact = source_meta.metadata->point_of_contact;
 				}
 			}
-			LoadSourceAppearance(context, source_ref, *bind_data);
+			LoadSourceAppearance(context, source_ref, *reader, source_meta, *bind_data);
 		} catch (const std::exception &e) {
 			// An unreadable source is not fatal -- the rows are what is being copied,
 			// and the metadata is a bonus. Warn rather than fail the whole COPY.
@@ -518,6 +620,28 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 		DUCKDB_LOG_WARNING(context, "cityjson: could not determine the source file for this COPY, so no metadata "
 		                            "(including the CRS) is carried across; pass metadata_from or crs to set it "
 		                            "explicitly");
+	}
+
+	// Mesh formats must be told which appearance form the cells are in: material cells
+	// look identical in both, and resolving sidecar ids against the source's local
+	// blocks would silently recolour every face.
+	if (IsMeshFormat(bind_data->format) && !bind_data->materials_query.has_value() &&
+	    !bind_data->textures_query.has_value() && bind_data->source_ref.has_value()) {
+		// Bound once, as above: clang-tidy's optional model does not carry the
+		// has_value() across the unique_ptr deref.
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		const auto &source_ref = *bind_data->source_ref;
+		if (source_ref.sidecar_appearance) {
+			throw BinderException(
+			    "COPY TO " + input.info.format +
+			    ": the source was read with appearance := 'sidecar', so its material/texture cells hold "
+			    "sidecar ids; pass materials_query / textures_query (e.g. materials_query 'SELECT * FROM "
+			    "cityjson_materials(''" +
+			    source_ref.path + "'')') so they can be resolved");
+		}
+	}
+	if (IsMeshFormat(bind_data->format)) {
+		bind_data->appearance_source = BuildAppearanceSource(context, *bind_data);
 	}
 
 	// Default quantisation: when neither an explicit transform_scale/translate nor a
@@ -601,8 +725,8 @@ static unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyF
 // COPY TO Initialize Global
 // ============================================================
 
-static unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
-                                                               const string &file_path) {
+unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
+                                                        const string &file_path) {
 	auto gstate = make_uniq<CityJSONCopyGlobalState>();
 	gstate->temp_file_path = file_path;
 	return std::move(gstate);
@@ -612,7 +736,7 @@ static unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &co
 // COPY TO Initialize Local
 // ============================================================
 
-static unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context, FunctionData &bind_data) {
+unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context, FunctionData &bind_data) {
 	return make_uniq<CityJSONCopyLocalState>();
 }
 
@@ -911,8 +1035,8 @@ static json RenestBoundaries(const std::string &type, const json &boundaries, co
 // COPY TO Sink
 // ============================================================
 
-static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
-                               LocalFunctionData &lstate_p, DataChunk &input) {
+void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
+                        LocalFunctionData &lstate_p, DataChunk &input) {
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &lstate = lstate_p.Cast<CityJSONCopyLocalState>();
 
@@ -1303,8 +1427,8 @@ static void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_dat
 // COPY TO Combine
 // ============================================================
 
-static void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
-                                  LocalFunctionData &lstate_p) {
+void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p,
+                           LocalFunctionData &lstate_p) {
 	auto &gstate = gstate_p.Cast<CityJSONCopyGlobalState>();
 	auto &lstate = lstate_p.Cast<CityJSONCopyLocalState>();
 
@@ -1329,7 +1453,7 @@ static void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_
 // COPY TO Finalize
 // ============================================================
 
-static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p) {
+void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p) {
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &gstate = gstate_p.Cast<CityJSONCopyGlobalState>();
 
@@ -1347,11 +1471,13 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 	// Write to the temp file path — DuckDB will rename it to the final path after Finalize
 	auto &output_path = gstate.temp_file_path;
 
-	if (bind_data.is_seq) {
+	switch (bind_data.format) {
+	case CopyFormat::CityJSONSeq:
 		CityJSONWriter::WriteCityJSONSeq(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
+		break;
 #ifdef CITYJSON_HAS_FCB
-	} else if (bind_data.is_fcb) {
+	case CopyFormat::FlatCityBuf: {
 		// The relation's attribute columns, not the ones that happened to carry a
 		// value. An attribute that is NULL in every row is omitted from the JSON by
 		// the sink above, so without this list the FCB header never learns it exists
@@ -1365,10 +1491,23 @@ static void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_da
 		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.fcb_attr_index_columns, bind_data.fcb_branching_factor,
 		                                 bind_data.fcb_index_node_size, declared_attr_columns);
+		break;
+	}
+#else
+	case CopyFormat::FlatCityBuf:
+		throw InternalException("flatcitybuf COPY format bound without FCB support");
 #endif
-	} else {
+	case CopyFormat::Obj:
+		FinalizeObj(context, bind_data, gstate);
+		break;
+	case CopyFormat::Gltf:
+	case CopyFormat::Glb:
+		FinalizeGltf(context, bind_data, gstate);
+		break;
+	case CopyFormat::CityJSON:
 		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                              bind_data.source_appearance_header);
+		break;
 	}
 }
 

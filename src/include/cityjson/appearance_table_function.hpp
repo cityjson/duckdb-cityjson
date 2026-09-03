@@ -1,9 +1,12 @@
 #pragma once
 
 #include "cityjson/cityjson_types.hpp"
+#include "cityjson/reader.hpp"
 #include "duckdb.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -53,6 +56,17 @@ void AppearanceSidecarColumns(const std::string &sidecar, std::vector<std::strin
  * implementations to merge.
  */
 void RegisterAppearanceTableFunctions(ExtensionLoader &loader);
+
+//! Which sidecar a registered appearance table function produces.
+enum class SidecarKind { MATERIALS, TEXTURES, TEMPLATES };
+
+//! Opens the reader whose appearance definitions a sidecar function exposes. The CityJSON
+//! sidecars open with OpenAnyCityJSONFile; the OBJ ones with an OBJReader.
+using ReaderOpener = std::function<std::unique_ptr<CityJSONReader>(ClientContext &, const std::string &path)>;
+
+//! The bind/scan pair behind every appearance sidecar function, parameterised by the
+//! function's TableFunctionInfo so one bind serves every input format.
+TableFunction CreateAppearanceTableFunction(const std::string &name, SidecarKind kind, ReaderOpener opener);
 
 } // namespace cityjson
 } // namespace duckdb

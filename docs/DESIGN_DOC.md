@@ -130,6 +130,16 @@ reader is a forward cursor: its "read the next feature" operation deliberately
 does *not* rewind, because that is the streaming scan's position. The bulk
 operations rewind so they can be asked more than once.
 
+`OBJReader` is the fourth reader and the first for a non-CityJSON source. It
+parses the file once into `CityJSONFeature` records — one per `o`, each with its
+own vertex pool — and a `CityJSON` header holding the `.mtl` materials, the
+textured ones as textures, and the `vt` list as the UV pool, so the generic bind
+and scan (WKB, `geometry_properties`, `bbox`, sidecar normalisation) apply
+unchanged. What an OBJ cannot say is asked of the caller (`lod`, `object_type`,
+`geometry_type`) or resolved by convention (semantic surfaces from `usemtl` / `g`
+names). The appearance sidecar functions take their reader from a
+`TableFunctionInfo`, which is what lets one bind serve both input formats.
+
 ## 5. The scan path
 
 DuckDB's table function lifecycle — **bind → init global → init local → scan**,
@@ -229,16 +239,50 @@ and invalidate nothing.
 
 ## 9. Writing
 
-One shared sink serves all three output formats, so format-independent concerns —
-reassembling CityObjects from rows, the CityGML-to-CityJSON type mapping,
-quantising vertices against the transform — are implemented once. The formats
-differ only in how they lay out what the sink produces: one document with a
-global vertex pool, one line per feature with local pools, or a binary file with
-indices.
+One shared sink serves all four output formats, so format-independent concerns —
+reassembling CityObjects from rows, the CityGML-to-CityJSON type mapping — are
+implemented once. The three CityJSON-family formats differ only in how they lay
+out what the sink produces: one document with a global vertex pool, one line per
+feature with local pools, or a binary file with indices. The fourth, `obj`, takes
+the same objects down a different path (below).
 
-Vertices are quantised to integers against the transform on the way out, so the
-transform's scale *is* the output precision. The default is chosen so round trips
-stay lossless for large projected national coordinates.
+Vertices are quantised to integers against the transform on the way out of those
+three, so the transform's scale *is* the output precision. The default is chosen
+so round trips stay lossless for large projected national coordinates. The mesh
+writers do not quantise: they carry the coordinates as they came, and `precision`
+governs how many digits reach the file.
+
+The mesh writers share the CityJSON writers' bind, sink and combine: the sink
+already rebuilds each row as a CityJSON object with coordinates, semantics and
+appearance refs, and only `Finalize` differs. `BuildMeshModel` flattens those
+objects into per-object vertex pools and faces (rings, surface, material,
+texture, UVs) once per COPY; `AppearanceSource` resolves refs either through the
+source's own blocks (local form) or through the two query options (sidecar
+form), and the writer never sees the difference. A material or texture cell
+itself reaches `BuildMeshModel` in either of two shapes, orthogonally to form —
+the CityParquet spec's flat, per-WKB-face shape, or this extension's reader's
+nested, per-shell shape — and it classifies which by nesting depth, so both
+shapes colour the same faces. Faces with holes are
+triangulated with earcut after projection onto their Newell normal, shifted to
+the ring's first vertex so the signed-area tests do not drown at projected
+magnitudes.
+
+The glTF writer builds a `tinygltf::Model` from the same mesh model: one
+buffer, 4-byte-aligned views, positions as float32 relative to the origin,
+indices narrowed to u16 when a primitive has fewer than 65 535 vertices, and
+images as raw bytes in bufferViews — tinygltf is built without stb, so nothing
+is ever decoded. The origin subtraction is what the float32 rule costs or
+saves: one float32 ULP at 1e5 is 8 mm, so `origin 'none'` puts projected
+national coordinates into float32 at that resolution, while the 1e3 magnitudes
+an origin leaves resolve to 0.1 mm. A GLB is refused past 4 GiB, because its
+chunk headers are 32-bit and tinygltf casts into them unchecked.
+`TriangulateFaceCorners` triangulates each face into per-*corner* indices
+rather than per-vertex ones, because a textured face's UV is a per-corner
+attribute glTF has no way to share the way it shares `POSITION`: a vertex
+visited twice with two different UVs has to become two glTF vertices.
+tinygltf was chosen over cgltf and fastgltf because it serialises `extras` and
+arbitrary extension JSON verbatim, which keeps the 3D Tiles metadata
+extensions a data change rather than a library change.
 
 ## 10. CRS handling
 

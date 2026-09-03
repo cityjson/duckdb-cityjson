@@ -1,0 +1,423 @@
+# name: test/sql/copy_obj.test
+# description: COPY TO obj writes one o per object, g per surface, usemtl per material, and an .mtl beside it
+# group: [sql]
+
+# A multi-line VARCHAR is one sqllogictest value, and an expected block is read one
+# value per line, so `SELECT content` on a whole file compares as a single row and
+# fails the row count. Files are therefore compared line-per-row (UNNEST over
+# string_split) or, where blank lines matter (the .mtl), as one value with newlines
+# rendered as '|' -- both exact, neither loosened.
+
+require cityjson
+
+# --- Structure: o per object, g per semantic surface, faces as n-gons, origin subtracted and recorded.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed.obj' (FORMAT obj);
+
+query I
+SELECT UNNEST(string_split(trim(content, chr(10)), chr(10))) FROM read_text('__TEST_DIR__/holed.obj');
+----
+# Written by duckdb-cityjson
+# crs https://www.opengis.net/def/crs/EPSG/0/7415
+# origin 84500 446300 0
+mtllib holed.mtl
+o courtyard
+v 0 0 10
+v 4 0 10
+v 4 4 10
+v 0 4 10
+v 1 1 10
+v 1 3 10
+v 3 3 10
+v 3 1 10
+v 0 0 0
+v 4 0 0
+g RoofSurface
+usemtl RoofSurface
+f 1 5 6
+f 8 5 1
+f 4 1 6
+f 8 1 2
+f 3 4 6
+f 7 8 2
+f 3 6 7
+f 7 2 3
+g WallSurface
+usemtl WallSurface
+f 9 10 2 1
+
+# (Which eight triangles earcut picks is an implementation detail; the count checks below pin
+#  the invariant -- eight 3-vertex faces -- independently. Keep every other line verbatim.)
+
+query I
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed.obj')) WHERE line LIKE 'f %';
+----
+9
+
+query I
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed.obj'))
+WHERE line LIKE 'f %' AND len(string_split(line, ' ')) = 4;
+----
+8
+
+# --- The .mtl sits beside the final file, named after it, with default colours per surface type.
+query I
+SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/holed.mtl');
+----
+# Written by duckdb-cityjson|newmtl RoofSurface|Kd 0.9 0.06 0.09|d 1||newmtl WallSurface|Kd 0.8 0.8 0.8|d 1||
+
+# --- Overwriting an existing target. DuckDB writes through a temp file only when the
+#     path is already there (bind_copy.cpp), so this second COPY -- and nothing before
+#     it -- hands the writer 'tmp_holed.obj'. The .mtl must still be named after the
+#     final stem and written beside the final file, not left as 'tmp_holed.mtl'.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed.obj' (FORMAT obj);
+
+query III
+SELECT (SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line
+                              FROM read_text('__TEST_DIR__/holed.obj')) WHERE line = 'mtllib holed.mtl'),
+       (SELECT COUNT(*) FROM read_text('__TEST_DIR__/holed.mtl')),
+       (SELECT COUNT(*) FROM read_text('__TEST_DIR__/tmp_holed.mtl'));
+----
+1	1	0
+
+# --- triangulate true: every face a triangle (8 + 2).
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed_tri.obj' (FORMAT obj, triangulate true);
+
+query II
+SELECT COUNT(*), COUNT(*) FILTER (len(string_split(line, ' ')) = 4)
+FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_tri.obj')) WHERE line LIKE 'f %';
+----
+10	10
+
+# --- origin 'none' keeps world coordinates at full precision; precision 3 rounds them.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed_world.obj' (FORMAT obj, origin 'none');
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_world.obj')) WHERE line LIKE 'v %' LIMIT 1;
+----
+v 84500 446300 10
+
+query I
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_world.obj')) WHERE line LIKE '# origin%';
+----
+0
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed_p3.obj' (FORMAT obj, origin 'none', precision 3);
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_p3.obj')) WHERE line LIKE 'v %' LIMIT 1;
+----
+v 8.45e+04 4.46e+05 10
+
+# --- A Solid's material cell reaches the mesh model in either of the two shapes the
+#     spec and this extension's reader produce, and both must colour the same faces:
+#     the reader nests `values` per shell, the spec's FLAT form gives one id per WKB
+#     face. Pin the reader's shape first, so the REPLACE below is demonstrably the
+#     other one and not a copy of it.
+query I
+SELECT material_lod2_2 FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
+----
+{"visual":{"values":[[0,1,1,1,1,2]]}}
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
+TO '__TEST_DIR__/solid_nested.obj' (FORMAT obj);
+
+# The flat cell replaces the reader's own, so no reader produced it. The source file
+# is still discovered through the REPLACE (FindCopySourceRef walks the FROM clause,
+# not the select list), so no metadata_from is needed -- the `# crs` line proves it.
+statement ok
+COPY (SELECT * REPLACE ('{"visual":{"values":[0,1,1,1,1,2]}}' AS material_lod2_2)
+      FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
+TO '__TEST_DIR__/solid_flat.obj' (FORMAT obj);
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_nested.obj'))
+WHERE line LIKE 'g %' OR line LIKE 'usemtl %' OR line LIKE '# crs%';
+----
+# crs https://www.opengis.net/def/crs/EPSG/0/7415
+g RoofSurface
+usemtl red
+g WallSurface
+usemtl grey
+g GroundSurface
+usemtl dark
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_flat.obj'))
+WHERE line LIKE 'g %' OR line LIKE 'usemtl %' OR line LIKE '# crs%';
+----
+# crs https://www.opengis.net/def/crs/EPSG/0/7415
+g RoofSurface
+usemtl red
+g WallSurface
+usemtl grey
+g GroundSurface
+usemtl dark
+
+query I
+SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/solid_nested.mtl');
+----
+# Written by duckdb-cityjson|newmtl red|Kd 1 0 0|d 1||newmtl grey|Kd 0.5 0.5 0.5|d 1||newmtl dark|Kd 0.1 0.1 0.1|d 1||
+
+# The two .obj files are byte-identical but for their `mtllib` line, which names the
+# output file's own stem; the .mtl files are identical outright.
+query II
+SELECT (SELECT content FROM read_text('__TEST_DIR__/solid_nested.mtl'))
+     = (SELECT content FROM read_text('__TEST_DIR__/solid_flat.mtl')),
+       (SELECT list_filter(string_split(content, chr(10)), x -> x NOT LIKE 'mtllib %')
+        FROM read_text('__TEST_DIR__/solid_nested.obj'))
+     = (SELECT list_filter(string_split(content, chr(10)), x -> x NOT LIKE 'mtllib %')
+        FROM read_text('__TEST_DIR__/solid_flat.obj'));
+----
+true	true
+
+# --- The same two shapes for a *textured* Solid, where the cell nests one level deeper
+#     than a material's: the reader's per-shell `values` and the spec's per-WKB-face
+#     one must yield the same vt pool and the same `f v/vt` faces. The reader's shape is
+#     pinned first, so the REPLACE below is demonstrably the other one.
+query I
+SELECT texture_lod2_2 FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2');
+----
+{"visual":{"values":[[[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]]]]}}
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))
+TO '__TEST_DIR__/solid_tex_nested.obj' (FORMAT obj);
+
+statement ok
+COPY (SELECT * REPLACE ('{"visual":{"values":[[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]]]}}' AS texture_lod2_2)
+      FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))
+TO '__TEST_DIR__/solid_tex_flat.obj' (FORMAT obj);
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_tex_nested.obj'))
+WHERE line LIKE 'vt %' OR line LIKE 'f %';
+----
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+f 5/1 6/2 2/3 1/4
+f 6/1 7/2 3/3 2/4
+f 7/1 8/2 4/3 3/4
+f 8/1 5/2 1/3 4/4
+f 5/1 8/2 7/3 6/4
+
+query I
+SELECT (SELECT list_filter(string_split(content, chr(10)), x -> x NOT LIKE 'mtllib %')
+        FROM read_text('__TEST_DIR__/solid_tex_nested.obj'))
+     = (SELECT list_filter(string_split(content, chr(10)), x -> x NOT LIKE 'mtllib %')
+        FROM read_text('__TEST_DIR__/solid_tex_flat.obj'));
+----
+true
+
+# --- A leading `null` is one face with no texture, not a differently shaped cell.
+#     The shape is measured from the first entry that carries something -- a `null` (or
+#     an empty array, which reads as a ring in its own right) says nothing about the
+#     nesting below it, and measuring from one classifies the whole cell wrongly and
+#     drops the geometry's appearance in silence.
+query I
+SELECT texture_lod2_2 FROM read_cityjson('test/data/null_lead_texture.city.json', lod := '2.2');
+----
+{"visual":{"values":[null,[[0,0,1,2,3]]]}}
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/null_lead_texture.city.json', lod := '2.2'))
+TO '__TEST_DIR__/null_lead.obj' (FORMAT obj);
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/null_lead.obj'))
+WHERE line LIKE 'vt %' OR line LIKE 'f %';
+----
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1 2 3 4
+f 5/1 6/2 7/3 8/4
+
+# --- A Solid whose *first face* is `[null]` (not a bare `null`) is the same case one
+#     level further in: "carries nothing" is recursive, so `[null]`, `[[null]]` and
+#     `[[]]` all read as nothing at every level FirstMeasurable is applied, and the
+#     cell is measured from its second face, a textured one, instead.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/solid_null_first_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/solid_null_first_face.obj' (FORMAT obj);
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_null_first_face.obj'))
+WHERE line LIKE 'vt %' OR line LIKE 'f %/%';
+----
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 5/1 6/2 2/3 1/4
+
+# --- Sidecar form inlines every UV pair, so a UV *index* in a cell under a declared
+#     sidecar form is a form mistake and is refused. materials_query alone declares the
+#     form -- and is the case where local indices would otherwise be resolved as global
+#     ids -- so the refusal must not wait on a texture id resolving.
+statement error
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
+TO '__TEST_DIR__/uv_refused.obj' (FORMAT obj, materials_query 'SELECT 0 AS id');
+----
+carries a UV index
+
+query I
+SELECT COUNT(*) FROM glob('__TEST_DIR__/uv_refused.*');
+----
+0
+
+# --- The source-ref rule: a source read with appearance := 'sidecar' carries
+#     dataset-global ids in its material/texture cells, which are indistinguishable
+#     from local indices into the file's own blocks. Resolving them there would
+#     silently recolour every face, so the COPY refuses until it is told the form.
+statement error
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/sidecar_refused.obj' (FORMAT obj);
+----
+read with appearance := 'sidecar'
+
+# Naming the sidecar definitions lifts the refusal, and they are what the faces resolve against.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/sidecar_ok.obj' (FORMAT obj,
+    materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
+
+# The sidecar rows' own names reach the .mtl, so the cells resolved as sidecar ids
+# rather than as indices into the file's local blocks. (Only referenced materials get
+# an entry; unreferenced faces fall back to the object class's default colour.)
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/sidecar_ok.mtl'))
+WHERE line LIKE 'newmtl %' ORDER BY line;
+----
+newmtl Bridge
+newmtl UUID_0794715b-1334-4855-83d3-8e8270c11e78
+newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
+
+# An explicit metadata_from must not disarm the rule. It replaces the *discovered*
+# source ref, but what it cannot know is the form the reader was asked for -- so the
+# form is still taken from the SELECT, and this refuses exactly as the plain case does.
+statement error
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/sidecar_mf.obj' (FORMAT obj, metadata_from 'test/data/railway_appearance.city.jsonl');
+----
+read with appearance := 'sidecar'
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO '__TEST_DIR__/sidecar_mf_ok.obj' (FORMAT obj, metadata_from 'test/data/railway_appearance.city.jsonl',
+    materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/sidecar_mf_ok.mtl'))
+WHERE line LIKE 'newmtl %' ORDER BY line;
+----
+newmtl Bridge
+newmtl UUID_0794715b-1334-4855-83d3-8e8270c11e78
+newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
+
+# --- Two materials can share a name; a .mtl entry cannot. Entries are keyed by
+#     identity, so the second material gets its own entry under a name suffixed with
+#     its id, and the faces name the two apart.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/duplicate_material_name.city.json', lod := '2.2'))
+TO '__TEST_DIR__/twins.obj' (FORMAT obj);
+
+query I
+SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/twins.mtl');
+----
+# Written by duckdb-cityjson|newmtl brick|Kd 0.8 0.3 0.2|d 1||newmtl brick_1|Kd 0.2 0.3 0.8|d 1||
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/twins.obj'))
+WHERE line LIKE 'usemtl %';
+----
+usemtl brick
+usemtl brick_1
+
+# --- A texture whose image cannot be read is not fatal: the face keeps its material
+#     colour and the .mtl carries no map_Kd. cube.mtl names `brick.png`, which is not
+#     in test/data/obj -- so this also pins that relative image URIs are resolved
+#     against the *source's* directory, not the output's.
+statement ok
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
+TO '__TEST_DIR__/cube_rt.obj' (FORMAT obj);
+
+query II
+SELECT COUNT(*) FILTER (line LIKE 'map_Kd%'), COUNT(*) FILTER (line = 'newmtl brick')
+FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/cube_rt.mtl'));
+----
+0	1
+
+# --- Option validation happens at bind, before a row is sunk.
+statement error
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/bad_origin.obj' (FORMAT obj, origin 'middle');
+----
+origin must be 'auto', 'none' or 'x,y,z'
+
+statement error
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/bad_precision.obj' (FORMAT obj, precision 0);
+----
+precision must be between 1 and 17 significant digits
+
+# --- An explicit origin is subtracted verbatim.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/holed_fixed.obj' (FORMAT obj, origin '84500,446304,0');
+
+query I
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_fixed.obj'))
+WHERE line LIKE '# origin%' OR line LIKE 'v %' LIMIT 2;
+----
+# origin 84500 446304 0
+v 0 -4 10
+
+# --- lod picks the column; an object with nothing at that LoD is skipped; default = highest present.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/delft_lod12.obj' (FORMAT obj, lod '1.2');
+
+query I
+SELECT (SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/delft_lod12.obj')) WHERE line LIKE 'o %')
+     = (SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod1_2 IS NOT NULL);
+----
+true
+
+# --- Round trip through read_obj: ids, surface types and face counts agree.
+#     (Circular by construction -- the fixture assertions above are what prove the conventions;
+#      this proves the two sides agree on them.)
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO '__TEST_DIR__/rt.obj' (FORMAT obj);
+
+query III
+SELECT id, geometry_properties_lod2_2.surfaces, len(geometry_properties_lod2_2.face_semantics)
+FROM read_obj('__TEST_DIR__/rt.obj', lod := '2.2');
+----
+courtyard	[{"type":"RoofSurface"},{"type":"WallSurface"}]	9
+
+query I
+SELECT bbox FROM read_obj('__TEST_DIR__/rt.obj', lod := '2.2');
+----
+{'xmin': 84500.0, 'ymin': 446300.0, 'zmin': 0.0, 'xmax': 84504.0, 'ymax': 446304.0, 'zmax': 10.0}
+
+# --- Required columns are the CityJSON writer's.
+statement error
+COPY (SELECT 1 AS x) TO '__TEST_DIR__/bad.obj' (FORMAT obj);
+----
+requires an 'id' column

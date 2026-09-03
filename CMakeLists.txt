@@ -9,6 +9,16 @@ set(TARGET_NAME cityjson)
 # Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
 find_package(nlohmann_json REQUIRED)
 
+# Three header-only uses. tinyobjloader's port also builds a static library, but the
+# header carries the implementation behind TINYOBJLOADER_IMPLEMENTATION, and compiling
+# it into our own objects is what keeps the wasm side-module link free of a second
+# archive to hand over (see the flatcitybuf block below for what that costs). The port
+# has already patched the header for double precision (feature `double`).
+find_path(TINYOBJLOADER_INCLUDE_DIR tiny_obj_loader.h REQUIRED)
+find_path(TINYGLTF_INCLUDE_DIR tiny_gltf.h REQUIRED)
+find_path(EARCUT_INCLUDE_DIR mapbox/earcut.hpp REQUIRED)
+include_directories(${TINYOBJLOADER_INCLUDE_DIR} ${TINYGLTF_INCLUDE_DIR} ${EARCUT_INCLUDE_DIR})
+
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
@@ -35,6 +45,10 @@ set(EXTENSION_SOURCES
     src/cityjson/local_cityjson_reader.cpp
     src/cityjson/local_cityjsonseq_reader.cpp
     src/cityjson/reader_factory.cpp
+    src/cityjson/obj_reader.cpp
+    src/cityjson/obj_table_function.cpp
+    # Third-party single-header implementations (one TU, see the file)
+    src/cityjson/third_party_impl.cpp
     # Geometry encoding layer
     src/cityjson/wkb_encoder.cpp
     src/cityjson/wkb_decoder.cpp
@@ -77,6 +91,13 @@ set(EXTENSION_SOURCES
     src/cityjson/cityparquet_appearance.cpp
     src/cityjson/appearance_normalise.cpp
     src/cityjson/appearance_table_function.cpp
+    # Mesh interchange (OBJ / glTF writers)
+    src/cityjson/face_triangulation.cpp
+    src/cityjson/appearance_source.cpp
+    src/cityjson/mesh_model.cpp
+    src/cityjson/obj_writer.cpp
+    src/cityjson/gltf_writer.cpp
+    src/cityjson/mesh_copy.cpp
 )
 
 # Declared here rather than next to the find_package below, because the wasm block
@@ -129,6 +150,14 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 # not feed INTERFACE_COMPILE_FEATURES.)
 target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_20)
 target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_20)
+
+# tinygltf configuration, on every TU that includes the header: without stb, the
+# TinyGLTF constructor must not reference the stb-backed default image callbacks, and
+# that decision is made per-TU at include time.
+foreach(tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
+  target_compile_definitions(${tgt} PRIVATE TINYGLTF_NO_STB_IMAGE TINYGLTF_NO_STB_IMAGE_WRITE
+                                            TINYGLTF_NO_EXTERNAL_IMAGE)
+endforeach()
 
 # No fused multiply-add, on any platform. The writer's output must be
 # byte-identical everywhere.
