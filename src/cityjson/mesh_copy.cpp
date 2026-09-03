@@ -1,5 +1,6 @@
 #include "cityjson/mesh_copy.hpp"
 
+#include "cityjson/gltf_writer.hpp"
 #include "cityjson/mesh_model.hpp"
 #include "cityjson/obj_writer.hpp"
 #include "duckdb/common/exception.hpp"
@@ -112,16 +113,62 @@ void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJS
 	}
 }
 
+void FinalizeGltf(ClientContext &context, CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate) {
+	auto targets = ResolveMeshTargets(bind_data);
+	if (!bind_data.appearance_source.has_value()) {
+		// The bind resolves this for every mesh format; reaching Finalize without it
+		// means the bind and the finalize disagree about what a mesh format is.
+		throw InternalException("glTF COPY finalised without an appearance source");
+	}
+	// A copy: LoadImage fills texture bytes, and the bind data must stay as bound.
+	// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+	AppearanceSource appearance = bind_data.appearance_source.value();
+	MeshBuildOptions build;
+	build.lod = bind_data.mesh_lod;
+	build.origin = bind_data.mesh_origin;
+	auto model = BuildMeshModel(gstate.feature_objects, gstate.feature_order, appearance, build, bind_data.crs);
+	for (const auto &w : model.warnings) {
+		DUCKDB_LOG_WARNING(context, "cityjson: " + w);
+	}
+	GltfWriteOptions options;
+	options.binary = bind_data.format == CopyFormat::Glb;
+	options.attributes = bind_data.gltf_attributes;
+	// The writer is handed the temp path, which sits in the final directory, so the
+	// buffer and the images it writes beside it land next to the final file -- under
+	// the final stem, which the temp name does not carry.
+	options.bin_basename = targets.final_stem + ".bin";
+	options.image_dir = targets.final_dir;
+	std::vector<std::string> write_warnings;
+	WriteGltf(
+	    model, appearance, gstate.temp_file_path, options,
+	    [&](int64_t texture_id) {
+		    std::string warning;
+		    if (!appearance.LoadImage(context, texture_id, targets.source_dir, warning)) {
+			    DUCKDB_LOG_WARNING(context, "cityjson: " + warning + "; faces fall back to the material colour");
+			    return false;
+		    }
+		    return true;
+	    },
+	    write_warnings);
+	for (const auto &w : write_warnings) {
+		DUCKDB_LOG_WARNING(context, "cityjson: " + w);
+	}
+}
+
 void RegisterMeshCopyFunctions(ExtensionLoader &loader) {
-	CopyFunction obj("obj");
-	obj.extension = "obj";
-	obj.copy_to_bind = CityJSONCopyToBind;
-	obj.copy_to_initialize_global = CityJSONCopyToInitGlobal;
-	obj.copy_to_initialize_local = CityJSONCopyToInitLocal;
-	obj.copy_to_sink = CityJSONCopyToSink;
-	obj.copy_to_combine = CityJSONCopyToCombine;
-	obj.copy_to_finalize = CityJSONCopyToFinalize;
-	loader.RegisterFunction(obj);
+	// One function per format name, all bound by the same bind/sink/finalize: the
+	// format is what the bind reads off the name, and the finalize dispatches on it.
+	for (const char *name : {"obj", "gltf", "glb"}) {
+		CopyFunction fn(name);
+		fn.extension = name;
+		fn.copy_to_bind = CityJSONCopyToBind;
+		fn.copy_to_initialize_global = CityJSONCopyToInitGlobal;
+		fn.copy_to_initialize_local = CityJSONCopyToInitLocal;
+		fn.copy_to_sink = CityJSONCopyToSink;
+		fn.copy_to_combine = CityJSONCopyToCombine;
+		fn.copy_to_finalize = CityJSONCopyToFinalize;
+		loader.RegisterFunction(fn);
+	}
 }
 
 } // namespace cityjson

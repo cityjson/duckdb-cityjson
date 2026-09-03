@@ -1502,7 +1502,8 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 		break;
 	case CopyFormat::Gltf:
 	case CopyFormat::Glb:
-		throw InternalException("mesh COPY format bound without a writer");
+		FinalizeGltf(context, bind_data, gstate);
+		break;
 	case CopyFormat::CityJSON:
 		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                              bind_data.source_appearance_header);

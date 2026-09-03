@@ -40,6 +40,11 @@ bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int6
 //! write it, with the `.mtl` and any images beside the *final* path.
 void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate);
 
+//! The `gltf`/`glb` branch of the COPY finalize: build the mesh model the sink
+//! accumulated and write it, with the `.bin` and any images beside the *final* path
+//! for `.gltf`, and everything in the one file for `.glb`.
+void FinalizeGltf(ClientContext &context, CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate);
+
 //! COPY TO for the mesh interchange formats. One function per format name, all bound
 //! by the same bind/sink/finalize: `obj` today, `gltf`/`glb` alongside it.
 void RegisterMeshCopyFunctions(ExtensionLoader &loader);
