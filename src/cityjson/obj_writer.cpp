@@ -9,7 +9,6 @@
 #include <fstream>
 #include <map>
 #include <optional>
-#include <tuple>
 #include <vector>
 
 namespace duckdb {
@@ -41,23 +40,6 @@ struct MtlEntry {
 	std::string map_kd; // empty = none
 };
 
-// What a .mtl entry's contents actually depend on -- not the rendered usemtl name,
-// which two distinct identities can share (a CityJSON material named "RoofSurface"
-// and a default-coloured "RoofSurface" surface; two materials sharing a name).
-enum class MtlKind { Material, DefaultSurface, DefaultClass };
-
-struct MtlKey {
-	MtlKind kind = MtlKind::DefaultClass;
-	int64_t material_id = -1; // Kind::Material
-	std::string label;        // surface type (DefaultSurface) or object class (DefaultClass)
-	int64_t texture_id = -1;  // -1 = untextured
-
-	bool operator<(const MtlKey &other) const {
-		return std::tie(kind, material_id, label, texture_id) <
-		       std::tie(other.kind, other.material_id, other.label, other.texture_id);
-	}
-};
-
 std::string Sanitise(const std::string &name) {
 	// OBJ tokens are whitespace-delimited; keep names to one token.
 	std::string out = name;
@@ -80,10 +62,10 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 		throw CityJSONError::FileWrite("Failed to open output file: " + obj_path);
 	}
 
-	std::map<std::string, MtlEntry> mtl;           // rendered usemtl name -> .mtl contents
-	std::vector<std::string> mtl_order;            // deterministic .mtl order
-	std::map<MtlKey, std::string> key_to_name;     // identity -> the name already assigned to it
-	std::map<int64_t, std::string> image_basename; // texture id -> copied file, "" = failed
+	std::map<std::string, MtlEntry> mtl;                 // rendered usemtl name -> .mtl contents
+	std::vector<std::string> mtl_order;                  // deterministic .mtl order
+	std::map<MaterialIdentity, std::string> key_to_name; // identity -> the name already assigned to it
+	std::map<int64_t, std::string> image_basename;       // texture id -> copied file, "" = failed
 	auto texture_file = [&](int64_t tex) -> std::string {
 		auto it = image_basename.find(tex);
 		if (it != image_basename.end()) {
@@ -96,9 +78,10 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 	};
 	// The usemtl name of a face, registering its .mtl entry on first use. A textured
 	// face gets its own entry (OBJ ties map_Kd to the material; CityJSON does not).
-	// Entries are keyed by identity (MtlKey), not by the rendered name string, so two
-	// distinct identities that render to the same name (a material and a default-coloured
-	// surface sharing a label, or two materials sharing a name) get distinct .mtl entries.
+	// Entries are keyed by identity (MaterialIdentity), not by the rendered name string,
+	// so two distinct identities that render to the same name (a material and a
+	// default-coloured surface sharing a label, or two materials sharing a name) get
+	// distinct .mtl entries.
 	auto material_name = [&](const MeshObject &object, const MeshFace &face) -> std::string {
 		std::string base = Sanitise(FaceGroupName(object, face, appearance));
 		std::string map;
@@ -106,28 +89,12 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 			map = texture_file(face.texture);
 		}
 
-		MtlKey key;
 		// A texture whose bytes could not be had leaves the face with its colour and no
 		// map_Kd -- which is what an untextured face writes -- so it must not key an
 		// entry of its own, or the same contents are written twice under two names.
-		key.texture_id = map.empty() ? -1 : face.texture;
+		const MaterialIdentity key = IdentityOf(object, face, appearance, map.empty() ? -1 : face.texture);
 		auto mit = face.material >= 0 ? appearance.Materials().find(face.material) : appearance.Materials().end();
-		bool has_material = mit != appearance.Materials().end();
-		if (has_material) {
-			key.kind = MtlKind::Material;
-			key.material_id = face.material;
-		} else {
-			std::string surface = face.surface >= 0 && static_cast<size_t>(face.surface) < object.surfaces.size()
-			                          ? object.surfaces[face.surface]
-			                          : "";
-			if (!surface.empty()) {
-				key.kind = MtlKind::DefaultSurface;
-				key.label = surface;
-			} else {
-				key.kind = MtlKind::DefaultClass;
-				key.label = object.object_type;
-			}
-		}
+		const bool has_material = mit != appearance.Materials().end();
 
 		auto existing = key_to_name.find(key);
 		if (existing != key_to_name.end()) {
@@ -137,7 +104,7 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 		std::string name = map.empty() ? base : base + "__tex" + std::to_string(face.texture);
 		if (mtl.count(name) != 0) {
 			// The name string is already claimed by a different identity -- disambiguate.
-			name += key.kind == MtlKind::Material ? "_" + std::to_string(key.material_id) : "_default";
+			name += key.kind == MaterialKind::Material ? "_" + std::to_string(key.material_id) : "_default";
 		}
 
 		MtlEntry e;

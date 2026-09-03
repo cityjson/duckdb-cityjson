@@ -2,6 +2,7 @@
 
 #include "cityjson/error.hpp"
 #include "cityjson/face_triangulation.hpp"
+#include "cityjson/mesh_copy.hpp"
 
 #include <tiny_gltf.h>
 
@@ -13,7 +14,6 @@
 #include <limits>
 #include <map>
 #include <string>
-#include <tuple>
 #include <vector>
 
 namespace duckdb {
@@ -30,8 +30,9 @@ tinygltf::Value ToValue(const json &j) {
 	case json::value_t::boolean:
 		return tinygltf::Value(j.get<bool>());
 	case json::value_t::number_unsigned: {
-		// tinygltf's integer constructor takes `int`. Anything wider travels as a double
-		// rather than being truncated into a different number.
+		// tinygltf's integer constructor takes `int`. Anything wider travels as a double,
+		// which is exact up to 2^53 and rounds beyond it -- still nearer the value than
+		// the truncation an `int` would give.
 		const uint64_t v = j.get<uint64_t>();
 		if (v <= static_cast<uint64_t>(std::numeric_limits<int>::max())) {
 			return tinygltf::Value(static_cast<int>(v));
@@ -97,24 +98,6 @@ struct BufferBuilder {
 	}
 };
 
-// What a glTF material's *contents* depend on -- not its name, which two distinct
-// identities can share (a CityJSON material named "RoofSurface" and a default-coloured
-// RoofSurface; two materials sharing a name). Keying by the rendered name would collapse
-// them onto whichever was seen first, and silently paint one in the other's colour.
-enum class MaterialKind { Material, DefaultSurface, DefaultClass };
-
-struct MaterialIdentity {
-	MaterialKind kind = MaterialKind::DefaultClass;
-	int64_t material_id = -1; // MaterialKind::Material
-	std::string label;        // surface type (DefaultSurface) or object class (DefaultClass)
-	int texture = -1;         // glTF texture index, -1 = untextured
-
-	bool operator<(const MaterialIdentity &other) const {
-		return std::tie(kind, material_id, label, texture) <
-		       std::tie(other.kind, other.material_id, other.label, other.texture);
-	}
-};
-
 //! What a face resolved to: the glTF material, and the glTF texture that material carries
 //! (-1 when the face is untextured or its image could not be had).
 struct FaceMaterial {
@@ -163,11 +146,6 @@ std::string MimeType(const std::string &image_type, const std::vector<uint8_t> &
 		return "image/jpeg";
 	}
 	return "";
-}
-
-std::string BaseName(const std::string &path) {
-	auto slash = path.find_last_of("/\\");
-	return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
 // Image writer for .gltf output: raw bytes, no re-encoding. tinygltf has no default one
@@ -242,19 +220,10 @@ void WriteGltf(const MeshModel &model, AppearanceSource &appearance, const std::
 			image.bufferView = buffer.AddView(gltf, tex.image_data.data(), tex.image_data.size(), 0);
 		} else {
 			image.image.assign(tex.image_data.begin(), tex.image_data.end());
-			std::string basename = BaseName(tex.image_uri);
-			if (basename.empty()) {
-				basename = "texture_" + std::to_string(tex_id) + (mime == "image/png" ? ".png" : ".jpg");
-			}
-			// Images land flat beside the output, so two URIs differing only in their
-			// directory ("a/x.png", "b/x.png") would arrive under one name and the second
-			// would overwrite the first, silently re-texturing its faces. Qualify the later.
-			auto owner = basename_owner.find(basename);
-			if (owner != basename_owner.end() && owner->second != tex_id) {
-				basename = "texture_" + std::to_string(tex_id) + "_" + basename;
-			}
-			basename_owner[basename] = tex_id;
-			image.uri = basename;
+			// tinygltf writes an image's `uri` *or* its `mimeType`, never both, so a
+			// name with no extension is one no viewer can type: the fallback comes from
+			// the media type, which is known here and never empty.
+			image.uri = TextureBasename(tex, tex_id, mime == "image/png" ? ".png" : ".jpg", basename_owner);
 		}
 		gltf.images.push_back(image);
 
@@ -278,26 +247,17 @@ void WriteGltf(const MeshModel &model, AppearanceSource &appearance, const std::
 		const bool has_uvs = !face.uvs.empty() && face.uvs.size() == face.rings.size();
 		const int tex = face.texture >= 0 && has_uvs ? gltf_texture(face.texture) : -1;
 
-		std::string surface = face.surface >= 0 && static_cast<size_t>(face.surface) < object.surfaces.size()
-		                          ? object.surfaces[face.surface]
-		                          : "";
 		auto mit = face.material >= 0 ? appearance.Materials().find(face.material) : appearance.Materials().end();
 		const bool has_material = mit != appearance.Materials().end();
 
-		MaterialIdentity key;
-		// A texture whose bytes could not be had leaves the face with its colour alone --
+		// The identity carries the *AppearanceSource* texture id, not the glTF index, so
+		// it means the same thing here as in the .mtl writer; the two are in bijection. A
+		// texture whose bytes could not be had leaves the face with its colour alone --
 		// which is what an untextured face gets -- so it must not key an entry of its own.
-		key.texture = tex;
-		if (has_material) {
-			key.kind = MaterialKind::Material;
-			key.material_id = face.material;
-		} else if (!surface.empty()) {
-			key.kind = MaterialKind::DefaultSurface;
-			key.label = surface;
-		} else {
-			key.kind = MaterialKind::DefaultClass;
-			key.label = object.object_type;
-		}
+		const MaterialIdentity key = IdentityOf(object, face, appearance, tex >= 0 ? face.texture : -1);
+		// The default colour is the surface type's when the identity is a surface's, and
+		// the object class's otherwise -- which is what `label` already holds.
+		const std::string surface = key.kind == MaterialKind::DefaultSurface ? key.label : "";
 		auto it = material_index.find(key);
 		if (it != material_index.end()) {
 			return {it->second, tex};

@@ -28,10 +28,21 @@ std::string JoinDir(const std::string &dir, const std::string &name);
 //! discovered source's own appearance blocks.
 AppearanceSource BuildAppearanceSource(ClientContext &context, const CityJSONCopyBindData &bind_data);
 
-//! Copies texture `id`'s bytes beside the final output under the image's own basename;
-//! returns false (and logs) when the bytes cannot be had. `basename_owner` records which
-//! texture claimed each name, so a second texture whose URI shares a basename is written
-//! under a name qualified by its id rather than over the first one's bytes.
+//! The file name texture `id`'s image is written under, beside the output: the image's
+//! own basename when its URI has one, else `texture_<id>` followed by `fallback_ext`
+//! (which the caller derives -- the declared `image_type` for `obj`, the media type
+//! glTF has to state anyway for `gltf` -- and which is empty when nothing says).
+//!
+//! Images land flat in one directory, so two URIs differing only in their directory
+//! ("a/x.png", "b/x.png") would arrive under one name and the second would overwrite the
+//! first, silently re-texturing its faces. `basename_owner` records which texture claimed
+//! each name; a name already claimed is qualified with `texture_<id>_`. A texture is
+//! resolved once per write, so an existing claim is always some other texture's.
+std::string TextureBasename(const MeshTexture &tex, int64_t id, const std::string &fallback_ext,
+                            std::map<std::string, int64_t> &basename_owner);
+
+//! Copies texture `id`'s bytes beside the final output under `TextureBasename`'s name;
+//! returns false (and logs) when the bytes cannot be had.
 bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int64_t texture_id,
                       const MeshTargets &targets, std::map<std::string, int64_t> &basename_owner,
                       std::string &basename);

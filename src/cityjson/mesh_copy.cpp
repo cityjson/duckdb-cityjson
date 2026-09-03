@@ -42,6 +42,22 @@ AppearanceSource BuildAppearanceSource(ClientContext &context, const CityJSONCop
 	return AppearanceSource::FromLocal(bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
 }
 
+std::string TextureBasename(const MeshTexture &tex, int64_t id, const std::string &fallback_ext,
+                            std::map<std::string, int64_t> &basename_owner) {
+	auto slash = tex.image_uri.find_last_of("/\\");
+	std::string basename = slash == std::string::npos ? tex.image_uri : tex.image_uri.substr(slash + 1);
+	if (basename.empty()) {
+		// No URI to name the file after. The extension is what a viewer reads the format
+		// from, so it is appended only when something states one -- never a trailing dot.
+		basename = "texture_" + std::to_string(id) + fallback_ext;
+	}
+	if (basename_owner.count(basename) != 0) {
+		basename = "texture_" + std::to_string(id) + "_" + basename;
+	}
+	basename_owner[basename] = id;
+	return basename;
+}
+
 bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int64_t texture_id,
                       const MeshTargets &targets, std::map<std::string, int64_t> &basename_owner,
                       std::string &basename) {
@@ -51,24 +67,8 @@ bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int6
 		return false;
 	}
 	auto &tex = appearance.Textures().at(texture_id);
-	auto slash = tex.image_uri.find_last_of("/\\");
-	basename = slash == std::string::npos ? tex.image_uri : tex.image_uri.substr(slash + 1);
-	if (basename.empty()) {
-		// No URI to name the file after. The extension is what a viewer reads the format
-		// from, so it is appended only when the row declares one -- never a trailing dot.
-		basename = "texture_" + std::to_string(texture_id);
-		if (!tex.image_type.empty()) {
-			basename += "." + StringUtil::Lower(tex.image_type);
-		}
-	}
-	// Images are copied flat beside the output, so two URIs differing only in their
-	// directory ("a/x.png", "b/x.png") arrive under one name and the second would
-	// overwrite the first, silently re-texturing its faces. Qualify the later one.
-	auto owner = basename_owner.find(basename);
-	if (owner != basename_owner.end() && owner->second != texture_id) {
-		basename = "texture_" + std::to_string(texture_id) + "_" + basename;
-	}
-	basename_owner[basename] = texture_id;
+	basename = TextureBasename(tex, texture_id, tex.image_type.empty() ? "" : "." + StringUtil::Lower(tex.image_type),
+	                           basename_owner);
 	std::ofstream img(JoinDir(targets.final_dir, basename), std::ios::binary);
 	if (!img.is_open()) {
 		DUCKDB_LOG_WARNING(context, "cityjson: could not write texture image '" + basename + "'");

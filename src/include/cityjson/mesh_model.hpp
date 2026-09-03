@@ -54,6 +54,29 @@ MeshModel BuildMeshModel(const std::map<std::string, std::vector<std::pair<std::
 
 std::array<double, 3> DefaultColour(const std::string &surface_type, const std::string &object_type);
 
+//! What a face is dressed in, as an *identity* rather than as the name it renders to.
+//! Two distinct identities can share a name -- a CityJSON material called `RoofSurface`
+//! and a default-coloured RoofSurface, or two materials both called `brick` -- and a
+//! writer that keyed its material table by the name would collapse them onto whichever
+//! it saw first and silently paint one in the other's colour.
+enum class MaterialKind { Material, DefaultSurface, DefaultClass };
+
+struct MaterialIdentity {
+	MaterialKind kind = MaterialKind::DefaultClass;
+	int64_t material_id = -1; //!< MaterialKind::Material
+	std::string label;        //!< surface type (DefaultSurface) or object class (DefaultClass)
+	int64_t texture_id = -1;  //!< -1 = untextured
+
+	bool operator<(const MaterialIdentity &other) const;
+};
+
+//! The identity of `face` within `object`. `texture_id` is what the caller resolved the
+//! face's texture to and is passed in rather than read off the face, because a texture
+//! whose image could not be had leaves the face with its colour alone -- exactly what an
+//! untextured face gets -- and so must not key an entry of its own: the caller passes -1.
+MaterialIdentity IdentityOf(const MeshObject &object, const MeshFace &face, const AppearanceSource &appearance,
+                            int64_t texture_id);
+
 std::string FaceGroupName(const MeshObject &object, const MeshFace &face, const AppearanceSource &appearance);
 
 //! Parse "x,y,z"; nullopt for anything else.

@@ -4,6 +4,7 @@
 #include <functional>
 #include <limits>
 #include <sstream>
+#include <tuple>
 
 namespace duckdb {
 namespace cityjson {
@@ -234,6 +235,33 @@ std::array<double, 3> DefaultColour(const std::string &surface_type, const std::
 		return c->second;
 	}
 	return {0.6, 0.6, 0.6};
+}
+
+bool MaterialIdentity::operator<(const MaterialIdentity &other) const {
+	return std::tie(kind, material_id, label, texture_id) <
+	       std::tie(other.kind, other.material_id, other.label, other.texture_id);
+}
+
+MaterialIdentity IdentityOf(const MeshObject &object, const MeshFace &face, const AppearanceSource &appearance,
+                            int64_t texture_id) {
+	MaterialIdentity key;
+	key.texture_id = texture_id;
+	const bool has_material =
+	    face.material >= 0 && appearance.Materials().find(face.material) != appearance.Materials().end();
+	const std::string surface = face.surface >= 0 && static_cast<size_t>(face.surface) < object.surfaces.size()
+	                                ? object.surfaces[face.surface]
+	                                : "";
+	if (has_material) {
+		key.kind = MaterialKind::Material;
+		key.material_id = face.material;
+	} else if (!surface.empty()) {
+		key.kind = MaterialKind::DefaultSurface;
+		key.label = surface;
+	} else {
+		key.kind = MaterialKind::DefaultClass;
+		key.label = object.object_type;
+	}
+	return key;
 }
 
 std::string FaceGroupName(const MeshObject &object, const MeshFace &face, const AppearanceSource &appearance) {
