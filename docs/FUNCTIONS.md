@@ -1530,9 +1530,11 @@ identity and the attributes instead.
 
 A GLB's chunk headers are 32-bit, so a GLB cannot exceed 4 GiB. A write whose
 geometry and embedded images would take it past that is refused rather than
-written with wrapped chunk lengths and no error — write `FORMAT gltf`, whose
-buffer is a separate file the limit does not apply to, or split the export
-with a lower `lod` or a `WHERE` clause.
+written with wrapped chunk lengths and no error — either up front, from the
+buffer size before anything is serialised, or after writing, from the file's
+actual size, whichever catches it first — and no file is left behind either
+way. Write `FORMAT gltf`, whose buffer is a separate file the limit does not
+apply to, or split the export with a lower `lod` or a `WHERE` clause.
 
 Under duckdb-wasm, prefer GLB: a `.gltf` needs its `.bin` and any images
 placed beside it, which the browser cannot do for a file it only hands to the

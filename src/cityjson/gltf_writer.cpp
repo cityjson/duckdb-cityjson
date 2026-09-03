@@ -10,6 +10,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -483,11 +484,12 @@ void WriteGltf(const MeshModel &model, AppearanceSource &appearance, const std::
 	if (options.binary) {
 		// A GLB's chunk headers are uint32_t, and tinygltf's WriteBinaryGltfStream casts
 		// the JSON and BIN sizes into them without checking -- so a model past 4 GiB is
-		// written with wrapped lengths and no error at all. Refuse it here instead. The
-		// JSON is not serialised yet, so a fixed allowance stands in for it; it is far
-		// larger than any plausible glTF JSON, and erring high only refuses a little
-		// early. There is no unit-level check for this: the smallest input that reaches
-		// the limit needs more than 4 GiB of buffer.
+		// written with wrapped lengths and no error at all. This is a cheap early
+		// refusal, not the authoritative one: the JSON is not serialised yet, so a fixed
+		// 64 MiB allowance stands in for it, and it is a floor, not a bound -- measured
+		// JSON for city geometry runs about 1.9x the buffer size, so this only catches
+		// the case where the buffer alone is already near the limit. The exact check is
+		// the post-write one below, against the file's actual size.
 		constexpr uint64_t GLB_MAX = (uint64_t(1) << 32) - 28; // 12-byte header + two 8-byte chunk headers
 		constexpr uint64_t JSON_ALLOWANCE = uint64_t(64) << 20;
 		const uint64_t bin_size = gltf.buffers.empty() ? 0 : gltf.buffers.front().data.size();
@@ -510,6 +512,32 @@ void WriteGltf(const MeshModel &model, AppearanceSource &appearance, const std::
 	                                      /*writeBinary=*/options.binary);
 	if (!ok) {
 		throw CityJSONError::FileWrite("Failed writing glTF output: " + out_path);
+	}
+
+	if (options.binary) {
+		// The pre-write guard above is a floor, not the real limit: the JSON tinygltf
+		// serialises here can run far past the 64 MiB allowance it assumed. This is the
+		// exact check, against the bytes actually written -- it is what makes the ~1.5
+		// GiB - ~3.9 GiB range (past the pre-write floor, past what a 1.9x JSON estimate
+		// alone would refuse) safe rather than silently corrupted. `out_path` is still
+		// DuckDB's temp path at this point, sitting in the final directory under a temp
+		// name; removing it here means no file -- final or temp -- is left behind, and
+		// throwing keeps COPY's rename to the final path from ever running.
+		std::error_code ec;
+		const auto written = std::filesystem::file_size(out_path, ec);
+		if (ec) {
+			throw CityJSONError::FileWrite("Could not stat GLB output to check its size: " + out_path + ": " +
+			                               ec.message());
+		}
+		constexpr uint64_t GLB_HARD_MAX = uint64_t(1) << 32;
+		if (written >= GLB_HARD_MAX) {
+			std::filesystem::remove(out_path, ec); // best-effort: the throw below is what matters
+			throw CityJSONError::FileWrite(
+			    "GLB output exceeds the 4 GiB limit a GLB's 32-bit chunk headers can address (" +
+			    std::to_string(written) +
+			    " bytes written): write FORMAT gltf, whose buffer is a separate file, or split the export "
+			    "with a lower `lod` or a WHERE clause");
+		}
 	}
 }
 
