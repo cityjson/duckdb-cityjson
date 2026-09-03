@@ -45,6 +45,7 @@ set(EXTENSION_SOURCES
     src/cityjson/local_cityjson_reader.cpp
     src/cityjson/local_cityjsonseq_reader.cpp
     src/cityjson/reader_factory.cpp
+    src/cityjson/obj_parser.cpp
     src/cityjson/obj_reader.cpp
     src/cityjson/obj_table_function.cpp
     # Third-party single-header implementations (one TU, see the file)
