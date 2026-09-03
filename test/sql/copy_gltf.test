@@ -4,9 +4,9 @@
 
 # The json extension is not linked into this test binary, so `require json` would skip
 # the whole file and report green. The .gltf is pretty-printed JSON; each view below
-# strips the whitespace around the structural characters (never inside a string, since
-# only whitespace adjacent to them is removed) so one compact line can be matched with
-# core regexp functions. tinygltf serialises through nlohmann::json, whose objects are
+# strips the whitespace around the structural characters so one compact line can be
+# matched with core regexp functions. A string value would lose whitespace of its own
+# where it borders one of those characters; no value asserted here contains any. tinygltf serialises through nlohmann::json, whose objects are
 # key-sorted, so a pattern may rely on the alphabetical order of the keys it spans.
 # Schema defaults are omitted by tinygltf: roughnessFactor 1.0, alphaMode OPAQUE and a
 # baseColorFactor of [1,1,1,1] never reach the file.
