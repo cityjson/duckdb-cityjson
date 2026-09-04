@@ -11,9 +11,8 @@ require parquet
 # so declaring them as attributes makes the footer contradict the schema -- and a
 # conformant reader then tries to decode `address` as a user attribute.
 #
-# `other_attributes` is NOT reserved: it named a column the format no longer has,
-# so the fixture's physical column of that name (a leftover from an older
-# cityparquet-rs schema) is ordinary, like any other unrecognised column.
+# `class` is NOT reserved: it is an ordinary attribute of that foreign file, so it
+# is listed.
 
 statement ok
 CREATE SCHEMA pkg;
@@ -27,7 +26,7 @@ SELECT * FROM cityparquet_write('pkg', '__TEST_DIR__/attrs_out');
 query III
 SELECT decode(value) LIKE '%"address"%',
        decode(value) LIKE '%"template"%',
-       decode(value) LIKE '%"other_attributes"%'
+       decode(value) LIKE '%"class"%'
 FROM parquet_kv_metadata('__TEST_DIR__/attrs_out/building.parquet')
 WHERE key::VARCHAR = 'city';
 ----
