@@ -7,26 +7,23 @@ namespace duckdb {
 namespace cityjson {
 
 /**
- * Registers cityjson_appearance_ids(cell VARCHAR, kind VARCHAR) -> BIGINT[].
+ * Registers the two appearance-cell scalar functions:
  *
- * Extracts the material or texture ids a `material_lod*` / `texture_lod*` cell
- * references, across every theme in the cell. Used to find sidecar rows nothing
- * references.
+ *   cityjson_appearance_ids(cell) -> BIGINT[]
+ *   cityjson_shift_appearance_ids(cell, offset BIGINT) -> the cell's own type
  *
- * This is a C++ function rather than generated `json_extract` SQL for two reasons: the
- * JSON type and its functions live in the `json` extension, which this extension does
- * not require; and the two cell shapes genuinely differ —
+ * `cell` is a `material_lod*` cell -- MAP(VARCHAR, BIGINT[]) -- or a `texture_lod*`
+ * one -- MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]). The type says which, so
+ * there is no `kind` argument; anything else is refused at bind. The accepted types
+ * are derived from ColumnType::MaterialMap / ColumnType::TextureMap, so neither can
+ * drift from the column it exists to read, and a VARCHAR attribute that merely looks
+ * like an appearance column (`material_lodging`) is rejected rather than parsed.
  *
- *   material: {"<theme>": {"values": [id|null, ...]}}   -- one id per face
- *             {"<theme>": {"value": id}}                -- one id for the geometry
- *   texture:  {"<theme>": {"values": [[[id, uv...], ...], ...]}}
- *                                                       -- per face, per ring;
- *                                                          only each ring's FIRST
- *                                                          element is an id, the rest
- *                                                          are UV references
- *
- * A path expression that treated the texture nesting like the material one would
- * collect UV indices as though they were texture ids.
+ * The first extracts the sidecar ids a cell references, across every theme,
+ * deduplicated and ascending -- which is how vacuum finds sidecar rows nothing
+ * references. The second adds `offset` to each of those ids and leaves everything
+ * else, the texture `uv` pairs included, exactly as it was -- which is how insert and
+ * merge renumber an incoming package's references onto the destination's id space.
  */
 void RegisterAppearanceIdsFunction(ExtensionLoader &loader);
 

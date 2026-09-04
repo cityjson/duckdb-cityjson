@@ -74,7 +74,6 @@ std::string ReferencedIds(ClientContext &context, const std::string &schema, con
 		}
 	} else {
 		const std::string prefix = (sidecar == "materials") ? "material_lod" : "texture_lod";
-		const std::string kind = (sidecar == "materials") ? "material" : "texture";
 
 		// Object tables are not the only holders of appearance references:
 		// geometry_templates.parquet carries its own material_lod*/texture_lod* columns,
@@ -92,7 +91,7 @@ std::string ReferencedIds(ClientContext &context, const std::string &schema, con
 			// columns are discovered from the catalog rather than assumed.
 			for (const auto &column : AppearanceLodColumns(context, schema, table, prefix)) {
 				terms.push_back("SELECT UNNEST(cityjson_appearance_ids(" +
-				                KeywordHelper::WriteOptionallyQuoted(column) + ", '" + kind + "')) AS ref FROM " +
+				                KeywordHelper::WriteOptionallyQuoted(column) + ")) AS ref FROM " +
 				                QualifiedName(schema, table) + " WHERE " +
 				                KeywordHelper::WriteOptionallyQuoted(column) + " IS NOT NULL");
 			}

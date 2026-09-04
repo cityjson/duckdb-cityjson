@@ -188,7 +188,7 @@ non-numeric lod
 # mode the indices are feature-local and this is only true by coincidence.
 query I
 SELECT COUNT(*) FROM (
-  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0)) AS ref
   FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
   WHERE material_lod3_0 IS NOT NULL
 ) r
@@ -198,7 +198,7 @@ WHERE r.ref NOT IN (SELECT id FROM cityjson_materials('test/data/railway_appeara
 
 query I
 SELECT COUNT(*) FROM (
-  SELECT UNNEST(cityjson_appearance_ids(texture_lod3_0, 'texture')) AS ref
+  SELECT UNNEST(cityjson_appearance_ids(texture_lod3_0)) AS ref
   FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
   WHERE texture_lod3_0 IS NOT NULL
 ) r

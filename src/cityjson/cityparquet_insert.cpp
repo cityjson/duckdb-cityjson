@@ -436,8 +436,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			continue;
 		}
 		const std::string sidecar = std::string(kind) == "material" ? "materials" : "textures";
-		replacements.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", '" + kind + "', " +
-		                       OffsetExpr(sidecar) + ") AS " + Quoted(column.name));
+		replacements.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " + OffsetExpr(sidecar) +
+		                       ") AS " + Quoted(column.name));
 	}
 	const std::string projection = replacements.empty() ? "*" : "* REPLACE (" + Join(replacements, ", ") + ")";
 
@@ -474,8 +474,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 				continue;
 			}
 			const std::string target = std::string(kind) == "material" ? "materials" : "textures";
-			sidecar_replacements.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", '" + kind +
-			                               "', " + OffsetExpr(target) + ") AS " + Quoted(column.name));
+			sidecar_replacements.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
+			                               OffsetExpr(target) + ") AS " + Quoted(column.name));
 		}
 		sql += "INSERT INTO " + QualifiedName(schema, sidecar) + " BY NAME SELECT * REPLACE (" +
 		       Join(sidecar_replacements, ", ") + ") FROM " + StageTable(sidecar) + ";\n";

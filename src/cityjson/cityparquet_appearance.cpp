@@ -1,8 +1,8 @@
 #include "cityjson/cityparquet_appearance.hpp"
 
-#include "cityjson/json_utils.hpp"
+#include "cityjson/appearance_cell.hpp"
+#include "cityjson/column_types.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
 #include <set>
@@ -12,237 +12,207 @@ namespace cityjson {
 
 namespace {
 
-//! material: every integer leaf of `values` is an id, at whatever nesting depth.
-//!
-//! The nesting depth is not fixed: a MultiSurface nests one level (one id per surface),
-//! a Solid two (per shell, per surface), a MultiSolid three. Reading only the top level
-//! would return nothing at all for a Solid -- and an empty reference set makes vacuum
-//! delete materials that are still in use.
-void CollectMaterialIds(const json &node, std::set<int64_t> &ids) {
-	if (node.is_number_integer()) {
-		ids.insert(node.get<int64_t>());
-		return;
-	}
-	if (!node.is_array()) {
-		return;
-	}
-	for (const auto &child : node) {
-		CollectMaterialIds(child, ids);
-	}
-}
+//! The two cells differ only in where their ids sit, so each kind contributes a
+//! traits type and the two function bodies below are written once.
+struct MaterialTraits {
+	using Cell = MaterialCell;
 
-//! texture: the innermost array is a *ring* -- `[id, uv, uv, ...]` -- of which only the
-//! first element is a texture id; the rest are UV references. Above the ring sit
-//! surface, and for a Solid or MultiSolid one or two further shell dimensions.
-//!
-//! So the depth above the ring varies, but the ring itself is recognisable: it is the
-//! array whose own elements are scalars rather than arrays. Recurse while elements are
-//! arrays; treat the first scalar-valued array as a ring. Assuming a fixed
-//! face/ring depth, as an earlier version did, silently collected nothing for solids
-//! (making vacuum delete live textures) and would collect UV indices as ids if the
-//! nesting were shallower than assumed.
-void CollectTextureIds(const json &node, std::set<int64_t> &ids) {
-	if (!node.is_array() || node.empty()) {
-		return;
+	static Cell FromValue(const Value &value) {
+		return MaterialCellFromValue(value);
 	}
-	if (node[0].is_array()) {
-		for (const auto &child : node) {
-			CollectTextureIds(child, ids);
-		}
-		return;
-	}
-	// A ring. Its first element is the texture id, or null for an untextured ring.
-	if (node[0].is_number_integer()) {
-		ids.insert(node[0].get<int64_t>());
-	}
-}
 
-void CollectThemeIds(const json &theme, const std::string &kind, std::set<int64_t> &ids) {
-	auto values = theme.find("values");
-	if (values != theme.end()) {
-		if (kind == "material") {
-			CollectMaterialIds(*values, ids);
-		} else {
-			CollectTextureIds(*values, ids);
+	static Value ToValue(const Cell &cell) {
+		return MaterialCellValue(cell);
+	}
+
+	//! One id per WKB face; a face the source assigns no material to is null.
+	static void CollectIds(const Cell &cell, std::set<int64_t> &ids) {
+		for (const auto &theme : cell.themes) {
+			for (const auto &id : theme.second) {
+				if (id.has_value()) {
+					ids.insert(id.value());
+				}
+			}
 		}
 	}
-	// The whole-geometry form, material only.
-	auto value = theme.find("value");
-	if (kind == "material" && value != theme.end() && value->is_number_integer()) {
-		ids.insert(value->get<int64_t>());
-	}
-}
 
-//! Add `offset` to every id, preserving structure. Mirrors the collectors above: for a
-//! material every integer leaf is an id; for a texture only each ring's first element is,
-//! and the rest are UV data that must not move.
-json ShiftMaterialIds(const json &node, int64_t offset) {
-	if (node.is_number_integer()) {
-		return json(node.get<int64_t>() + offset);
-	}
-	if (!node.is_array()) {
-		return node;
-	}
-	json out = json::array();
-	for (const auto &child : node) {
-		out.push_back(ShiftMaterialIds(child, offset));
-	}
-	return out;
-}
-
-json ShiftTextureIds(const json &node, int64_t offset) {
-	if (!node.is_array() || node.empty()) {
-		return node;
-	}
-	if (node[0].is_array()) {
-		json out = json::array();
-		for (const auto &child : node) {
-			out.push_back(ShiftTextureIds(child, offset));
+	static void ShiftIds(Cell &cell, int64_t offset) {
+		for (auto &theme : cell.themes) {
+			for (auto &id : theme.second) {
+				if (id.has_value()) {
+					id = id.value() + offset;
+				}
+			}
 		}
-		return out;
 	}
-	// A ring. Shift the id; leave every UV entry -- index or inlined [u,v] pair --
-	// exactly as it was. Shifting a coordinate would silently distort the texture.
-	json ring = node;
-	if (ring[0].is_number_integer()) {
-		ring[0] = ring[0].get<int64_t>() + offset;
-	}
-	return ring;
-}
+};
 
-void ShiftAppearanceIdsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+struct TextureTraits {
+	using Cell = TextureCell;
+
+	static Cell FromValue(const Value &value) {
+		return TextureCellFromValue(value);
+	}
+
+	static Value ToValue(const Cell &cell) {
+		return TextureCellValue(cell);
+	}
+
+	//! Per face, per ring. Only the ring's `id` is a sidecar reference; its `uv`
+	//! pairs are coordinates. A bare ring references nothing.
+	static void CollectIds(const Cell &cell, std::set<int64_t> &ids) {
+		for (const auto &theme : cell.themes) {
+			for (const auto &face : theme.second) {
+				for (const auto &ring : face) {
+					if (ring.id.has_value()) {
+						ids.insert(ring.id.value());
+					}
+				}
+			}
+		}
+	}
+
+	//! Moving a `uv` coordinate would silently distort the texture, so only the id
+	//! moves.
+	static void ShiftIds(Cell &cell, int64_t offset) {
+		for (auto &theme : cell.themes) {
+			for (auto &face : theme.second) {
+				for (auto &ring : face) {
+					if (ring.id.has_value()) {
+						ring.id = ring.id.value() + offset;
+					}
+				}
+			}
+		}
+	}
+};
+
+//! Row-at-a-time over `Value`s: a cell is a nested MAP whose depth the flat vector
+//! API would have to be walked by hand, and vacuum runs this once per row of a
+//! sidecar scan rather than in an inner loop.
+template <class Traits>
+void CollectCellIds(DataChunk &args, Vector &result) {
 	const auto count = args.size();
-	UnifiedVectorFormat cell_format, kind_format, offset_format;
-	args.data[0].ToUnifiedFormat(count, cell_format);
-	args.data[1].ToUnifiedFormat(count, kind_format);
-	args.data[2].ToUnifiedFormat(count, offset_format);
-	const auto cells = UnifiedVectorFormat::GetData<string_t>(cell_format);
-	const auto kinds = UnifiedVectorFormat::GetData<string_t>(kind_format);
-	const auto offsets = UnifiedVectorFormat::GetData<int64_t>(offset_format);
+	const auto id_type = ListType::GetChildType(result.GetType());
 
 	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
 	for (idx_t i = 0; i < count; i++) {
-		const auto ci = cell_format.sel->get_index(i);
-		const auto ki = kind_format.sel->get_index(i);
-		const auto oi = offset_format.sel->get_index(i);
-		if (!cell_format.validity.RowIsValid(ci) || !kind_format.validity.RowIsValid(ki) ||
-		    !offset_format.validity.RowIsValid(oi)) {
-			result.SetValue(i, Value(LogicalType(LogicalTypeId::VARCHAR)));
+		const auto cell = args.data[0].GetValue(i);
+		if (cell.IsNull()) {
+			result.SetValue(i, Value(result.GetType()));
 			continue;
 		}
-		const auto kind = StringUtil::Lower(kinds[ki].GetString());
-		if (kind != "material" && kind != "texture") {
-			throw InvalidInputException("cityjson_shift_appearance_ids: kind must be 'material' or 'texture', got '%s'",
-			                            kind);
-		}
-		json parsed;
-		try {
-			parsed = json::parse(cells[ci].GetString());
-		} catch (const std::exception &e) {
-			throw InvalidInputException("cityjson_shift_appearance_ids: cannot parse appearance cell: %s", e.what());
-		}
-		if (!parsed.is_object()) {
-			result.SetValue(i, Value(cells[ci].GetString()));
-			continue;
-		}
-		const auto offset = offsets[oi];
-		json out = json::object();
-		for (const auto &entry : parsed.items()) {
-			if (!entry.value().is_object()) {
-				out[entry.key()] = entry.value();
-				continue;
-			}
-			json theme = entry.value();
-			auto values = theme.find("values");
-			if (values != theme.end()) {
-				theme["values"] =
-				    kind == "material" ? ShiftMaterialIds(*values, offset) : ShiftTextureIds(*values, offset);
-			}
-			auto value = theme.find("value");
-			if (kind == "material" && value != theme.end()) {
-				theme["value"] = ShiftMaterialIds(*value, offset);
-			}
-			out[entry.key()] = std::move(theme);
-		}
-		result.SetValue(i, Value(out.dump()));
-	}
-	if (count == 1) {
-		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
-	}
-}
-
-void AppearanceIdsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	const auto count = args.size();
-
-	UnifiedVectorFormat cell_format;
-	UnifiedVectorFormat kind_format;
-	args.data[0].ToUnifiedFormat(count, cell_format);
-	args.data[1].ToUnifiedFormat(count, kind_format);
-	const auto cells = UnifiedVectorFormat::GetData<string_t>(cell_format);
-	const auto kinds = UnifiedVectorFormat::GetData<string_t>(kind_format);
-
-	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
-	const auto list_type = LogicalType::LIST(LogicalType(LogicalTypeId::BIGINT));
-
-	for (idx_t i = 0; i < count; i++) {
-		const auto cell_idx = cell_format.sel->get_index(i);
-		const auto kind_idx = kind_format.sel->get_index(i);
-		if (!cell_format.validity.RowIsValid(cell_idx) || !kind_format.validity.RowIsValid(kind_idx)) {
-			result.SetValue(i, Value(list_type));
-			continue;
-		}
-
-		const auto kind = StringUtil::Lower(kinds[kind_idx].GetString());
-		if (kind != "material" && kind != "texture") {
-			throw InvalidInputException("cityjson_appearance_ids: kind must be 'material' or 'texture', got '%s'",
-			                            kind);
-		}
-
-		json parsed;
-		try {
-			parsed = json::parse(cells[cell_idx].GetString());
-		} catch (const std::exception &e) {
-			throw InvalidInputException("cityjson_appearance_ids: cannot parse appearance cell: %s", e.what());
-		}
-		if (!parsed.is_object()) {
-			result.SetValue(i, Value(list_type));
-			continue;
-		}
-
-		// The outer dimension is the theme, a dynamic key set, so iterate rather than
-		// look up a known name.
+		// A set, so the ids come out deduplicated and ascending: the caller is an
+		// `IN` list or a reference check, neither of which wants either kind of
+		// noise.
 		std::set<int64_t> ids;
-		for (const auto &entry : parsed.items()) {
-			if (!entry.value().is_object()) {
-				continue;
-			}
-			CollectThemeIds(entry.value(), kind, ids);
-		}
+		Traits::CollectIds(Traits::FromValue(cell), ids);
 
 		duckdb::vector<Value> children;
+		children.reserve(ids.size());
 		for (const auto id : ids) {
 			children.push_back(Value::BIGINT(id));
 		}
-		result.SetValue(i, Value::LIST(LogicalType(LogicalTypeId::BIGINT), std::move(children)));
+		result.SetValue(i, Value::LIST(id_type, std::move(children)));
 	}
 
 	if (count == 1) {
 		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
 	}
+}
+
+template <class Traits>
+void ShiftCellIds(DataChunk &args, Vector &result) {
+	const auto count = args.size();
+
+	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
+	for (idx_t i = 0; i < count; i++) {
+		const auto cell = args.data[0].GetValue(i);
+		const auto offset = args.data[1].GetValue(i);
+		if (cell.IsNull() || offset.IsNull()) {
+			result.SetValue(i, Value(result.GetType()));
+			continue;
+		}
+		auto parsed = Traits::FromValue(cell);
+		Traits::ShiftIds(parsed, offset.GetValue<int64_t>());
+		result.SetValue(i, Traits::ToValue(parsed));
+	}
+
+	if (count == 1) {
+		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
+	}
+}
+
+//! True when `type` is the material cell type; the caller has already established
+//! that it is one of the two, so anything else is a texture cell.
+bool IsMaterialCell(const LogicalType &type) {
+	return type == ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap);
+}
+
+void AppearanceIdsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	if (IsMaterialCell(args.data[0].GetType())) {
+		CollectCellIds<MaterialTraits>(args, result);
+	} else {
+		CollectCellIds<TextureTraits>(args, result);
+	}
+}
+
+void ShiftAppearanceIdsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	if (IsMaterialCell(args.data[0].GetType())) {
+		ShiftCellIds<MaterialTraits>(args, result);
+	} else {
+		ShiftCellIds<TextureTraits>(args, result);
+	}
+}
+
+/**
+ * Resolve the cell kind from the argument's type.
+ *
+ * The two cell types are both MAPs, and DuckDB costs a MAP-to-MAP implicit cast on
+ * the type id alone -- so two registered overloads, one per cell type, tie at cost
+ * zero and every call is "could not choose a best candidate". The argument is
+ * therefore declared ANY and the kind is resolved here, which is the same contract
+ * (the type says which) with an error message that names both accepted types.
+ */
+const LogicalType &BindCellType(ScalarFunction &bound_function, const Expression &argument) {
+	const auto &cell_type = argument.return_type;
+	if (cell_type != ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap) &&
+	    cell_type != ColumnTypeUtils::ToDuckDBType(ColumnType::TextureMap)) {
+		throw BinderException("%s: expected a %s (material) or %s (texture) cell, got %s", bound_function.name,
+		                      ColumnTypeUtils::ToString(ColumnType::MaterialMap),
+		                      ColumnTypeUtils::ToString(ColumnType::TextureMap), cell_type.ToString());
+	}
+	bound_function.arguments[0] = cell_type;
+	return cell_type;
+}
+
+unique_ptr<FunctionData> BindAppearanceIds(ClientContext &context, ScalarFunction &bound_function,
+                                           vector<unique_ptr<Expression>> &arguments) {
+	BindCellType(bound_function, *arguments[0]);
+	return nullptr;
+}
+
+unique_ptr<FunctionData> BindShiftAppearanceIds(ClientContext &context, ScalarFunction &bound_function,
+                                                vector<unique_ptr<Expression>> &arguments) {
+	// Shifting rewrites ids in place, so the result is the cell it was handed.
+	bound_function.return_type = BindCellType(bound_function, *arguments[0]);
+	return nullptr;
 }
 
 } // namespace
 
 void RegisterAppearanceIdsFunction(ExtensionLoader &loader) {
-	ScalarFunction func("cityjson_appearance_ids",
-	                    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
-	                    LogicalType::LIST(LogicalType(LogicalTypeId::BIGINT)), AppearanceIdsFunction);
-	loader.RegisterFunction(func);
+	const auto id_list = LogicalType::LIST(LogicalType::BIGINT);
 
-	ScalarFunction shift(
-	    "cityjson_shift_appearance_ids",
-	    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT)},
-	    LogicalType(LogicalTypeId::VARCHAR), ShiftAppearanceIdsFunction);
+	ScalarFunction ids("cityjson_appearance_ids", {LogicalType::ANY}, id_list, AppearanceIdsFunction,
+	                   BindAppearanceIds);
+	loader.RegisterFunction(ids);
+
+	// The declared return type is a placeholder: the bind replaces it with the cell
+	// type it was actually handed.
+	ScalarFunction shift("cityjson_shift_appearance_ids", {LogicalType::ANY, LogicalType::BIGINT},
+	                     ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap), ShiftAppearanceIdsFunction,
+	                     BindShiftAppearanceIds);
 	loader.RegisterFunction(shift);
 }
 

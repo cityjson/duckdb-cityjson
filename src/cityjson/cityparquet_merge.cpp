@@ -227,10 +227,10 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			    MatchesLodSuffix(lowered, "texture_lod") &&
 			    std::find(source_sidecars.begin(), source_sidecars.end(), "textures") != source_sidecars.end();
 			if (is_material) {
-				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", 'material', " +
+				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
 				                 OffsetExpr("materials") + ")");
 			} else if (is_texture) {
-				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", 'texture', " +
+				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
 				                 OffsetExpr("textures") + ")");
 			} else {
 				values.push_back(Quoted(column.name));
@@ -271,7 +271,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				values.push_back(Quoted(column.name));
 				continue;
 			}
-			values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", '" + kind + "', " +
+			values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
 			                 OffsetExpr(std::string(kind) == "material" ? "materials" : "textures") + ")");
 		}
 		sql += "INSERT INTO " + QualifiedName(destination, sidecar) + " (" + Join(names, ", ") + ") SELECT " +

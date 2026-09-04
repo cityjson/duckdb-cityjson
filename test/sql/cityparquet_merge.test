@@ -8,37 +8,23 @@ require parquet
 
 # --- supporting scalars ------------------------------------------------------
 
-# Shifting material ids moves every integer leaf, at whatever nesting depth.
+# Shifting material ids moves every id of every theme and returns the cell's own
+# type; a face with no material stays null. The MAP type selects the overload, so
+# there is no kind argument.
 query T
-SELECT cityjson_shift_appearance_ids('{"visual":{"values":[0,1,null]}}', 'material', 10);
+SELECT cityjson_shift_appearance_ids(MAP {'visual': [0, 1, NULL]}::MAP(VARCHAR, BIGINT[]), 10);
 ----
-{"visual":{"values":[10,11,null]}}
+{visual=[10, 11, NULL]}
 
+# Only a ring's id moves; the [u, v] pairs stay exactly as they are -- shifting a
+# coordinate would silently distort the texture.
 query T
-SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[0,1],[2]]}}', 'material', 5);
+SELECT cityjson_shift_appearance_ids(MAP {'visual': [[{'id': 0, 'uv': [[0.5, 0.25], [0.5, 0.5], [0.25, 0.5]]}]]}::MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]), 4)['visual'][1][1];
 ----
-{"visual":{"values":[[5,6],[7]]}}
-
-query T
-SELECT cityjson_shift_appearance_ids('{"visual":{"value":3}}', 'material', 2);
-----
-{"visual":{"value":5}}
-
-# For textures only each ring's FIRST element is an id. The [u,v] pairs must not
-# move -- shifting a coordinate would silently distort the texture.
-query T
-SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[[0,[0.5,0.25]]]]}}', 'texture', 4);
-----
-{"visual":{"values":[[[4,[0.5,0.25]]]]}}
-
-# A ring that is still index-based (local mode) shifts only its id.
-query T
-SELECT cityjson_shift_appearance_ids('{"visual":{"values":[[[1,7,8]]]}}', 'texture', 3);
-----
-{"visual":{"values":[[[4,7,8]]]}}
+{'id': 4, 'uv': [[0.5, 0.25], [0.5, 0.5], [0.25, 0.5]]}
 
 query I
-SELECT cityjson_shift_appearance_ids(NULL, 'material', 1) IS NULL;
+SELECT cityjson_shift_appearance_ids(NULL::MAP(VARCHAR, BIGINT[]), 1) IS NULL;
 ----
 true
 
@@ -86,7 +72,7 @@ CREATE TABLE utr.building AS
          list_transform(parents, x -> 'U-' || x) AS parents,
          list_transform(children, x -> 'U-' || x) AS children,
          children_roles, bbox, geometry_lod2_2, geometry_properties_lod2_2,
-         '{"visual":{"values":[0]}}' AS material_lod2_2, texture_lod2_2
+         MAP {'visual': [0]}::MAP(VARCHAR, BIGINT[]) AS material_lod2_2, texture_lod2_2
   FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 10;
 
 statement ok
@@ -129,7 +115,7 @@ SELECT id, name FROM ams.materials ORDER BY id;
 # names still resolves.
 query I
 SELECT COUNT(*) FROM (
-  SELECT UNNEST(cityjson_appearance_ids(material_lod2_2, 'material')) AS ref FROM ams.building
+  SELECT UNNEST(cityjson_appearance_ids(material_lod2_2)) AS ref FROM ams.building
   WHERE material_lod2_2 IS NOT NULL
 ) r WHERE r.ref NOT IN (SELECT id FROM ams.materials);
 ----
@@ -138,7 +124,7 @@ SELECT COUNT(*) FROM (
 # The rows that came from utr point at the renumbered material, not at 0.
 query I
 SELECT COUNT(*) FROM ams.building
-WHERE id LIKE 'U-%' AND material_lod2_2 LIKE '%2%';
+WHERE id LIKE 'U-%' AND material_lod2_2['visual'] = [2];
 ----
 10
 
@@ -227,7 +213,7 @@ WHERE column_name IN ('geometry_lod1_0', 'geometry_lod3_0');
 # still names the material it was authored against.
 query I
 SELECT COUNT(*) FROM (
-  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0)) AS ref
   FROM tpl_dst.geometry_templates WHERE material_lod3_0 IS NOT NULL
 ) r WHERE r.ref NOT IN (SELECT id FROM tpl_dst.materials);
 ----
@@ -264,13 +250,13 @@ SELECT name FROM tpl_dst.materials WHERE id = 4;
 kiosk-paint
 
 query T
-SELECT material_lod2_0 FROM tpl_dst.city_furniture WHERE id = 'kiosk-1';
+SELECT material_lod2_0['visual'] FROM tpl_dst.city_furniture WHERE id = 'kiosk-1';
 ----
-{"visual":{"values":[4]}}
+[4]
 
 query I
 SELECT COUNT(*) FROM (
-  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0)) AS ref
   FROM tpl_dst.geometry_templates WHERE material_lod3_0 IS NOT NULL
 ) r WHERE r.ref NOT IN (SELECT id FROM tpl_dst.materials);
 ----

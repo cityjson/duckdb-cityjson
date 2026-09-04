@@ -61,7 +61,7 @@ true
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/appearance.city.jsonl')
 WHERE material_lod3_0 IS NOT NULL
-  AND list_max(cityjson_appearance_ids(material_lod3_0, 'material'))
+  AND list_max(cityjson_appearance_ids(material_lod3_0))
       >= (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/appearance.city.jsonl'));
 ----
 0

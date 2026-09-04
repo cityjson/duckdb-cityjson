@@ -96,8 +96,8 @@ std::vector<std::string> AppearanceLodColumns(ClientContext &context, const std:
 //! A bare prefix test is not enough. `material_lodging` is a perfectly ordinary source
 //! attribute, and the reader already takes care not to swallow it as an appearance
 //! column (test/sql/cityjson_appearance.test). Misclassifying it hands arbitrary
-//! attribute text to cityjson_appearance_ids or cityjson_shift_appearance_ids, neither
-//! of which can parse it.
+//! attribute text to cityjson_appearance_ids or cityjson_shift_appearance_ids, whose
+//! overloads take the typed cells and so match no VARCHAR column at all.
 bool MatchesLodSuffix(const std::string &name, const std::string &prefix);
 
 //! The `all_objects AS (...)` CTE body: every object table's identity and hierarchy

@@ -90,10 +90,10 @@ SELECT COUNT(*) FROM ams.materials;
 
 query I
 SELECT COUNT(*) FROM (
-  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0)) AS ref
   FROM ams.bridge WHERE material_lod3_0 IS NOT NULL
   UNION ALL
-  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0, 'material')) AS ref
+  SELECT UNNEST(cityjson_appearance_ids(material_lod3_0)) AS ref
   FROM ams.city_furniture WHERE material_lod3_0 IS NOT NULL
 ) r WHERE r.ref NOT IN (SELECT id FROM ams.materials);
 ----
@@ -119,16 +119,21 @@ SELECT name FROM ams.materials WHERE id = 4;
 kiosk-paint
 
 query T
-SELECT material_lod2_0 FROM ams.city_furniture WHERE id = 'kiosk-1';
+SELECT material_lod2_0['visual'] FROM ams.city_furniture WHERE id = 'kiosk-1';
 ----
-{"visual":{"values":[4]}}
+[4]
 
 # Texture ids shift the same way, and the inlined UV pairs must not be touched by
 # the shift -- they are coordinates, not ids.
 query T
-SELECT texture_lod2_0 FROM ams.city_furniture WHERE id = 'kiosk-1';
+SELECT texture_lod2_0['visual'][1][1].id FROM ams.city_furniture WHERE id = 'kiosk-1';
 ----
-{"visual":{"values":[[[4,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]]]}}
+4
+
+query T
+SELECT texture_lod2_0['visual'][1][1].uv FROM ams.city_furniture WHERE id = 'kiosk-1';
+----
+[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
 # --- geometry templates ------------------------------------------------------
 
