@@ -8,7 +8,7 @@
   "id": "rs_minimal",
   "geometry": null,
   "properties": {
-    "datetime": "2026-08-20T08:36:08Z",
+    "datetime": "2026-09-04T22:42:51Z",
     "city3d:version": "2.0",
     "city3d:city_objects": 121,
     "city3d:lods": [
@@ -59,8 +59,8 @@
       "roles": [
         "data"
       ],
-      "file:size": 51273,
-      "file:checksum": "1220b5385c03a4eec02cd478294c51466e46763b8198976255c0d363f2881c28b104"
+      "file:size": 61589,
+      "file:checksum": "12207e5d81f1b5cd0b8bb266b9de1220053dfe26e6f584f317418f681ca26ba87c21"
     },
     "bridge.parquet": {
       "href": "./bridge.parquet",
@@ -69,8 +69,8 @@
         "data",
         "cityparquet-objects"
       ],
-      "file:size": 93626,
-      "file:checksum": "1220a4db6a6bdb5f0c2b54198019fbfe8b856295c1a8f8c61a3d23ce442c6f537540"
+      "file:size": 118051,
+      "file:checksum": "12206c83ee0f09dea9cee1ff4bc5ee3bf99ae5b2842a765fe7a43dae4f444a0c55eb"
     },
     "building.parquet": {
       "href": "./building.parquet",
@@ -79,8 +79,8 @@
         "data",
         "cityparquet-objects"
       ],
-      "file:size": 51273,
-      "file:checksum": "1220b5385c03a4eec02cd478294c51466e46763b8198976255c0d363f2881c28b104"
+      "file:size": 61589,
+      "file:checksum": "12207e5d81f1b5cd0b8bb266b9de1220053dfe26e6f584f317418f681ca26ba87c21"
     }
   }
 }

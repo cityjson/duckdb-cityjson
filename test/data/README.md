@@ -9,9 +9,9 @@ Trimmed to `building.parquet` + `bridge.parquet` + `metadata.json` (the full
 conversion produces twelve object/sidecar tables); `metadata.json`'s `assets` map is
 hand-edited to match. The point of the fixture is the schema and footer conventions
 `building.parquet` carries -- notably the reserved `address` and `template` columns --
-not the row count or the full module set. It also carries an `other_attributes`
-column, an ordinary attribute of that foreign file; nothing in the current format
-reserves that name (the format's escape hatch is the single `other` column).
+not the row count or the full module set. Its `material_lod*` / `texture_lod*`
+columns are the specification's typed MAPs, flat per WKB face, which is what
+`cityparquet_rs_appearance.test` pins.
 
 ## obj/
 

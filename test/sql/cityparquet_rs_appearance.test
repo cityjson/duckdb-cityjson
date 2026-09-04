@@ -1,0 +1,36 @@
+# name: test/sql/cityparquet_rs_appearance.test
+# description: The reference writer's typed appearance columns read back as MAPs
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# The package was written by cityparquet-rs, not by this extension (test/data/README.md).
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'rs');
+
+query TT
+SELECT typeof(material_lod3_0), typeof(texture_lod3_0) FROM rs.building LIMIT 1;
+----
+MAP(VARCHAR, BIGINT[])	MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])
+
+# The alignment check below is non-vacuous: at least one row has both a
+# material and known face semantics to compare.
+query I
+SELECT COUNT(*) > 0 FROM rs.building
+WHERE material_lod3_0 IS NOT NULL
+  AND geometry_properties_lod3_0.face_semantics IS NOT NULL;
+----
+true
+
+# One material id per WKB face: the list length equals the face count of the WKB,
+# read here from geometry_properties_lod3_0.face_semantics (no
+# cityjson_wkb_face_count scalar exists in this extension).
+query I
+SELECT COUNT(*) FROM rs.building
+WHERE material_lod3_0 IS NOT NULL
+  AND geometry_properties_lod3_0.face_semantics IS NOT NULL
+  AND len(map_values(material_lod3_0)[1]) <> len(geometry_properties_lod3_0.face_semantics);
+----
+0
