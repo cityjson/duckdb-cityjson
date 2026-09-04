@@ -1,6 +1,8 @@
 #include "cityjson/appearance_table_function.hpp"
 
 #include "cityjson/error.hpp"
+#include "cityjson/appearance_cell.hpp"
+#include "cityjson/appearance_flatten.hpp"
 #include "cityjson/appearance_normalise.hpp"
 #include "cityjson/city_object_utils.hpp"
 #include "cityjson/column_types.hpp"
@@ -187,23 +189,36 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 				output.SetValue(base, emitted, Value::BLOB(wkb.data(), wkb.size()));
 				auto props = CityObjectUtils::GetGeometryPropertiesStruct(geometry);
 				output.SetValue(base + 1, emitted, Value(props.is_null() ? std::string() : props.dump()));
-				// A template's appearance needs the same normalisation an object row's
-				// does: emitted verbatim, its rings would keep source-local texture ids
+				// A template's appearance is flattened and resolved like an object
+				// row's: emitted verbatim, its rings would keep source-local texture ids
 				// and bare UV indices, which no consumer of the package can resolve.
 				// Templates are document-level, so they carry no feature id and resolve
 				// against the header's definitions and UV pool.
 				static const std::vector<std::array<double, 2>> no_uvs;
 				const auto &uv_pool = bind_data.template_uv_pool;
-				output.SetValue(base + 2, emitted,
-				                geometry.material.has_value()
-				                    ? Value(NormaliseMaterialMap(geometry.material.value(), bind_data.index, "").dump())
-				                    : Value(LogicalType(LogicalTypeId::VARCHAR)));
-				output.SetValue(base + 3, emitted,
-				                geometry.texture.has_value()
-				                    ? Value(NormaliseTextureMap(geometry.texture.value(), bind_data.index, "",
-				                                                uv_pool.empty() ? no_uvs : uv_pool)
-				                                .dump())
-				                    : Value(LogicalType(LogicalTypeId::VARCHAR)));
+				const IdResolver resolve_material = [&bind_data](int64_t local) {
+					return bind_data.index.ResolveMaterial("", local);
+				};
+				const IdResolver resolve_texture = [&bind_data](int64_t local) {
+					return bind_data.index.ResolveTexture("", local);
+				};
+				Value material_cell(MaterialCellType());
+				if (geometry.material.has_value()) {
+					const auto cell = FlattenMaterialMap(geometry, geometry.material.value(), resolve_material);
+					if (!cell.themes.empty()) {
+						material_cell = MaterialCellValue(cell);
+					}
+				}
+				Value texture_cell(TextureCellType());
+				if (geometry.texture.has_value()) {
+					const auto cell = FlattenTextureMap(geometry, geometry.texture.value(), resolve_texture,
+					                                    uv_pool.empty() ? no_uvs : uv_pool);
+					if (!cell.themes.empty()) {
+						texture_cell = TextureCellValue(cell);
+					}
+				}
+				output.SetValue(base + 2, emitted, material_cell);
+				output.SetValue(base + 3, emitted, texture_cell);
 			}
 		} else if (bind_data.kind == SidecarKind::MATERIALS) {
 			const auto &material = bind_data.index.materials[index];
@@ -304,9 +319,9 @@ void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std
 		names.push_back("geometry_properties_" + suffix);
 		types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::GeometryPropertiesStruct));
 		names.push_back("material_" + suffix);
-		types.push_back(varchar);
+		types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap));
 		names.push_back("texture_" + suffix);
-		types.push_back(varchar);
+		types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::TextureMap));
 	}
 }
 

@@ -38,7 +38,8 @@ enum class ColumnType {
 	GeometryWKB,              // BLOB - WKB-encoded geometry (3D)
 	GeometryPropertiesStruct, // STRUCT("type" VARCHAR, surfaces JSON,
 	                          //        face_semantics INTEGER[], shells INTEGER[][])
-	AppearanceJson,           // JSON - per-LoD material_lod*/texture_lod* appearance (§11)
+	MaterialMap,              // MAP(VARCHAR, BIGINT[]) - per-LoD material_lod* (§11)
+	TextureMap,               // MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) - texture_lod* (§11)
 
 	// Reserved columns the spec requires present (NULL-filled) even when nothing in
 	// this reader's data model populates them yet (02-object-table-schema.mdx).

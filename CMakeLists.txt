@@ -88,6 +88,8 @@ set(EXTENSION_SOURCES
     src/cityjson/cityparquet_merge.cpp
     src/cityjson/cityparquet_write.cpp
     src/cityjson/cityparquet_appearance.cpp
+    src/cityjson/appearance_cell.cpp
+    src/cityjson/appearance_flatten.cpp
     src/cityjson/appearance_normalise.cpp
     src/cityjson/appearance_table_function.cpp
     # Mesh interchange (OBJ / glTF writers)

@@ -103,7 +103,8 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 		switch (column.kind) {
 		case ColumnType::GeometryWKB:
 		case ColumnType::GeometryPropertiesStruct:
-		case ColumnType::AppearanceJson:
+		case ColumnType::MaterialMap:
+		case ColumnType::TextureMap:
 			try {
 				column.lod = ParseLODFromGeometryColumn(column.name);
 			} catch (const CityJSONError &) {

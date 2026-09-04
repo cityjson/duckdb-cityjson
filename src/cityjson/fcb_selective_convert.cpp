@@ -316,7 +316,8 @@ bool IsGeometryDerivedColumn(const Column &column) {
 	case ColumnType::GeographicalExtent:
 	case ColumnType::GeometryWKB:
 	case ColumnType::GeometryPropertiesStruct:
-	case ColumnType::AppearanceJson:
+	case ColumnType::MaterialMap:
+	case ColumnType::TextureMap:
 		return true;
 	default:
 		break;

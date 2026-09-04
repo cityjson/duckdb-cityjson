@@ -60,6 +60,16 @@ public:
 		FlatVector::SetNull(*vector_, row, true);
 	}
 
+	/**
+	 * Write a whole Value into the row, nested children and nulls included.
+	 * The route for the typed appearance cells, whose MAP/LIST/STRUCT nesting has no
+	 * flat writer; a NULL cell is Value(<column type>) rather than SetNull, so one
+	 * route builds every cell.
+	 */
+	void SetValue(size_t row, const Value &value) {
+		vector_->SetValue(row, value);
+	}
+
 private:
 	VectorType type_; // Type of vector
 	Vector *vector_;  // Pointer to DuckDB vector
@@ -197,16 +207,6 @@ void WriteGeographicalExtent(Vector *struct_vec, const json &value, size_t row);
  * @param row Row index in vector
  */
 void WriteGeometryWKB(Vector *blob_vec, const std::vector<uint8_t> &wkb_data, size_t row);
-
-/**
- * Write a json value to a varchar vector as JSON text
- * Handles AppearanceJson (material_lod* / texture_lod*), which stays JSON text
- *
- * @param vec Pointer to varchar vector
- * @param value JSON value to serialise
- * @param row Row index in vector
- */
-void WriteJsonText(Vector *vec, const json &value, size_t row);
 
 /**
  * Write geometry properties to a struct vector

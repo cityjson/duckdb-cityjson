@@ -12,8 +12,8 @@ WHERE column_name LIKE 'geometry%' OR column_name LIKE 'material%' OR column_nam
 ----
 geometry_lod2_2	BLOB
 geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
-material_lod2_2	VARCHAR
-texture_lod2_2	VARCHAR
+material_lod2_2	MAP(VARCHAR, BIGINT[])
+texture_lod2_2	MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])
 
 query I
 SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
@@ -117,34 +117,37 @@ SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', geometry_type := 
 ----
 geometry_type must be 'auto', 'Solid' or 'MultiSurface'
 
-# --- material_lod*: one theme "visual", values per face in WKB face order; ids are MTL ordinals.
+# --- material_lod*: one theme "visual", one id per WKB face; ids are MTL ordinals.
 query II
 SELECT id, material_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
 ----
-cube	{"visual":{"values":[[0,1,1,1,1,2]]}}
-slab	{"visual":{"values":[2]}}
+cube	{visual=[0, 1, 1, 1, 1, 2]}
+slab	{visual=[2]}
 
-# --- texture_lod* in local form: [texId, vtIdx…] per ring for the four textured walls, [null] elsewhere.
+# --- texture_lod*: per face, per ring; the four textured walls carry an id and their
+#     inlined UV pairs, the roof and floor are bare rings.
 query I
 SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'cube';
 ----
-{"visual":{"values":[[[[null]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[null]]]]}}
+{visual=[[{'id': NULL, 'uv': NULL}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': NULL, 'uv': NULL}]]}
 
 query I
 SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2') WHERE id = 'slab';
 ----
 NULL
 
-# --- appearance := 'sidecar' inlines the UVs; ids are unchanged (one file, one definition set).
+# --- appearance := 'sidecar' decides the id space and nothing else. An OBJ carries one
+#     definition set, so the ids are unchanged, and UVs are inlined in both modes: the
+#     cells are identical to the local-mode ones above.
 query I
 SELECT texture_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar') WHERE id = 'cube';
 ----
-{"visual":{"values":[[[[null]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[0,[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]],[[null]]]]}}
+{visual=[[{'id': NULL, 'uv': NULL}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': NULL, 'uv': NULL}]]}
 
 query I
 SELECT material_lod2_2 FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar') WHERE id = 'cube';
 ----
-{"visual":{"values":[[0,1,1,1,1,2]]}}
+{visual=[0, 1, 1, 1, 1, 2]}
 
 # --- `# origin` written by our exporter is added back, so a round trip is exact.
 query I
@@ -224,13 +227,13 @@ SELECT bbox.xmin::VARCHAR, bbox.ymin::VARCHAR, bbox.zmin::VARCHAR FROM read_obj(
 ----
 84593.249625	446461.355	0.475
 
-# --- Same for `vt`: the sidecar form inlines the UV pair per face-vertex, so its exact
-# digits are visible in the printed JSON (the local form only carries an index).
+# --- Same for `vt`: the UV pairs are inlined per ring vertex, so their exact digits are
+# visible in the cell.
 query I
-SELECT texture_lod1_0 LIKE '%[0,[0.3,0.7],[0.3,0.7],[0.3,0.7]]%'
+SELECT texture_lod1_0['visual'][1][1].uv
 FROM read_obj('test/data/obj/precise.obj', lod := '1', appearance := 'sidecar');
 ----
-true
+[[0.3, 0.7], [0.3, 0.7], [0.3, 0.7]]
 
 # --- OBJ -> CityJSON keeps geometry, semantics and appearance refs intact on the way out.
 #     Circular oracle by construction: this writes with our writer and reads back with
@@ -244,5 +247,5 @@ query III
 SELECT id, geometry_properties_lod2_2.type, material_lod2_2
 FROM read_cityjson('__TEST_DIR__/cube.city.json', lod := '2.2') ORDER BY id;
 ----
-cube	Solid	{"visual":{"values":[[0,1,1,1,1,2]]}}
-slab	MultiSurface	{"visual":{"values":[2]}}
+cube	Solid	{visual=[0, 1, 1, 1, 1, 2]}
+slab	MultiSurface	{visual=[2]}

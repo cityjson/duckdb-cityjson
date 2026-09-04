@@ -57,7 +57,7 @@ public:
 	 * - bbox: STRUCT
 	 * - geometry_lod2_2: BLOB (WKB)
 	 * - geometry_properties_lod2_2: STRUCT (spec § "Geometry properties and semantics")
-	 * - material_lod2_2 / texture_lod2_2: JSON appearance (§11)
+	 * - material_lod2_2 / texture_lod2_2: typed MAP appearance (§11)
 	 *
 	 * @param lod Normalised LoD string, e.g. "2.2" or "3.0"
 	 * @return Vector of geometry column definitions

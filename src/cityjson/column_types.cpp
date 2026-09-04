@@ -1,4 +1,5 @@
 #include "cityjson/column_types.hpp"
+#include "cityjson/appearance_cell.hpp"
 #include "cityjson/lod_table.hpp"
 #include <algorithm>
 #include <cctype>
@@ -45,8 +46,10 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 	case ColumnType::GeometryPropertiesStruct:
 		// `surfaces` holds JSON text; see ToDuckDBType for why it is typed VARCHAR.
 		return "STRUCT(\"type\" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])";
-	case ColumnType::AppearanceJson:
-		return "JSON";
+	case ColumnType::MaterialMap:
+		return "MAP(VARCHAR, BIGINT[])";
+	case ColumnType::TextureMap:
+		return "MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])";
 	case ColumnType::AddressList:
 		return "STRUCT(street VARCHAR, house_number VARCHAR, po_box VARCHAR, zip_code VARCHAR, city VARCHAR, "
 		       "state VARCHAR, country VARCHAR, free_text VARCHAR, location BLOB)[]";
@@ -85,8 +88,9 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 		return LogicalTypeId::BLOB;
 	case ColumnType::GeometryPropertiesStruct:
 		return LogicalTypeId::STRUCT;
-	case ColumnType::AppearanceJson:
-		return LogicalTypeId::VARCHAR; // JSON stored as VARCHAR
+	case ColumnType::MaterialMap:
+	case ColumnType::TextureMap:
+		return LogicalTypeId::MAP;
 	case ColumnType::AddressList:
 		return LogicalTypeId::LIST;
 	case ColumnType::TemplateStruct:
@@ -176,8 +180,14 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		return LogicalType::STRUCT(children);
 	}
 
-	case ColumnType::AppearanceJson:
-		return LogicalType::VARCHAR; // JSON stored as VARCHAR
+	case ColumnType::MaterialMap:
+		// Spec § "material / texture columns": a theme is an open key set, which a
+		// STRUCT cannot express and a MAP key can; what a theme holds has a fixed
+		// shape, so the map value is typed rather than JSON text.
+		return MaterialCellType();
+
+	case ColumnType::TextureMap:
+		return TextureCellType();
 
 	case ColumnType::AddressList: {
 		// Spec "Addresses": a lean subset of 3DCityDB v5's ADDRESS table. `location`
@@ -420,8 +430,8 @@ bool ColumnTypeUtils::IsTemporal(ColumnType type) {
 bool ColumnTypeUtils::IsComplex(ColumnType type) {
 	return type == ColumnType::Json || type == ColumnType::VarcharArray || type == ColumnType::Geometry ||
 	       type == ColumnType::GeographicalExtent || type == ColumnType::GeometryWKB ||
-	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::AppearanceJson ||
-	       type == ColumnType::AddressList || type == ColumnType::TemplateStruct;
+	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::MaterialMap ||
+	       type == ColumnType::TextureMap || type == ColumnType::AddressList || type == ColumnType::TemplateStruct;
 }
 
 // ============================================================

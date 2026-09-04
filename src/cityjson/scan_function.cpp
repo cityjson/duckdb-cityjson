@@ -1,4 +1,6 @@
 #include "cityjson/table_function.hpp"
+#include "cityjson/appearance_cell.hpp"
+#include "cityjson/appearance_flatten.hpp"
 #include "cityjson/vector_writer.hpp"
 #include "cityjson/city_object_utils.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
@@ -67,12 +69,14 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			continue;
 		}
 
-		// Handle per-LoD appearance columns (material_lod* / texture_lod*, §11.1):
-		// emit the matching geometry's material/texture theme map verbatim, null
-		// when the geometry (or its appearance) is absent.
-		if (col.kind == ColumnType::AppearanceJson) {
+		// Handle per-LoD appearance columns (material_lod* / texture_lod*, spec
+		// "material / texture columns"): the matching geometry's themes, flattened
+		// to one entry per WKB face, typed. NULL when the geometry -- or its
+		// appearance -- is absent, and NULL when the source map carries no theme at
+		// all, since the null cell is what "no appearance" means.
+		if (col.kind == ColumnType::MaterialMap || col.kind == ColumnType::TextureMap) {
 			const Geometry *geom = bind_data.target_lod.has_value() ? target_geom : city_obj.GetGeometryAtLOD(col.lod);
-			const bool is_material = col.name.rfind("material", 0) == 0;
+			const bool is_material = col.kind == ColumnType::MaterialMap;
 			const json *appearance = nullptr;
 			if (geom != nullptr) {
 				const auto &opt = is_material ? geom->material : geom->texture;
@@ -80,31 +84,53 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 					appearance = &opt.value();
 				}
 			}
-			if (appearance != nullptr) {
-				if (bind_data.appearance_index.has_value()) {
-					// appearance := 'sidecar'. Rewrite the source's feature-local indices
-					// into dataset-global sidecar ids, and (for textures) replace UV
-					// indices with the coordinates themselves -- the UV pool is
-					// per-feature, so a stored index would be meaningless once features
-					// share one table.
-					const auto &index = bind_data.appearance_index.value();
-					const std::vector<std::array<double, 2>> *uv_pool = nullptr;
-					if (feature.appearance.has_value()) {
-						uv_pool = &feature.appearance->vertices_texture;
-					} else if (bind_data.metadata.appearance.has_value()) {
-						uv_pool = &bind_data.metadata.appearance->vertices_texture;
-					}
-					static const std::vector<std::array<double, 2>> empty_pool;
-					const auto normalised = is_material
-					                            ? NormaliseMaterialMap(*appearance, index, feature.id)
-					                            : NormaliseTextureMap(*appearance, index, feature.id,
-					                                                  uv_pool != nullptr ? *uv_pool : empty_pool);
-					WriteJsonText(wrappers[col_idx].AsFlatMut(), normalised, output_row);
-				} else {
-					WriteJsonText(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
-				}
+			const auto cell_type = is_material ? MaterialCellType() : TextureCellType();
+			if (geom == nullptr || appearance == nullptr) {
+				wrappers[col_idx].SetValue(output_row, Value(cell_type));
+				continue;
+			}
+
+			// The `appearance` option decides the id space and nothing else. In
+			// sidecar mode a source index is a feature-local one and resolves to the
+			// dataset-global sidecar id; in local mode it is carried through as the
+			// CityJSON view the source gave.
+			const AppearanceIndex *index =
+			    bind_data.appearance_index.has_value() ? &bind_data.appearance_index.value() : nullptr;
+			const std::string *feature_id = &feature.id;
+			IdResolver resolve = [](int64_t local) {
+				return local;
+			};
+			if (index != nullptr && is_material) {
+				resolve = [index, feature_id](int64_t local) {
+					return index->ResolveMaterial(*feature_id, local);
+				};
+			} else if (index != nullptr) {
+				resolve = [index, feature_id](int64_t local) {
+					return index->ResolveTexture(*feature_id, local);
+				};
+			}
+
+			// UVs are inlined in both modes: the pool is per-feature, so a stored
+			// index is meaningless once features share one table.
+			static const std::vector<std::array<double, 2>> empty_pool;
+			const std::vector<std::array<double, 2>> *uv_pool = nullptr;
+			if (feature.appearance.has_value()) {
+				uv_pool = &feature.appearance->vertices_texture;
+			} else if (bind_data.metadata.appearance.has_value()) {
+				uv_pool = &bind_data.metadata.appearance->vertices_texture;
+			}
+
+			// Value-at-a-time, not the flat writers the hot columns use: an
+			// appearance cell is sparse and deeply nested, and this is not the path
+			// a scan spends its time in.
+			if (is_material) {
+				const auto cell = FlattenMaterialMap(*geom, *appearance, resolve);
+				wrappers[col_idx].SetValue(output_row,
+				                           cell.themes.empty() ? Value(cell_type) : MaterialCellValue(cell));
 			} else {
-				wrappers[col_idx].SetNull(output_row);
+				const auto cell =
+				    FlattenTextureMap(*geom, *appearance, resolve, uv_pool != nullptr ? *uv_pool : empty_pool);
+				wrappers[col_idx].SetValue(output_row, cell.themes.empty() ? Value(cell_type) : TextureCellValue(cell));
 			}
 			continue;
 		}

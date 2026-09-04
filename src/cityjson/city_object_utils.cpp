@@ -201,8 +201,8 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 		// Per-LoD appearance columns paired to the geometry by name (§11.1). Present
 		// for every LoD that has a geometry column, whether or not any row carries
 		// appearance for it (nullable).
-		result.emplace_back("material_" + suffix, ColumnType::AppearanceJson);
-		result.emplace_back("texture_" + suffix, ColumnType::AppearanceJson);
+		result.emplace_back("material_" + suffix, ColumnType::MaterialMap);
+		result.emplace_back("texture_" + suffix, ColumnType::TextureMap);
 	}
 
 	return result;

@@ -548,8 +548,8 @@ static std::vector<CjColumn> WideSchema() {
 	    CjColumn("height", CjColumnType::Double),
 	    CjColumn("geometry_lod2_2", CjColumnType::GeometryWKB),
 	    CjColumn("geometry_properties_lod2_2", CjColumnType::GeometryPropertiesStruct),
-	    CjColumn("material_lod2_2", CjColumnType::AppearanceJson),
-	    CjColumn("texture_lod2_2", CjColumnType::AppearanceJson),
+	    CjColumn("material_lod2_2", CjColumnType::MaterialMap),
+	    CjColumn("texture_lod2_2", CjColumnType::TextureMap),
 	    CjColumn("bbox", CjColumnType::GeographicalExtent),
 	};
 }

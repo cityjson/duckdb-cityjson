@@ -55,14 +55,17 @@ std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Co
 		// Determine vector type based on column type
 		VectorType vec_type;
 
-		if (col.kind == ColumnType::VarcharArray || col.kind == ColumnType::AddressList) {
+		if (col.kind == ColumnType::VarcharArray || col.kind == ColumnType::AddressList ||
+		    col.kind == ColumnType::MaterialMap || col.kind == ColumnType::TextureMap) {
+			// MAP is physically a LIST of (key, value) structs. The appearance columns
+			// are written through VectorWrapper::SetValue, which does not consult the
+			// wrapper's shape, so this only keeps AsFlatMut from being reachable.
 			vec_type = VectorType::List;
 		} else if (col.kind == ColumnType::Geometry || col.kind == ColumnType::GeographicalExtent ||
 		           col.kind == ColumnType::GeometryPropertiesStruct || col.kind == ColumnType::TemplateStruct) {
 			vec_type = VectorType::Struct;
 		} else {
-			// All primitives and Json (stored as VARCHAR) are Flat -- including
-			// AppearanceJson, which stays JSON text unlike GeometryPropertiesStruct.
+			// All primitives and Json (stored as VARCHAR) are Flat.
 			vec_type = VectorType::Flat;
 		}
 
@@ -464,16 +467,6 @@ static void AppendIntListList(Vector &list_vec, const json &arr, size_t row) {
 
 	ListVector::SetListSize(solid_vec, inner_pos);
 	ListVector::SetListSize(list_vec, outer_size + n_solids);
-}
-
-void WriteJsonText(Vector *vec, const json &value, size_t row) {
-	if (value.is_null()) {
-		FlatVector::SetNull(*vec, row, true);
-		return;
-	}
-
-	std::string json_str = value.dump();
-	FlatVector::GetData<string_t>(*vec)[row] = StringVector::AddString(*vec, json_str);
 }
 
 void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
