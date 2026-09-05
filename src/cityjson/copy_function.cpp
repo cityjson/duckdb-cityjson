@@ -1,4 +1,5 @@
 #include "cityjson/copy_function.hpp"
+#include "cityjson/appearance_cell.hpp"
 #include "cityjson/appearance_source.hpp"
 #include "cityjson/cityjson_writer.hpp"
 #include "cityjson/cityparquet_package.hpp"
@@ -1202,11 +1203,26 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 		};
 
 		// Re-attach per-LoD appearance (§11) onto a geometry from its matching
-		// material_lod*/texture_lod* columns. The appearance column shares the
+		// material_lod*/texture_lod* MAP column. The appearance column shares the
 		// geometry column's LoD suffix: geometry_lod3 -> material_lod3 / texture_lod3;
 		// the un-suffixed "geometry" -> "material" / "texture". Legacy geom_lod*
 		// STRUCT geometry carries its appearance in the struct itself, so it has no
 		// suffix match here and is left untouched.
+		//
+		// A mesh format (OBJ/glTF/GLB) gets the flat, WKB-face-aligned cell verbatim
+		// (appearance_cell.hpp's `*CellToFlatJson` shape) -- mesh_model.cpp indexes it
+		// by face position and never re-nests it. The CityJSON family (CityJSON /
+		// CityJSONSeq / FlatCityBuf) instead needs the spec's per-shell nesting,
+		// recovered with the same `RenestValues` the semantics reconstruction above
+		// already applies to `face_semantics`, keyed off this geometry's own
+		// `type`/`shells` (the same properties column `find_properties_col` locates for
+		// `apply_properties`). A texture's per-face element is its whole ring array,
+		// re-nested as one unit; the `[u, v]` pairs inside stay inline here and are
+		// re-interned into a per-feature (or, for a single-document CityJSON,
+		// per-document) `vertices-texture` pool only once every row of the output has
+		// been collected, in CityJSONWriter::WriteCityJSONSeq / WriteCityJSON -- a
+		// feature's rows can be processed on different threads during this sink, and
+		// only the writer sees every one of them together.
 		auto apply_appearance = [&](json &geom, const std::string &geom_name) {
 			std::string suffix;
 			static const std::string kGeometryPrefix = "geometry";
@@ -1217,7 +1233,7 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 			} else {
 				return;
 			}
-			auto attach = [&](const std::string &prefix, const char *key) {
+			auto attach = [&](const std::string &prefix, const char *key, bool is_material) {
 				auto it = bind_data.appearance_by_name.find(prefix + suffix);
 				if (it == bind_data.appearance_by_name.end()) {
 					return;
@@ -1226,14 +1242,47 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 				if (v.IsNull()) {
 					return;
 				}
+				json flat;
 				try {
-					geom[key] = json_utils::ParseJson(v.ToString());
-				} catch (...) {
-					// Ignore parse errors in appearance JSON.
+					flat = is_material ? MaterialCellToFlatJson(MaterialCellFromValue(v))
+					                   : TextureCellToFlatJson(TextureCellFromValue(v));
+				} catch (const std::exception &) {
+					return; // a malformed cell contributes no appearance, same as absent
 				}
+				if (IsMeshFormat(bind_data.format)) {
+					geom[key] = std::move(flat);
+					return;
+				}
+				const std::string geom_type = geom.value("type", "");
+				json shells = json::array();
+				auto props_col = find_properties_col(geom_name);
+				if (props_col != DConstants::INVALID_INDEX) {
+					auto pval = input.data[props_col].GetValue(row);
+					if (!pval.IsNull()) {
+						json props;
+						if (bind_data.column_types[props_col].id() == LogicalTypeId::STRUCT) {
+							props = StructPropsToJson(pval);
+						} else {
+							try {
+								props = json_utils::ParseJson(pval.ToString());
+							} catch (...) {
+								// leave `props` empty -> shells stays the empty array
+							}
+						}
+						if (props.contains("shells")) {
+							shells = props["shells"];
+						}
+					}
+				}
+				json nested = json::object();
+				for (auto theme_it = flat.begin(); theme_it != flat.end(); ++theme_it) {
+					json values = theme_it.value().value("values", json::array());
+					nested[theme_it.key()] = json {{"values", RenestValues(geom_type, values, shells)}};
+				}
+				geom[key] = std::move(nested);
 			};
-			attach("material", "material");
-			attach("texture", "texture");
+			attach("material", "material", true);
+			attach("texture", "texture", false);
 		};
 
 		json geometries = json::array();

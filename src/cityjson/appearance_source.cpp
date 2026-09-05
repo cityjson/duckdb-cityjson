@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cmath>
 
 namespace duckdb {
 namespace cityjson {
@@ -71,13 +70,11 @@ AppearanceSource AppearanceSource::FromLocal(const std::optional<json> &header,
 	CityJSON doc;
 	if (header.has_value()) {
 		doc.appearance = Appearance::FromJson(header.value());
-		src.header_uv_pool_ = doc.appearance->vertices_texture;
 	}
 	std::vector<CityJSONFeature> features;
 	for (const auto &kv : by_feature) {
 		CityJSONFeature f(kv.first);
 		f.appearance = Appearance::FromJson(kv.second);
-		src.uv_pool_by_feature_[kv.first] = f.appearance->vertices_texture;
 		features.push_back(std::move(f));
 	}
 	src.index_ = AppearanceIndex::Build(doc, features);
@@ -220,39 +217,18 @@ std::optional<std::array<double, 2>> AppearanceSource::UV(const std::string &fea
 	if (uv_ref.is_array() && uv_ref.size() >= 2 && uv_ref[0].is_number() && uv_ref[1].is_number()) {
 		return std::array<double, 2> {uv_ref[0].get<double>(), uv_ref[1].get<double>()};
 	}
-	// An index may arrive as a JSON float that happens to be integral (e.g. `3.0`,
-	// produced by some encoders/query engines) -- treat it the same as a genuine
-	// integer rather than silently returning nullopt (which would hide a sidecar-form
-	// mistake that should throw below).
-	if (!uv_ref.is_number() || uv_ref.get<double>() != std::floor(uv_ref.get<double>())) {
+	if (!uv_ref.is_number()) {
 		return std::nullopt;
 	}
-	if (sidecar_) {
-		// Sidecar form inlines every UV pair (spec, appearance sidecars). A bare index here
-		// means the cells are not in the form the *_query options declared -- refuse
-		// rather than write a texture-less face and call it success.
-		throw InvalidInputException("texture cell of feature '%s' carries a UV index (%s) but materials_query / "
-		                            "textures_query declare sidecar form, whose UVs are inlined [u, v] pairs; "
-		                            "read the source with appearance := 'sidecar', or drop the *_query options",
-		                            feature_id, uv_ref.dump());
-	}
-	// An integral float outside int64_t's exactly-representable range (e.g. `1e20`)
-	// must not reach the double -> int64_t cast below, which is undefined behaviour
-	// there; 2^53 is the largest magnitude every double still represents exactly.
-	auto as_double = uv_ref.get<double>();
-	if (as_double < 0.0 || as_double > 9007199254740992.0) { // 2^53
-		return std::nullopt;
-	}
-	auto idx = static_cast<int64_t>(as_double);
-	const std::vector<std::array<double, 2>> *pool = &header_uv_pool_;
-	auto it = uv_pool_by_feature_.find(feature_id);
-	if (it != uv_pool_by_feature_.end() && !it->second.empty()) {
-		pool = &it->second;
-	}
-	if (idx < 0 || static_cast<size_t>(idx) >= pool->size()) {
-		return std::nullopt;
-	}
-	return (*pool)[static_cast<size_t>(idx)];
+	// Every UV is inlined as a [u, v] pair regardless of appearance mode (spec §11,
+	// appearance sidecars) -- only the material/texture id is feature-local in one
+	// mode and dataset-global in the other. A bare number here is never a valid UV
+	// element in either mode, so it is refused rather than resolved against a pool
+	// that no longer exists.
+	throw InvalidInputException(
+	    "texture cell of feature '%s' carries a UV index (%s), not an inline [u, v] pair; every UV is inlined "
+	    "regardless of appearance mode",
+	    feature_id, uv_ref.dump());
 }
 
 bool AppearanceSource::LoadImage(ClientContext &context, int64_t texture_id, const std::string &base_dir,

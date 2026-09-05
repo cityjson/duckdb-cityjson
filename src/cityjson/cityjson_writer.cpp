@@ -5,8 +5,11 @@
 #endif
 #include <fstream>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <map>
 #include <algorithm>
+#include <utility>
 
 namespace duckdb {
 namespace cityjson {
@@ -160,6 +163,107 @@ std::vector<std::array<int64_t, 3>> CityJSONWriter::BuildVertexPool(std::vector<
 }
 
 // ============================================================
+// BuildTexturePool
+// ============================================================
+
+// Number of array levels a texture theme's `values` nests above face level, mirroring
+// exactly the branches `RenestValues` (copy_function.cpp) applies when it re-nests the
+// flat cell: Solid gets one shell level, MultiSolid/CompositeSolid a solid level and a
+// shell level, everything else (MultiSurface, CompositeSurface, and any other type --
+// RenestValues' own fallthrough) stays flat, i.e. `values[i]` is already a face.
+static int TextureNestingDepth(const std::string &type) {
+	if (type == "Solid") {
+		return 1;
+	}
+	if (type == "MultiSolid" || type == "CompositeSolid") {
+		return 2;
+	}
+	return 0;
+}
+
+// Rewrite one texture theme's nested `values` in place, recursing `depth` array levels
+// (TextureNestingDepth) before treating each element as a face: a face is a list of
+// rings, each ring either `[null]` (bare -- nothing to intern) or `[id, [u, v], ...]`.
+// Every `[u, v]` pair is interned into `pool` by exact bitwise equality of both
+// components, in first-use order, and rewritten to its index in place.
+static void InternTextureValues(json &values, int depth, std::map<std::pair<uint64_t, uint64_t>, size_t> &index,
+                                std::vector<std::array<double, 2>> &pool) {
+	if (!values.is_array()) {
+		return;
+	}
+	if (depth > 0) {
+		for (auto &child : values) {
+			InternTextureValues(child, depth - 1, index, pool);
+		}
+		return;
+	}
+	for (auto &face : values) {
+		if (!face.is_array()) {
+			continue;
+		}
+		for (auto &ring : face) {
+			if (!ring.is_array() || ring.empty() || !ring[0].is_number_integer()) {
+				continue; // a bare ring: no id, nothing to intern
+			}
+			for (size_t k = 1; k < ring.size(); k++) {
+				auto &pair = ring[k];
+				if (!pair.is_array() || pair.size() < 2 || !pair[0].is_number() || !pair[1].is_number()) {
+					continue;
+				}
+				double u = pair[0].get<double>();
+				double v = pair[1].get<double>();
+				uint64_t bits_u;
+				uint64_t bits_v;
+				std::memcpy(&bits_u, &u, sizeof(bits_u));
+				std::memcpy(&bits_v, &v, sizeof(bits_v));
+				auto key = std::make_pair(bits_u, bits_v);
+				auto found = index.find(key);
+				size_t idx;
+				if (found != index.end()) {
+					idx = found->second;
+				} else {
+					idx = pool.size();
+					pool.push_back({u, v});
+					index.emplace(key, idx);
+				}
+				pair = static_cast<int64_t>(idx);
+			}
+		}
+	}
+}
+
+std::vector<std::array<double, 2>>
+CityJSONWriter::BuildTexturePool(std::vector<std::pair<std::string, json>> &objects) {
+	std::map<std::pair<uint64_t, uint64_t>, size_t> index;
+	std::vector<std::array<double, 2>> pool;
+
+	for (auto &[obj_id, obj_json] : objects) {
+		if (!obj_json.contains("geometry") || !obj_json["geometry"].is_array()) {
+			continue;
+		}
+		for (auto &geom : obj_json["geometry"]) {
+			auto tex_it = geom.find("texture");
+			if (tex_it == geom.end() || !tex_it->is_object()) {
+				continue;
+			}
+			const int depth = TextureNestingDepth(geom.value("type", ""));
+			for (auto &entry : tex_it->items()) {
+				auto &theme_json = entry.value();
+				if (!theme_json.is_object()) {
+					continue;
+				}
+				auto values_it = theme_json.find("values");
+				if (values_it == theme_json.end()) {
+					continue;
+				}
+				InternTextureValues(*values_it, depth, index, pool);
+			}
+		}
+	}
+	return pool;
+}
+
+// ============================================================
 // BuildMetadataJson
 // ============================================================
 
@@ -230,13 +334,33 @@ void CityJSONWriter::WriteCityJSON(
 
 	// Build global vertex pool (replaces coordinates with indices in-place)
 	auto vertex_pool = BuildVertexPool(all_objects, metadata.transform);
+	// Same, for the inline [u, v] pairs `apply_appearance` left in every geometry's
+	// `texture` object (replaces them with pool indices in-place).
+	auto texture_pool = BuildTexturePool(all_objects);
 
 	// CityObjects
 	// Definitions for the per-geometry material/texture refs. A whole-document
 	// CityJSON has exactly one block, so unlike the Seq path there is nothing to
-	// key by feature.
-	if (appearance.has_value() && !appearance->empty()) {
-		root["appearance"] = appearance.value();
+	// key by feature. `materials`/`textures` -- the referenced arrays -- come
+	// verbatim from the source (their local ids line up with the ones the geometry
+	// refs use); `vertices-texture` does not, since a face's UV pairs are inlined in
+	// the cell rather than indexed, and the pool actually referenced by this
+	// document's output is rebuilt fresh above.
+	bool has_appearance_definitions = appearance.has_value() && !appearance->empty();
+	if (has_appearance_definitions || !texture_pool.empty()) {
+		json app = has_appearance_definitions ? appearance.value() : json::object();
+		if (!texture_pool.empty()) {
+			json vt = json::array();
+			for (const auto &uv : texture_pool) {
+				vt.push_back(json::array({uv[0], uv[1]}));
+			}
+			app["vertices-texture"] = std::move(vt);
+		} else {
+			app.erase("vertices-texture");
+		}
+		if (!app.empty()) {
+			root["appearance"] = std::move(app);
+		}
 	}
 
 	root["CityObjects"] = json::object();
@@ -312,6 +436,10 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 		// Build per-feature vertex pool
 		auto vertex_pool = BuildVertexPool(feature_objs, metadata.transform);
+		// Same, for the inline [u, v] pairs `apply_appearance` left in every geometry's
+		// `texture` object -- this feature's own pool, rebuilt from exactly what its
+		// geometries reference (replaces the pairs with pool indices in-place).
+		auto texture_pool = BuildTexturePool(feature_objs);
 
 		// Build CityJSONFeature line
 		json feature;
@@ -325,11 +453,27 @@ void CityJSONWriter::WriteCityJSONSeq(
 		// This feature's own appearance block. Its refs are LOCAL indices into it,
 		// so it is re-emitted onto the feature it came from and never merged with
 		// another feature's -- merging would preserve every count while silently
-		// re-pointing every reference.
+		// re-pointing every reference. `materials`/`textures` come verbatim from the
+		// source; `vertices-texture` is replaced with the pool just rebuilt, since a
+		// face's UV pairs are inlined in the cell rather than indexed and the source
+		// pool's numbering has no bearing on what this output actually references.
 		{
 			auto appearance_it = appearance_by_feature.find(fid);
-			if (appearance_it != appearance_by_feature.end() && !appearance_it->second.empty()) {
-				feature["appearance"] = appearance_it->second;
+			bool has_definitions = appearance_it != appearance_by_feature.end() && !appearance_it->second.empty();
+			if (has_definitions || !texture_pool.empty()) {
+				json app = has_definitions ? appearance_it->second : json::object();
+				if (!texture_pool.empty()) {
+					json vt = json::array();
+					for (const auto &uv : texture_pool) {
+						vt.push_back(json::array({uv[0], uv[1]}));
+					}
+					app["vertices-texture"] = std::move(vt);
+				} else {
+					app.erase("vertices-texture");
+				}
+				if (!app.empty()) {
+					feature["appearance"] = std::move(app);
+				}
 			}
 		}
 

@@ -25,109 +25,20 @@ int FaceDepth(const std::string &type) {
 	return -1; // points and lines are not renderable surfaces
 }
 
-// A material leaf is one face's raw reference: a scalar id, or null.
-bool IsScalarLeaf(const json &node) {
-	return node.is_number() || node.is_null();
-}
-
-// A texture leaf is one *ring*: an array whose first element is not itself an array
-// (a texture id, or null) -- even though the ring's later elements are `[u, v]` pairs,
-// which are arrays.
-bool IsRingLeaf(const json &node) {
-	return node.is_array() && (node.empty() || !node[0].is_array());
-}
-
-// A value carries nothing if it is `null`, or an array all of whose elements
-// (recursively) carry nothing -- so `[]`, `[null]`, `[[null]]` and `[[]]` all carry
-// nothing, exactly like a bare `null` at that position. CityJSON's own shorthand
-// collapses an all-null substructure to `null`, but nothing requires a producer to
-// take that shortcut, so both spellings must be recognised.
-bool CarriesNothing(const json &node) {
-	if (node.is_null()) {
-		return true;
-	}
-	if (!node.is_array()) {
-		return false;
-	}
-	for (const auto &element : node) {
-		if (!CarriesNothing(element)) {
-			return false;
-		}
-	}
-	return true;
-}
-
-// The element a level can be measured from: the first that carries something. A `null`
-// (or an all-null substructure spelled out instead, see CarriesNothing) says nothing
-// about the nesting below it, so a cell whose first face has no appearance -- a texture
-// `[null, [[0, 0, 1, 2, 3]]]`, a MultiSolid material `[null, [[0, ...]]]` -- is
-// measured from its second. nullptr when the level holds nothing measurable at all.
-const json *FirstMeasurable(const json &values) {
-	for (const auto &element : values) {
-		if (!CarriesNothing(element)) {
-			return &element;
-		}
-	}
-	return nullptr;
-}
-
-// Number of array levels from `values` down to (and including) the level whose
-// members satisfy `is_leaf` -- 1 for a flat `[id, id, ...]`, one more per nesting
-// level below that. 0 when `values` isn't uniformly shaped that way at any depth
-// (malformed, or the wrong leaf kind for what's actually there).
-int ValuesDepth(const json &values, bool (*is_leaf)(const json &)) {
-	if (!values.is_array() || values.empty()) {
-		return 0;
-	}
-	int depth = 1;
-	const json *node = FirstMeasurable(values);
-	while (node != nullptr && !is_leaf(*node)) {
-		if (!node->is_array() || node->empty()) {
-			return 0;
-		}
-		node = FirstMeasurable(*node);
-		depth++;
-	}
-	return node == nullptr ? 0 : depth;
-}
-
-enum class ValuesShape { Absent, Flat, Nested };
-
-// material_lod*/texture_lod* store `values` flat, aligned to the WKB face count --
-// one entry per face regardless of shell/solid nesting (spec §04, "material / texture
-// columns"). A geometry re-nested from CityJSON's own on-disk shape instead (this
-// extension's own scan path, and the legacy geom_lod* STRUCT path) nests `values`
-// exactly like `boundaries`. Tell the two apart by array depth against both
-// expectations; a depth matching neither is treated as absent, same as no column at
-// all. `face_depth` is `FaceDepth(geometry.type)`; for MultiSurface / CompositeSurface
-// (0) flat and nested coincide, so classifying as Nested there is correct for both --
-// `ForEachFace`'s depth-0 case already indexes `values` directly by face position.
-ValuesShape ClassifyValues(const json &values, int face_depth, bool texture) {
-	const int flat_expected = texture ? 2 : 1;
-	const int nested_expected = flat_expected + face_depth;
-	const int depth = ValuesDepth(values, texture ? IsRingLeaf : IsScalarLeaf);
-	if (depth == nested_expected) {
-		return ValuesShape::Nested;
-	}
-	if (depth == flat_expected) {
-		return ValuesShape::Flat;
-	}
-	return ValuesShape::Absent;
-}
-
 const json &EmptyJson() {
 	static const json null_value;
 	return null_value;
 }
 
 // Walk `boundaries` down to face level, with `sem` (always nested -- the COPY sink
-// re-nests semantics.values to match `boundaries`) and `mat`/`tex` (only when the
-// caller has classified them as nested too; pass EmptyJson() otherwise, and resolve
-// them from a flat array by face position in the callback instead) kept in step.
-// `values` may be null or shorter than the boundaries; a missing entry reads as null.
-void ForEachFace(
-    const json &boundaries, const json &sem, const json &mat, const json &tex, int depth,
-    const std::function<void(const json &face, const json &sem_v, const json &mat_v, const json &tex_v)> &fn) {
+// re-nests semantics.values to match `boundaries`) kept in step. material_lod*/
+// texture_lod* stay flat regardless of nesting (spec §04, "material / texture
+// columns"): one entry per face, aligned to the WKB face order the same
+// `face_counter` counts here, so the caller indexes them directly by face position
+// rather than walking them alongside `boundaries`. `sem` may be null or shorter than
+// the boundaries; a missing entry reads as null.
+void ForEachFace(const json &boundaries, const json &sem, int depth,
+                 const std::function<void(const json &face, const json &sem_v)> &fn) {
 	auto at = [](const json &arr, size_t i) -> const json & {
 		return arr.is_array() && i < arr.size() ? arr[i] : EmptyJson();
 	};
@@ -136,7 +47,7 @@ void ForEachFace(
 			return;
 		}
 		for (size_t i = 0; i < boundaries.size(); i++) {
-			fn(boundaries[i], at(sem, i), at(mat, i), at(tex, i));
+			fn(boundaries[i], at(sem, i));
 		}
 		return;
 	}
@@ -144,14 +55,15 @@ void ForEachFace(
 		return;
 	}
 	for (size_t i = 0; i < boundaries.size(); i++) {
-		ForEachFace(boundaries[i], at(sem, i), at(mat, i), at(tex, i), depth - 1, fn);
+		ForEachFace(boundaries[i], at(sem, i), depth - 1, fn);
 	}
 }
 
-// The first theme's `values` (or a `value` broadcast is handled by the caller).
-// nlohmann keeps object keys sorted, so "first" means alphabetically first by theme
-// name -- a source with only one theme (the common case) is unaffected.
-const json &FirstThemeValues(const json &themed, json &broadcast_holder) {
+// The first theme's flat `values` (`{theme: {"values": [...]}}`, appearance_cell.hpp's
+// `*CellToFlatJson` shape -- the only shape a material_lod*/texture_lod* MAP column
+// produces). nlohmann keeps object keys sorted, so "first" means alphabetically first
+// by theme name -- a source with only one theme (the common case) is unaffected.
+const json &FirstThemeValues(const json &themed) {
 	if (!themed.is_object() || themed.empty()) {
 		return EmptyJson();
 	}
@@ -160,11 +72,6 @@ const json &FirstThemeValues(const json &themed, json &broadcast_holder) {
 		auto v = theme.find("values");
 		if (v != theme.end()) {
 			return *v;
-		}
-		auto single = theme.find("value");
-		if (single != theme.end()) {
-			broadcast_holder = *single; // one id for the whole geometry
-			return broadcast_holder;
 		}
 	}
 	return EmptyJson();
@@ -350,17 +257,11 @@ MeshModel BuildMeshModel(const std::map<std::string, std::vector<std::pair<std::
 					sem_values = sem["values"];
 				}
 			}
-			json mat_broadcast;
-			json tex_broadcast;
-			json mat_values = geom.contains("material") ? FirstThemeValues(geom["material"], mat_broadcast) : json();
-			json tex_values = geom.contains("texture") ? FirstThemeValues(geom["texture"], tex_broadcast) : json();
-			const bool mat_is_broadcast = !mat_broadcast.is_null();
-
-			const ValuesShape mat_shape =
-			    mat_is_broadcast ? ValuesShape::Absent : ClassifyValues(mat_values, face_depth, /*texture=*/false);
-			const ValuesShape tex_shape = ClassifyValues(tex_values, face_depth, /*texture=*/true);
-			const json &mat_for_walk = mat_shape == ValuesShape::Nested ? mat_values : EmptyJson();
-			const json &tex_for_walk = tex_shape == ValuesShape::Nested ? tex_values : EmptyJson();
+			// material_lod*/texture_lod* MAP columns always give a flat, WKB-face-aligned
+			// `values` (appearance_cell.hpp's `*CellToFlatJson` shape) -- indexed below by
+			// `this_face`, the same order `ForEachFace` counts boundaries in.
+			json mat_values = geom.contains("material") ? FirstThemeValues(geom["material"]) : json();
+			json tex_values = geom.contains("texture") ? FirstThemeValues(geom["texture"]) : json();
 
 			std::map<std::array<double, 3>, uint32_t> vertex_index;
 			bool legacy_index_boundaries = false; // boundaries leaves are indices, not [x,y,z]
@@ -391,105 +292,87 @@ MeshModel BuildMeshModel(const std::map<std::string, std::vector<std::pair<std::
 			size_t face_counter = 0;
 			bool warned_bad_face = false;
 			bool warned_degenerate_face = false;
-			ForEachFace(*bit, sem_values, mat_for_walk, tex_for_walk, face_depth,
-			            [&](const json &face_json, const json &sem_v, const json &mat_v, const json &tex_v) {
-				            const size_t this_face = face_counter++;
-				            MeshFace face;
-				            if (!face_json.is_array()) {
-					            if (!warned_bad_face) {
-						            model.warnings.push_back("object " + id + ": a face is not an array, skipped");
-						            warned_bad_face = true;
-					            }
-					            return;
-				            }
-				            for (size_t r = 0; r < face_json.size(); r++) {
-					            std::vector<uint32_t> ring;
-					            for (const auto &p : face_json[r]) {
-						            if (auto idx = add_vertex(p)) {
-							            ring.push_back(*idx);
-						            }
-					            }
-					            if (ring.size() >= 3) {
-						            face.rings.push_back(std::move(ring));
-					            } else if (r == 0) {
-						            if (!legacy_index_boundaries && !warned_degenerate_face) {
-							            model.warnings.push_back(
-							                "object " + id +
-							                ": a face's outer ring has fewer than three resolvable vertices, skipped");
-							            warned_degenerate_face = true;
-						            }
-						            return; // an outer ring with under three vertices is not a face
-					            }
-				            }
-				            if (face.rings.empty()) {
-					            return; // a face with no ring entries at all
-				            }
-				            if (sem_v.is_number_integer()) {
-					            face.surface = sem_v.get<int32_t>();
-				            }
+			ForEachFace(*bit, sem_values, face_depth, [&](const json &face_json, const json &sem_v) {
+				const size_t this_face = face_counter++;
+				MeshFace face;
+				if (!face_json.is_array()) {
+					if (!warned_bad_face) {
+						model.warnings.push_back("object " + id + ": a face is not an array, skipped");
+						warned_bad_face = true;
+					}
+					return;
+				}
+				for (size_t r = 0; r < face_json.size(); r++) {
+					std::vector<uint32_t> ring;
+					for (const auto &p : face_json[r]) {
+						if (auto idx = add_vertex(p)) {
+							ring.push_back(*idx);
+						}
+					}
+					if (ring.size() >= 3) {
+						face.rings.push_back(std::move(ring));
+					} else if (r == 0) {
+						if (!legacy_index_boundaries && !warned_degenerate_face) {
+							model.warnings.push_back(
+							    "object " + id +
+							    ": a face's outer ring has fewer than three resolvable vertices, skipped");
+							warned_degenerate_face = true;
+						}
+						return; // an outer ring with under three vertices is not a face
+					}
+				}
+				if (face.rings.empty()) {
+					return; // a face with no ring entries at all
+				}
+				if (sem_v.is_number_integer()) {
+					face.surface = sem_v.get<int32_t>();
+				}
 
-				            // Material: broadcast, else nested (mat_v, walked in step with
-				            // boundaries), else flat (mat_values indexed by face position).
-				            int64_t mat_ref = -1;
-				            if (mat_is_broadcast) {
-					            if (mat_broadcast.is_number_integer()) {
-						            mat_ref = mat_broadcast.get<int64_t>();
-					            }
-				            } else if (mat_shape == ValuesShape::Nested) {
-					            if (mat_v.is_number_integer()) {
-						            mat_ref = mat_v.get<int64_t>();
-					            }
-				            } else if (mat_shape == ValuesShape::Flat && this_face < mat_values.size() &&
-				                       mat_values[this_face].is_number_integer()) {
-					            mat_ref = mat_values[this_face].get<int64_t>();
-				            }
-				            if (mat_ref >= 0) {
-					            if (auto mat_id = appearance.ResolveMaterial(feature_id, mat_ref)) {
-						            face.material = *mat_id;
-					            }
-				            }
+				// Material: mat_values indexed by face position.
+				int64_t mat_ref = -1;
+				if (this_face < mat_values.size() && mat_values[this_face].is_number_integer()) {
+					mat_ref = mat_values[this_face].get<int64_t>();
+				}
+				if (mat_ref >= 0) {
+					if (auto mat_id = appearance.ResolveMaterial(feature_id, mat_ref)) {
+						face.material = *mat_id;
+					}
+				}
 
-				            // Texture: nested (tex_v) or flat (tex_values indexed by face
-				            // position) both land on the same per-face shape: a list over the
-				            // face's rings, each ring [texId, uv, uv, ...]; the id is the first
-				            // ring's.
-				            const json *tex_node = nullptr;
-				            if (tex_shape == ValuesShape::Nested) {
-					            tex_node = &tex_v;
-				            } else if (tex_shape == ValuesShape::Flat && this_face < tex_values.size()) {
-					            tex_node = &tex_values[this_face];
-				            }
-				            if (tex_node != nullptr && tex_node->is_array() && !tex_node->empty() &&
-				                (*tex_node)[0].is_array() && !(*tex_node)[0].empty() &&
-				                (*tex_node)[0][0].is_number_integer()) {
-					            // The UVs are read before the texture id is resolved, because
-					            // reading them is what enforces spec rule 1: sidecar form
-					            // inlines every pair, so AppearanceSource::UV throws on an
-					            // index. materials_query on its own declares the form and
-					            // defines no texture at all -- exactly the case where local
-					            // indices would otherwise be resolved as global ids -- so the
-					            // refusal must not wait on an id resolving.
-					            std::vector<std::vector<std::array<double, 2>>> uvs;
-					            bool complete = true;
-					            for (size_t r = 0; r < face.rings.size() && complete; r++) {
-						            const json &tring = r < tex_node->size() ? (*tex_node)[r] : EmptyJson();
-						            std::vector<std::array<double, 2>> ring_uv;
-						            for (size_t k = 1; tring.is_array() && k < tring.size(); k++) {
-							            if (auto uv = appearance.UV(feature_id, tring[k])) {
-								            ring_uv.push_back(*uv);
-							            }
-						            }
-						            complete = ring_uv.size() == face.rings[r].size();
-						            uvs.push_back(std::move(ring_uv));
-					            }
-					            auto tid = appearance.ResolveTexture(feature_id, (*tex_node)[0][0].get<int64_t>());
-					            if (tid.has_value() && complete) {
-						            face.texture = *tid;
-						            face.uvs = std::move(uvs);
-					            }
-				            }
-				            object.faces.push_back(std::move(face));
-			            });
+				// Texture: tex_values indexed by face position -- a list over the
+				// face's rings, each ring [texId, uv, uv, ...]; the id is the first
+				// ring's.
+				const json *tex_node = this_face < tex_values.size() ? &tex_values[this_face] : nullptr;
+				if (tex_node != nullptr && tex_node->is_array() && !tex_node->empty() && (*tex_node)[0].is_array() &&
+				    !(*tex_node)[0].empty() && (*tex_node)[0][0].is_number_integer()) {
+					// The UVs are read before the texture id is resolved, because
+					// reading them is what enforces spec rule 1: sidecar form
+					// inlines every pair, so AppearanceSource::UV throws on an
+					// index. materials_query on its own declares the form and
+					// defines no texture at all -- exactly the case where local
+					// indices would otherwise be resolved as global ids -- so the
+					// refusal must not wait on an id resolving.
+					std::vector<std::vector<std::array<double, 2>>> uvs;
+					bool complete = true;
+					for (size_t r = 0; r < face.rings.size() && complete; r++) {
+						const json &tring = r < tex_node->size() ? (*tex_node)[r] : EmptyJson();
+						std::vector<std::array<double, 2>> ring_uv;
+						for (size_t k = 1; tring.is_array() && k < tring.size(); k++) {
+							if (auto uv = appearance.UV(feature_id, tring[k])) {
+								ring_uv.push_back(*uv);
+							}
+						}
+						complete = ring_uv.size() == face.rings[r].size();
+						uvs.push_back(std::move(ring_uv));
+					}
+					auto tid = appearance.ResolveTexture(feature_id, (*tex_node)[0][0].get<int64_t>());
+					if (tid.has_value() && complete) {
+						face.texture = *tid;
+						face.uvs = std::move(uvs);
+					}
+				}
+				object.faces.push_back(std::move(face));
+			});
 
 			if (legacy_index_boundaries) {
 				model.warnings.push_back("object " + id +

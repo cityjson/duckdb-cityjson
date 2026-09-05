@@ -104,6 +104,15 @@ private:
 	 */
 	static std::vector<std::array<int64_t, 3>> BuildVertexPool(std::vector<std::pair<std::string, json>> &objects,
 	                                                           const std::optional<Transform> &transform);
+
+	/**
+	 * Rebuild the `vertices-texture` pool from the inline [u, v] pairs
+	 * `CityJSONCopyToSink::apply_appearance` left in every geometry's `texture`
+	 * object, rewriting each ring's pairs to indices into it in-place. One call's
+	 * worth of `objects` shares one pool: per feature for WriteCityJSONSeq, or the
+	 * whole document for WriteCityJSON.
+	 */
+	static std::vector<std::array<double, 2>> BuildTexturePool(std::vector<std::pair<std::string, json>> &objects);
 };
 
 } // namespace cityjson

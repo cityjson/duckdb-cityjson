@@ -75,3 +75,83 @@ query I
 SELECT content LIKE '%"appearance"%' FROM read_text('__TEST_DIR__/appearance.city.json');
 ----
 true
+
+# --- Task 4: COPY re-nests the flat appearance cells and rebuilds vertices-texture --
+# the file, not the row, is the oracle (both the two prior blocks' checks read the
+# `appearance` block only, which LoadSourceAppearance carries across regardless of
+# whether the per-geometry cell round-trips).
+
+# A Solid's material comes back nested per shell.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
+TO '__TEST_DIR__/solid_material_rt.city.json' (FORMAT cityjson);
+
+query I
+SELECT regexp_matches(content, '"material":\{"visual":\{"values":\[\[[0-9,]+\]\]\}\}')
+FROM read_text('__TEST_DIR__/solid_material_rt.city.json');
+----
+true
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT material_lod2_2['visual'] FROM read_cityjson('__TEST_DIR__/solid_material_rt.city.json', lod := '2.2')
+  EXCEPT ALL
+  SELECT material_lod2_2['visual'] FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2')
+);
+----
+0
+
+# A texture's UV pairs come back as indices into a rebuilt vertices-texture pool
+# (solid_texture.city.json carries a texture only, no material).
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))
+TO '__TEST_DIR__/solid_texture_rt.city.json' (FORMAT cityjson);
+
+# A ring is an id followed by four integer UV indices, never [u, v] pairs, and the pool exists.
+query II
+SELECT regexp_matches(content, '\[0,[0-9]+,[0-9]+,[0-9]+,[0-9]+\]'),
+       regexp_matches(content, '"vertices-texture":\[\[')
+FROM read_text('__TEST_DIR__/solid_texture_rt.city.json');
+----
+true	true
+
+# Reading the written file back yields the same cell as the source: value-equal round trip.
+query I
+SELECT COUNT(*) FROM (
+  SELECT texture_lod2_2['visual'][1][1].uv
+  FROM read_cityjson('__TEST_DIR__/solid_texture_rt.city.json', lod := '2.2')
+  EXCEPT ALL
+  SELECT texture_lod2_2['visual'][1][1].uv
+  FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2')
+);
+----
+0
+
+# The per-feature pool takes the same path through CityJSONSeq (WriteCityJSONSeq's own
+# BuildTexturePool call, separate code from WriteCityJSON's document-level one above) --
+# railway_appearance.city.jsonl's one textured feature proves that path too.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO '__TEST_DIR__/appearance_seq_rt.city.jsonl' (FORMAT cityjsonseq);
+
+# Two lines carry it: the header's own (LoadSourceAppearance's verbatim carry, unrelated
+# to any geometry -- the header has none) and the one textured feature's rebuilt pool.
+query I
+SELECT COUNT(*) FROM (
+  SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/appearance_seq_rt.city.jsonl')
+) WHERE line LIKE '%"vertices-texture":[[%';
+----
+2
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT texture_lod3_0['visual'] AS t
+  FROM read_cityjsonseq('__TEST_DIR__/appearance_seq_rt.city.jsonl')
+  WHERE id = 'GMLID_BUI100628_817_8083'
+  EXCEPT ALL
+  SELECT texture_lod3_0['visual']
+  FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+  WHERE id = 'GMLID_BUI100628_817_8083'
+);
+----
+0

@@ -118,12 +118,8 @@ SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM rea
 ----
 v 8.45e+04 4.46e+05 10
 
-# --- A Solid's material cell reaches the mesh model in either of the two shapes the
-#     spec and this extension's reader produce, and both must colour the same faces.
-#     The reader's cell is the specification's flat shape -- one id per WKB face; the
-#     REPLACE block below (the hand-substituted JSON-text alternate shape) is retired
-#     by Task 4. Pin the reader's own rendering first, so the REPLACE below is
-#     demonstrably a stand-in and not a copy of it.
+# --- A Solid's material cell is the specification's flat shape -- one id per WKB
+#     face -- and the mesh writer indexes it by face position directly.
 query I
 SELECT material_lod2_2 FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
 ----
@@ -133,28 +129,8 @@ statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
 TO '__TEST_DIR__/solid_nested.obj' (FORMAT obj);
 
-# The flat cell replaces the reader's own, so no reader produced it. The source file
-# is still discovered through the REPLACE (FindCopySourceRef walks the FROM clause,
-# not the select list), so no metadata_from is needed -- the `# crs` line proves it.
-statement ok
-COPY (SELECT * REPLACE ('{"visual":{"values":[0,1,1,1,1,2]}}' AS material_lod2_2)
-      FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
-TO '__TEST_DIR__/solid_flat.obj' (FORMAT obj);
-
 query I
 SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_nested.obj'))
-WHERE line LIKE 'g %' OR line LIKE 'usemtl %' OR line LIKE '# crs%';
-----
-# crs https://www.opengis.net/def/crs/EPSG/0/7415
-g RoofSurface
-usemtl red
-g WallSurface
-usemtl grey
-g GroundSurface
-usemtl dark
-
-query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_flat.obj'))
 WHERE line LIKE 'g %' OR line LIKE 'usemtl %' OR line LIKE '# crs%';
 ----
 # crs https://www.opengis.net/def/crs/EPSG/0/7415
@@ -170,25 +146,8 @@ SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/solid_nested.
 ----
 # Written by duckdb-cityjson|newmtl red|Kd 1 0 0|d 1||newmtl grey|Kd 0.5 0.5 0.5|d 1||newmtl dark|Kd 0.1 0.1 0.1|d 1||
 
-# The two .obj files are byte-identical but for their `mtllib` line, which names the
-# output file's own stem; the .mtl files are identical outright.
-query II
-SELECT (SELECT content FROM read_text('__TEST_DIR__/solid_nested.mtl'))
-     = (SELECT content FROM read_text('__TEST_DIR__/solid_flat.mtl')),
-       (SELECT list_filter(string_split(content, chr(10)), x -> x NOT LIKE 'mtllib %')
-        FROM read_text('__TEST_DIR__/solid_nested.obj'))
-     = (SELECT list_filter(string_split(content, chr(10)), x -> x NOT LIKE 'mtllib %')
-        FROM read_text('__TEST_DIR__/solid_flat.obj'));
-----
-true	true
-
-# --- The same two shapes for a *textured* Solid, where the cell nests one level deeper
-#     than a material's: the reader's per-shell `values` and the spec's per-WKB-face
-#     one must yield the same vt pool and the same `f v/vt` faces. The reader's cell is
-#     the specification's flat shape -- one ring list per WKB face; the REPLACE block
-#     below (the hand-substituted JSON-text alternate shape) is retired by Task 4. Pin
-#     the reader's own rendering first, so the REPLACE below is demonstrably a
-#     stand-in.
+# --- A textured Solid's cell is likewise flat -- one ring list per WKB face -- and
+#     yields the vt pool and `f v/vt` faces the mesh writer emits directly from it.
 query I
 SELECT texture_lod2_2 FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2');
 ----
@@ -197,11 +156,6 @@ SELECT texture_lod2_2 FROM read_cityjson('test/data/solid_texture.city.json', lo
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))
 TO '__TEST_DIR__/solid_tex_nested.obj' (FORMAT obj);
-
-statement ok
-COPY (SELECT * REPLACE ('{"visual":{"values":[[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]]]}}' AS texture_lod2_2)
-      FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))
-TO '__TEST_DIR__/solid_tex_flat.obj' (FORMAT obj);
 
 query I
 SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_tex_nested.obj'))
@@ -218,23 +172,13 @@ f 7/1 8/2 4/3 3/4
 f 8/1 5/2 1/3 4/4
 f 5/1 8/2 7/3 6/4
 
-query I
-SELECT (SELECT list_filter(string_split(content, chr(10)), x -> x NOT LIKE 'mtllib %')
-        FROM read_text('__TEST_DIR__/solid_tex_nested.obj'))
-     = (SELECT list_filter(string_split(content, chr(10)), x -> x NOT LIKE 'mtllib %')
-        FROM read_text('__TEST_DIR__/solid_tex_flat.obj'));
-----
-true
-
-# --- A leading `null` is one face with no texture, not a differently shaped cell.
-#     The shape is measured from the first entry that carries something -- a `null` (or
-#     an empty array, which reads as a ring in its own right) says nothing about the
-#     nesting below it, and measuring from one classifies the whole cell wrongly and
-#     drops the geometry's appearance in silence.
+# --- A leading `null` is one face with no texture, not a cell the mesh writer treats
+#     any differently: the cell is flat and face-position-indexed regardless of which
+#     face, if any, carries no texture.
 query I
 SELECT texture_lod2_2 FROM read_cityjson('test/data/null_lead_texture.city.json', lod := '2.2');
 ----
-{"visual":{"values":[null,[[0,0,1,2,3]]]}}
+{visual=[[{'id': NULL, 'uv': NULL}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}]]}
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/null_lead_texture.city.json', lod := '2.2'))
@@ -251,10 +195,9 @@ vt 0 1
 f 1 2 3 4
 f 5/1 6/2 7/3 8/4
 
-# --- A Solid whose *first face* is `[null]` (not a bare `null`) is the same case one
-#     level further in: "carries nothing" is recursive, so `[null]`, `[[null]]` and
-#     `[[]]` all read as nothing at every level FirstMeasurable is applied, and the
-#     cell is measured from its second face, a textured one, instead.
+# --- A Solid whose *first face* is `[null]` (a bare ring, not a bare `null`) is the
+#     same case one level further in: still one face-position-indexed entry per WKB
+#     face, so which face happens to carry no texture makes no difference.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_null_first_face.city.json', lod := '2.2'))
 TO '__TEST_DIR__/solid_null_first_face.obj' (FORMAT obj);
@@ -269,18 +212,19 @@ vt 1 1
 vt 0 1
 f 5/1 6/2 2/3 1/4
 
-# --- Sidecar form inlines every UV pair, so a UV *index* in a cell under a declared
-#     sidecar form is a form mistake and is refused. materials_query alone declares the
-#     form -- and is the case where local indices would otherwise be resolved as global
-#     ids -- so the refusal must not wait on a texture id resolving.
-statement error
+# --- Every UV is an inline [u, v] pair regardless of appearance mode (spec, appearance
+#     sidecars), so a texture cell never carries a bare index for AppearanceSource::UV
+#     to refuse -- that refusal is defence in depth for a future direct C++ caller, not
+#     reachable through this SQL surface. materials_query on its own (no textures_query)
+#     simply leaves every texture unresolved: `id` has nothing to look up, so the COPY
+#     still succeeds, just without any face's texture -- no vt pool, no `f v/vt`.
+statement ok
 COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
-TO '__TEST_DIR__/uv_refused.obj' (FORMAT obj, materials_query 'SELECT 0 AS id');
-----
-carries a UV index
+TO '__TEST_DIR__/materials_only.obj' (FORMAT obj, materials_query 'SELECT 0 AS id');
 
 query I
-SELECT COUNT(*) FROM glob('__TEST_DIR__/uv_refused.*');
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/materials_only.obj'))
+WHERE line LIKE 'vt %' OR line LIKE 'f%/%';
 ----
 0
 

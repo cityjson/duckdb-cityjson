@@ -55,9 +55,10 @@ public:
 	}
 	std::optional<int64_t> ResolveMaterial(const std::string &feature_id, int64_t ref) const;
 	std::optional<int64_t> ResolveTexture(const std::string &feature_id, int64_t ref) const;
-	//! A ring's UV element: an integer index into the feature's (or header's) pool in
-	//! local form, an inline [u, v] pair in sidecar form. nullopt when unresolvable; an
-	//! integer in sidecar form throws InvalidInputException (the declared form is wrong).
+	//! A ring's UV element: an inline [u, v] pair, in both local and sidecar form --
+	//! only the material/texture *ids* differ between the two modes, never how a UV is
+	//! spelled. nullopt when the element is neither a pair nor a number (e.g. absent);
+	//! a bare integer index throws InvalidInputException, since neither form uses one.
 	std::optional<std::array<double, 2>> UV(const std::string &feature_id, const json &uv_ref) const;
 
 	const std::map<int64_t, MeshMaterial> &Materials() const {
@@ -71,8 +72,6 @@ public:
 private:
 	bool sidecar_ = false;
 	AppearanceIndex index_; // local form only
-	std::vector<std::array<double, 2>> header_uv_pool_;
-	std::map<std::string, std::vector<std::array<double, 2>>> uv_pool_by_feature_;
 	std::map<int64_t, MeshMaterial> materials_;
 	std::map<int64_t, MeshTexture> textures_;
 };
