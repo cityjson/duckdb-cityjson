@@ -470,8 +470,9 @@ populates only its own LoD's columns, leaving the table sparse by construction.
 per ring — `id` the ring's (local or sidecar) texture id, `uv` one `[u, v]`
 pair per ring vertex, and an untextured ring holds `{NULL, NULL}`. Both
 `'local'` and `'sidecar'` mode build this same struct; only `id`'s numbering
-differs. The builder recurses to each geometry's leaves rather than assuming a
-nesting depth, since a `Solid` nests one level deeper than a `MultiSurface`.
+differs. The builder walks the same per-type face nesting `face_semantics` does
+(`FlattenPerFace`) — a fixed depth per geometry type, not a recursion to whatever
+depth a geometry happens to nest.
 
 ### Reading appearance cells
 

@@ -345,17 +345,19 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 		bind_data.source_appearance_header = appearance_json;
 
 		// An OBJ's texture refs are file-global indices into the file's one `vt` pool,
-		// and the reader never renumbers them per object -- unlike position
-		// vertices, which do get a per-feature-local pool. So the whole pool, verbatim,
-		// serves the feature line of every object that resolves a texture: index i means
-		// the same UV coordinate in each copy. Only those objects get it -- stamping the
-		// file's whole pool onto every feature multiplies the output by the object count
-		// for a pool most of them never index into.
-		auto vt_it = appearance_json.find("vertices-texture");
-		if (vt_it == appearance_json.end()) {
+		// and the reader never renumbers them per object -- unlike position vertices,
+		// which do get a per-feature-local pool. `BuildAppearanceBlock`/`BuildTexturePool`
+		// (cityjson_writer.cpp) rebuild each textured feature's actual `vertices-texture`
+		// from the inline `[u, v]` pairs `apply_appearance` leaves on its own geometry --
+		// compacted and re-interned in first-use order -- so nothing stamped here ends up
+		// in the output file itself. This loop's only job is to mark which features are
+		// textured at all: an empty `vertices-texture` marker makes `BuildAppearanceBlock`
+		// treat the feature as having a definition to rebuild, rather than skipping it as
+		// texture-less, just as well as the full pool would.
+		if (appearance_json.find("vertices-texture") == appearance_json.end()) {
 			return;
 		}
-		json feature_appearance = json {{"vertices-texture", *vt_it}};
+		json feature_marker = json {{"vertices-texture", json::array()}};
 		for (const auto &feature : reader.ReadAllChunks().records) {
 			bool textured = false;
 			for (const auto &entry : feature.city_objects) {
@@ -370,7 +372,7 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 				}
 			}
 			if (textured) {
-				bind_data.source_appearance_by_feature[feature.id] = feature_appearance;
+				bind_data.source_appearance_by_feature[feature.id] = feature_marker;
 			}
 		}
 		return;
@@ -634,7 +636,7 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
 		const auto &source_ref = *bind_data->source_ref;
 		if (source_ref.sidecar_appearance) {
-			throw BinderException(
+			throw InvalidInputException(
 			    "COPY TO " + input.info.format +
 			    ": the source was read with appearance := 'sidecar', so its material/texture cells hold "
 			    "sidecar ids; pass materials_query / textures_query (e.g. materials_query 'SELECT * FROM "
@@ -660,6 +662,23 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 			    ": the source was read with appearance := 'sidecar', so its material/texture cells hold "
 			    "dataset-global ids that the feature-local appearance blocks this format re-attaches cannot "
 			    "resolve; read the source with appearance := 'local' (the default) for a CityJSON-family COPY");
+		}
+		// A whole-document CityJSON has one top-level `appearance` block
+		// (WriteCityJSON re-attaches only `source_appearance_header`), but a
+		// CityJSONSeq source's features each carry their own `materials`/`textures`
+		// definitions under LOCAL indices (LoadSourceAppearance). There is nowhere in
+		// one document to put a second feature's blocks without re-pointing every
+		// ref, so this refuses rather than silently drop them -- CityJSONSeq is the
+		// format with room for a block per feature.
+		if (bind_data->format == CopyFormat::CityJSON) {
+			for (const auto &entry : bind_data->source_appearance_by_feature) {
+				if (entry.second.contains("materials") || entry.second.contains("textures")) {
+					throw InvalidInputException(
+					    "COPY TO cityjson: the source's features carry their own materials or textures "
+					    "definitions, which a whole-document CityJSON has no place for; write CityJSONSeq "
+					    "instead");
+				}
+			}
 		}
 	}
 
@@ -1050,6 +1069,45 @@ static json RenestBoundaries(const std::string &type, const json &boundaries, co
 	return boundaries;
 }
 
+// Count the faces a geometry's own already-nested `boundaries` carries (spec §7.1's
+// nesting per type), by the point `apply_appearance` runs -- after `apply_properties`
+// has re-nested a WKB decode's flattened shell via `RenestBoundaries`, or left a
+// legacy STRUCT geometry's already-nested boundaries alone. Used to reject an
+// appearance cell shorter than the geometry it is attached to: `RenestValues`' own
+// fallback (a mismatched count wraps the whole flat list as one shell) exists to
+// tolerate a `shells` property that does not account for every face, not to paper
+// over a cell the caller built with too few entries.
+static size_t CountFaces(const std::string &type, const json &boundaries) {
+	if (!boundaries.is_array()) {
+		return 0;
+	}
+	if (type == "Solid") {
+		size_t total = 0;
+		for (const auto &shell : boundaries) {
+			if (shell.is_array()) {
+				total += shell.size();
+			}
+		}
+		return total;
+	}
+	if (type == "MultiSolid" || type == "CompositeSolid") {
+		size_t total = 0;
+		for (const auto &solid : boundaries) {
+			if (!solid.is_array()) {
+				continue;
+			}
+			for (const auto &shell : solid) {
+				if (shell.is_array()) {
+					total += shell.size();
+				}
+			}
+		}
+		return total;
+	}
+	// MultiSurface / CompositeSurface: one entry per surface.
+	return boundaries.size();
+}
+
 // ============================================================
 // COPY TO Sink
 // ============================================================
@@ -1279,11 +1337,25 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 					throw InvalidInputException("object %s: %s: %s", city_obj_id, prefix + suffix,
 					                            ErrorData(e).RawMessage());
 				}
+				const std::string geom_type = geom.value("type", "");
+				// A cell shorter than the geometry it is attached to is invalid input,
+				// not a shape `RenestValues` should paper over: its own fallback for a
+				// short/mismatched list is to wrap the whole thing as one shell, which
+				// for a cell built by hand (rather than round-tripped from a wider one)
+				// silently attaches values to the wrong faces instead of failing loudly.
+				const size_t face_count = CountFaces(geom_type, geom.value("boundaries", json::array()));
+				for (auto theme_it = flat.begin(); theme_it != flat.end(); ++theme_it) {
+					size_t entries = theme_it.value().value("values", json::array()).size();
+					if (entries != face_count) {
+						throw InvalidInputException("object %s: %s: theme '%s' has %d entries for %d faces",
+						                            city_obj_id, prefix + suffix, theme_it.key(),
+						                            static_cast<int>(entries), static_cast<int>(face_count));
+					}
+				}
 				if (IsMeshFormat(bind_data.format)) {
 					geom[key] = std::move(flat);
 					return;
 				}
-				const std::string geom_type = geom.value("type", "");
 				static const json kEmptyShells = json::array();
 				const json &shells = props.contains("shells") ? props["shells"] : kEmptyShells;
 				json nested = json::object();

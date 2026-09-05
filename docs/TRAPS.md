@@ -143,14 +143,19 @@ columns, never the definitions.
   (`ReadMetadata`), re-emitted via `Appearance::ToJson`; a second `OBJReader` over the
   same path is never constructed, since the first one memoises its parse and
   `ReadAllChunks` on it is free. The reader never renumbers a face's texture-coordinate
-  indices per object — they stay file-global into the file's one `vt` pool —
-  so that whole pool travels verbatim onto the `vertices-texture` block of each feature
-  whose geometry carries a `texture`, rather than being sliced: index *i* means the same
-  UV coordinate in every copy. A feature with no texture is stamped with nothing; the
-  pool is one size for every object, so stamping it on all of them inflates the output by
-  the object count. The pool is **not compacted per feature** — a textured feature
-  carries the whole file's UVs, including the ones it never indexes; writer-side
-  compaction (a per-feature pool with the refs renumbered against it) is a follow-up.
+  indices per object — they stay file-global into the file's one `vt` pool — so
+  `LoadSourceAppearance` only stamps an empty `{"vertices-texture": []}` marker onto
+  each feature whose geometry carries a `texture` (a feature with no texture is
+  stamped with nothing); the marker's job is to tell `BuildAppearanceBlock`
+  (`cityjson_writer.cpp`) that this feature has a definition to rebuild, not to carry
+  any UVs itself. `BuildAppearanceBlock`/`BuildTexturePool` then build the feature's
+  actual `vertices-texture` from the `[u, v]` pairs `apply_appearance` left inline on
+  its own geometry, interning them in first-use order — so a textured feature's block
+  on disk holds only the UVs it indexes, compacted, not the whole file's pool. The
+  header line is the one exception: `WriteCityJSON`/`WriteCityJSONSeq` re-attach
+  `source_appearance_header` verbatim, with no `BuildAppearanceBlock` call, so a
+  whole-document CityJSON's top-level `vertices-texture` is whatever the OBJ's file-wide
+  `vt` pool was.
 - **Appearance blocks are per-feature and their refs are feature-local.** In CityJSONSeq
   every feature carries its own `appearance`, and its material/texture indices are local
   to that block, exactly as its boundary indices are local to its own `vertices` pool.

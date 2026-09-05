@@ -66,15 +66,16 @@ WHERE material_lod3_0 IS NOT NULL
 ----
 0
 
-# Whole-document CityJSON has a single top-level block; it must travel too.
-statement ok
+# A CityJSONSeq source whose features carry their own materials/textures cannot
+# become one whole-document CityJSON: the HEADER only has room for one appearance
+# block, so re-attaching it (WriteCityJSON) would drop every per-feature block and
+# leave GMLID_855011_330784_753's material refs pointing at whichever definitions
+# happened to land in the header instead.
+statement error
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
 TO '__TEST_DIR__/appearance.city.json' (FORMAT cityjson);
-
-query I
-SELECT content LIKE '%"appearance"%' FROM read_text('__TEST_DIR__/appearance.city.json');
 ----
-true
+carry their own materials or textures
 
 # --- Task 4: COPY re-nests the flat appearance cells and rebuilds vertices-texture --
 # the file, not the row, is the oracle (both the two prior blocks' checks read the
@@ -178,6 +179,17 @@ COPY (SELECT * REPLACE (MAP {'visual': [[{'id': 5, 'uv': NULL}]]}::MAP(VARCHAR, 
 TO '__TEST_DIR__/bad_cell.city.json' (FORMAT cityjson);
 ----
 object cube: texture_lod2_2: texture cell: a ring's id and uv must be NULL together
+
+# --- A cell shorter than the geometry it is attached to is invalid input too: the
+#     six-face Solid of solid_material.city.json gets a two-entry `visual` list, which
+#     `RenestValues`' single-shell fallback would otherwise wrap as `{"values":[[0,1]]}`
+#     -- valid-looking CityJSON that silently drops four faces' worth of material.
+statement error
+COPY (SELECT * REPLACE (MAP {'visual': [0, 1]}::MAP(VARCHAR, BIGINT[]) AS material_lod2_2)
+      FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
+TO '__TEST_DIR__/short_cell.city.json' (FORMAT cityjson);
+----
+theme 'visual' has 2 entries for 6 faces
 
 # --- FlatCityBuf gets the same appearance carry-through as CityJSON/CityJSONSeq:
 #     fcb::writer::geom_encoder reads a geometry's own material/texture straight off
