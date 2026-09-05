@@ -112,6 +112,9 @@ MaterialCell MaterialCellFromValue(const Value &value) {
 	if (value.IsNull()) {
 		return cell;
 	}
+	if (value.type() != MaterialCellType()) {
+		throw InvalidInputException("material cell: expected MAP(VARCHAR, BIGINT[]), got %s", value.type().ToString());
+	}
 	for (const auto &entry : MapValue::GetChildren(value)) {
 		const auto &theme_values = MapEntryChild(entry, kMapEntryValue);
 		if (theme_values.IsNull()) {
@@ -131,6 +134,10 @@ TextureCell TextureCellFromValue(const Value &value) {
 	TextureCell cell;
 	if (value.IsNull()) {
 		return cell;
+	}
+	if (value.type() != TextureCellType()) {
+		throw InvalidInputException("texture cell: expected MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]), got %s",
+		                            value.type().ToString());
 	}
 	for (const auto &entry : MapValue::GetChildren(value)) {
 		const auto &theme_values = MapEntryChild(entry, kMapEntryValue);

@@ -119,14 +119,15 @@ SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM rea
 v 8.45e+04 4.46e+05 10
 
 # --- A Solid's material cell reaches the mesh model in either of the two shapes the
-#     spec and this extension's reader produce, and both must colour the same faces:
-#     the reader nests `values` per shell, the spec's FLAT form gives one id per WKB
-#     face. Pin the reader's shape first, so the REPLACE below is demonstrably the
-#     other one and not a copy of it.
+#     spec and this extension's reader produce, and both must colour the same faces.
+#     The reader's cell is the specification's flat shape -- one id per WKB face; the
+#     REPLACE block below (the hand-substituted JSON-text alternate shape) is retired
+#     by Task 4. Pin the reader's own rendering first, so the REPLACE below is
+#     demonstrably a stand-in and not a copy of it.
 query I
 SELECT material_lod2_2 FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
 ----
-{"visual":{"values":[[0,1,1,1,1,2]]}}
+{visual=[0, 1, 1, 1, 1, 2]}
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
@@ -183,12 +184,15 @@ true	true
 
 # --- The same two shapes for a *textured* Solid, where the cell nests one level deeper
 #     than a material's: the reader's per-shell `values` and the spec's per-WKB-face
-#     one must yield the same vt pool and the same `f v/vt` faces. The reader's shape is
-#     pinned first, so the REPLACE below is demonstrably the other one.
+#     one must yield the same vt pool and the same `f v/vt` faces. The reader's cell is
+#     the specification's flat shape -- one ring list per WKB face; the REPLACE block
+#     below (the hand-substituted JSON-text alternate shape) is retired by Task 4. Pin
+#     the reader's own rendering first, so the REPLACE below is demonstrably a
+#     stand-in.
 query I
 SELECT texture_lod2_2 FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2');
 ----
-{"visual":{"values":[[[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]],[[0,0,1,2,3]]]]}}
+{visual=[[{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}], [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}]]}
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))

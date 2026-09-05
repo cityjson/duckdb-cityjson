@@ -43,6 +43,29 @@ SELECT cityjson_appearance_ids('{}');
 ----
 expected a MAP(VARCHAR, BIGINT[]) (material) or MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) (texture) cell
 
+# A scalar is refused the same way, at bind, before it ever reaches the appearance
+# cell readers that MapValue::GetChildren would otherwise crash on in a release
+# build.
+statement error
+SELECT cityjson_appearance_ids(42);
+----
+expected a MAP(VARCHAR, BIGINT[]) (material) or MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) (texture) cell, got INTEGER
+
+# A MAP that is neither cell type -- same key type, ordinary VARCHAR values -- is
+# refused too, rather than silently binding to whichever overload tolerates it.
+statement error
+SELECT cityjson_appearance_ids(MAP {'v': 'a'}::MAP(VARCHAR, VARCHAR));
+----
+expected a MAP(VARCHAR, BIGINT[]) (material) or MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) (texture) cell, got MAP(VARCHAR, VARCHAR)
+
+# A material cell must bind to the material overload, not fall through to the
+# texture reader (the two MAP value types differ, so the binder cannot confuse
+# them).
+query T
+SELECT cityjson_appearance_ids(MAP {'v': [1]}::MAP(VARCHAR, BIGINT[]));
+----
+[1]
+
 # --- orphans and vacuum ------------------------------------------------------
 
 statement ok
