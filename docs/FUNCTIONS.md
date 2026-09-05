@@ -438,11 +438,14 @@ Object rows then reference those ids rather than feature-local ones:
 SELECT id, material_lod3_0
 FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
 WHERE material_lod3_0 IS NOT NULL LIMIT 1;
--- GMLID_855011_330784_753 | {"visual":{"values":[2,2,2,2,2,2,3,3,3,…]}}
+-- GMLID_855011_330784_753 | {visual=[2, 2, 2, 2, 2, 2, 3, 3, 3, …]}
 ```
 
-`appearance` accepts `'local'` (default, verbatim) or `'sidecar'`, on
-`read_cityjson` and `read_cityjsonseq`. **`read_flatcitybuf` does not take it** —
+`appearance` accepts `'local'` (default) or `'sidecar'`, on `read_cityjson` and
+`read_cityjsonseq`. Both modes emit the same typed `material_lod*` /
+`texture_lod*` `MAP` cells (below); the mode decides only the **id space** —
+feature-local in `'local'`, dataset-global sidecar ids in `'sidecar'` — and
+texture UVs are inlined in both. **`read_flatcitybuf` does not take it** —
 sidecar normalisation is not available on the `.fcb` read path.
 
 The template sidecar carries the same per-LoD column grammar as an object table
@@ -462,10 +465,51 @@ transform and the file CRS — an instance's `transformationMatrix` and referenc
 point place it into the world — so their WKB holds raw doubles. Each row
 populates only its own LoD's columns, leaving the table sparse by construction.
 
-**Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; sidecar
-mode emits `[texId, [u,v], [u,v], …]`. Both rewrites recurse to their leaves
-rather than assuming a nesting depth, since a `Solid` nests one level deeper than
-a `MultiSurface`.
+**Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; every
+`texture_lod*` cell replaces that with one `STRUCT(id BIGINT, uv DOUBLE[][])`
+per ring — `id` the ring's (local or sidecar) texture id, `uv` one `[u, v]`
+pair per ring vertex, and an untextured ring holds `{NULL, NULL}`. Both
+`'local'` and `'sidecar'` mode build this same struct; only `id`'s numbering
+differs. The builder recurses to each geometry's leaves rather than assuming a
+nesting depth, since a `Solid` nests one level deeper than a `MultiSurface`.
+
+### Reading appearance cells
+
+Both columns are ordinary DuckDB `MAP`s, so `map['theme']` is the way in — it
+returns the theme's per-WKB-face list, indexed by the same face order
+`geometry_lod*`'s WKB emits:
+
+```sql
+SELECT material_lod2_2['visual'][3]
+FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
+-- 1
+```
+
+A texture cell nests one level further — face, then ring — so index twice
+before reaching the `STRUCT`'s fields:
+
+```sql
+SELECT texture_lod2_2['visual'][1][1].uv
+FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2');
+-- [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+```
+
+`UNNEST` turns a theme's face list back into rows, one per WKB face:
+
+```sql
+SELECT id, UNNEST(material_lod3_0['visual']) AS face_material_id
+FROM (
+    SELECT id, material_lod3_0
+    FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+    WHERE material_lod3_0 IS NOT NULL LIMIT 1
+)
+LIMIT 5;
+-- GMLID_855011_330784_753 | 2
+-- GMLID_855011_330784_753 | 2
+-- GMLID_855011_330784_753 | 2
+-- GMLID_855011_330784_753 | 2
+-- GMLID_855011_330784_753 | 2
+```
 
 ---
 
@@ -483,18 +527,21 @@ WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;
 --> STRUCT(xmin, ymin, zmin, xmax, ymax, zmax DOUBLE)
 ```
 
-### `cityjson_appearance_ids(cell, kind)`
+### `cityjson_appearance_ids(cell)`
 
 The sidecar ids an appearance cell references, as a list.
 
 ```sql
-SELECT cityjson_appearance_ids(material_lod3_0, 'material') AS ids
+SELECT cityjson_appearance_ids(material_lod3_0) AS ids
 FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
 WHERE material_lod3_0 IS NOT NULL LIMIT 1;
 -- [2, 3]
 ```
 
-`kind` is `'material'` or `'texture'`. This is what `cityparquet_orphans` and
+There is no separate `kind` argument: `cell`'s exact type — the material cell's
+`MAP(VARCHAR, BIGINT[])` or the texture cell's `MAP(VARCHAR, STRUCT(id BIGINT,
+uv DOUBLE[][])[][])` — is what the bind checks to tell the two apart, and
+anything else is a bind error. This is what `cityparquet_orphans` and
 `cityparquet_vacuum` use to decide which sidecar rows are still reachable.
 
 ### `cityjson_wkb_geometry_type(blob)`
@@ -512,7 +559,7 @@ FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod2_2
 -- PolyhedralSurface Z     ← solid; excluded from `geo`
 ```
 
-### `cityjson_shift_appearance_ids(cell, kind, offset)`
+### `cityjson_shift_appearance_ids(cell, offset)`
 
 Shifts every sidecar id in an appearance cell by a constant. This is the
 renumbering primitive `cityparquet_merge` and `insert_cityjson` generate calls to
@@ -882,11 +929,12 @@ Mapping:
   state persists across `o`, as OBJ specifies.
 - `.mtl` materials are the appearance definitions in `mtllib` order
   (`obj_materials`); a material with `map_Kd` is also a texture
-  (`obj_textures`), and faces under it with `v/vt` indices carry
-  `texture_lod*` rings that index the file's `vt` list (`'sidecar'` inlines
-  them). Faces without UVs carry `[null]`. A `usemtl` naming a material no
-  `mtllib` declared leaves the face without one, and warns in `duckdb_logs` once
-  per name.
+  (`obj_textures`), and faces under it with `v/vt` indices get a `texture_lod*`
+  ring whose `vt` index is resolved against the file's `vt` list and inlined as
+  a `[u, v]` pair — the same for either `appearance` mode. A face with no UV
+  carries an untextured ring (NULL `id`, NULL `uv`). A `usemtl` naming a
+  material no `mtllib` declared leaves the face without one, and warns in
+  `duckdb_logs` once per name.
 - Positive and negative (relative) indices; `v` with a fourth component; `vn`
   ignored. A line ending in `\` continues on the next one. A `mtllib` naming
   several files loads every one of them, in order. A missing `.mtl`, or one that
@@ -1046,7 +1094,7 @@ Three things the table cannot say in a cell:
 - **An `o` name is one OBJ token.** Whitespace in an id is replaced by `_`, so an id
   carrying a space does not round-trip through `read_obj`.
 - **One theme is written.** A material or texture cell may carry several themes
-  (`{"visual": …, "winter": …}`); the mesh writers take the alphabetically first.
+  (`{visual=…, winter=…}`); the mesh writers take the alphabetically first.
 
 Remote output paths are not supported for mesh formats: the `.obj`, `.mtl` and any
 copied images are written with local file streams, never through DuckDB's own
@@ -1151,19 +1199,18 @@ so the two share one entry rather than being written twice under two names.
 default-coloured face whose label a material has already claimed, or a semantic
 surface type that reads the same as an object class.
 
-A material or texture cell also comes in two **shapes**, independently of which
-form it is in: the CityParquet spec's flat, per-WKB-face shape, or this
-extension's own reader's nested, per-shell shape — the reader always emits the
-nested shape when it re-serialises a row, but a spec-conformant writer emits the
-flat one, so the mesh writer accepts either, classifying by nesting depth:
+A material or texture cell is always **flat, one entry per WKB face**,
+regardless of how deeply the source geometry nests — a `Solid`'s per-shell
+`values` are resolved against its shells before the cell is built, so the mesh
+writer indexes the cell directly by face position rather than walking shells:
 
 ```sql
 SELECT material_lod2_2 FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
--- {"visual":{"values":[[0,1,1,1,1,2]]}}      ← nested: one array per shell
+-- {visual=[0, 1, 1, 1, 1, 2]}
 ```
 
 Which **form** — local or sidecar — a cell is in is a separate question, and
-cannot be told from the cell itself (`{"visual":{"values":[2,…]}}` either way
+cannot be told from the cell itself (a `MAP(VARCHAR, BIGINT[])` either way
 regardless of form). So a source that was read with `appearance := 'sidecar'`
 and no `*_query` is refused rather than guessed:
 
@@ -1603,8 +1650,8 @@ becomes `geometry_lod2_0`, never `geometry_lod2`:
 | ------ | ---- | ----------- |
 | `geometry_lodX_Y` | BLOB | WKB geometry for that LoD (NULL if absent) |
 | `geometry_properties_lodX_Y` | STRUCT | What WKB cannot carry (below) |
-| `material_lodX_Y` | JSON (VARCHAR) | Per-surface material map; NULL if none |
-| `texture_lodX_Y` | JSON (VARCHAR) | Per-surface texture map; NULL if none |
+| `material_lodX_Y` | `MAP(VARCHAR, BIGINT[])` | Theme → one sidecar id (or NULL) per WKB face; NULL if no material |
+| `texture_lodX_Y` | `MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])` | Theme → per WKB face → per ring → the id and its `[u, v]` pairs; NULL if no texture |
 
 On the Delft data that yields `geometry_lod0_0`, `geometry_lod1_2`,
 `geometry_lod1_3` and `geometry_lod2_2`, each with its three companions.

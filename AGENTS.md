@@ -47,7 +47,11 @@ is the authority on the encoding; this repo implements it.
   any finding** — CI's `Tidy Check` takes ~37 minutes, so finding out there is late.
   It needs `build/tidy/compile_commands.json`, which the cmake configure inside
   `make tidy-check` writes, and costs ~10s per staged file. `SKIP_TIDY=1` (or
-  `SKIP_FORMAT=1`) bypasses one phase, `--no-verify` both.
+  `SKIP_FORMAT=1`) bypasses one phase, `--no-verify` both. **A `.cpp` new in the same
+  commit is skipped, not tidied** — it has no entry yet in a compile database
+  configured before it existed, and the hook says so rather than guessing a command
+  line. Re-run `make tidy-check` to reconfigure `build/tidy` with the new file, then
+  tidy it by hand.
 - **Version pinning differs between the two phases, deliberately.** Formatting is
   skipped outright unless clang-format is exactly 11.0.1 — another version reformats
   conforming code its own way and churns the diff forever. Tidy *prefers* CI's 18.x

@@ -103,6 +103,25 @@ interchangeable. The package writer's result rows are a file inventory, not a re
   cannot be shown to be the package's one CRS), unknown vs unknown passes, and a side
   whose footers are missing states nothing and is not checked.
 
+## Scan: appearance columns
+
+- **The scan writes appearance cells value-at-a-time.** `material_lod*` /
+  `texture_lod*` go through `Value::MAP` + `Vector::SetValue`
+  (`scan_function.cpp`), not the flat-vector writers the rest of the wide
+  layout uses. That is a deliberate trade for a column that is sparse and
+  deeply nested and not where a scan spends its time — but it means the path
+  is wrong for a column expected to be densely populated: boxing every cell
+  into a `Value` first costs real time on a hot column, so a future format
+  whose appearance is not sparse should not reach for this path unchanged.
+- **A `Solid` whose source writes `material.values` (or `texture.values`) flat
+  instead of nested per shell — malformed CityJSON, since the spec requires one
+  array per shell — flattens to an all-null theme rather than erroring.**
+  `ForEachFace` (`appearance_flatten.cpp`) indexes a Solid's `values` by shell
+  first (`values[shell_index]`); a flat array of ints then reads as non-array
+  shell entries at every index, so every face comes back with no value.
+  `face_semantics` shares this same `ForEachFace` and has the identical failure
+  mode against the identical malformed input.
+
 ## COPY: what the rows cannot carry
 
 Two kinds of content are **file-level**, not row-level: the source's `metadata` header
@@ -163,8 +182,10 @@ columns, never the definitions.
   call should not pay for, and a NULL is honest where a plausible wrong number is not. All
   three metadata functions share the schema, which is why the column is NULLed rather than
   dropped.
-- **Local and sidecar material cells are indistinguishable.** Only texture cells
-  differ (`[id, 5, 6]` vs `[id, [u,v], …]`). Mesh COPY is therefore *told* the
+- **Local and sidecar appearance cells are indistinguishable.** UVs are
+  inlined in both modes, so a material or texture cell has exactly the same
+  shape whichever mode produced it — only the *numbering* of `id` differs
+  (feature-local vs dataset-global sidecar). Mesh COPY is therefore *told* the
   form: `materials_query`/`textures_query` present means sidecar. A source read
   with `appearance := 'sidecar'` is refused without them; `FindCopySourceRef`
   carries that flag. The refusal only fires for a **discovered** source — a
@@ -172,13 +193,6 @@ columns, never the definitions.
   `read_cityjson[seq](…, appearance := 'sidecar')` call that produced it, so the
   form cannot be told and the cells silently resolve as local-form instead of
   being refused.
-- **A material/texture cell also comes in two *shapes*, orthogonally to form.**
-  This extension's own reader always re-serialises a row's material/texture
-  column as the nested, per-shell form; the CityParquet spec defines the flat,
-  per-WKB-face form. `BuildMeshModel` accepts both by inspecting nesting depth,
-  because a mesh COPY source is not always this extension's own reader — a
-  spec-conformant Parquet writer emits the flat shape, and both must colour the
-  same faces.
 - **Sidecar files and the temp-rename.** `Finalize` writes the main file to
   DuckDB's temp path, which is renamed afterwards. The `.mtl` and copied images
   (`obj`), and the `.bin` buffer and images (`gltf`), are not covered: they are

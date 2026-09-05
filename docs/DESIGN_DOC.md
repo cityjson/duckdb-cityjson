@@ -188,12 +188,20 @@ worth stating plainly:
 ## 7. Appearance
 
 Materials and textures are kept **separate from geometry**, following OBJ /
-COLLADA / glTF precedent, and exist in two modes:
+COLLADA / glTF precedent. Each per-LoD `material_lod*` / `texture_lod*` column
+is a typed `MAP`, flat one entry per WKB face: `MAP(VARCHAR, BIGINT[])` for
+material, theme → one id (or NULL) per face; `MAP(VARCHAR, STRUCT(id BIGINT, uv
+DOUBLE[][])[][])` for texture, theme → per face → per ring → the id and its
+inlined `[u, v]` pairs, an untextured ring holding `{NULL, NULL}`. That cell
+shape is the same in both of two id-space modes:
 
 - **local** (default) — the source's own feature-local indices, passed through
-  verbatim.
-- **sidecar** — dataset-global ids into interned material/texture tables, with
-  texture UVs inlined.
+  as-is.
+- **sidecar** — dataset-global ids into interned material/texture tables.
+
+UVs are inlined in both modes — a stored index into a per-feature UV pool is
+meaningless once every feature's rows share one table, so `'local'` mode
+inlines it just as `'sidecar'` mode does.
 
 Sidecar mode exists because CityParquet needs it: once every feature's rows share
 one table, a feature-local index resolves to the wrong definition. Interning is
@@ -262,14 +270,18 @@ appearance refs, and only `Finalize` differs. `BuildMeshModel` flattens those
 objects into per-object vertex pools and faces (rings, surface, material,
 texture, UVs) once per COPY; `AppearanceSource` resolves refs either through the
 source's own blocks (local form) or through the two query options (sidecar
-form), and the writer never sees the difference. A material or texture cell
-itself reaches `BuildMeshModel` in either of two shapes, orthogonally to form —
-the CityParquet spec's flat, per-WKB-face shape, or this extension's reader's
-nested, per-shell shape — and it classifies which by nesting depth, so both
-shapes colour the same faces. Faces with holes are
-triangulated with earcut after projection onto their Newell normal, shifted to
-the ring's first vertex so the signed-area tests do not drown at projected
-magnitudes.
+form), and the writer never sees the difference. A `material_lod*`/`texture_lod*`
+column is already flat, one entry per WKB face, so `BuildMeshModel` indexes it
+directly by face position and never walks a nesting. The CityJSON-family sink
+instead needs the spec's per-shell nesting: it re-nests the flat cell against
+the geometry's own `shells`, the same reconstruction `face_semantics` uses, and
+re-interns a texture's inlined `[u, v]` pairs into a per-feature (or, for a
+single-document CityJSON, per-document) `vertices-texture` pool only once every
+row of a feature has been collected — a feature's rows can land on different
+threads during this sink, and only the writer sees every one of them together.
+Faces with holes are triangulated with earcut after projection onto their
+Newell normal, shifted to the ring's first vertex so the signed-area tests do
+not drown at projected magnitudes.
 
 The glTF writer builds a `tinygltf::Model` from the same mesh model: one
 buffer, 4-byte-aligned views, positions as float32 relative to the origin,
