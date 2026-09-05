@@ -31,6 +31,14 @@ SELECT cityjson_appearance_ids(MAP {'visual': [
 ----
 [0, 5]
 
+# A texture cell whose every ring is bare (no `id`, no `uv`) contributes no
+# references -- an EMPTY list, not NULL. The cell itself is present; it is
+# only every ring inside it that carries nothing.
+query T
+SELECT cityjson_appearance_ids(MAP {'visual': [[{'id': NULL, 'uv': NULL}]]}::MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]));
+----
+[]
+
 query I
 SELECT cityjson_appearance_ids(NULL::MAP(VARCHAR, BIGINT[])) IS NULL;
 ----

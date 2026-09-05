@@ -34,3 +34,13 @@ WHERE material_lod3_0 IS NOT NULL
   AND len(map_values(material_lod3_0)[1]) <> len(geometry_properties_lod3_0.face_semantics);
 ----
 0
+
+# The predicate above is not vacuous, but it is also not broad: this fixture has
+# exactly one row where both a material and known face semantics are present, so
+# the alignment check is exercised once, not across the fixture.
+query I
+SELECT COUNT(*) FROM rs.building
+WHERE material_lod3_0 IS NOT NULL
+  AND geometry_properties_lod3_0.face_semantics IS NOT NULL;
+----
+1
