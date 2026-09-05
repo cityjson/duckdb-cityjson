@@ -12,6 +12,7 @@
 #include "cityjson/mesh_model.hpp"
 #include "cityjson/obj_reader.hpp"
 #include "cityjson/reader.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -643,6 +644,23 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 	}
 	if (IsMeshFormat(bind_data->format)) {
 		bind_data->appearance_source = BuildAppearanceSource(context, *bind_data);
+	} else if (bind_data->source_ref.has_value()) {
+		// The CityJSON family re-attaches each feature's own appearance block
+		// verbatim (LoadSourceAppearance/CityJSONWriter) -- LOCAL indices into that
+		// block's `materials`/`textures` arrays. A sidecar-read source's cells hold
+		// dataset-global ids instead, which those LOCAL arrays do not index into, and
+		// unlike the mesh formats there is no materials_query/textures_query escape
+		// hatch here to resolve them against -- so this refuses unconditionally
+		// rather than write a file whose refs and definitions silently disagree.
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		const auto &source_ref = *bind_data->source_ref;
+		if (source_ref.sidecar_appearance) {
+			throw InvalidInputException(
+			    "COPY TO " + input.info.format +
+			    ": the source was read with appearance := 'sidecar', so its material/texture cells hold "
+			    "dataset-global ids that the feature-local appearance blocks this format re-attaches cannot "
+			    "resolve; read the source with appearance := 'local' (the default) for a CityJSON-family COPY");
+		}
 	}
 
 	// Default quantisation: when neither an explicit transform_scale/translate nor a
@@ -1142,13 +1160,15 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 		// object. `from_wkb` is true when the geometry came from a flattened WKB
 		// column (so its shells must be recovered from `shells`); false for the
 		// legacy STRUCT layout, whose boundaries are already nested.
-		auto apply_properties = [&](json &geom, idx_t props_col, bool from_wkb) {
+		// Returns the parsed `props` json so `apply_appearance` (below) can read its
+		// `shells` without re-fetching and re-parsing the same column value.
+		auto apply_properties = [&](json &geom, idx_t props_col, bool from_wkb) -> json {
 			if (props_col == DConstants::INVALID_INDEX) {
-				return;
+				return json();
 			}
 			auto pval = input.data[props_col].GetValue(row);
 			if (pval.IsNull()) {
-				return;
+				return json();
 			}
 			// CityParquet stores geometry_properties as a STRUCT; read_cityjson emits
 			// the same payload as VARCHAR JSON. Obtain a json object from whichever we
@@ -1160,7 +1180,7 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 				try {
 					props = json_utils::ParseJson(pval.ToString());
 				} catch (...) {
-					return; // invalid JSON text -> apply no properties
+					return json(); // invalid JSON text -> apply no properties
 				}
 			}
 			try {
@@ -1200,6 +1220,7 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 			} catch (...) {
 				// Ignore parse errors in geometry properties.
 			}
+			return props;
 		};
 
 		// Re-attach per-LoD appearance (§11) onto a geometry from its matching
@@ -1214,16 +1235,18 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 		// by face position and never re-nests it. The CityJSON family (CityJSON /
 		// CityJSONSeq / FlatCityBuf) instead needs the spec's per-shell nesting,
 		// recovered with the same `RenestValues` the semantics reconstruction above
-		// already applies to `face_semantics`, keyed off this geometry's own
-		// `type`/`shells` (the same properties column `find_properties_col` locates for
-		// `apply_properties`). A texture's per-face element is its whole ring array,
-		// re-nested as one unit; the `[u, v]` pairs inside stay inline here and are
+		// already applies to `face_semantics`, keyed off this geometry's own `type`
+		// and the same `props["shells"]` `apply_properties` already parsed for this
+		// row (passed in by the caller, rather than re-fetching and re-parsing the
+		// same `geometry_properties_*` column value here). A texture's per-face
+		// element is its whole ring array, re-nested as one unit; the `[u, v]` pairs
+		// inside stay inline here and are
 		// re-interned into a per-feature (or, for a single-document CityJSON,
 		// per-document) `vertices-texture` pool only once every row of the output has
 		// been collected, in CityJSONWriter::WriteCityJSONSeq / WriteCityJSON -- a
 		// feature's rows can be processed on different threads during this sink, and
 		// only the writer sees every one of them together.
-		auto apply_appearance = [&](json &geom, const std::string &geom_name) {
+		auto apply_appearance = [&](json &geom, const std::string &geom_name, const json &props) {
 			std::string suffix;
 			static const std::string kGeometryPrefix = "geometry";
 			if (geom_name == kGeometryPrefix) {
@@ -1246,34 +1269,23 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 				try {
 					flat = is_material ? MaterialCellToFlatJson(MaterialCellFromValue(v))
 					                   : TextureCellToFlatJson(TextureCellFromValue(v));
-				} catch (const std::exception &) {
-					return; // a malformed cell contributes no appearance, same as absent
+				} catch (const InvalidInputException &e) {
+					// A cell that violates the column's own invariants (a NULL theme
+					// value, `id`/`uv` disagreeing on nullness) is invalid input, not an
+					// appearance to silently drop -- the `other` column is refused just
+					// as loudly for the same reason elsewhere in this function.
+					// ErrorData unwraps the plain message: an Exception's own what()
+					// returns the client-protocol JSON envelope, not the raw text.
+					throw InvalidInputException("object %s: %s: %s", city_obj_id, prefix + suffix,
+					                            ErrorData(e).RawMessage());
 				}
 				if (IsMeshFormat(bind_data.format)) {
 					geom[key] = std::move(flat);
 					return;
 				}
 				const std::string geom_type = geom.value("type", "");
-				json shells = json::array();
-				auto props_col = find_properties_col(geom_name);
-				if (props_col != DConstants::INVALID_INDEX) {
-					auto pval = input.data[props_col].GetValue(row);
-					if (!pval.IsNull()) {
-						json props;
-						if (bind_data.column_types[props_col].id() == LogicalTypeId::STRUCT) {
-							props = StructPropsToJson(pval);
-						} else {
-							try {
-								props = json_utils::ParseJson(pval.ToString());
-							} catch (...) {
-								// leave `props` empty -> shells stays the empty array
-							}
-						}
-						if (props.contains("shells")) {
-							shells = props["shells"];
-						}
-					}
-				}
+				static const json kEmptyShells = json::array();
+				const json &shells = props.contains("shells") ? props["shells"] : kEmptyShells;
 				json nested = json::object();
 				for (auto theme_it = flat.begin(); theme_it != flat.end(); ++theme_it) {
 					json values = theme_it.value().value("values", json::array());
@@ -1374,8 +1386,8 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 			}
 
 			if (produced) {
-				apply_properties(geom, find_properties_col(col_name), from_wkb);
-				apply_appearance(geom, col_name);
+				auto props = apply_properties(geom, find_properties_col(col_name), from_wkb);
+				apply_appearance(geom, col_name, props);
 				geometries.push_back(std::move(geom));
 			}
 		}
@@ -1539,7 +1551,8 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 		}
 		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.fcb_attr_index_columns, bind_data.fcb_branching_factor,
-		                                 bind_data.fcb_index_node_size, declared_attr_columns);
+		                                 bind_data.fcb_index_node_size, declared_attr_columns,
+		                                 bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
 		break;
 	}
 #else

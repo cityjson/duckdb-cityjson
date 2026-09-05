@@ -263,6 +263,39 @@ CityJSONWriter::BuildTexturePool(std::vector<std::pair<std::string, json>> &obje
 	return pool;
 }
 
+// Build the appearance block for one scope of objects (a whole document, or one
+// CityJSONSeq/FlatCityBuf feature): the source's own `materials`/`textures` arrays
+// verbatim (their local ids line up with what this scope's geometry refs use), with
+// `vertices-texture` replaced by a pool freshly rebuilt from the inline [u, v] pairs
+// `apply_appearance` left in `objects` (`BuildTexturePool`/`InternTextureValues`,
+// mutating `objects` in place) -- or erased if nothing in this scope actually
+// references a texture, since a stale source pool would otherwise survive unused.
+// nullopt when there is neither a source definition nor anything to rebuild, so a
+// caller skips the key entirely rather than writing an empty object. One call site
+// used by `WriteCityJSON`, `WriteCityJSONSeq` and `WriteFlatCityBuf` alike.
+std::optional<json> CityJSONWriter::BuildAppearanceBlock(const std::optional<json> &source_appearance,
+                                                         std::vector<std::pair<std::string, json>> &objects) {
+	auto texture_pool = BuildTexturePool(objects);
+	bool has_definitions = source_appearance.has_value() && !source_appearance->empty();
+	if (!has_definitions && texture_pool.empty()) {
+		return std::nullopt;
+	}
+	json app = has_definitions ? source_appearance.value() : json::object();
+	if (!texture_pool.empty()) {
+		json vt = json::array();
+		for (const auto &uv : texture_pool) {
+			vt.push_back(json::array({uv[0], uv[1]}));
+		}
+		app["vertices-texture"] = std::move(vt);
+	} else {
+		app.erase("vertices-texture");
+	}
+	if (app.empty()) {
+		return std::nullopt;
+	}
+	return app;
+}
+
 // ============================================================
 // BuildMetadataJson
 // ============================================================
@@ -334,33 +367,15 @@ void CityJSONWriter::WriteCityJSON(
 
 	// Build global vertex pool (replaces coordinates with indices in-place)
 	auto vertex_pool = BuildVertexPool(all_objects, metadata.transform);
-	// Same, for the inline [u, v] pairs `apply_appearance` left in every geometry's
-	// `texture` object (replaces them with pool indices in-place).
-	auto texture_pool = BuildTexturePool(all_objects);
 
-	// CityObjects
 	// Definitions for the per-geometry material/texture refs. A whole-document
 	// CityJSON has exactly one block, so unlike the Seq path there is nothing to
-	// key by feature. `materials`/`textures` -- the referenced arrays -- come
-	// verbatim from the source (their local ids line up with the ones the geometry
-	// refs use); `vertices-texture` does not, since a face's UV pairs are inlined in
-	// the cell rather than indexed, and the pool actually referenced by this
-	// document's output is rebuilt fresh above.
-	bool has_appearance_definitions = appearance.has_value() && !appearance->empty();
-	if (has_appearance_definitions || !texture_pool.empty()) {
-		json app = has_appearance_definitions ? appearance.value() : json::object();
-		if (!texture_pool.empty()) {
-			json vt = json::array();
-			for (const auto &uv : texture_pool) {
-				vt.push_back(json::array({uv[0], uv[1]}));
-			}
-			app["vertices-texture"] = std::move(vt);
-		} else {
-			app.erase("vertices-texture");
-		}
-		if (!app.empty()) {
-			root["appearance"] = std::move(app);
-		}
+	// key by feature. `materials`/`textures` come verbatim from the source;
+	// `vertices-texture` is rebuilt fresh from what this document's geometry
+	// actually references (BuildAppearanceBlock, which also mutates `all_objects`'
+	// texture cells in place -- inline [u, v] pairs become pool indices).
+	if (auto app = BuildAppearanceBlock(appearance, all_objects)) {
+		root["appearance"] = std::move(app.value());
 	}
 
 	root["CityObjects"] = json::object();
@@ -436,10 +451,20 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 		// Build per-feature vertex pool
 		auto vertex_pool = BuildVertexPool(feature_objs, metadata.transform);
-		// Same, for the inline [u, v] pairs `apply_appearance` left in every geometry's
-		// `texture` object -- this feature's own pool, rebuilt from exactly what its
-		// geometries reference (replaces the pairs with pool indices in-place).
-		auto texture_pool = BuildTexturePool(feature_objs);
+
+		// This feature's own appearance block, built (and `feature_objs`' texture
+		// cells rewritten from inline [u, v] pairs to pool indices) BEFORE the
+		// CityObjects copy below, or the copy would carry the pre-rewrite pairs to
+		// the file untouched. Its refs are LOCAL indices, so it is re-emitted onto
+		// the feature it came from and never merged with another feature's --
+		// merging would preserve every count while silently re-pointing every
+		// reference. `materials`/`textures` come verbatim from the source;
+		// `vertices-texture` is rebuilt fresh from exactly what this feature's own
+		// geometry references.
+		auto appearance_it = appearance_by_feature.find(fid);
+		std::optional<json> source_appearance =
+		    appearance_it != appearance_by_feature.end() ? std::optional<json>(appearance_it->second) : std::nullopt;
+		auto feature_appearance = BuildAppearanceBlock(source_appearance, feature_objs);
 
 		// Build CityJSONFeature line
 		json feature;
@@ -449,32 +474,11 @@ void CityJSONWriter::WriteCityJSONSeq(
 		for (const auto &[obj_id, obj_json] : feature_objs) {
 			feature["CityObjects"][obj_id] = obj_json;
 		}
-
-		// This feature's own appearance block. Its refs are LOCAL indices into it,
-		// so it is re-emitted onto the feature it came from and never merged with
-		// another feature's -- merging would preserve every count while silently
-		// re-pointing every reference. `materials`/`textures` come verbatim from the
-		// source; `vertices-texture` is replaced with the pool just rebuilt, since a
-		// face's UV pairs are inlined in the cell rather than indexed and the source
-		// pool's numbering has no bearing on what this output actually references.
-		{
-			auto appearance_it = appearance_by_feature.find(fid);
-			bool has_definitions = appearance_it != appearance_by_feature.end() && !appearance_it->second.empty();
-			if (has_definitions || !texture_pool.empty()) {
-				json app = has_definitions ? appearance_it->second : json::object();
-				if (!texture_pool.empty()) {
-					json vt = json::array();
-					for (const auto &uv : texture_pool) {
-						vt.push_back(json::array({uv[0], uv[1]}));
-					}
-					app["vertices-texture"] = std::move(vt);
-				} else {
-					app.erase("vertices-texture");
-				}
-				if (!app.empty()) {
-					feature["appearance"] = std::move(app);
-				}
-			}
+		// Re-bound in the `if` itself (rather than testing `feature_appearance`
+		// directly): clang-tidy's optional-narrowing only tracks a `.value()` back to
+		// a truthiness check made in the same `if (auto x = ...)` condition.
+		if (auto app = std::move(feature_appearance)) {
+			feature["appearance"] = std::move(app.value());
 		}
 
 		feature["vertices"] = json::array();
@@ -513,7 +517,9 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
                                       const std::vector<std::string> &feature_order,
                                       const std::vector<std::string> &attr_index_columns,
                                       std::optional<uint16_t> branching_factor, std::optional<uint16_t> index_node_size,
-                                      const std::vector<std::string> &declared_attr_columns) {
+                                      const std::vector<std::string> &declared_attr_columns,
+                                      const std::optional<json> &appearance_header,
+                                      const std::map<std::string, json> &appearance_by_feature) {
 	// Build the metadata header (same shape as CityJSONSeq's line 1).
 	json header;
 	header["type"] = "CityJSON";
@@ -524,6 +530,14 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 	auto meta_json = BuildMetadataJson(metadata);
 	if (!meta_json.empty()) {
 		header["metadata"] = meta_json;
+	}
+
+	// The material/texture definitions the per-geometry refs index into -- carried
+	// verbatim, same as WriteCityJSONSeq's header line. `fcb::writer::header_serializer`
+	// (`to_fcb_header`) reads `appearance` straight off this metadata line, exactly
+	// as it reads `type`/`version`/`transform`/`metadata`.
+	if (appearance_header.has_value() && !appearance_header->empty()) {
+		header["appearance"] = appearance_header.value();
 	}
 
 	// FcbWriter needs a transform to quantize/dequantize vertices -- identity if none given.
@@ -561,6 +575,22 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 		json feature;
 		feature["type"] = "CityJSONFeature";
 		feature["id"] = fid;
+
+		// This feature's own appearance block -- LOCAL indices, so re-attached to the
+		// feature it came from, with `vertices-texture` rebuilt fresh exactly as
+		// WriteCityJSONSeq does. `fcb::writer::geom_encoder` reads a geometry's own
+		// `material`/`texture` off the standard CityJSON shape already in
+		// `feature_objs`, so nothing else is needed to route it through.
+		{
+			auto appearance_it = appearance_by_feature.find(fid);
+			std::optional<json> source_appearance = appearance_it != appearance_by_feature.end()
+			                                            ? std::optional<json>(appearance_it->second)
+			                                            : std::nullopt;
+			if (auto app = BuildAppearanceBlock(source_appearance, feature_objs)) {
+				feature["appearance"] = std::move(app.value());
+			}
+		}
+
 		feature["CityObjects"] = json::object();
 		for (const auto &[obj_id, obj_json] : feature_objs) {
 			feature["CityObjects"][obj_id] = obj_json;
