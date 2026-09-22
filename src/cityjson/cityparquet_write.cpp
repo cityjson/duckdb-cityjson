@@ -424,26 +424,29 @@ std::string BuildGeoJson(const json &crs, const std::vector<ColumnFacts> &facts)
 //! Row-group size of every package COPY -- DuckDB's own default, stated so the
 //! object tables' dictionary cut-off below can equal it.
 constexpr idx_t PACKAGE_ROW_GROUP_SIZE = 122880;
-//! Cap on one string dictionary page. A chunk is dictionary-encoded -- and so
-//! eligible for a filter -- only while its distinct values fit under this cap.
-//! Across a full row group that is roughly 68 bytes per row for a near-unique
-//! column, so identifier dictionaries stay far below it, a wide near-unique
-//! string can exceed it and fall back to PLAIN, and a compact WKB or JSON
-//! column can fit under it and be filtered like any other.
+//! Cap on one string dictionary page. It restricts the chunks DuckDB would
+//! otherwise dictionary-encode: across a full row group it is roughly 68 bytes
+//! per row for a near-unique column, so identifier dictionaries stay far below
+//! it, a wide near-unique string exceeds it and falls back to PLAIN, and a
+//! compact WKB or JSON column can fit under it. It is a further restriction,
+//! not the whole rule -- a type DuckDB never dictionary-encodes, Boolean among
+//! them, is PLAIN however small its vocabulary.
 constexpr idx_t STRING_DICTIONARY_PAGE_LIMIT = 8388608;
 
 //! The COPY options that decide bloom filters (spec 02-object-table-schema.mdx,
 //! "Bloom filters"). DuckDB writes a filter only for a dictionary-encoded chunk,
 //! and its dictionary and bloom options are file-wide, so an object table raises
-//! the dictionary cut-off to the row-group size: every column chunk whose
-//! distinct values fit under the dictionary-page cap is dictionary-encoded and
-//! filtered, `id` and `feature_id` among them.
+//! the dictionary cut-off to the row-group size, so the chunks it does
+//! dictionary-encode -- `id` and `feature_id` among them -- carry a filter.
 //!
-//! Eligibility is therefore CONDITIONAL on dictionary encoding, not a fixed
-//! column list. A high-cardinality string averaging more than about 68 bytes
-//! over a full 122 880-row group exceeds the cap, is written PLAIN and carries
-//! no filter; a compact WKB or JSON column can stay under it and carry one,
-//! in any row group and not only a short trailing one. On the packages measured
+//! Eligibility is therefore CONDITIONAL on the chunk actually being
+//! dictionary-encoded, not a fixed column list. That excludes a type whose
+//! writer never uses a dictionary, Boolean among them: PLAIN and unfiltered
+//! however small its vocabulary. The dictionary-page cap restricts the rest: a
+//! high-cardinality string averaging more than about 68 bytes over a full
+//! 122 880-row group exceeds it, is written PLAIN and carries no filter; a
+//! compact WKB or JSON column can stay under it and carry one, in any row
+//! group and not only a short trailing one. On the packages measured
 //! so far the filtered set is a superset of the reference writer's -- on delft
 //! (2 231 rows, one row group) 68 of 115 column chunks carry a filter,
 //! including numeric and temporal attributes, the `bbox` leaves, list elements

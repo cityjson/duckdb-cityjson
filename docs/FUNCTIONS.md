@@ -790,16 +790,18 @@ the format the data originally came from into each file's `city` footer as
 filters on the object tables. DuckDB writes a filter only for a
 dictionary-encoded column chunk, and its dictionary and bloom options apply to a
 whole file, so each object table is written with 122 880-row row groups and a
-dictionary cut-off of the same size under an 8 MiB dictionary-page cap: every
-column chunk whose distinct values fit under that cap is dictionary-encoded and
-carries a filter (FPP 0.01), placed after the last row group — `id` and
-`feature_id` among them.
+dictionary cut-off of the same size under an 8 MiB dictionary-page cap. The
+chunks DuckDB dictionary-encodes carry a filter (FPP 0.01), placed after the
+last row group — `id` and `feature_id` among them.
 
-Which other columns qualify is conditional on that cap, not a fixed list. Over a
-full row group the cap works out at roughly 68 bytes per row for a near-unique
-column, so a high-cardinality string wider than that is written PLAIN and
-carries no filter, while a compact WKB geometry or JSON column can stay under
-the cap and carry one — in any row group, not only a short trailing one. In
+Which other columns qualify is conditional on the chunk actually being
+dictionary-encoded, not a fixed list. That excludes a type whose writer never
+uses a dictionary — Boolean among them, PLAIN and unfiltered however small its
+vocabulary. The dictionary-page cap restricts the rest: over a full row group it
+works out at roughly 68 bytes per row for a near-unique column, so a
+high-cardinality string wider than that is written PLAIN and carries no filter,
+while a compact WKB geometry or JSON column can stay under the cap and carry one
+— in any row group, not only a short trailing one. In
 practice the filtered set is wider than the string columns: on the delft package
 (2 231 rows, one row group) 68 of 115 column chunks carry a filter, numeric and
 temporal attributes, the `bbox` leaves, list elements and the geometry columns
