@@ -784,9 +784,19 @@ SELECT * FROM cityparquet_write('delft', 'out/', crs => 'EPSG:7415');
 -- metadata.json    | written |    0 |    6721
 ```
 
-It takes two named parameters: `crs` (below) and `source_format`, which records
+It takes three named parameters: `crs` (below); `source_format`, which records
 the format the data originally came from into each file's `city` footer as
-`source_format`.
+`source_format`; and `bloom` (default `true`), which writes Parquet bloom
+filters on the object tables. DuckDB writes a filter only for a
+dictionary-encoded column chunk, and its dictionary and bloom options apply to a
+whole file, so each object table is written with 122 880-row row groups and a
+dictionary cut-off of the same size under an 8 MiB dictionary-page cap: `id`,
+`feature_id` and every other string column whose dictionary fits carry a filter
+(FPP 0.01), placed after the last row group. WKB geometry and JSON columns
+exceed the cap and stay unfiltered, except in a row group small enough for their
+dictionary to fit. Sidecars carry no filter; `bloom => false` writes none at
+all. DuckDB itself consults the filters for `=` and `IN` predicates, including
+those pushed down from a join.
 
 …and load a package directory back into a fresh schema:
 

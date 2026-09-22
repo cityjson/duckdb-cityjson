@@ -1,0 +1,85 @@
+# name: test/sql/cityparquet_bloom.test
+# description: cityparquet_write writes bloom filters on the identifier columns, after the data, none on sidecars; bloom => false writes none
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+statement ok
+CREATE SCHEMA bl;
+
+statement ok
+CREATE TABLE bl.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('bl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('bl', '__TEST_DIR__/bloom_on', crs => 'EPSG:7415');
+
+# The identifier columns carry a filter in every row group. With DuckDB's
+# default cut-off (a fifth of the row group's rows) they would be PLAIN, and
+# DuckDB filters dictionary-encoded chunks only.
+query I
+SELECT string_agg(path_in_schema, ',' ORDER BY path_in_schema)
+FROM (
+  SELECT path_in_schema
+  FROM parquet_metadata('__TEST_DIR__/bloom_on/building.parquet')
+  WHERE path_in_schema IN ('id', 'feature_id', 'identificatie')
+  GROUP BY path_in_schema
+  HAVING bool_and(bloom_filter_offset IS NOT NULL)
+);
+----
+feature_id,id,identificatie
+
+# Every filter starts after the last byte of column data and declares its length.
+query II
+SELECT
+  bool_and(m.bloom_filter_offset >= e.data_end),
+  bool_and(m.bloom_filter_length IS NOT NULL)
+FROM parquet_metadata('__TEST_DIR__/bloom_on/building.parquet') m,
+  (SELECT max(coalesce(nullif(dictionary_page_offset, 0), data_page_offset) + total_compressed_size) AS data_end
+   FROM parquet_metadata('__TEST_DIR__/bloom_on/building.parquet')) e
+WHERE m.bloom_filter_offset IS NOT NULL;
+----
+true	true
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('bl', '__TEST_DIR__/bloom_off', crs => 'EPSG:7415', bloom => false);
+
+query I
+SELECT COUNT(*) FROM parquet_metadata('__TEST_DIR__/bloom_off/building.parquet')
+WHERE bloom_filter_offset IS NOT NULL;
+----
+0
+
+# Sidecars never carry a filter, whatever DuckDB would dictionary-encode in them.
+statement ok
+CREATE SCHEMA bl_tpl;
+
+statement ok
+CREATE TABLE bl_tpl.vegetation AS
+  SELECT * FROM read_cityjson('test/data/geometry_templates.city.json', appearance := 'sidecar');
+
+statement ok
+CREATE TABLE bl_tpl.geometry_templates AS
+  SELECT * FROM cityjson_geometry_templates('test/data/geometry_templates.city.json');
+
+statement ok
+PRAGMA cityparquet_init('bl_tpl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('bl_tpl', '__TEST_DIR__/bloom_tpl', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM parquet_metadata('__TEST_DIR__/bloom_tpl/geometry_templates.parquet')
+WHERE bloom_filter_offset IS NOT NULL;
+----
+0
+
+query I
+SELECT COUNT(*) > 0 FROM parquet_metadata('__TEST_DIR__/bloom_tpl/vegetation.parquet')
+WHERE path_in_schema = 'id' AND bloom_filter_offset IS NOT NULL;
+----
+true
