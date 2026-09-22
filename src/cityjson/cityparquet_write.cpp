@@ -424,17 +424,32 @@ std::string BuildGeoJson(const json &crs, const std::vector<ColumnFacts> &facts)
 //! Row-group size of every package COPY -- DuckDB's own default, stated so the
 //! object tables' dictionary cut-off below can equal it.
 constexpr idx_t PACKAGE_ROW_GROUP_SIZE = 122880;
-//! Cap on one string dictionary page. Identifier dictionaries stay far below
-//! it; a WKB or JSON column's page exceeds it and is written PLAIN, unfiltered.
+//! Cap on one string dictionary page. A chunk is dictionary-encoded -- and so
+//! eligible for a filter -- only while its distinct values fit under this cap.
+//! Across a full row group that is roughly 68 bytes per row for a near-unique
+//! column, so identifier dictionaries stay far below it, a wide near-unique
+//! string can exceed it and fall back to PLAIN, and a compact WKB or JSON
+//! column can fit under it and be filtered like any other.
 constexpr idx_t STRING_DICTIONARY_PAGE_LIMIT = 8388608;
 
 //! The COPY options that decide bloom filters (spec 02-object-table-schema.mdx,
 //! "Bloom filters"). DuckDB writes a filter only for a dictionary-encoded chunk,
 //! and its dictionary and bloom options are file-wide, so an object table raises
-//! the dictionary cut-off to the row-group size: `id`, `feature_id` and every
-//! other string column whose dictionary page fits under the cap is
-//! dictionary-encoded and filtered. That is a superset of the reference writer's
-//! columns, documented in 06-resources/02-software.mdx. Sidecars carry none.
+//! the dictionary cut-off to the row-group size: every column chunk whose
+//! distinct values fit under the dictionary-page cap is dictionary-encoded and
+//! filtered, `id` and `feature_id` among them.
+//!
+//! Eligibility is therefore CONDITIONAL on dictionary encoding, not a fixed
+//! column list. A high-cardinality string averaging more than about 68 bytes
+//! over a full 122 880-row group exceeds the cap, is written PLAIN and carries
+//! no filter; a compact WKB or JSON column can stay under it and carry one,
+//! in any row group and not only a short trailing one. On the packages measured
+//! so far the filtered set is a superset of the reference writer's -- on delft
+//! (2 231 rows, one row group) 68 of 115 column chunks carry a filter,
+//! including numeric and temporal attributes, the `bbox` leaves, list elements
+//! and the geometry columns -- but that is an observation on those data, not a
+//! property of the option set. Documented in 06-resources/02-software.mdx.
+//! Sidecars carry none.
 std::string BloomCopyOptions(bool is_object, bool bloom) {
 	const auto row_groups = ", ROW_GROUP_SIZE " + std::to_string(PACKAGE_ROW_GROUP_SIZE);
 	if (!is_object || !bloom) {
