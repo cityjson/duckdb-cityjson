@@ -55,10 +55,7 @@ std::string SidecarFunction(const std::string &sidecar) {
 //! .city.json on purpose.
 std::unique_ptr<CityJSONReader> OpenFor(ClientContext &context, const std::string &reader_function,
                                         const std::string &path, size_t sample_lines) {
-	if (reader_function == "read_cityjsonseq") {
-		return OpenCityJSONSeqFile(context, path, sample_lines);
-	}
-	return OpenAnyCityJSONFile(context, path, sample_lines);
+	return OpenCityJSONFileOfKind(context, ReaderKindForFunction(reader_function), path, sample_lines);
 }
 
 //! The generated call to the read function, with the options the caller passed through.

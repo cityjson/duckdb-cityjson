@@ -252,7 +252,26 @@ enum class ReaderKind : uint8_t {
 	Auto,
 	//! OpenCityJSONSeqFile — CityJSONSeq only, never auto-detected.
 	CityJSONSeq,
+	//! FlatCityBuf only, via FlatCityBufReader.
+	FlatCityBuf,
+	//! Wavefront OBJ only, via OBJReader.
+	Obj,
 };
+
+/**
+ * The reader kind a read_* table function opens with.
+ *
+ * A caller replaying a recorded choice — the streaming scan in init_global, COPY's
+ * reopen of its source — names the function, not the factory, and never restates the
+ * mapping.
+ */
+ReaderKind ReaderKindForFunction(const std::string &read_function);
+
+/**
+ * The reader kind a bare path implies, for `metadata_from` where no read function
+ * names one. Suffix-based, defaulting to Auto when the suffix is unknown.
+ */
+ReaderKind ReaderKindForPath(const std::string &path);
 
 /**
  * Open `file_name` with the factory `kind` names.

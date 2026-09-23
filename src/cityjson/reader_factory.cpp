@@ -1,5 +1,8 @@
 #include "cityjson/reader.hpp"
 #include "cityjson/json_utils.hpp"
+#include "cityjson/obj_reader.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_reader.hpp"
 #endif
@@ -108,10 +111,49 @@ std::unique_ptr<CityJSONReader> OpenCityJSONFileOfKind(duckdb::ClientContext &co
 	switch (kind) {
 	case ReaderKind::CityJSONSeq:
 		return OpenCityJSONSeqFile(context, file_name, sample_lines);
+	case ReaderKind::FlatCityBuf:
+#ifdef CITYJSON_HAS_FCB
+		return std::make_unique<FlatCityBufReader>(context, file_name, file_name, sample_lines);
+#else
+		throw NotImplementedException("flatcitybuf support is not compiled in");
+#endif
+	case ReaderKind::Obj: {
+		OBJReadOptions options;
+		// The definitions an OBJ carries are file-global, so any LoD serves to read them.
+		options.lod = "0.0";
+		return std::make_unique<OBJReader>(context, file_name, options);
+	}
 	case ReaderKind::Auto:
 	default:
 		return OpenAnyCityJSONFile(context, file_name, sample_lines);
 	}
+}
+
+ReaderKind ReaderKindForFunction(const std::string &read_function) {
+	if (read_function == "read_cityjsonseq") {
+		return ReaderKind::CityJSONSeq;
+	}
+	if (read_function == "read_flatcitybuf") {
+		return ReaderKind::FlatCityBuf;
+	}
+	if (read_function == "read_obj") {
+		return ReaderKind::Obj;
+	}
+	return ReaderKind::Auto;
+}
+
+ReaderKind ReaderKindForPath(const std::string &path) {
+	auto lower = StringUtil::Lower(path);
+	if (StringUtil::EndsWith(lower, ".fcb")) {
+		return ReaderKind::FlatCityBuf;
+	}
+	if (StringUtil::EndsWith(lower, ".obj")) {
+		return ReaderKind::Obj;
+	}
+	if (StringUtil::EndsWith(lower, ".jsonl")) {
+		return ReaderKind::CityJSONSeq;
+	}
+	return ReaderKind::Auto;
 }
 
 } // namespace cityjson
