@@ -70,6 +70,8 @@ struct WriteBindData : public TableFunctionData {
 	std::string directory;
 	std::string crs;
 	std::string source_format;
+	//! Write Parquet bloom filters on the object tables (`bloom => false` writes none).
+	bool bloom = true;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<WriteBindData>();
@@ -78,11 +80,12 @@ struct WriteBindData : public TableFunctionData {
 		result->directory = directory;
 		result->crs = crs;
 		result->source_format = source_format;
+		result->bloom = bloom;
 		return std::move(result);
 	}
 	bool Equals(const FunctionData &other) const override {
 		auto &o = other.Cast<WriteBindData>();
-		return catalog == o.catalog && schema == o.schema && directory == o.directory;
+		return catalog == o.catalog && schema == o.schema && directory == o.directory && bloom == o.bloom;
 	}
 };
 
@@ -418,6 +421,48 @@ std::string BuildGeoJson(const json &crs, const std::vector<ColumnFacts> &facts)
 	return geo.dump();
 }
 
+//! Row-group size of every package COPY -- DuckDB's own default, stated so the
+//! object tables' dictionary cut-off below can equal it.
+constexpr idx_t PACKAGE_ROW_GROUP_SIZE = 122880;
+//! Cap on one string dictionary page. It restricts the chunks DuckDB would
+//! otherwise dictionary-encode: across a full row group it is roughly 68 bytes
+//! per row for a near-unique column, so identifier dictionaries stay far below
+//! it, a wide near-unique string exceeds it and falls back to PLAIN, and a
+//! compact WKB or JSON column can fit under it. It is a further restriction,
+//! not the whole rule -- a type DuckDB never dictionary-encodes, Boolean among
+//! them, is PLAIN however small its vocabulary.
+constexpr idx_t STRING_DICTIONARY_PAGE_LIMIT = 8388608;
+
+//! The COPY options that decide bloom filters (spec 02-object-table-schema.mdx,
+//! "Bloom filters"). DuckDB writes a filter only for a dictionary-encoded chunk,
+//! and its dictionary and bloom options are file-wide, so an object table raises
+//! the dictionary cut-off to the row-group size, so the chunks it does
+//! dictionary-encode -- `id` and `feature_id` among them -- carry a filter.
+//!
+//! Eligibility is therefore CONDITIONAL on the chunk actually being
+//! dictionary-encoded, not a fixed column list. That excludes a type whose
+//! writer never uses a dictionary, Boolean among them: PLAIN and unfiltered
+//! however small its vocabulary. The dictionary-page cap restricts the rest: a
+//! high-cardinality string averaging more than about 68 bytes over a full
+//! 122 880-row group exceeds it, is written PLAIN and carries no filter; a
+//! compact WKB or JSON column can stay under it and carry one, in any row
+//! group and not only a short trailing one. On the packages measured
+//! so far the filtered set is a superset of the reference writer's -- on delft
+//! (2 231 rows, one row group) 68 of 115 column chunks carry a filter,
+//! including numeric and temporal attributes, the `bbox` leaves, list elements
+//! and the geometry columns -- but that is an observation on those data, not a
+//! property of the option set. Documented in 06-resources/02-software.mdx.
+//! Sidecars carry none.
+std::string BloomCopyOptions(bool is_object, bool bloom) {
+	const auto row_groups = ", ROW_GROUP_SIZE " + std::to_string(PACKAGE_ROW_GROUP_SIZE);
+	if (!is_object || !bloom) {
+		return row_groups + ", WRITE_BLOOM_FILTER false";
+	}
+	return row_groups + ", DICTIONARY_SIZE_LIMIT " + std::to_string(PACKAGE_ROW_GROUP_SIZE) +
+	       ", STRING_DICTIONARY_PAGE_SIZE_LIMIT " + std::to_string(STRING_DICTIONARY_PAGE_LIMIT) +
+	       ", WRITE_BLOOM_FILTER true, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.01";
+}
+
 } // namespace
 
 static unique_ptr<FunctionData> WriteBind(ClientContext &context, TableFunctionBindInput &input,
@@ -434,6 +479,8 @@ static unique_ptr<FunctionData> WriteBind(ClientContext &context, TableFunctionB
 			result->crs = StringValue::Get(entry.second);
 		} else if (entry.first == "source_format") {
 			result->source_format = StringValue::Get(entry.second);
+		} else if (entry.first == "bloom") {
+			result->bloom = BooleanValue::Get(entry.second);
 		}
 	}
 
@@ -630,7 +677,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		Run(connection, "COPY (SELECT " +
 		                    CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation) +
 		                    " FROM " + QualifiedName(bind_data.catalog, bind_data.schema, table) + ") TO " +
-		                    Literal(path) + " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "});");
+		                    Literal(path) + " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "}" +
+		                    BloomCopyOptions(is_object, bind_data.bloom) + ");");
 
 		WrittenFile written;
 		written.file = file;
@@ -782,6 +830,7 @@ void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
 	func.init_global = WriteInitGlobal;
 	func.named_parameters["crs"] = LogicalType(LogicalTypeId::VARCHAR);
 	func.named_parameters["source_format"] = LogicalType(LogicalTypeId::VARCHAR);
+	func.named_parameters["bloom"] = LogicalType(LogicalTypeId::BOOLEAN);
 	loader.RegisterFunction(func);
 }
 
