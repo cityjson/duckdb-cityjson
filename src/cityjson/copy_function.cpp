@@ -337,7 +337,7 @@ static uint16_t ParseTreeTuningOption(const Value &val, const std::string &optio
 // the whole file again.
 static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref, CityJSONReader &reader,
                                  const CityJSON &source_meta, CityJSONCopyBindData &bind_data) {
-	if (source_ref.is_obj) {
+	if (source_ref.kind == ReaderKind::Obj) {
 		if (!source_meta.appearance.has_value() || source_meta.appearance->Empty()) {
 			return;
 		}
@@ -390,7 +390,7 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 		return std::optional<json>(std::in_place, *it);
 	};
 
-	if (!source_ref.is_seq) {
+	if (source_ref.kind != ReaderKind::CityJSONSeq) {
 		// Whole-document CityJSON: one block, and no per-feature blocks exist.
 		bind_data.source_appearance_header = take_appearance(json_utils::ParseJson(content));
 		return;
@@ -532,6 +532,11 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 			bind_data->materials_query = val.ToString();
 		} else if (loption == "textures_query") {
 			bind_data->textures_query = val.ToString();
+		} else {
+			// A misspelled option used to be dropped silently, writing the output with
+			// the default the user thought they had overridden. Reject anything the
+			// bind does not know rather than guess.
+			throw BinderException("COPY TO " + input.info.format + ": unknown option '" + option.first + "'");
 		}
 	}
 
@@ -559,9 +564,7 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 	if (!explicit_metadata_from.empty()) {
 		CopySourceRef ref;
 		ref.path = explicit_metadata_from;
-		ref.is_fcb = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".fcb");
-		ref.is_seq = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".jsonl");
-		ref.is_obj = StringUtil::EndsWith(StringUtil::Lower(explicit_metadata_from), ".obj");
+		ref.kind = ReaderKindForPath(explicit_metadata_from);
 		ref.sidecar_appearance = discovered.has_value() && discovered->sidecar_appearance;
 		bind_data->source_ref = std::move(ref);
 	} else {
@@ -580,14 +583,11 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
 		const auto &source_ref = *bind_data->source_ref;
 		try {
-			std::unique_ptr<CityJSONReader> reader;
-			if (source_ref.is_obj) {
-				OBJReadOptions obj_options;
-				obj_options.lod = "0.0"; // the definitions are file-global; any LoD serves
-				reader = std::make_unique<OBJReader>(context, source_ref.path, obj_options);
-			} else {
-				reader = OpenAnyCityJSONFile(context, source_ref.path, 1);
-			}
+			// Reopen with the reader the query itself used, not by re-detecting the
+			// format: a CityJSONSeq file named `*.city.json` is misread as a whole
+			// CityJSON document by auto-detection, which drops its metadata (CRS above
+			// all) and logs a warning instead.
+			auto reader = OpenCityJSONFileOfKind(context, source_ref.kind, source_ref.path, 1);
 			auto source_meta = reader->ReadMetadata();
 
 			// Only fill what the user did not state. An explicit crs must win, so it

@@ -20,6 +20,21 @@ FROM cityjsonseq_metadata('__TEST_DIR__/preserved.city.jsonl');
 ----
 EPSG	7415
 
+# --- read_cityjsonseq over a Seq file named *.city.json keeps its CRS ---
+# COPY reopens the source to inherit its metadata. Opening it by auto-detection
+# rather than by the reader the query used misreads a CityJSONSeq file whose name
+# does not end in .jsonl as a whole CityJSON document, logs a warning, and writes
+# a header with no `metadata` -- silently dropping EPSG:7415.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/seq_named_city_json.city.json'))
+TO '__TEST_DIR__/seq_named.city.jsonl' (FORMAT cityjsonseq);
+
+query TT
+SELECT reference_system.authority, reference_system.code
+FROM cityjsonseq_metadata('__TEST_DIR__/seq_named.city.jsonl');
+----
+EPSG	7415
+
 # --- it survives a format change too ---
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))

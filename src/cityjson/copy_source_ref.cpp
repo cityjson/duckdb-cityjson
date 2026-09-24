@@ -27,18 +27,23 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 		}
 		auto &call = fn.function->Cast<FunctionExpression>();
 
-		CopySourceRef found;
-		if (call.function_name == "read_cityjson") {
-			found.is_seq = false;
-		} else if (call.function_name == "read_cityjsonseq") {
-			found.is_seq = true;
-		} else if (call.function_name == "read_flatcitybuf") {
-			found.is_fcb = true;
-		} else if (call.function_name == "read_obj") {
-			found.is_obj = true;
-		} else {
+		// Only the four read functions name a path we can reopen. Anything else in a
+		// table function position (a read_csv, a range, a join) names no CityJSON file.
+		static const char *const kReadFunctions[] = {"read_cityjson", "read_cityjsonseq", "read_flatcitybuf",
+		                                             "read_obj"};
+		bool is_read_function = false;
+		for (auto *name : kReadFunctions) {
+			if (call.function_name == name) {
+				is_read_function = true;
+				break;
+			}
+		}
+		if (!is_read_function) {
 			return;
 		}
+
+		CopySourceRef found;
+		found.kind = ReaderKindForFunction(call.function_name);
 
 		// Only a literal path is recoverable. A computed or parameterised argument
 		// is not knowable at bind time, and a wrong guess is worse than none.

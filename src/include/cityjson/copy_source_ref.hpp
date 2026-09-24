@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cityjson/reader.hpp"
 #include "duckdb/parser/query_node.hpp"
 
 #include <optional>
@@ -11,10 +12,10 @@ namespace cityjson {
 //! A CityJSON source discovered inside a COPY TO's SELECT statement.
 struct CopySourceRef {
 	std::string path;
-	bool is_seq = false;
-	bool is_fcb = false;
-	//! read_obj: metadata and appearance come from an OBJReader, not a CityJSON file.
-	bool is_obj = false;
+	//! Which factory opened (or should reopen) this source. Recorded from the read_*
+	//! call that named the path, so COPY reopens with the same reader the query used
+	//! rather than re-detecting the format from a name that may not describe it.
+	ReaderKind kind = ReaderKind::Auto;
 	//! The reader call was `appearance := 'sidecar'`: its material/texture cells hold
 	//! dataset-global ids, not indices into the file's own blocks.
 	bool sidecar_appearance = false;
