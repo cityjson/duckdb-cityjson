@@ -1,4 +1,5 @@
 #include "cityjson/metadata_table_function.hpp"
+#include "cityjson/function_docs.hpp"
 #include "cityjson/metadata_table.hpp"
 #include "cityjson/reader.hpp"
 #include "cityjson/json_utils.hpp"
@@ -114,8 +115,13 @@ TableFunction CreateMetadataTableFunction() {
 }
 
 void RegisterMetadataTableFunction(ExtensionLoader &loader) {
-	auto func = CreateMetadataTableFunction();
-	loader.RegisterFunction(func);
+	RegisterDocumented(loader, CreateMetadataTableFunction(),
+	                   {{"path"},
+	                    "Returns one row of dataset-level metadata from a CityJSON document: version, transform, "
+	                    "extent, reference system, point of contact and CityObject count.",
+	                    "SELECT version, city_objects_count FROM "
+	                    "cityjson_metadata('https://cityjson.open3d.city/cityjson/delft.city.json');",
+	                    {"cityjson", "metadata"}});
 }
 
 // Bind function for cityjsonseq_metadata — always uses LocalCityJSONSeqReader
@@ -165,8 +171,13 @@ TableFunction CreateCityJSONSeqMetadataTableFunction() {
 }
 
 void RegisterCityJSONSeqMetadataTableFunction(ExtensionLoader &loader) {
-	auto func = CreateCityJSONSeqMetadataTableFunction();
-	loader.RegisterFunction(func);
+	RegisterDocumented(loader, CreateCityJSONSeqMetadataTableFunction(),
+	                   {{"path"},
+	                    "Returns one row of dataset-level metadata from a CityJSONSeq stream, in cityjson_metadata's "
+	                    "columns, counting both CityObjects and features.",
+	                    "SELECT reference_system.code, city_objects_count, features_count FROM "
+	                    "cityjsonseq_metadata('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');",
+	                    {"cityjson", "metadata"}});
 }
 
 } // namespace cityjson

@@ -1,4 +1,5 @@
 #include "cityjson/table_function.hpp"
+#include "cityjson/function_docs.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
@@ -36,8 +37,14 @@ TableFunction CreateReadCityJSONTableFunction() {
 }
 
 void RegisterCityJSONTableFunction(ExtensionLoader &loader) {
-	auto func = CreateReadCityJSONTableFunction();
-	loader.RegisterFunction(func);
+	RegisterDocumented(
+	    loader, CreateReadCityJSONTableFunction(),
+	    {{"path"},
+	     "Reads a CityJSON document (.city.json) as one row per CityObject, with typed attribute columns and one WKB "
+	     "geometry_lod* column per level of detail.",
+	     "SELECT object_type, COUNT(*) FROM read_cityjson('https://cityjson.open3d.city/cityjson/delft.city.json') "
+	     "GROUP BY ALL;",
+	     {"cityjson", "read"}});
 }
 
 TableFunction CreateReadCityJSONSeqTableFunction() {
@@ -66,8 +73,13 @@ TableFunction CreateReadCityJSONSeqTableFunction() {
 }
 
 void RegisterCityJSONSeqTableFunction(ExtensionLoader &loader) {
-	auto func = CreateReadCityJSONSeqTableFunction();
-	loader.RegisterFunction(func);
+	RegisterDocumented(
+	    loader, CreateReadCityJSONSeqTableFunction(),
+	    {{"path"},
+	     "Reads a CityJSONSeq stream (.city.jsonl) as one row per CityObject, with the same columns as read_cityjson.",
+	     "SELECT id, b3_h_dak_max FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl') "
+	     "WHERE object_type = 'Building' LIMIT 3;",
+	     {"cityjson", "read"}});
 }
 
 } // namespace cityjson

@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_package.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/json_utils.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
@@ -400,20 +401,42 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory, c
 }
 
 void RegisterCityParquetPackageFunctions(ExtensionLoader &loader) {
-	loader.RegisterFunction(PragmaFunction::PragmaCall(
-	    "cityparquet_read", PragmaRead, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}));
+	RegisterDocumented(
+	    loader,
+	    PragmaFunction::PragmaCall("cityparquet_read", PragmaRead,
+	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}),
+	    {{"path", "schema"},
+	     "Loads a CityParquet package directory into a schema, creating it if needed and replacing any "
+	     "same-named table, one table per file, with each file's Parquet footer in __cityparquet.",
+	     "PRAGMA cityparquet_read('./data/delft', 'delft');",
+	     {"cityparquet", "package"}});
 
-	loader.RegisterFunction(
-	    PragmaFunction::PragmaCall("cityparquet_init", PragmaInit, {LogicalType(LogicalTypeId::VARCHAR)}));
+	RegisterDocumented(
+	    loader, PragmaFunction::PragmaCall("cityparquet_init", PragmaInit, {LogicalType(LogicalTypeId::VARCHAR)}),
+	    {{"schema"},
+	     "Registers a schema's CityParquet object and sidecar tables in its __cityparquet bookkeeping table; "
+	     "idempotent, and unlike cityparquet_read it recovers no Parquet footers.",
+	     "PRAGMA cityparquet_init('delft');",
+	     {"cityparquet", "package"}});
 
 	ScalarFunction init_sql("cityparquet_init_sql", {LogicalType(LogicalTypeId::VARCHAR)},
 	                        LogicalType(LogicalTypeId::VARCHAR), InitSQLScalar);
-	loader.RegisterFunction(init_sql);
+	RegisterDocumented(loader, std::move(init_sql),
+	                   {{"schema"},
+	                    "Returns the SQL that PRAGMA cityparquet_init would run for a schema, without running it.",
+	                    "cityparquet_init_sql('delft')",
+	                    {"cityparquet", "package"}});
 
 	ScalarFunction city_field("cityparquet_city_field",
 	                          {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	                          LogicalType(LogicalTypeId::VARCHAR), CityFieldFunction);
-	loader.RegisterFunction(city_field);
+	RegisterDocumented(
+	    loader, std::move(city_field),
+	    {{"city", "field"},
+	     "Returns one top-level field of a CityParquet city footer JSON string as text, or NULL when the "
+	     "footer is not a JSON object or the field is absent or null.",
+	     R"(cityparquet_city_field('{"source_format": "CityJSONSeq"}', 'source_format'))",
+	     {"cityparquet", "metadata"}});
 }
 
 } // namespace cityjson

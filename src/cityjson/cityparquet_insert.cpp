@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_insert.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/appearance_table_function.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/cityparquet_package.hpp"
@@ -541,27 +542,41 @@ void InsertSQLScalar(DataChunk &args, ExpressionState &state, Vector &result) {
 	    });
 }
 
-void RegisterOne(ExtensionLoader &loader, const char *name, pragma_query_t query) {
+void RegisterOne(ExtensionLoader &loader, const char *name, pragma_query_t query, const char *source,
+                 const char *example) {
 	auto pragma = PragmaFunction::PragmaCall(
 	    name, query, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
 	pragma.named_parameters["create_tables"] = LogicalType(LogicalTypeId::BOOLEAN);
 	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	pragma.named_parameters["lod"] = LogicalType(LogicalTypeId::VARCHAR);
 	pragma.named_parameters["sample_lines"] = LogicalType(LogicalTypeId::BIGINT);
-	loader.RegisterFunction(pragma);
+	RegisterDocumented(loader, std::move(pragma),
+	                   {{"schema", "path"},
+	                    std::string("Inserts a ") + source +
+	                        " file into a CityParquet package schema, routing each object to its CityGML module table "
+	                        "and renumbering sidecar ids; refuses an id collision or a CRS mismatch.",
+	                    example,
+	                    {"cityparquet", "package"}});
 }
 
 } // namespace
 
 void RegisterCityParquetInsertFunctions(ExtensionLoader &loader) {
-	RegisterOne(loader, "insert_cityjson", PragmaInsert<kReadCityJSON>);
-	RegisterOne(loader, "insert_cityjsonseq", PragmaInsert<kReadCityJSONSeq>);
-	RegisterOne(loader, "insert_flatcitybuf", PragmaInsert<kReadFlatCityBuf>);
+	RegisterOne(loader, "insert_cityjson", PragmaInsert<kReadCityJSON>, "CityJSON",
+	            "PRAGMA insert_cityjson('delft', 'tile.city.json', create_tables = true);");
+	RegisterOne(loader, "insert_cityjsonseq", PragmaInsert<kReadCityJSONSeq>, "CityJSONSeq",
+	            "PRAGMA insert_cityjsonseq('delft', 'tile.city.jsonl', create_tables = true);");
+	RegisterOne(loader, "insert_flatcitybuf", PragmaInsert<kReadFlatCityBuf>, "FlatCityBuf",
+	            "PRAGMA insert_flatcitybuf('delft', 'tile.fcb', create_tables = true);");
 
 	ScalarFunction insert_sql("insert_cityjson_sql",
 	                          {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	                          LogicalType(LogicalTypeId::VARCHAR), InsertSQLScalar);
-	loader.RegisterFunction(insert_sql);
+	RegisterDocumented(loader, std::move(insert_sql),
+	                   {{"schema", "path"},
+	                    "Returns the SQL that PRAGMA insert_cityjson would run, without running it.",
+	                    "insert_cityjson_sql('delft', 'tile.city.json')",
+	                    {"cityparquet", "package"}});
 }
 
 } // namespace cityjson

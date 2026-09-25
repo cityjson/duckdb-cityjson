@@ -2,6 +2,16 @@
 
 Every SQL function this extension registers, with a worked example for each.
 
+From a SQL connection, `duckdb_functions()` gives every scalar, table and pragma
+function a one-sentence description, one example and its parameter names:
+
+```sql
+SELECT function_name, function_type, parameters, description, examples
+FROM duckdb_functions() WHERE function_name LIKE 'cityparquet%';
+```
+
+`COPY` formats have no entry there; they are documented only here.
+
 The examples run against two public Delft datasets, so you can paste any of them
 into a DuckDB shell and get the same numbers back:
 

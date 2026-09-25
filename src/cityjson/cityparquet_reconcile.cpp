@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_reconcile.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -295,11 +296,20 @@ void RegisterCityParquetReconcileFunctions(ExtensionLoader &loader) {
 	auto pragma =
 	    PragmaFunction::PragmaCall("cityparquet_reconcile", PragmaReconcile, {LogicalType(LogicalTypeId::VARCHAR)});
 	pragma.named_parameters["checks"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-	loader.RegisterFunction(pragma);
+	RegisterDocumented(loader, std::move(pragma),
+	                   {{"schema"},
+	                    "Re-derives a CityParquet package schema's reciprocal hierarchy, feature_id and bbox after a "
+	                    "structural edit; checks limits it to the ones listed.",
+	                    "PRAGMA cityparquet_reconcile('delft', checks = ['bbox']);",
+	                    {"cityparquet", "package"}});
 
 	ScalarFunction reconcile_sql("cityparquet_reconcile_sql", {LogicalType(LogicalTypeId::VARCHAR)},
 	                             LogicalType(LogicalTypeId::VARCHAR), ReconcileSQLScalar);
-	loader.RegisterFunction(reconcile_sql);
+	RegisterDocumented(loader, std::move(reconcile_sql),
+	                   {{"schema"},
+	                    "Returns the SQL that PRAGMA cityparquet_reconcile would run for a schema, without running it.",
+	                    "cityparquet_reconcile_sql('delft')",
+	                    {"cityparquet", "package"}});
 }
 
 } // namespace cityjson

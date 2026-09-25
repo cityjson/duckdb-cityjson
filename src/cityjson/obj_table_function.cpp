@@ -1,5 +1,6 @@
 #include "cityjson/obj_table_function.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/appearance_table_function.hpp"
 #include "cityjson/crs_projjson.hpp"
 #include "cityjson/error.hpp"
@@ -157,7 +158,13 @@ void RegisterOBJTableFunctions(ExtensionLoader &loader) {
 	read_obj.projection_pushdown = true;
 	read_obj.filter_pushdown = false;
 	read_obj.pushdown_complex_filter = CityJSONPushdownComplexFilter;
-	loader.RegisterFunction(read_obj);
+	RegisterDocumented(loader, std::move(read_obj),
+	                   {{"path"},
+	                    "Reads a Wavefront OBJ as one row per o group in the CityJSON object-table columns; lod is "
+	                    "required, and object_type (default Building) sets every object's class.",
+	                    "SELECT id, object_type, geometry_properties_lod2_2.type FROM "
+	                    "read_obj('test/data/obj/cube.obj', lod := '2.2');",
+	                    {"obj", "read"}});
 
 	// Sidecars need no LoD: the materials are file-global. Any lod satisfies the reader.
 	ReaderOpener obj_opener = [](ClientContext &context, const std::string &path) {
@@ -165,13 +172,29 @@ void RegisterOBJTableFunctions(ExtensionLoader &loader) {
 		options.lod = "0.0";
 		return std::unique_ptr<CityJSONReader>(std::make_unique<OBJReader>(context, path, options));
 	};
-	loader.RegisterFunction(CreateAppearanceTableFunction("obj_materials", SidecarKind::MATERIALS, obj_opener));
-	loader.RegisterFunction(CreateAppearanceTableFunction("obj_textures", SidecarKind::TEXTURES, obj_opener));
+	RegisterDocumented(loader, CreateAppearanceTableFunction("obj_materials", SidecarKind::MATERIALS, obj_opener),
+	                   {{"path"},
+	                    "Returns the materials of an OBJ's .mtl files as CityParquet materials sidecar rows, in the "
+	                    "same columns as cityjson_materials.",
+	                    "SELECT id, name, diffuseColor, transparency FROM obj_materials('test/data/obj/cube.obj');",
+	                    {"obj", "appearance"}});
+	RegisterDocumented(loader, CreateAppearanceTableFunction("obj_textures", SidecarKind::TEXTURES, obj_opener),
+	                   {{"path"},
+	                    "Returns the map_Kd textures of an OBJ's .mtl files as CityParquet textures sidecar rows, in "
+	                    "the same columns as cityjson_textures.",
+	                    "SELECT id, image_uri, image_type FROM obj_textures('test/data/obj/cube.obj');",
+	                    {"obj", "appearance"}});
 
 	TableFunction obj_metadata("obj_metadata", {LogicalType::VARCHAR}, OBJMetadataScan, OBJMetadataBind);
 	obj_metadata.named_parameters["crs"] = LogicalType::VARCHAR;
 	obj_metadata.init_global = OBJMetadataInitGlobal;
-	loader.RegisterFunction(obj_metadata);
+	RegisterDocumented(loader, std::move(obj_metadata),
+	                   {{"path"},
+	                    "Returns one row of dataset-level metadata for an OBJ in cityjson_metadata's columns: the "
+	                    "extent of every vertex, and the reference system given as crs.",
+	                    "SELECT reference_system, city_objects_count FROM "
+	                    "obj_metadata('test/data/obj/cube.obj', crs := 'EPSG:7415');",
+	                    {"obj", "metadata"}});
 }
 
 } // namespace cityjson

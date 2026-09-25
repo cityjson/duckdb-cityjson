@@ -1,0 +1,82 @@
+# name: test/sql/function_descriptions.test
+# description: every registered function is documented in duckdb_functions()
+# group: [sql]
+
+# An agent connected to a database learns what a function does only from
+# duckdb_functions(): a description, a runnable example, and parameter names
+# rather than col0/col1. The extension's families are selected by prefix, so a
+# function added under one is covered without being listed; only the obj_ family is
+# named exactly, because core's obj_description / shobj_description share it.
+# read_flatcitybuf and flatcitybuf_metadata exist only in a build with FlatCityBuf.
+
+require cityjson
+
+statement ok
+CREATE TABLE ours AS
+SELECT * FROM duckdb_functions()
+WHERE function_name SIMILAR TO '(cityjson|cityjsonseq|cityparquet|flatcitybuf)_.*'
+   OR function_name SIMILAR TO '(read|insert)_(cityjson|cityjsonseq|flatcitybuf)(_sql)?'
+   OR function_name IN ('read_obj', 'obj_materials', 'obj_textures', 'obj_metadata');
+
+# 36 functions, plus the two FlatCityBuf readers when that support is built in.
+query I
+SELECT COUNT(*) = 36 + 2 * (SELECT COUNT(*) FROM ours WHERE function_name = 'read_flatcitybuf') FROM ours;
+----
+true
+
+query T
+SELECT function_name FROM ours WHERE description IS NULL OR description = '' ORDER BY ALL;
+----
+
+query T
+SELECT function_name FROM ours WHERE examples IS NULL OR len(examples) = 0 ORDER BY ALL;
+----
+
+query T
+SELECT function_name FROM ours WHERE categories IS NULL OR len(categories) = 0 ORDER BY ALL;
+----
+
+query T
+SELECT function_name FROM ours WHERE len(list_filter(parameters, p -> p SIMILAR TO 'col[0-9]+')) > 0 ORDER BY ALL;
+----
+
+# A table or pragma function lists its named parameters after the positional ones,
+# in the order of an unordered map. The names come from that same map, so each
+# must sit beside its own type. The order itself is hash-dependent and is never
+# pinned; only the pairing is. Two named parameters of one type on one function
+# (cityparquet_merge's are not: BOOLEAN and VARCHAR[]) could swap unseen.
+query T
+SELECT DISTINCT function_name || '.' || p || ' is ' || parameter_types[i]
+FROM (
+    SELECT function_name, parameters, parameter_types, unnest(parameters) AS p,
+           generate_subscripts(parameters, 1) AS i
+    FROM ours
+)
+WHERE (p IN ('sample_lines') AND parameter_types[i] <> 'BIGINT')
+   OR (p IN ('lod', 'appearance', 'crs', 'source_format', 'object_type', 'geometry_type') AND parameter_types[i] <> 'VARCHAR')
+   OR (p IN ('xmin', 'ymin', 'xmax', 'ymax') AND parameter_types[i] <> 'DOUBLE')
+   OR (p IN ('cascade', 'create_tables', 'bloom') AND parameter_types[i] <> 'BOOLEAN')
+   OR (p IN ('tables', 'checks') AND parameter_types[i] <> 'VARCHAR[]')
+ORDER BY ALL;
+----
+
+# Positional names are the ones FUNCTIONS.md documents.
+query TT
+SELECT function_name, parameters[1] FROM ours
+WHERE function_name IN ('read_cityjson', 'cityparquet_write', 'cityparquet_delete', 'cityjson_shift_appearance_ids')
+ORDER BY ALL;
+----
+cityjson_shift_appearance_ids	cell
+cityparquet_delete	schema
+cityparquet_write	schema
+read_cityjson	path
+
+# A table function's example is a full statement: used as a bare expression it is
+# a binder error. A pragma's is a PRAGMA statement. Every example calls its function.
+query T
+SELECT function_name FROM ours
+WHERE (function_type = 'table' AND NOT examples[1] ILIKE '%FROM ' || function_name || '(%')
+   OR (function_type = 'pragma' AND NOT examples[1] ILIKE 'PRAGMA ' || function_name || '(%')
+   OR NOT examples[1] ILIKE '%' || function_name || '(%'
+ORDER BY ALL;
+----

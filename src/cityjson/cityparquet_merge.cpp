@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_merge.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
@@ -322,12 +323,21 @@ void RegisterCityParquetMergeFunctions(ExtensionLoader &loader) {
 	    "cityparquet_merge", PragmaMerge, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
 	pragma.named_parameters["create_tables"] = LogicalType(LogicalTypeId::BOOLEAN);
 	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-	loader.RegisterFunction(pragma);
+	RegisterDocumented(loader, std::move(pragma),
+	                   {{"destination", "source"},
+	                    "Merges one CityParquet package schema into another, renumbering sidecar ids, and refuses the "
+	                    "whole merge on an id collision or a CRS mismatch.",
+	                    "PRAGMA cityparquet_merge('delft', 'utrecht');",
+	                    {"cityparquet", "package"}});
 
 	ScalarFunction merge_sql("cityparquet_merge_sql",
 	                         {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	                         LogicalType(LogicalTypeId::VARCHAR), MergeSQLScalar);
-	loader.RegisterFunction(merge_sql);
+	RegisterDocumented(loader, std::move(merge_sql),
+	                   {{"destination", "source"},
+	                    "Returns the SQL that PRAGMA cityparquet_merge would run, without running it.",
+	                    "cityparquet_merge_sql('delft', 'utrecht')",
+	                    {"cityparquet", "package"}});
 }
 
 } // namespace cityjson

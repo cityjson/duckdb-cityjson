@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_appearance.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/appearance_cell.hpp"
 #include "cityjson/column_types.hpp"
 #include "duckdb/common/exception.hpp"
@@ -206,14 +207,28 @@ void RegisterAppearanceIdsFunction(ExtensionLoader &loader) {
 
 	ScalarFunction ids("cityjson_appearance_ids", {LogicalType::ANY}, id_list, AppearanceIdsFunction,
 	                   BindAppearanceIds);
-	loader.RegisterFunction(ids);
+	RegisterDocumented(loader, std::move(ids),
+	                   {{"cell"},
+	                    "Returns the distinct appearance ids a material_lod* or texture_lod* cell references, as an "
+	                    "ascending list.",
+	                    "SELECT cityjson_appearance_ids(material_lod3_0) FROM "
+	                    "read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar') "
+	                    "WHERE material_lod3_0 IS NOT NULL LIMIT 1;",
+	                    {"cityjson", "appearance"}});
 
 	// The declared return type is a placeholder: the bind replaces it with the cell
 	// type it was actually handed.
 	ScalarFunction shift("cityjson_shift_appearance_ids", {LogicalType::ANY, LogicalType::BIGINT},
 	                     ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap), ShiftAppearanceIdsFunction,
 	                     BindShiftAppearanceIds);
-	loader.RegisterFunction(shift);
+	RegisterDocumented(loader, std::move(shift),
+	                   {{"cell", "offset"},
+	                    "Adds a constant to every appearance id in a material_lod* or texture_lod* cell; the "
+	                    "renumbering step that cityparquet_merge and insert_cityjson generate.",
+	                    "SELECT cityjson_shift_appearance_ids(material_lod3_0, 10) FROM "
+	                    "read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar') "
+	                    "WHERE material_lod3_0 IS NOT NULL LIMIT 1;",
+	                    {"cityjson", "appearance"}});
 }
 
 } // namespace cityjson

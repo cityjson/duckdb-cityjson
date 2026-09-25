@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_validate.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -268,20 +269,43 @@ void VacuumSQLScalar(DataChunk &args, ExpressionState &state, Vector &result) {
 } // namespace
 
 void RegisterCityParquetValidateFunctions(ExtensionLoader &loader) {
-	loader.RegisterFunction(
-	    PragmaFunction::PragmaCall("cityparquet_validate", PragmaValidate, {LogicalType(LogicalTypeId::VARCHAR)}));
-	loader.RegisterFunction(
-	    PragmaFunction::PragmaCall("cityparquet_orphans", PragmaOrphans, {LogicalType(LogicalTypeId::VARCHAR)}));
-	loader.RegisterFunction(
-	    PragmaFunction::PragmaCall("cityparquet_vacuum", PragmaVacuum, {LogicalType(LogicalTypeId::VARCHAR)}));
+	RegisterDocumented(
+	    loader,
+	    PragmaFunction::PragmaCall("cityparquet_validate", PragmaValidate, {LogicalType(LogicalTypeId::VARCHAR)}),
+	    {{"schema"},
+	     "Checks a CityParquet package schema for null or dangling feature_id, dangling parents and children, "
+	     "misaligned children_roles and duplicate ids, into the temp table cityparquet_validation.",
+	     "PRAGMA cityparquet_validate('delft');",
+	     {"cityparquet", "package"}});
+	RegisterDocumented(
+	    loader, PragmaFunction::PragmaCall("cityparquet_orphans", PragmaOrphans, {LogicalType(LogicalTypeId::VARCHAR)}),
+	    {{"schema"},
+	     "Lists the sidecar rows no object in a CityParquet package schema references, into the temp table "
+	     "cityparquet_orphan_rows.",
+	     "PRAGMA cityparquet_orphans('delft');",
+	     {"cityparquet", "package"}});
+	RegisterDocumented(
+	    loader, PragmaFunction::PragmaCall("cityparquet_vacuum", PragmaVacuum, {LogicalType(LogicalTypeId::VARCHAR)}),
+	    {{"schema"},
+	     "Deletes the sidecar rows no object in a CityParquet package schema references.",
+	     "PRAGMA cityparquet_vacuum('delft');",
+	     {"cityparquet", "package"}});
 
 	ScalarFunction validate_sql("cityparquet_validate_sql", {LogicalType(LogicalTypeId::VARCHAR)},
 	                            LogicalType(LogicalTypeId::VARCHAR), ValidateSQLScalar);
-	loader.RegisterFunction(validate_sql);
+	RegisterDocumented(loader, std::move(validate_sql),
+	                   {{"schema"},
+	                    "Returns the SQL that PRAGMA cityparquet_validate would run for a schema, without running it.",
+	                    "cityparquet_validate_sql('delft')",
+	                    {"cityparquet", "package"}});
 
 	ScalarFunction vacuum_sql("cityparquet_vacuum_sql", {LogicalType(LogicalTypeId::VARCHAR)},
 	                          LogicalType(LogicalTypeId::VARCHAR), VacuumSQLScalar);
-	loader.RegisterFunction(vacuum_sql);
+	RegisterDocumented(loader, std::move(vacuum_sql),
+	                   {{"schema"},
+	                    "Returns the SQL that PRAGMA cityparquet_vacuum would run for a schema, without running it.",
+	                    "cityparquet_vacuum_sql('delft')",
+	                    {"cityparquet", "package"}});
 }
 
 } // namespace cityjson

@@ -1,5 +1,6 @@
 #include "cityjson/wkb_extent.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -198,11 +199,25 @@ LogicalType ExtentType() {
 
 void RegisterWKBExtentFunction(ExtensionLoader &loader) {
 	ScalarFunction func("cityjson_wkb_extent", {LogicalType::BLOB}, ExtentType(), WKBExtentFunction);
-	loader.RegisterFunction(func);
+	RegisterDocumented(loader, std::move(func),
+	                   {{"wkb"},
+	                    "Returns the 3D extent (xmin, ymin, zmin, xmax, ymax, zmax) of a WKB geometry, including the "
+	                    "PolyhedralSurface Z solids that DuckDB spatial rejects.",
+	                    "SELECT cityjson_wkb_extent(geometry_lod2_2).zmax FROM "
+	                    "read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl') "
+	                    "WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;",
+	                    {"geometry"}});
 
 	ScalarFunction type_name("cityjson_wkb_geometry_type", {LogicalType::BLOB}, LogicalType(LogicalTypeId::VARCHAR),
 	                         WKBGeometryTypeFunction);
-	loader.RegisterFunction(type_name);
+	RegisterDocumented(loader, std::move(type_name),
+	                   {{"wkb"},
+	                    "Returns the geometry type name of a WKB blob, such as 'MultiPolygon Z' or "
+	                    "'PolyhedralSurface Z', without decoding its coordinates.",
+	                    "SELECT DISTINCT cityjson_wkb_geometry_type(geometry_lod2_2) FROM "
+	                    "read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl') "
+	                    "WHERE geometry_lod2_2 IS NOT NULL;",
+	                    {"geometry"}});
 }
 
 } // namespace cityjson
