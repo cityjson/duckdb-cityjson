@@ -12,7 +12,8 @@ Every scalar, table and pragma function is registered through `RegisterDocumente
 parameter names, a one-sentence description, one example and a category or two. That
 is what `duckdb_functions()` reports, and it is the only documentation an agent on a SQL
 connection can reach. `test/sql/function_descriptions.test` fails for a function
-registered without one.
+registered without one under the extension's name prefixes (and must be told about
+any new family outside them).
 
 - **The bare `loader.RegisterFunction(fn)` overloads carry no description.** The
   `Create*FunctionInfo` overloads do, but default to `ERROR_ON_CONFLICT` where the bare
@@ -23,11 +24,16 @@ registered without one.
   itself, as `extension_loader.cpp` does, keeping its `ERROR_ON_CONFLICT`.
 - **A description's `parameter_names` replace the whole parameter list.** For a table
   or pragma function that list is the positional arguments followed by the named
-  parameters, in the iteration order of the `named_parameters` hash map, and any index
-  left unnamed shows as `col<N>` — so naming only the positional ones turns
-  `sample_lines` into `col3`. The helper appends the named ones by iterating that same
-  map; a hand-written list would pair names with the wrong types. The order is
-  hash-dependent, so the test checks each name against its type, never the order.
+  parameters, and any index left unnamed shows as `col<N>` — so naming only the
+  positional ones turns `sample_lines` into `col3`. `duckdb_functions()` reads the named
+  ones from a by-value copy of the registered function (`GetFunctionByOffset`), in that
+  copy's `named_parameters` iteration order, and **copying an `unordered_map` does not
+  keep its order everywhere**: libstdc++ keeps it, libc++ (macOS, Wasm) reverses it,
+  MSVC reverses it within a bucket. How many copies registration makes differs between
+  `TableFunction` and `PragmaFunction`, so iterating the map *before* registering pairs
+  names with the wrong types off Linux. The helper appends the names after registering,
+  from the catalog entry through the same by-value copy the extractor makes. The test
+  checks each name against its type, never the order, which is hash-dependent.
 - **`parameter_types` stays empty.** A single description with no types matches every
   overload, the `ANY`-typed appearance-cell functions included.
 - **`COPY` functions have no description slot.** The `cityjson`, `cityjsonseq`,

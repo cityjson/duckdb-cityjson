@@ -305,13 +305,14 @@ void GeoScan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
 void RegisterGeoParquetTableFunctions(ExtensionLoader &loader) {
 	TableFunction func("cityjson_geoparquet_geo", {LogicalType::VARCHAR}, GeoScan, GeoBind);
 	func.init_global = GeoInitGlobal;
-	RegisterDocumented(loader, std::move(func),
-	                   {{"path"},
-	                    "Returns the GeoParquet geo and CityParquet city footer JSON for a CityJSON(Seq) source, to "
-	                    "pass to COPY ... (FORMAT PARQUET, KV_METADATA ...); geo is NULL when every LoD holds solids.",
-	                    "SELECT geo IS NOT NULL AS has_geo, city IS NOT NULL AS has_city FROM "
-	                    "cityjson_geoparquet_geo('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');",
-	                    {"cityparquet", "metadata"}});
+	RegisterDocumented(
+	    loader, std::move(func),
+	    {{"path"},
+	     "Returns the GeoParquet geo and CityParquet city footer JSON for a CityJSON(Seq) source, to "
+	     "pass to COPY ... (FORMAT PARQUET, KV_METADATA ...); geo is NULL when no LoD is GeoParquet-legal.",
+	     "SELECT geo IS NOT NULL AS has_geo, city IS NOT NULL AS has_city FROM "
+	     "cityjson_geoparquet_geo('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');",
+	     {"cityparquet", "metadata"}});
 }
 
 } // namespace cityjson

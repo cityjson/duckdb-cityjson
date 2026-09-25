@@ -406,8 +406,8 @@ void RegisterCityParquetPackageFunctions(ExtensionLoader &loader) {
 	    PragmaFunction::PragmaCall("cityparquet_read", PragmaRead,
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}),
 	    {{"path", "schema"},
-	     "Loads a CityParquet package directory into a new schema, one table per file, and records "
-	     "each file's recovered Parquet footer in schema.__cityparquet.",
+	     "Loads a CityParquet package directory into a schema, creating it if needed and replacing any "
+	     "same-named table, one table per file, with each file's Parquet footer in __cityparquet.",
 	     "PRAGMA cityparquet_read('./data/delft', 'delft');",
 	     {"cityparquet", "package"}});
 

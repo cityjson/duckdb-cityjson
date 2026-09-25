@@ -238,7 +238,8 @@ void RegisterCityParquetDeleteFunctions(ExtensionLoader &loader) {
 	RegisterDocumented(loader, std::move(pragma),
 	                   {{"schema", "predicate"},
 	                    "Deletes the objects matching a SQL predicate from a CityParquet package schema, with their "
-	                    "descendants unless cascade = false, then re-derives feature_id, hierarchy and bbox.",
+	                    "descendants unless cascade = false, prunes them from survivors' hierarchy and re-derives "
+	                    "feature_id and bbox.",
 	                    "PRAGMA cityparquet_delete('delft', 'object_type = ''Building'' AND b3_h_dak_max > 20');",
 	                    {"cityparquet", "package"}});
 

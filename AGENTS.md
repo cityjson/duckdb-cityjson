@@ -165,8 +165,9 @@ hook already excludes it.
 ## Adding to the code
 
 - **A new function**: register it with `RegisterDocumented` (`function_docs.hpp`),
-  never the bare `loader.RegisterFunction`, and add its name to
-  `test/sql/function_descriptions.test`. Its description is what `duckdb_functions()`
+  never the bare `loader.RegisterFunction`, and make sure
+  `test/sql/function_descriptions.test` selects it (by prefix, or by name for a new
+  family). Its description is what `duckdb_functions()`
   shows an agent; see [docs/TRAPS.md](docs/TRAPS.md#registration-and-duckdb_functions).
 - **A new named parameter**: register it in `table_function_registration.cpp`, parse it
   in the bind (`bind_function.cpp`), store it on `CityJSONBindData`, use it in
