@@ -1,5 +1,6 @@
 #include "cityjson/appearance_table_function.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/error.hpp"
 #include "cityjson/appearance_cell.hpp"
 #include "cityjson/appearance_flatten.hpp"
@@ -336,9 +337,26 @@ void RegisterAppearanceTableFunctions(ExtensionLoader &loader) {
 	ReaderOpener any = [](ClientContext &context, const std::string &path) {
 		return OpenAnyCityJSONFile(context, path);
 	};
-	loader.RegisterFunction(CreateAppearanceTableFunction("cityjson_materials", SidecarKind::MATERIALS, any));
-	loader.RegisterFunction(CreateAppearanceTableFunction("cityjson_textures", SidecarKind::TEXTURES, any));
-	loader.RegisterFunction(CreateAppearanceTableFunction("cityjson_geometry_templates", SidecarKind::TEMPLATES, any));
+	RegisterDocumented(loader, CreateAppearanceTableFunction("cityjson_materials", SidecarKind::MATERIALS, any),
+	                   {{"path"},
+	                    "Returns a CityJSON(Seq) file's materials as CityParquet materials sidecar rows, interned "
+	                    "across the whole file under dataset-global ids.",
+	                    "SELECT id, name, diffuseColor, transparency FROM "
+	                    "cityjson_materials('test/data/railway_appearance.city.jsonl');",
+	                    {"cityjson", "appearance"}});
+	RegisterDocumented(loader, CreateAppearanceTableFunction("cityjson_textures", SidecarKind::TEXTURES, any),
+	                   {{"path"},
+	                    "Returns a CityJSON(Seq) file's textures as CityParquet textures sidecar rows, interned across "
+	                    "the whole file under dataset-global ids.",
+	                    "SELECT * FROM cityjson_textures('test/data/railway_appearance.city.jsonl');",
+	                    {"cityjson", "appearance"}});
+	RegisterDocumented(
+	    loader, CreateAppearanceTableFunction("cityjson_geometry_templates", SidecarKind::TEMPLATES, any),
+	    {{"path"},
+	     "Returns a CityJSON(Seq) file's geometry templates as CityParquet geometry_templates sidecar rows, in local "
+	     "coordinates with one set of geometry_lod* columns per LoD.",
+	     "SELECT * FROM cityjson_geometry_templates('test/data/railway_appearance.city.jsonl');",
+	     {"cityjson", "appearance"}});
 }
 
 } // namespace cityjson

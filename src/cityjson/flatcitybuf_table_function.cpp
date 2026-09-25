@@ -1,6 +1,7 @@
 #ifdef CITYJSON_HAS_FCB
 
 #include "cityjson/flatcitybuf_table_function.hpp"
+#include "cityjson/function_docs.hpp"
 #include "cityjson/flatcitybuf_reader.hpp"
 #include "cityjson/table_function.hpp"
 #include "cityjson/json_utils.hpp"
@@ -355,7 +356,13 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 	func.projection_pushdown = true;
 	func.pushdown_complex_filter = FlatCityBufPushdownComplexFilter;
 
-	loader.RegisterFunction(func);
+	RegisterDocumented(loader, std::move(func),
+	                   {{"path"},
+	                    "Reads a FlatCityBuf file (.fcb) as one row per CityObject, in read_cityjson's columns; "
+	                    "xmin, ymin, xmax and ymax together skip features outside the box via its R-tree.",
+	                    "SELECT COUNT(*) FROM read_flatcitybuf('https://flatcitybuf.open3d.city/data/delft.fcb', "
+	                    "xmin => 84900, ymin => 446200, xmax => 85200, ymax => 446500);",
+	                    {"flatcitybuf", "read"}});
 }
 
 // ============================================================
@@ -447,7 +454,13 @@ static void FcbMetadataScan(ClientContext &context, TableFunctionInput &data, Da
 void RegisterFlatCityBufMetadataTableFunction(ExtensionLoader &loader) {
 	TableFunction func("flatcitybuf_metadata", {LogicalType::VARCHAR}, FcbMetadataScan, FcbMetadataBind);
 	func.init_global = FcbMetadataInitGlobal;
-	loader.RegisterFunction(func);
+	RegisterDocumented(loader, std::move(func),
+	                   {{"path"},
+	                    "Returns one row of dataset-level metadata from a FlatCityBuf header, in cityjson_metadata's "
+	                    "columns; features_count is set and city_objects_count is NULL.",
+	                    "SELECT version, features_count FROM "
+	                    "flatcitybuf_metadata('https://flatcitybuf.open3d.city/data/delft.fcb');",
+	                    {"flatcitybuf", "metadata"}});
 }
 
 } // namespace cityjson

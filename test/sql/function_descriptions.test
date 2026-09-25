@@ -1,0 +1,95 @@
+# name: test/sql/function_descriptions.test
+# description: every registered function is documented in duckdb_functions()
+# group: [sql]
+
+# An agent connected to a database learns what a function does only from
+# duckdb_functions(): a description, a runnable example, and parameter names
+# rather than col0/col1. The names are listed exactly, not by prefix, because
+# core's obj_description / shobj_description share the obj_ prefix.
+# read_flatcitybuf and flatcitybuf_metadata exist only in a build with FlatCityBuf
+# enabled; every query below counts violations, so a build without them passes.
+
+require cityjson
+
+statement ok
+CREATE TABLE ours AS
+SELECT * FROM duckdb_functions()
+WHERE function_name IN (
+    'read_cityjson', 'read_cityjsonseq', 'read_flatcitybuf',
+    'cityjson_metadata', 'cityjsonseq_metadata', 'flatcitybuf_metadata',
+    'cityjson_geoparquet_geo',
+    'cityjson_materials', 'cityjson_textures', 'cityjson_geometry_templates',
+    'cityjson_wkb_extent', 'cityjson_wkb_geometry_type',
+    'cityjson_appearance_ids', 'cityjson_shift_appearance_ids',
+    'cityparquet_city_field',
+    'cityparquet_read', 'cityparquet_init', 'cityparquet_init_sql',
+    'cityparquet_validate', 'cityparquet_validate_sql',
+    'cityparquet_orphans', 'cityparquet_vacuum', 'cityparquet_vacuum_sql',
+    'cityparquet_delete', 'cityparquet_delete_sql',
+    'cityparquet_reconcile', 'cityparquet_reconcile_sql',
+    'cityparquet_merge', 'cityparquet_merge_sql',
+    'insert_cityjson', 'insert_cityjsonseq', 'insert_flatcitybuf', 'insert_cityjson_sql',
+    'cityparquet_write',
+    'read_obj', 'obj_materials', 'obj_textures', 'obj_metadata'
+);
+
+# The list above is complete for this build: 36 without FlatCityBuf, 38 with it.
+query I
+SELECT COUNT(*) IN (36, 38) FROM ours;
+----
+true
+
+query T
+SELECT function_name FROM ours WHERE description IS NULL OR description = '' ORDER BY ALL;
+----
+
+query T
+SELECT function_name FROM ours WHERE examples IS NULL OR len(examples) = 0 ORDER BY ALL;
+----
+
+query T
+SELECT function_name FROM ours WHERE categories IS NULL OR len(categories) = 0 ORDER BY ALL;
+----
+
+query T
+SELECT function_name FROM ours WHERE len(list_filter(parameters, p -> p SIMILAR TO 'col[0-9]+')) > 0 ORDER BY ALL;
+----
+
+# A table or pragma function lists its named parameters after the positional ones,
+# in the order of an unordered map. The names come from that same map, so each
+# must sit beside its own type. The order itself is hash-dependent and is never
+# pinned; only the pairing is.
+query T
+SELECT DISTINCT function_name || '.' || p || ' is ' || parameter_types[i]
+FROM (
+    SELECT function_name, parameters, parameter_types, unnest(parameters) AS p,
+           generate_subscripts(parameters, 1) AS i
+    FROM ours
+)
+WHERE (p IN ('sample_lines') AND parameter_types[i] <> 'BIGINT')
+   OR (p IN ('lod', 'appearance', 'crs', 'source_format', 'object_type', 'geometry_type') AND parameter_types[i] <> 'VARCHAR')
+   OR (p IN ('xmin', 'ymin', 'xmax', 'ymax') AND parameter_types[i] <> 'DOUBLE')
+   OR (p IN ('cascade', 'create_tables', 'bloom') AND parameter_types[i] <> 'BOOLEAN')
+   OR (p IN ('tables', 'checks') AND parameter_types[i] <> 'VARCHAR[]')
+ORDER BY ALL;
+----
+
+# Positional names are the ones FUNCTIONS.md documents.
+query TT
+SELECT function_name, parameters[1] FROM ours
+WHERE function_name IN ('read_cityjson', 'cityparquet_write', 'cityparquet_delete', 'cityjson_shift_appearance_ids')
+ORDER BY ALL;
+----
+cityjson_shift_appearance_ids	cell
+cityparquet_delete	schema
+cityparquet_write	schema
+read_cityjson	path
+
+# A table function's example is a full statement: used as a bare expression it is
+# a binder error. A pragma's is a PRAGMA statement.
+query T
+SELECT function_name FROM ours
+WHERE (function_type = 'table' AND NOT examples[1] ILIKE '%FROM ' || function_name || '(%')
+   OR (function_type = 'pragma' AND NOT examples[1] ILIKE 'PRAGMA ' || function_name || '(%')
+ORDER BY ALL;
+----

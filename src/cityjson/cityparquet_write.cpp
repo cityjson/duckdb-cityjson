@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_write.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
 #include "cityjson/column_types.hpp"
@@ -831,7 +832,12 @@ void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
 	func.named_parameters["crs"] = LogicalType(LogicalTypeId::VARCHAR);
 	func.named_parameters["source_format"] = LogicalType(LogicalTypeId::VARCHAR);
 	func.named_parameters["bloom"] = LogicalType(LogicalTypeId::BOOLEAN);
-	loader.RegisterFunction(func);
+	RegisterDocumented(loader, std::move(func),
+	                   {{"schema", "directory"},
+	                    "Writes a CityParquet package schema out as a package directory: one Parquet file per table "
+	                    "with regenerated city and geo footers, plus a metadata.json STAC Item; one row per file.",
+	                    "SELECT * FROM cityparquet_write('delft', 'out/', crs => 'EPSG:7415');",
+	                    {"cityparquet", "package"}});
 }
 
 } // namespace cityjson

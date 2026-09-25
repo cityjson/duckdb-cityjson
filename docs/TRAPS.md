@@ -5,6 +5,34 @@ Things that are costly to rediscover. Read the section for a layer before changi
 Behaviour lives in [FUNCTIONS.md](FUNCTIONS.md), architecture in
 [DESIGN_DOC.md](DESIGN_DOC.md), working agreements in [../CLAUDE.md](../CLAUDE.md).
 
+## Registration and `duckdb_functions()`
+
+Every scalar, table and pragma function is registered through `RegisterDocumented`
+(`src/include/cityjson/function_docs.hpp`) with a `FunctionDoc`: its positional
+parameter names, a one-sentence description, one example and a category or two. That
+is what `duckdb_functions()` reports, and it is the only documentation an agent on a SQL
+connection can reach. `test/sql/function_descriptions.test` fails for a function
+registered without one.
+
+- **The bare `loader.RegisterFunction(fn)` overloads carry no description.** The
+  `Create*FunctionInfo` overloads do, but default to `ERROR_ON_CONFLICT` where the bare
+  ones set `ALTER_ON_CONFLICT`; the helper sets it for scalars and tables.
+- **Pragmas have no documented overload.** `ExtensionLoader` takes only a
+  `PragmaFunction` or `PragmaFunctionSet`, so the helper builds the
+  `CreatePragmaFunctionInfo` and calls the system catalog's `CreatePragmaFunction`
+  itself, as `extension_loader.cpp` does, keeping its `ERROR_ON_CONFLICT`.
+- **A description's `parameter_names` replace the whole parameter list.** For a table
+  or pragma function that list is the positional arguments followed by the named
+  parameters, in the iteration order of the `named_parameters` hash map, and any index
+  left unnamed shows as `col<N>` — so naming only the positional ones turns
+  `sample_lines` into `col3`. The helper appends the named ones by iterating that same
+  map; a hand-written list would pair names with the wrong types. The order is
+  hash-dependent, so the test checks each name against its type, never the order.
+- **`parameter_types` stays empty.** A single description with no types matches every
+  overload, the `ANY`-typed appearance-cell functions included.
+- **`COPY` functions have no description slot.** The `cityjson`, `cityjsonseq`,
+  `flatcitybuf`, `obj`, `gltf` and `glb` formats are documented only in FUNCTIONS.md.
+
 ## Generated SQL and the pragma layer
 
 The package-mutation functions are `PragmaFunction`s registered with a
