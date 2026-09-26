@@ -1,6 +1,7 @@
 #include "cityjson/json_utils.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/gzip_file_system.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include <fstream>
 #include <sstream>
@@ -33,6 +34,19 @@ std::string ReadFileContent(duckdb::ClientContext &context, const std::string &f
 	auto file_size = handle->GetFileSize();
 	std::string content(file_size, '\0');
 	handle->Read(const_cast<char *>(content.data()), file_size);
+
+	// A whole-document CityJSON may be served gzip-compressed (3DBAG's published
+	// tiles are). Detect by magic bytes rather than by extension, so a `.gz` path
+	// and a gzip payload under any name both decompress, while uncompressed content
+	// passes through untouched.
+	if (content.size() >= 2 && static_cast<unsigned char>(content[0]) == 0x1F &&
+	    static_cast<unsigned char>(content[1]) == 0x8B) {
+		try {
+			return GZipFileSystem::UncompressGZIPString(content);
+		} catch (const std::exception &e) {
+			throw CityJSONError::InvalidJson("Failed to decompress gzip content: " + std::string(e.what()));
+		}
+	}
 	return content;
 }
 

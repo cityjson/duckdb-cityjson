@@ -56,7 +56,10 @@ LOAD cityjson;
 One row per **CityObject**. `read_cityjson` takes a `.city.json` document with a
 global vertex pool; `read_cityjsonseq` takes a `.city.jsonl` stream whose every
 line after the header is a `CityJSONFeature` with its own local pool. Both
-produce the same column grammar.
+produce the same column grammar. A whole-document CityJSON that is
+gzip-compressed — `.city.json.gz`, as 3DBAG's published tiles are — is
+decompressed transparently, recognised by its magic bytes rather than its
+extension.
 
 ```sql
 SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');

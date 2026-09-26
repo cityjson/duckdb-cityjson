@@ -15,8 +15,10 @@
 #
 # The 3DBAG URL is pinned to a dataset version (v20250903) because 'latest' would
 # make this test depend on whatever 3DBAG published this morning. Old versions do
-# get retired: if this file ever fails on a transport error from data.3dbag.nl,
-# bump the version in the path rather than suspecting insert_cityjson.
+# get retired, and the published tiles are gzip-compressed (`.city.json.gz`, with
+# no plain `.city.json` sibling): if this file ever fails on a transport error from
+# data.3dbag.nl, bump the version in the path rather than suspecting insert_cityjson.
+# The reader decompresses by magic bytes, so the `.gz` path reads without a flag.
 #
 # docs/TESTING.md is a transcript of a DuckDB notebook someone drove by hand
 # against real datasets. This file is that walkthrough as a test. The notebook's
@@ -240,7 +242,7 @@ CREATE TEMP TABLE nb_before AS SELECT count(*) AS n FROM pkg.building;
 
 statement ok
 CREATE TEMP TABLE nb_incoming AS
-SELECT count(*) AS n FROM read_cityjson('https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json');
+SELECT count(*) AS n FROM read_cityjson('https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json.gz');
 
 # Every column the table had before the insert must still be there afterwards.
 # Schema evolution may ADD columns for attributes the incoming file introduces;
@@ -250,7 +252,7 @@ CREATE TEMP TABLE nb_cols_before AS
 SELECT column_name FROM duckdb_columns() WHERE schema_name = 'pkg' AND table_name = 'building';
 
 statement ok
-PRAGMA insert_cityjson('pkg', 'https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json');
+PRAGMA insert_cityjson('pkg', 'https://data.3dbag.nl/v20250903/tiles/9/304/532/9-304-532.city.json.gz');
 
 query I
 SELECT (SELECT count(*) FROM pkg.building) = (SELECT n FROM nb_before) + (SELECT n FROM nb_incoming);

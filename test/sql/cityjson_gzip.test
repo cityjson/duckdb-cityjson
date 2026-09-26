@@ -1,0 +1,42 @@
+# name: test/sql/cityjson_gzip.test
+# description: A gzip-compressed CityJSON document is decompressed on read and insert
+# group: [sql]
+
+require cityjson
+
+# A .city.json.gz is decompressed transparently: the same rows as the plain file.
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/minimal.city.json.gz');
+----
+1
+
+query II
+SELECT object_type, "yearOfConstruction" FROM read_cityjson('test/data/minimal.city.json.gz');
+----
+Building	2020
+
+# The decompressed object is the same as the plain-file object.
+query I
+WITH gz AS (SELECT bbox FROM read_cityjson('test/data/minimal.city.json.gz')),
+     plain AS (SELECT bbox FROM read_cityjson('test/data/minimal.city.json'))
+SELECT (SELECT bbox FROM gz) = (SELECT bbox FROM plain);
+----
+true
+
+# insert_cityjson reads a .city.json.gz the same way.
+statement ok
+CREATE SCHEMA gz_pkg;
+
+statement ok
+CREATE TABLE gz_pkg.building AS SELECT * FROM read_cityjson('test/data/no_geometry.city.json');
+
+statement ok
+PRAGMA cityparquet_init('gz_pkg');
+
+statement ok
+PRAGMA insert_cityjson('gz_pkg', 'test/data/minimal.city.json.gz');
+
+query I
+SELECT COUNT(*) FROM gz_pkg.building;
+----
+2
