@@ -8,8 +8,11 @@ every assertion made against each other.
 Trimmed to `building.parquet` + `bridge.parquet` + `metadata.json` (the full
 conversion produces twelve object/sidecar tables); `metadata.json`'s `assets` map is
 hand-edited to match. The point of the fixture is the schema and footer conventions
-`building.parquet` carries -- notably the reserved `address` and `template` columns --
-not the row count or the full module set. Its `material_lod*` / `texture_lod*`
+`building.parquet` carries -- notably the reserved `address` column -- not the row
+count or the full module set. It was written before the `implicit_geometry` rename and
+carries a `template` column instead, which this extension reads as an ordinary
+attribute; regenerating it from the current cityparquet-rs restores the reserved
+`implicit_geometry` coverage. Its `material_lod*` / `texture_lod*`
 columns are the specification's typed MAPs, flat per WKB face, which is what
 `cityparquet_rs_appearance.test` pins.
 

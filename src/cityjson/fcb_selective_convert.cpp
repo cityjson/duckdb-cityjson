@@ -332,7 +332,7 @@ namespace {
 
 // Structural columns the light path fills from FlatCityBuf table fields (or leaves
 // NULL) rather than from the attribute blob. Derived from GetDefinedColumns() (the
-// head reserved run) and LODTableUtils::GetTrailingColumns() (`template`, `other`)
+// head reserved run) and LODTableUtils::GetTrailingColumns() (`implicit_geometry`, `other`)
 // so the list cannot drift, minus `other` -- which is a defined column but carries
 // only attributes with no column of their own (CityObjectUtils::GetAttributeValue),
 // so it is handled separately.

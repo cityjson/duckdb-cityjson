@@ -4,6 +4,7 @@
 
 #include "cityjson/appearance_source.hpp"
 #include "cityjson/cityjson_types.hpp"
+#include "cityjson/cityparquet_extensions.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -37,7 +38,7 @@ enum class CopyColumnRole {
 	Bbox,               // derived bounding box — recomputed on read, ignored on write
 	Other,              // extension fields
 	Address,            // reserved `address` column — no writer round-trips it yet
-	Template,           // reserved `template` column — no writer round-trips it yet
+	ImplicitGeometry,   // reserved `implicit_geometry` column — no writer round-trips it yet
 	Attribute           // everything else -> attributes map
 };
 
@@ -87,6 +88,18 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::optional<std::string> reference_date;
 	std::optional<GeographicalExtent> geographical_extent;
 	std::optional<PointOfContact> point_of_contact;
+
+	// CityJSON Extensions (spec 06-extensions.mdx). `extension_declarations` is a
+	// package's `city.extensions`, supplied through metadata_query's `extensions`
+	// column: every name carrying a declared namespace prefix is written in CityJSON's
+	// `+` form, and the document's `extensions` member is rebuilt from it. Without it,
+	// `source_extensions` -- the discovered source's own `extensions` member -- is
+	// carried across verbatim and no name is rewritten.
+	std::vector<ExtensionDeclaration> extension_declarations;
+	std::optional<json> source_extensions;
+	// The name each column is written under: its own, or its `+` form when it carries
+	// a declared namespace prefix. Parallel to column_names.
+	std::vector<std::string> output_names;
 
 	// The source file this COPY reads from, when it is statically discoverable.
 	// COPY binds a relation, not a file, so file-level content -- the metadata

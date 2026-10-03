@@ -1,6 +1,7 @@
 #include "cityjson/cityparquet_write.hpp"
 
 #include "cityjson/function_docs.hpp"
+#include "cityjson/cityparquet_extensions.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
 #include "cityjson/column_types.hpp"
@@ -95,7 +96,7 @@ struct WrittenFile {
 	std::string action;
 	int64_t rows = 0;
 	int64_t bytes = 0;
-	//! Object table (a CityGML module) rather than an appearance/template sidecar.
+	//! Object table (a CityGML module) rather than an appearance/implicit-geometry sidecar.
 	//! Decides the asset's STAC roles in metadata.json, which is how a reader tells
 	//! the two apart without parsing filenames.
 	bool is_object = false;
@@ -222,10 +223,48 @@ unique_ptr<MaterializedQueryResult> Run(Connection &connection, const std::strin
 	return result;
 }
 
+//! Refuses a table holding a name with CityJSON's extension marker `+`. A package
+//! stores every extension name with its namespace prefix (spec 06-extensions.mdx), which
+//! insert_cityjson applies; a hand-rolled load keeps the reader's CityJSON names.
+void RefusePlusNames(Connection &connection, ClientContext &context, const std::string &catalog,
+                     const std::string &schema, const std::string &table, bool is_object) {
+	const auto refuse = [&](const std::string &what) {
+		throw InvalidInputException("cityparquet_write: %s of '%s.%s' carries CityJSON's extension marker `+`; a "
+		                            "CityParquet package stores an extension name with its extension's namespace "
+		                            "prefix, declared in city.extensions -- add CityJSON to a package with "
+		                            "insert_cityjson, which applies it",
+		                            what, schema, table);
+	};
+	for (const auto &column : TableColumns(context, schema, table)) {
+		if (IsPlusName(column.name)) {
+			refuse("the column '" + column.name + "'");
+		}
+		const bool is_properties = MatchesLodSuffix(StringUtil::Lower(column.name), "geometry_properties_lod");
+		if (is_properties && HasSurfacesField(column.type)) {
+			const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.name);
+			auto found = Run(connection, "SELECT regexp_extract(" + quoted + ".surfaces, " +
+			                                 Literal(R"re("type"\s*:\s*"(\+[^"]*)")re") + ", 1) FROM " +
+			                                 QualifiedName(catalog, schema, table) + " WHERE regexp_matches(" + quoted +
+			                                 ".surfaces, " + Literal(R"re("type"\s*:\s*"\+)re") + ") LIMIT 1");
+			if (found->RowCount() > 0) {
+				refuse("the semantic surface type '" + found->GetValue(0, 0).ToString() + "' in '" + column.name + "'");
+			}
+		}
+	}
+	if (is_object) {
+		auto found = Run(connection, "SELECT object_type FROM " + QualifiedName(catalog, schema, table) +
+		                                 " WHERE starts_with(object_type, '+') LIMIT 1");
+		if (found->RowCount() > 0) {
+			refuse("the object type '" + found->GetValue(0, 0).ToString() + "'");
+		}
+	}
+}
+
 //! Fold one object table into the package-level inventory.
 void CollectInventory(Connection &connection, const std::string &catalog, const std::string &schema,
                       const std::string &table, int64_t rows, const std::vector<ColumnFacts> &facts,
-                      const std::vector<std::string> &attributes, PackageInventory &inventory) {
+                      const std::vector<std::string> &attributes, const std::vector<ExtensionDeclaration> &declarations,
+                      PackageInventory &inventory) {
 	inventory.city_objects += rows;
 	for (const auto &attribute : attributes) {
 		inventory.attributes.insert(attribute);
@@ -244,10 +283,11 @@ void CollectInventory(Connection &connection, const std::string &catalog, const 
 
 	// The source type vocabulary, per the specification: the STAC Item mirrors the
 	// source model's inventory, not the by-module routing that put the rows in this file.
+	// An extension class is listed with CityJSON's `+`, not its namespace prefix.
 	auto types = Run(connection, "SELECT DISTINCT object_type FROM " + QualifiedName(catalog, schema, table) +
 	                                 " WHERE object_type IS NOT NULL");
 	for (idx_t row = 0; row < types->RowCount(); row++) {
-		inventory.co_types.insert(types->GetValue(0, row).ToString());
+		inventory.co_types.insert(RestorePlusName(types->GetValue(0, row).ToString(), declarations));
 	}
 
 	if (inventory.semantic_surfaces) {
@@ -264,11 +304,12 @@ void CollectInventory(Connection &connection, const std::string &catalog, const 
 	}
 }
 
-//! The geometry_templates sidecar's contribution to the package inventory: its LoDs and
-//! whether any template carries semantic surfaces. Templates are stored in local,
-//! unplaced coordinates, so they contribute no extent.
-void CollectTemplateInventory(Connection &connection, ClientContext &context, const std::string &catalog,
-                              const std::string &schema, const std::string &table, PackageInventory &inventory) {
+//! The implicit_geometries sidecar's contribution to the package inventory: its LoDs and
+//! whether any relative geometry carries semantic surfaces. Relative geometries are
+//! stored in local, unplaced coordinates, so they contribute no extent.
+void CollectImplicitGeometryInventory(Connection &connection, ClientContext &context, const std::string &catalog,
+                                      const std::string &schema, const std::string &table,
+                                      PackageInventory &inventory) {
 	for (const auto &column : GeometryLodColumns(context, schema, table)) {
 		const auto suffix = column.substr(std::string("geometry_").size());
 		auto lod = LODTableUtils::ParseLODFromSuffix(suffix);
@@ -600,6 +641,38 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 	// that can produce it to use.
 	const std::string crs_annotation = crs_json.is_null() ? std::string() : crs_json.dump();
 
+	// The extensions the package declares: the union of its object tables' footers, every
+	// one of which declares a namespace the same way (cityparquet_merge_extensions keeps
+	// it so). Read to give the STAC Item the source spelling of extension classes.
+	std::vector<ExtensionDeclaration> declarations;
+	for (const auto &entry : carried) {
+		json parsed;
+		try {
+			parsed = json::parse(entry.second);
+		} catch (const std::exception &) {
+			continue;
+		}
+		if (!parsed.is_object() || !parsed.contains("extensions") || parsed["extensions"].is_null()) {
+			continue;
+		}
+		for (auto &declaration : DeclarationsFromFooterJson(parsed["extensions"], "cityparquet_write")) {
+			const auto known = std::any_of(declarations.begin(), declarations.end(),
+			                               [&](const ExtensionDeclaration &d) { return d.ns == declaration.ns; });
+			if (!known) {
+				declarations.push_back(std::move(declaration));
+			}
+		}
+	}
+
+	// Checked for every table before any file is written, so a refusal leaves the
+	// directory as it was.
+	for (const auto &table : object_tables) {
+		RefusePlusNames(connection, context, bind_data.catalog, bind_data.schema, table, true);
+	}
+	for (const auto &sidecar : sidecars) {
+		RefusePlusNames(connection, context, bind_data.catalog, bind_data.schema, sidecar, false);
+	}
+
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (!fs.DirectoryExists(bind_data.directory)) {
 		fs.CreateDirectory(bind_data.directory);
@@ -619,12 +692,13 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			inventory.materials = rows;
 		} else if (table == "textures") {
 			inventory.textures = rows;
-		} else if (table == "geometry_templates") {
-			// A package whose objects carry only GeometryInstance geometry has no
-			// populated geometry_lod* column in any object table -- its LoDs live here.
+		} else if (table == "implicit_geometries") {
+			// A package whose objects carry only implicit geometry has no populated
+			// geometry_lod* column in any object table -- its LoDs live here.
 			// city3d:lods is the union across every file in the package, so leaving the
 			// sidecar out would report an empty LoD set for a perfectly valid package.
-			CollectTemplateInventory(connection, context, bind_data.catalog, bind_data.schema, table, inventory);
+			CollectImplicitGeometryInventory(connection, context, bind_data.catalog, bind_data.schema, table,
+			                                 inventory);
 		}
 
 		std::string kv;
@@ -648,7 +722,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 				}
 			}
 			CollectInventory(connection, bind_data.catalog, bind_data.schema, table, rows, facts, attributes,
-			                 inventory);
+			                 declarations, inventory);
 			auto carried_entry = carried.find(table);
 			const auto city = BuildCityJson(carried_entry == carried.end() ? std::string() : carried_entry->second,
 			                                crs_json, facts, attributes, bind_data.source_format);
@@ -660,7 +734,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			}
 		} else {
 			// A sidecar carries `version` plus only what is meaningful to it. None of the
-			// three holds a CRS-bearing coordinate -- geometry templates are stored in
+			// three holds a CRS-bearing coordinate -- relative geometries are stored in
 			// local, unplaced coordinates, exempt from the file CRS -- so `crs` is the one
 			// state where the key is legitimately ABSENT rather than null (spec
 			// 05-metadata.mdx, "CRS rules").

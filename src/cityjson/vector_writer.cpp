@@ -62,7 +62,7 @@ std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Co
 			// wrapper's shape, so this only keeps AsFlatMut from being reachable.
 			vec_type = VectorType::List;
 		} else if (col.kind == ColumnType::Geometry || col.kind == ColumnType::GeographicalExtent ||
-		           col.kind == ColumnType::GeometryPropertiesStruct || col.kind == ColumnType::TemplateStruct) {
+		           col.kind == ColumnType::GeometryPropertiesStruct || col.kind == ColumnType::ImplicitGeometryStruct) {
 			vec_type = VectorType::Struct;
 		} else {
 			// All primitives and Json (stored as VARCHAR) are Flat.
@@ -405,7 +405,7 @@ static void AppendIntList(Vector &list_vec, const json &arr, size_t row) {
 	ListVector::SetListSize(list_vec, list_size + n);
 }
 
-// Append one LIST<DOUBLE> row from a flat json array of numbers (spec `template`:
+// Append one LIST<DOUBLE> row from a flat json array of numbers (spec `implicit_geometry`:
 // transformationMatrix, a flat 16-element row-major 4x4). A non-numeric item
 // writes a SQL NULL list entry rather than failing the whole row.
 static void AppendDoubleList(Vector &list_vec, const json &arr, size_t row) {
@@ -523,10 +523,10 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 }
 
 // ============================================================
-// Template Struct
+// Implicit Geometry Struct
 // ============================================================
 
-void WriteTemplateStruct(Vector *vec, const json &value, size_t row) {
+void WriteImplicitGeometryStruct(Vector *vec, const json &value, size_t row) {
 	// STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
 	auto &children = StructVector::GetEntries(*vec);
 	auto &id_vec = *children[0];
@@ -548,7 +548,7 @@ void WriteTemplateStruct(Vector *vec, const json &value, size_t row) {
 		FlatVector::SetNull(id_vec, row, true);
 	}
 
-	// `point`: no reader resolves a template instance's placement point yet.
+	// `point`: no reader resolves a GeometryInstance's reference point yet.
 	FlatVector::SetNull(point_vec, row, true);
 
 	if (!is_null && value.contains("transformationMatrix") && value["transformationMatrix"].is_array()) {

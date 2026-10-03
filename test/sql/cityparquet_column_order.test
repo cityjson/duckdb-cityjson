@@ -7,7 +7,7 @@ require cityjson
 # CityParquet spec (02-object-table-schema.mdx, "Reserved columns"): reserved columns
 # appear, in this order, before any attribute column --
 #   id, feature_id, object_type, parents, children, children_roles, address, bbox,
-#   geometry_lod*/geometry_properties_lod*/material_lod*/texture_lod*, template, other,
+#   geometry_lod*/geometry_properties_lod*/material_lod*/texture_lod*, implicit_geometry, other,
 #   [other_attributes]
 # `other_attributes` is optional (spec line 34) and never synthesised by this reader, so
 # it is not asserted here. minimal.city.json carries three attributes (function,
@@ -34,9 +34,9 @@ SELECT (SELECT ord FROM wide_cols WHERE column_name = 'parents')
 ----
 true
 
-# 2. address and template exist, even though this fixture never populates either
+# 2. address and implicit_geometry exist, even though this fixture never populates either
 query I
-SELECT COUNT(*) FROM wide_cols WHERE column_name IN ('address', 'template');
+SELECT COUNT(*) FROM wide_cols WHERE column_name IN ('address', 'implicit_geometry');
 ----
 2
 
@@ -55,7 +55,7 @@ statement ok
 CREATE TABLE wide_reserved AS
 SELECT column_name FROM wide_cols
 WHERE column_name IN ('id', 'feature_id', 'object_type', 'parents', 'children',
-                       'children_roles', 'address', 'bbox', 'template', 'other',
+                       'children_roles', 'address', 'bbox', 'implicit_geometry', 'other',
                        'other_attributes')
    OR column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
    OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%';
@@ -71,7 +71,7 @@ WHERE attr.column_name NOT IN (SELECT column_name FROM wide_reserved)
 # 5. the full reserved sequence, chained in one assertion: every named reserved
 # column and every per-LoD structural family, in the exact spec order --
 # id, feature_id, object_type, parents, children, children_roles, address, bbox,
-# the geometry group, template, other, and then (implicitly, since `other` is the
+# the geometry group, implicit_geometry, other, and then (implicitly, since `other` is the
 # sequence's last named link) every attribute column. This is what would have
 # caught reverting only one of the two column-set assemblies: a regression in
 # either path breaks this query for that path alone.
@@ -96,8 +96,8 @@ SELECT
  AND (SELECT MAX(ord) FROM wide_cols
       WHERE column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
          OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%')
-   < (SELECT ord FROM wide_cols WHERE column_name = 'template')
- AND (SELECT ord FROM wide_cols WHERE column_name = 'template')
+   < (SELECT ord FROM wide_cols WHERE column_name = 'implicit_geometry')
+ AND (SELECT ord FROM wide_cols WHERE column_name = 'implicit_geometry')
    < (SELECT ord FROM wide_cols WHERE column_name = 'other')
  AND (SELECT ord FROM wide_cols WHERE column_name = 'other')
    < (SELECT MIN(ord) FROM wide_cols attr WHERE attr.column_name NOT IN (SELECT column_name FROM wide_reserved));
@@ -126,9 +126,9 @@ SELECT (SELECT ord FROM lod_cols WHERE column_name = 'parents')
 ----
 true
 
-# 2. address and template exist, even though this fixture never populates either
+# 2. address and implicit_geometry exist, even though this fixture never populates either
 query I
-SELECT COUNT(*) FROM lod_cols WHERE column_name IN ('address', 'template');
+SELECT COUNT(*) FROM lod_cols WHERE column_name IN ('address', 'implicit_geometry');
 ----
 2
 
@@ -147,7 +147,7 @@ statement ok
 CREATE TABLE lod_reserved AS
 SELECT column_name FROM lod_cols
 WHERE column_name IN ('id', 'feature_id', 'object_type', 'parents', 'children',
-                       'children_roles', 'address', 'bbox', 'template', 'other',
+                       'children_roles', 'address', 'bbox', 'implicit_geometry', 'other',
                        'other_attributes')
    OR column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
    OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%';
@@ -163,7 +163,7 @@ WHERE attr.column_name NOT IN (SELECT column_name FROM lod_reserved)
 # 5. the full reserved sequence, chained in one assertion: every named reserved
 # column and every per-LoD structural family, in the exact spec order --
 # id, feature_id, object_type, parents, children, children_roles, address, bbox,
-# the geometry group, template, other, and then (implicitly, since `other` is the
+# the geometry group, implicit_geometry, other, and then (implicitly, since `other` is the
 # sequence's last named link) every attribute column. This is what would have
 # caught reverting only one of the two column-set assemblies: a regression in
 # either path breaks this query for that path alone.
@@ -188,8 +188,8 @@ SELECT
  AND (SELECT MAX(ord) FROM lod_cols
       WHERE column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
          OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%')
-   < (SELECT ord FROM lod_cols WHERE column_name = 'template')
- AND (SELECT ord FROM lod_cols WHERE column_name = 'template')
+   < (SELECT ord FROM lod_cols WHERE column_name = 'implicit_geometry')
+ AND (SELECT ord FROM lod_cols WHERE column_name = 'implicit_geometry')
    < (SELECT ord FROM lod_cols WHERE column_name = 'other')
  AND (SELECT ord FROM lod_cols WHERE column_name = 'other')
    < (SELECT MIN(ord) FROM lod_cols attr WHERE attr.column_name NOT IN (SELECT column_name FROM lod_reserved));
@@ -218,9 +218,9 @@ SELECT (SELECT ord FROM seq_cols WHERE column_name = 'parents')
 ----
 true
 
-# 2. address and template exist, even though this fixture never populates either
+# 2. address and implicit_geometry exist, even though this fixture never populates either
 query I
-SELECT COUNT(*) FROM seq_cols WHERE column_name IN ('address', 'template');
+SELECT COUNT(*) FROM seq_cols WHERE column_name IN ('address', 'implicit_geometry');
 ----
 2
 
@@ -239,7 +239,7 @@ statement ok
 CREATE TABLE seq_reserved AS
 SELECT column_name FROM seq_cols
 WHERE column_name IN ('id', 'feature_id', 'object_type', 'parents', 'children',
-                       'children_roles', 'address', 'bbox', 'template', 'other',
+                       'children_roles', 'address', 'bbox', 'implicit_geometry', 'other',
                        'other_attributes')
    OR column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
    OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%';
@@ -255,7 +255,7 @@ WHERE attr.column_name NOT IN (SELECT column_name FROM seq_reserved)
 # 5. the full reserved sequence, chained in one assertion: every named reserved
 # column and every per-LoD structural family, in the exact spec order --
 # id, feature_id, object_type, parents, children, children_roles, address, bbox,
-# the geometry group, template, other, and then (implicitly, since `other` is the
+# the geometry group, implicit_geometry, other, and then (implicitly, since `other` is the
 # sequence's last named link) every attribute column. This is what would have
 # caught reverting only one of the two column-set assemblies: a regression in
 # either path breaks this query for that path alone.
@@ -280,8 +280,8 @@ SELECT
  AND (SELECT MAX(ord) FROM seq_cols
       WHERE column_name LIKE 'geometry_lod%' OR column_name LIKE 'geometry_properties_lod%'
          OR column_name LIKE 'material_lod%' OR column_name LIKE 'texture_lod%')
-   < (SELECT ord FROM seq_cols WHERE column_name = 'template')
- AND (SELECT ord FROM seq_cols WHERE column_name = 'template')
+   < (SELECT ord FROM seq_cols WHERE column_name = 'implicit_geometry')
+ AND (SELECT ord FROM seq_cols WHERE column_name = 'implicit_geometry')
    < (SELECT ord FROM seq_cols WHERE column_name = 'other')
  AND (SELECT ord FROM seq_cols WHERE column_name = 'other')
    < (SELECT MIN(ord) FROM seq_cols attr WHERE attr.column_name NOT IN (SELECT column_name FROM seq_reserved));

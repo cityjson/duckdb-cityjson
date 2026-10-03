@@ -7,7 +7,7 @@ require cityjson
 require parquet
 
 # Spec 02-object-table-schema.mdx: a column listed in `attributes` is an attribute,
-# and every other column is reserved. `address` and `template` are reserved names,
+# and every other column is reserved. `address` and `implicit_geometry` are reserved names,
 # so declaring them as attributes makes the footer contradict the schema -- and a
 # conformant reader then tries to decode `address` as a user attribute.
 #
@@ -25,9 +25,37 @@ SELECT * FROM cityparquet_write('pkg', '__TEST_DIR__/attrs_out');
 
 query III
 SELECT decode(value) LIKE '%"address"%',
-       decode(value) LIKE '%"template"%',
+       decode(value) LIKE '%"implicit_geometry"%',
        decode(value) LIKE '%"class"%'
 FROM parquet_kv_metadata('__TEST_DIR__/attrs_out/building.parquet')
 WHERE key::VARCHAR = 'city';
 ----
 false	false	true
+
+# That fixture predates the `implicit_geometry` column (test/data/README.md), so the
+# reserved name is pinned again on a table that carries it: every reader here emits
+# `implicit_geometry`, NULL-filled.
+statement ok
+CREATE SCHEMA own;
+
+statement ok
+CREATE TABLE own.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+statement ok
+PRAGMA cityparquet_init('own');
+
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM own.building) WHERE column_name = 'implicit_geometry';
+----
+1
+
+statement ok
+SELECT * FROM cityparquet_write('own', '__TEST_DIR__/attrs_own', crs => 'EPSG:7415');
+
+query II
+SELECT decode(value) LIKE '%"implicit_geometry"%',
+       decode(value) LIKE '%"measuredHeight"%'
+FROM parquet_kv_metadata('__TEST_DIR__/attrs_own/building.parquet')
+WHERE key::VARCHAR = 'city';
+----
+false	true

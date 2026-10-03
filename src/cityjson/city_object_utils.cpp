@@ -52,14 +52,15 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		return roles;
 	}
 
-	// `address` and `template`: reserved columns the spec requires present (spec
-	// "Optional data is NULL, not an omitted column"), but nothing in CityObject
-	// parses source address members or geometry-template instance data yet. Always
+	// `address` and `implicit_geometry`: reserved columns the spec requires present
+	// (spec "Optional data is NULL, not an omitted column"), but nothing in
+	// CityObject parses source address members or GeometryInstance data yet. Always
 	// NULL rather than surfacing a same-named source attribute here -- CityObject
 	// carries no field for either, so there is nothing to report but NULL without
-	// inventing it. (A source attribute literally named "address" or "template" is
-	// reserved-name-colliding input; it is preserved in `other`, not here.)
-	if (col.name == "address" || col.name == "template") {
+	// inventing it. (A source attribute literally named "address" or
+	// "implicit_geometry" is reserved-name-colliding input; it is preserved in
+	// `other`, not here.)
+	if (col.name == "address" || col.name == "implicit_geometry") {
 		return json(nullptr);
 	}
 
@@ -185,7 +186,7 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	// texture_lod* family, whose per-LoD *set* genuinely is a property of the
 	// dataset (spec: "a table whose objects have no analysis geometry at all
 	// carries none of them"), bbox is not part of that per-LoD exception: it is a
-	// single reserved column like `address` or `template`, column-nullable but
+	// single reserved column like `address` or `implicit_geometry`, column-nullable but
 	// always present. cityparquet-rs pushes it unconditionally too.
 	std::vector<Column> result;
 	result.emplace_back("bbox", ColumnType::GeographicalExtent);

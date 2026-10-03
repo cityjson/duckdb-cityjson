@@ -23,6 +23,9 @@ struct CityJSONWriteMetadata {
 	std::optional<std::string> reference_date;
 	std::optional<GeographicalExtent> geographical_extent;
 	std::optional<PointOfContact> point_of_contact;
+	//! The document's `extensions` member, keyed by extension name. Written by the
+	//! CityJSON and CityJSONSeq writers; the FlatCityBuf header is left without it.
+	std::optional<json> extensions;
 };
 
 /**

@@ -188,7 +188,7 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 	for (const auto &table : object_tables) {
 		// `bbox` is column-optional at the catalog level (a table this extension's
 		// own readers produced always carries it -- spec 02-object-table-schema.mdx,
-		// unconditional like `address`/`template` -- but a hand-rolled or foreign
+		// unconditional like `address`/`implicit_geometry` -- but a hand-rolled or foreign
 		// table need not). Writing `bbox = ...` against a table that lacks the
 		// column is a binder error, so this still has to check rather than assume.
 		auto pending_entry = pending.find(table);

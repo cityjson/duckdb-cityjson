@@ -17,7 +17,7 @@ namespace cityjson {
  *
  * Doing this by hand is a page of SQL that has to be got right in a particular order:
  * route each object to its CityGML module table, create the tables and sidecars the
- * source needs, renumber the incoming material/texture/template ids so they do not
+ * source needs, renumber the incoming material/texture/implicit-geometry ids so they do not
  * collide with the ones already there, rewrite every reference in the object rows to
  * match, and re-derive `feature_id`, the reciprocal hierarchy and `bbox` afterwards.
  * Getting the order wrong is silent: references end up pointing at another file's

@@ -18,9 +18,9 @@ WHERE function_name SIMILAR TO '(cityjson|cityjsonseq|cityparquet|flatcitybuf)_.
    OR function_name SIMILAR TO '(read|insert)_(cityjson|cityjsonseq|flatcitybuf)(_sql)?'
    OR function_name IN ('read_obj', 'obj_materials', 'obj_textures', 'obj_metadata');
 
-# 36 functions, plus the two FlatCityBuf readers when that support is built in.
+# 38 functions, plus the two FlatCityBuf readers when that support is built in.
 query I
-SELECT COUNT(*) = 36 + 2 * (SELECT COUNT(*) FROM ours WHERE function_name = 'read_flatcitybuf') FROM ours;
+SELECT COUNT(*) = 38 + 2 * (SELECT COUNT(*) FROM ours WHERE function_name = 'read_flatcitybuf') FROM ours;
 ----
 true
 

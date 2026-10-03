@@ -77,16 +77,16 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 	}
 	// Reserved (spec 02-object-table-schema.mdx) but always NULL today: no reader
 	// populates either from source data, and no writer here reassembles a CityJSON
-	// `address` member or geometry-template instance from one. Excluded from
-	// CopyColumnRole::Attribute so a NULL `address`/`template` column is never
+	// `address` member or GeometryInstance from one. Excluded from
+	// CopyColumnRole::Attribute so a NULL `address`/`implicit_geometry` column is never
 	// written as a literal CityJSON attribute, nor declared into an FCB header's
 	// attribute schema (copy_function.cpp's declared_attr_columns) -- same
 	// acceptable-loss treatment as Bbox and Other already get.
 	if (name == "address") {
 		return CopyColumnRole::Address;
 	}
-	if (name == "template") {
-		return CopyColumnRole::Template;
+	if (name == "implicit_geometry") {
+		return CopyColumnRole::ImplicitGeometry;
 	}
 	return CopyColumnRole::Attribute;
 }
@@ -115,6 +115,9 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->reference_date = reference_date;
 	result->geographical_extent = geographical_extent;
 	result->point_of_contact = point_of_contact;
+	result->extension_declarations = extension_declarations;
+	result->source_extensions = source_extensions;
+	result->output_names = output_names;
 	result->column_names = column_names;
 	result->column_types = column_types;
 	result->column_roles = column_roles;
@@ -262,6 +265,15 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 					    children[3].GetValue<double>(), children[4].GetValue<double>(), children[5].GetValue<double>());
 				}
 			}
+		} else if (name == "extensions") {
+			// A package's `city.extensions` (cityparquet_city_field(city, 'extensions')).
+			json parsed;
+			try {
+				parsed = json::parse(val.ToString());
+			} catch (const std::exception &e) {
+				throw BinderException("metadata_query: `extensions` is not valid JSON: " + std::string(e.what()));
+			}
+			bind_data.extension_declarations = DeclarationsFromFooterJson(parsed, "metadata_query");
 		} else if (name == "point_of_contact") {
 			if (val.type().id() == LogicalTypeId::STRUCT) {
 				auto &children = StructValue::GetChildren(val);
@@ -613,6 +625,21 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 					bind_data->point_of_contact = source_meta.metadata->point_of_contact;
 				}
 			}
+			// The source's `+` names reach the rows unchanged, so its declarations go
+			// back out as they came in.
+			if (!source_meta.extensions.empty()) {
+				json extensions = json::object();
+				for (const auto &entry : source_meta.extensions) {
+					json extension = {{"url", entry.second.url}, {"version", entry.second.version}};
+					if (entry.second.extra_properties.has_value()) {
+						for (const auto &extra : entry.second.extra_properties->items()) {
+							extension[extra.key()] = extra.value();
+						}
+					}
+					extensions[entry.first] = std::move(extension);
+				}
+				bind_data->source_extensions = std::move(extensions);
+			}
 			LoadSourceAppearance(context, source_ref, *reader, source_meta, *bind_data);
 		} catch (const std::exception &e) {
 			// An unreadable source is not fatal -- the rows are what is being copied,
@@ -743,6 +770,10 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 		default:
 			break;
 		}
+	}
+
+	for (const auto &name : names) {
+		bind_data->output_names.push_back(RestorePlusName(name, bind_data->extension_declarations));
 	}
 
 	// Validate mandatory columns
@@ -1156,7 +1187,9 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 		std::string feature_id = feature_id_val.ToString();
 		// The stored vocabulary is the CityGML class name; restore the CityJSON
 		// spelling for the four classes that differ (identity for everything else).
-		std::string object_type = CityJSONTypeForCityGMLClass(object_type_val.ToString());
+		// An extension class is stored with its namespace prefix; its `+` comes back.
+		std::string object_type =
+		    RestorePlusName(CityJSONTypeForCityGMLClass(object_type_val.ToString()), bind_data.extension_declarations);
 
 		// Build CityObject JSON
 		json city_obj;
@@ -1261,6 +1294,11 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 				// emit a semantics object when the flattened form carries both halves
 				// (surfaces + face_semantics); a lone `surfaces` is skipped rather than
 				// written as an invalid values-less semantics object.
+				if (props.contains("surfaces") && !bind_data.extension_declarations.empty()) {
+					RenameSurfaceTypes(props["surfaces"], [&](const std::string &type) {
+						return RestorePlusName(type, bind_data.extension_declarations);
+					});
+				}
 				if (props.contains("surfaces") && props.contains("face_semantics")) {
 					const json empty = json::array();
 					const json &shells = props.contains("shells") ? props["shells"] : empty;
@@ -1476,7 +1514,7 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 			if (bind_data.column_roles[col] == CopyColumnRole::Attribute) {
 				auto val = input.data[col].GetValue(row);
 				if (!val.IsNull()) {
-					attributes[bind_data.column_names[col]] = ValueToJson(val);
+					attributes[bind_data.output_names[col]] = ValueToJson(val);
 				}
 			}
 		}
@@ -1600,6 +1638,11 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 	write_meta.reference_date = bind_data.reference_date;
 	write_meta.geographical_extent = bind_data.geographical_extent;
 	write_meta.point_of_contact = bind_data.point_of_contact;
+	if (!bind_data.extension_declarations.empty()) {
+		write_meta.extensions = DeclarationsToCityJSON(bind_data.extension_declarations);
+	} else {
+		write_meta.extensions = bind_data.source_extensions;
+	}
 
 	// Write to the temp file path — DuckDB will rename it to the final path after Finalize
 	auto &output_path = gstate.temp_file_path;
@@ -1618,7 +1661,7 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 		std::vector<std::string> declared_attr_columns;
 		for (idx_t col = 0; col < bind_data.column_roles.size(); col++) {
 			if (bind_data.column_roles[col] == CopyColumnRole::Attribute) {
-				declared_attr_columns.push_back(bind_data.column_names[col]);
+				declared_attr_columns.push_back(bind_data.output_names[col]);
 			}
 		}
 		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order,

@@ -52,14 +52,15 @@ statement ok
 PRAGMA insert_cityjsonseq('ams', 'test/data/railway_appearance.city.jsonl');
 
 # The sidecars the source needs are created alongside: this file carries materials,
-# textures and geometry templates, and each gets its bookkeeping row too.
+# textures and geometry templates (the implicit_geometries sidecar), and each gets
+# its bookkeeping row too.
 query TT
 SELECT table_name, role FROM ams.__cityparquet ORDER BY table_name;
 ----
 bridge	object
 building	object
 city_furniture	object
-geometry_templates	sidecar
+implicit_geometries	sidecar
 materials	sidecar
 textures	sidecar
 
@@ -135,13 +136,13 @@ SELECT texture_lod2_0['visual'][1][1].uv FROM ams.city_furniture WHERE id = 'kio
 ----
 [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
-# --- geometry templates ------------------------------------------------------
+# --- implicit geometries ----------------------------------------------------
 
 statement ok
 PRAGMA insert_cityjson('ams', 'test/data/geometry_templates.city.json');
 
 query I
-SELECT COUNT(*) > 0 FROM ams.geometry_templates;
+SELECT COUNT(*) > 0 FROM ams.implicit_geometries;
 ----
 true
 
@@ -150,9 +151,9 @@ SELECT COUNT(*) FROM ams.vegetation WHERE object_type = 'SolitaryVegetationObjec
 ----
 2
 
-# These objects have template geometry only (GeometryInstance, no lod of its own),
+# These objects have implicit geometry only (GeometryInstance, no lod of its own),
 # so the reader emits no geometry_lod* columns for them -- but `bbox` is still a
-# reserved column, unconditional like `address`/`template` (spec
+# reserved column, unconditional like `address`/`implicit_geometry` (spec
 # 02-object-table-schema.mdx), so it is present regardless.
 query I
 SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM ams.vegetation) WHERE column_name = 'bbox';

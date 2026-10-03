@@ -28,6 +28,9 @@ std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &
 //! Case-insensitive lookup; nullptr when absent.
 const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::string &name);
 
+//! True for a geometry_properties struct type carrying its `surfaces` JSON text field.
+bool HasSurfacesField(const LogicalType &type);
+
 //! The promotion lattice: BIGINT -> DOUBLE is a safe widening; anything else scalar
 //! that disagrees falls back to VARCHAR. INVALID means the destination already
 //! accommodates the source. `function` and `column_name` name the caller and the
@@ -79,7 +82,10 @@ std::string GeometryColumnRef(const std::string &quoted_name, const LogicalType 
 std::string DeclaredCrsExpr(const std::string &schema);
 
 //! Scalar subquery: does this package state a CRS at all? False for a hand-rolled load,
-//! whose footers are NULL -- that states nothing, as opposed to stating "unknown".
+//! whose footers are NULL -- that states nothing, as opposed to stating "unknown". A
+//! footer counts when it carries `version` (every footer a writer produces does) or a
+//! CRS: the bookkeeping `city` of a package that has not been written yet may hold no
+//! more than its `extensions` declaration, which says nothing about the CRS.
 std::string CrsStatedExpr(const std::string &schema);
 
 //! Refuse a package whose own object-table footers declare more than one CRS, by name --

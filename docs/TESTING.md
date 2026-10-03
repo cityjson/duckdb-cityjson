@@ -112,7 +112,7 @@ SELECT* FROM read_parquet('/tmp/cp_test/delft_duckdb.parquet');"
 -- Material and texture
 SELECT (SELECT count(*) FROM cityjson_materials('cityparquet-rs/tests/fixtures/lod3_railway.city.json'))          AS materials,
        (SELECT count(*) FROM cityjson_textures('cityparquet-rs/tests/fixtures/lod3_railway.city.json'))           AS textures,
-       (SELECT count(*) FROM cityjson_geometry_templates('cityparquet-rs/tests/fixtures/lod3_railway.city.json')) AS templates;
+       (SELECT count(*) FROM cityjson_implicit_geometries('cityparquet-rs/tests/fixtures/lod3_railway.city.json')) AS implicit_geometries;
 
 SELECT * FROM cityjson_materials('cityparquet-rs/tests/fixtures/lod3_railway.city.json')
 ```

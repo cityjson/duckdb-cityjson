@@ -373,7 +373,7 @@ std::vector<Column> FlatCityBufReader::Columns() const {
 	}
 
 	// Reserved columns in the spec's fixed order -- head, then bbox + geometry,
-	// then the trailing run (template, other) -- and only then every attribute
+	// then the trailing run (implicit_geometry, other) -- and only then every attribute
 	// column (spec 02-object-table-schema.mdx, "Reserved columns").
 	columns.insert(columns.end(), geom_columns.begin(), geom_columns.end());
 	auto trailing_columns = LODTableUtils::GetTrailingColumns();

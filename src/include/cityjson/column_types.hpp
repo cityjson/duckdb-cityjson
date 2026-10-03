@@ -138,7 +138,7 @@ public:
  * 7. address: LIST(STRUCT) -- always NULL until a reader parses source addresses
  *
  * A caller assembles the full reserved order by inserting the geometry columns
- * after this, then `LODTableUtils::GetTrailingColumns()` (`template`, `other`),
+ * after this, then `LODTableUtils::GetTrailingColumns()` (`implicit_geometry`, `other`),
  * before any attribute column.
  *
  * @return Vector of predefined Column definitions

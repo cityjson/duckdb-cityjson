@@ -63,8 +63,8 @@ CREATE TABLE bl_tpl.vegetation AS
   SELECT * FROM read_cityjson('test/data/geometry_templates.city.json', appearance := 'sidecar');
 
 statement ok
-CREATE TABLE bl_tpl.geometry_templates AS
-  SELECT * FROM cityjson_geometry_templates('test/data/geometry_templates.city.json');
+CREATE TABLE bl_tpl.implicit_geometries AS
+  SELECT * FROM cityjson_implicit_geometries('test/data/geometry_templates.city.json');
 
 statement ok
 PRAGMA cityparquet_init('bl_tpl');
@@ -73,7 +73,7 @@ statement ok
 SELECT COUNT(*) FROM cityparquet_write('bl_tpl', '__TEST_DIR__/bloom_tpl', crs => 'EPSG:7415');
 
 query I
-SELECT COUNT(*) FROM parquet_metadata('__TEST_DIR__/bloom_tpl/geometry_templates.parquet')
+SELECT COUNT(*) FROM parquet_metadata('__TEST_DIR__/bloom_tpl/implicit_geometries.parquet')
 WHERE bloom_filter_offset IS NOT NULL;
 ----
 0

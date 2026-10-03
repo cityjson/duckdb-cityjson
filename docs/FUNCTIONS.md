@@ -41,9 +41,9 @@ LOAD cityjson;
 - [Metadata](#metadata) — `cityjson_metadata`, `cityjsonseq_metadata`, `flatcitybuf_metadata`
 - [Writing](#writing) — `COPY … TO`
 - [CityParquet footers](#cityparquet-footers) — `cityjson_geoparquet_geo`
-- [Appearance sidecars](#appearance-sidecars) — `cityjson_materials`, `cityjson_textures`, `cityjson_geometry_templates`
+- [Appearance sidecars](#appearance-sidecars) — `cityjson_materials`, `cityjson_textures`, `cityjson_implicit_geometries`
 - [Scalar helpers](#scalar-helpers) — `cityjson_wkb_extent`, `cityjson_appearance_ids`
-- [CityParquet packages](#cityparquet-packages) — the `cityparquet_*` / `insert_*` pragmas
+- [CityParquet packages](#cityparquet-packages) — the `cityparquet_*` / `insert_*` pragmas, [CityJSON Extensions](#cityjson-extensions)
 - [Mesh interchange](#mesh-interchange) — `read_obj`, `obj_materials`, `obj_textures`, `obj_metadata`, `COPY … TO (FORMAT obj)`, `COPY … TO (FORMAT gltf/glb)`
 - [Output schema](#output-schema) — column grammar in detail
 
@@ -261,7 +261,7 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 | `transform_scale` | VARCHAR | Vertex quantisation scale `'x,y,z'` (default `'0.001,0.001,0.001'`) |
 | `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`) |
 | `metadata_from` | VARCHAR | Path to read metadata and appearance definitions from, when the source is not discoverable from the query itself |
-| `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct or a plain string), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date` |
+| `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct or a plain string), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
 | `attr_index` | VARCHAR | *(flatcitybuf)* comma-separated columns to give a B+tree index |
 | `branching_factor` | BIGINT | *(flatcitybuf)* B+tree branching factor |
 | `index_node_size` | BIGINT | *(flatcitybuf)* R-tree node size |
@@ -290,6 +290,10 @@ TO 'delft_out.city.jsonl' (FORMAT cityjsonseq);
 SELECT reference_system.code FROM cityjsonseq_metadata('delft_out.city.jsonl');
 -- 7415
 ```
+
+The source's `extensions` member travels the same way, so its `+` names stay
+declared. A package's prefixed names are restored to `+` only through
+`metadata_query`'s `extensions` column ([CityJSON Extensions](#cityjson-extensions)).
 
 A `read_obj` source is discovered the same way: its `.mtl` materials and
 textures, and the `vt` UV pool they reference, travel into the written
@@ -324,13 +328,14 @@ simply nothing to index.
 | `geometry_properties*` | No | CityParquet STRUCT **or** JSON text |
 
 Everything else is written as a CityJSON attribute, with one exception: `bbox`,
-`other`, `address` and `template` are **recognised but not round-tripped** — a
-writer neither serialises their value into the output CityJSON nor declares them
-as attribute columns. `bbox` is derived and recomputed on read, so writing it
-back would be redundant; `other`, `address` and `template` are not written yet
-(a future writer would reassemble `other`'s members onto the CityObject, and
-`address`/`template` into their respective CityJSON members, rather than
-flattening any of the three into `attributes`).
+`other`, `address` and `implicit_geometry` are **recognised but not
+round-tripped** — a writer neither serialises their value into the output
+CityJSON nor declares them as attribute columns. `bbox` is derived and recomputed
+on read, so writing it back would be redundant; `other`, `address` and
+`implicit_geometry` are not written yet (a future writer would reassemble
+`other`'s members onto the CityObject, `address` into the CityJSON `address`
+member and `implicit_geometry` into a `GeometryInstance`, rather than flattening
+any of the three into `attributes`).
 
 **The wide CityParquet layout round-trips directly.** A Parquet object table goes
 back to CityJSON with no intermediate step, one multi-LoD CityObject per feature:
@@ -433,7 +438,7 @@ wrong definition — or to nothing.
 > repository, `test/data/railway_appearance.city.jsonl`, which carries all three.
 
 ```sql
--- The sidecar tables, shaped as materials.parquet / textures.parquet
+-- The sidecar tables, shaped as materials.parquet / textures.parquet / implicit_geometries.parquet
 SELECT id, name, diffuseColor, transparency
 FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
 -- 0 | UUID_e58d9d68-… | [0.496, 0.430, 0.297] | 0.0
@@ -442,7 +447,7 @@ FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
 -- 3 | UUID_0794715b-… | [0.598, 0.598, 0.598] | 0.0
 
 SELECT * FROM cityjson_textures('test/data/railway_appearance.city.jsonl');
-SELECT * FROM cityjson_geometry_templates('test/data/railway_appearance.city.jsonl');
+SELECT * FROM cityjson_implicit_geometries('test/data/railway_appearance.city.jsonl');
 ```
 
 Object rows then reference those ids rather than feature-local ones:
@@ -461,9 +466,12 @@ feature-local in `'local'`, dataset-global sidecar ids in `'sidecar'` — and
 texture UVs are inlined in both. **`read_flatcitybuf` does not take it** —
 sidecar normalisation is not available on the `.fcb` read path.
 
-The template sidecar carries the same per-LoD column grammar as an object table
-(`geometry_lod3_0`, `geometry_properties_lod3_0`, `material_lod3_0`,
-`texture_lod3_0` for this fixture), alongside `id` and `name`.
+`cityjson_implicit_geometries` turns the CityJSON `"geometry-templates"` member
+into the `implicit_geometries` sidecar: one row per template, each the shared
+*relative geometry* of an implicit geometry (CityGML `ImplicitGeometry`). It
+carries the same per-LoD column grammar as an object table (`geometry_lod3_0`,
+`geometry_properties_lod3_0`, `material_lod3_0`, `texture_lod3_0` for this
+fixture), alongside `id` and `name`.
 
 **Definitions are interned, not read from the header.** CityJSONSeq does not keep
 every definition in one place — the header carries some, each feature carries the
@@ -473,10 +481,11 @@ whole file, matched by structural equality (CityJSON gives a material no identit
 of its own). Header entries intern first, so their ids stay their ordinal
 positions, which is what a plain CityJSON document yields.
 
-**Geometry templates are in local coordinates**, exempt from the dataset
-transform and the file CRS — an instance's `transformationMatrix` and reference
-point place it into the world — so their WKB holds raw doubles. Each row
-populates only its own LoD's columns, leaving the table sparse by construction.
+**Relative geometries are in local coordinates**, exempt from the dataset
+transform and the file CRS — an implicit geometry's `transformationMatrix` and
+reference point place it into the world — so their WKB holds raw doubles. Each
+row populates only its own LoD's columns, leaving the table sparse by
+construction.
 
 **Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; every
 `texture_lod*` cell replaces that with one `STRUCT(id BIGINT, uv DOUBLE[][])`
@@ -587,12 +596,31 @@ Reads one field out of a `city` footer JSON string. Note that a footer which is
 SQL NULL — the package pragmas tell those apart by counting object-table footers
 separately, because only the latter is a *stated* unknown.
 
+### `cityparquet_prefix_surface_types(surfaces, namespace)` / `cityparquet_merge_extensions(city, extensions)`
+
+The two helpers the package pragmas generate calls to for
+[CityJSON Extensions](#cityjson-extensions); you rarely call either directly.
+
+```sql
+SELECT cityparquet_prefix_surface_types('[{"type":"+PartyWallSurface"},{"type":"WallSurface"}]', 'energy');
+-- [{"type":"energy_PartyWallSurface"},{"type":"WallSurface"}]
+
+SELECT cityparquet_merge_extensions(NULL, '{"energy":{"name":"Energy","url":"https://example.org/e.json"}}');
+-- {"extensions":{"energy":{"name":"Energy","url":"https://example.org/e.json"}}}
+```
+
+`cityparquet_prefix_surface_types` gives every `+` surface type in a
+`geometry_properties_lod*.surfaces` value the namespace prefix.
+`cityparquet_merge_extensions` merges a `city.extensions` object into a footer's
+own, and raises an error when a namespace is declared differently on the two
+sides.
+
 ---
 
 ## CityParquet packages
 
 A CityParquet dataset is a *directory* of Parquet files — one object table per
-CityGML module, plus optional `materials` / `textures` / `geometry_templates`
+CityGML module, plus optional `materials` / `textures` / `implicit_geometries`
 sidecars. Loading it into DuckDB gives you queryable tables; **mutating** it is
 harder, because the package has relationships ordinary `INSERT` / `UPDATE` /
 `DELETE` knows nothing about. Deleting a parent must cascade to its children, and
@@ -607,7 +635,7 @@ A package becomes a DuckDB **schema** whose tables are named by the spec's file
 basenames, plus a `__cityparquet` bookkeeping table. Object tables are
 `building`, `bridge`, `tunnel`, `construction`, `transportation`, `vegetation`,
 `relief`, `water_body`, `land_use`, `city_furniture`, `generics`; sidecars are
-`materials`, `textures`, `geometry_templates`. **Naming is the whole binding** —
+`materials`, `textures`, `implicit_geometries`. **Naming is the whole binding** —
 there is no registration state to keep in sync.
 
 `__cityparquet` holds one row per package file (`table_name`, `file_name`,
@@ -682,7 +710,7 @@ PRAGMA insert_cityjson('delft', 'tile.city.json');
 One call. Each object is routed to its **CityGML module** table — `Building` and
 `BuildingPart` both to `building`, `Road` and `Square` both to `transportation` —
 creating the module tables and sidecars the source needs, renumbering incoming
-material / texture / template ids so they cannot collide with existing ones,
+material / texture / implicit-geometry ids so they cannot collide with existing ones,
 rewriting every reference to match, and re-deriving `feature_id`, the reciprocal
 hierarchy and `bbox` afterwards.
 
@@ -695,8 +723,13 @@ PRAGMA insert_cityjson('delft', 'tile.city.json', create_tables = true);
 Worth knowing:
 
 - **Routing is total.** An object type belonging to no CityGML module is an
-  error, not a silently skipped row. Extension types cannot be placed without
-  their module declaration — read those with `read_cityjson` and insert yourself.
+  error, not a silently skipped row. An extension type routes only when its name
+  without the `+` is a core class (`+Building` goes to `building`); any other
+  cannot be placed without its module declaration — read those with
+  `read_cityjson` and insert yourself.
+- **Extension names take their namespace.** A `+` attribute, surface type or
+  object type is stored with the declaring extension's namespace as a prefix; see
+  [CityJSON Extensions](#cityjson-extensions).
 - **The file is opened twice** — once at plan time to learn its schema and object
   types, once by the generated read. The plan-time pass reads it *whole*, because
   a sample cannot tell you a rare type appears only in the tail.
@@ -707,6 +740,77 @@ Worth knowing:
   like with like. A package states **one** CRS for every row it holds, so an
   unknown on either side is refused rather than assumed; two unknowns are fine. A
   destination with no footer at all states nothing, so nothing is checked.
+
+### CityJSON Extensions
+
+A CityParquet package stores every name a CityJSON Extension adds with the
+extension's **namespace** as a prefix, in place of CityJSON's `+`. The namespace
+is the key of the source's `extensions` member lower-cased, with every character
+outside `[a-z0-9]` removed (`"Energy"` → `energy`), and it must start with a
+letter. `insert_cityjson` (and its siblings) apply it:
+
+| Source | Stored as |
+| ------ | --------- |
+| attribute `+heatCapacity` | column `energy_heatCapacity` |
+| surface type `+PartyWallSurface` | `geometry_properties_lod*.surfaces[].type` `energy_PartyWallSurface` |
+| object type `+Building` | `object_type` `energy_Building`, routed to `building` |
+
+```sql
+PRAGMA insert_cityjson('pkg', 'test/data/extension_energy.city.json');
+```
+
+```sql
+SELECT id, object_type, energy_heatCapacity FROM pkg.building WHERE energy_heatCapacity IS NOT NULL;
+-- house-1 | Building        | 250.5
+-- house-2 | energy_Building | 125.0
+```
+
+The package declares each namespace once, in every object table's
+`city.extensions` footer — recorded in `__cityparquet` by the insert and written
+out by `cityparquet_write`:
+
+```sql
+SELECT DISTINCT cityparquet_city_field(city, 'extensions') FROM pkg.__cityparquet WHERE role = 'object';
+-- {"energy":{"name":"Energy","url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}
+```
+
+A declaration on its own states no CRS: a package that has not been written yet
+still states nothing, and accepts a source in any CRS.
+
+What a source must get right, each a hard error that refuses the whole insert:
+
+- **A `+` name needs a declared extension.** CityJSON requires one.
+- **Exactly one declared extension.** With several, attributing each `+` name to
+  one of them needs the extensions' schema documents (`extraAttributes`,
+  `extraCityObjects`, `extraSemanticSurfaces`); attribution from extension schema
+  documents is not implemented.
+- **No core name may start with a declared prefix.** A core attribute
+  `energy_label` beside the Energy extension — in the same source, or in a package
+  that declares `energy` — would read back as an extension name.
+- **A namespace denotes one extension.** A package that already declares `energy`
+  for another extension refuses the insert, and `cityparquet_merge` refuses the
+  merge.
+
+`cityparquet_merge` carries the source's declarations onto the destination's
+footers. `cityparquet_write` refuses a table still holding a `+` name — a
+hand-rolled `read_cityjson` load keeps them — and lists extension classes in the
+STAC Item's `city3d:co_types` with their `+`, the source vocabulary.
+
+**Export.** `COPY` restores the `+` from the declaration, which a package read with
+`cityparquet_read` hands over through `metadata_query`:
+
+```sql
+COPY (SELECT * FROM pkg.building) TO 'out.city.jsonl' (
+    FORMAT cityjsonseq,
+    metadata_query 'SELECT max(cityparquet_city_field(city, ''extensions'')) AS extensions
+                    FROM pkg.__cityparquet WHERE role = ''object''');
+```
+
+Every name carrying a declared prefix — attribute, surface type, object type —
+is written with `+` again, and the document's `extensions` member is rebuilt
+(`name` as the key, `url` and `version` its members). A name with no declared
+prefix is written as it is. The FlatCityBuf writer restores the names but writes
+no `extensions` member.
 
 ### Mutation
 
@@ -1653,7 +1757,7 @@ Reserved columns appear in the order below, before every attribute column
 | `address` | STRUCT[] | Reserved; always NULL — no reader parses source addresses yet |
 | `bbox` | STRUCT (`xmin … zmax DOUBLE`) | 3D extent in world coordinates (below) |
 | *(the per-LoD geometry group, below)* | | |
-| `template` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses geometry-template instances yet |
+| `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses CityJSON `GeometryInstance` geometries yet. `id` references an `implicit_geometries` row |
 | `other` | JSON (VARCHAR) | Source members not mapped to a reserved or attribute column |
 
 Then **every attribute column** inferred from the data, last.

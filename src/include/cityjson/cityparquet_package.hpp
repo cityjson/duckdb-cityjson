@@ -19,7 +19,7 @@ inline constexpr const char *CITYPARQUET_VERSION = "0.1.0-draft";
 /**
  * A CityParquet package, as held in DuckDB, is a **schema** whose tables are named
  * exactly as the specification names the package's files: `building`,
- * `transportation`, … plus the `materials` / `textures` / `geometry_templates`
+ * `transportation`, … plus the `materials` / `textures` / `implicit_geometries`
  * sidecars. Naming is the whole binding — there is no registration state to keep in
  * sync and nothing session-scoped to go stale.
  *
@@ -35,7 +35,7 @@ inline constexpr const char *CITYPARQUET_VERSION = "0.1.0-draft";
 //! basenames, in the order the specification lists them.
 const std::vector<std::string> &ModuleTableNames();
 
-//! materials, textures, geometry_templates.
+//! materials, textures, implicit_geometries.
 const std::vector<std::string> &SidecarTableNames();
 
 //! The module table one CityObject type belongs in, per the specification's by-module

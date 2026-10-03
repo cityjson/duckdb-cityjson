@@ -115,7 +115,7 @@ std::vector<Column> LODTableUtils::GetTrailingColumns() {
 	// Spec 02-object-table-schema.mdx, "Reserved columns": everything after the
 	// geometry group and before any attribute column.
 	return {
-	    Column("template", ColumnType::TemplateStruct),
+	    Column("implicit_geometry", ColumnType::ImplicitGeometryStruct),
 	    Column("other", ColumnType::Json),
 	};
 }

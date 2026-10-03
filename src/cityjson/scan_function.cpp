@@ -135,17 +135,17 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			continue;
 		}
 
-		// `address` and `template`: reserved columns the spec requires present (and
-		// NULL-filled) even though nothing in this reader's data model populates
-		// them yet. `template` is routed through WriteTemplateStruct directly,
-		// bypassing WriteToVector's generic top-level-null shortcut, for the same
-		// reason GeometryPropertiesStruct is above: its LIST child
+		// `address` and `implicit_geometry`: reserved columns the spec requires present
+		// (and NULL-filled) even though nothing in this reader's data model populates
+		// them yet. `implicit_geometry` is routed through WriteImplicitGeometryStruct
+		// directly, bypassing WriteToVector's generic top-level-null shortcut, for the
+		// same reason GeometryPropertiesStruct is above: its LIST child
 		// (transformationMatrix) needs a well-formed list_entry_t even on a null
 		// row. `address`'s LIST<STRUCT> has no LIST nested inside a STRUCT child,
 		// so a plain SetNull is safe -- the same shape "children"/"parents"
 		// (VarcharArray) already rely on.
-		if (col.kind == ColumnType::TemplateStruct) {
-			WriteTemplateStruct(wrappers[col_idx].AsStructMut(), json(nullptr), output_row);
+		if (col.kind == ColumnType::ImplicitGeometryStruct) {
+			WriteImplicitGeometryStruct(wrappers[col_idx].AsStructMut(), json(nullptr), output_row);
 			continue;
 		}
 		if (col.kind == ColumnType::AddressList) {

@@ -344,6 +344,11 @@ void CityJSONWriter::WriteCityJSON(
 		root["metadata"] = meta_json;
 	}
 
+	// Every extension a document's `+` names belong to must be declared.
+	if (metadata.extensions.has_value() && !metadata.extensions->empty()) {
+		root["extensions"] = metadata.extensions.value();
+	}
+
 	// Transform
 	if (metadata.transform.has_value()) {
 		root["transform"] = json::object();
@@ -421,6 +426,11 @@ void CityJSONWriter::WriteCityJSONSeq(
 	auto meta_json = BuildMetadataJson(metadata);
 	if (!meta_json.empty()) {
 		header["metadata"] = meta_json;
+	}
+
+	// Every extension a document's `+` names belong to must be declared.
+	if (metadata.extensions.has_value() && !metadata.extensions->empty()) {
+		header["extensions"] = metadata.extensions.value();
 	}
 
 	if (metadata.transform.has_value()) {

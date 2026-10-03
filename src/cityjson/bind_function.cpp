@@ -5,6 +5,7 @@
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/city_object_utils.hpp"
+#include "cityjson/cityparquet_extensions.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -158,6 +159,28 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 		}
 	}
 	facts.object_types.assign(types.begin(), types.end());
+	facts.extensions = probe.metadata.extensions;
+
+	// Likewise complete: a surface type is renamed by namespace wherever it occurs.
+	std::set<std::string> surface_types;
+	const auto collect = [&surface_types](const Geometry &geometry) {
+		if (geometry.semantics.has_value() && geometry.semantics->contains("surfaces")) {
+			CollectSurfaceTypes(geometry.semantics->at("surfaces"), surface_types);
+		}
+	};
+	for (const auto &feature : all.records) {
+		for (const auto &entry : feature.city_objects) {
+			for (const auto &geometry : entry.second.geometry) {
+				collect(geometry);
+			}
+		}
+	}
+	if (probe.metadata.geometry_templates.has_value()) {
+		for (const auto &geometry : probe.metadata.geometry_templates->templates) {
+			collect(geometry);
+		}
+	}
+	facts.surface_types.assign(surface_types.begin(), surface_types.end());
 
 	// Interned, not counted off the header: a CityJSONSeq feature may carry definitions
 	// the header never declared, and those need a sidecar just as much.

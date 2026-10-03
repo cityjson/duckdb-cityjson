@@ -73,14 +73,29 @@ extension only generates text.
   generated SQL then names a column the staged relation does not have.
 - **`INSERT ... BY NAME` is not symmetric.** An unmatched *destination* column is left
   NULL, but a *source* column with no destination match is a binder error. Schema
-  evolution must run over sidecars too, not only module tables — `geometry_templates`
+  evolution must run over sidecars too, not only module tables — `implicit_geometries`
   carries per-LoD columns, so its shape varies by file.
 - **`bbox` is always present from this extension's own readers, but not from every
-  table.** A source with only template geometry produces no `geometry_lod*` columns,
+  table.** A source with only implicit geometry produces no `geometry_lod*` columns,
   but `bbox` is unconditional regardless (spec 02-object-table-schema.mdx, like
-  `address`/`template`). A hand-rolled or foreign table can still lack it, so anything
+  `address`/`implicit_geometry`). A hand-rolled or foreign table can still lack it, so anything
   generating `UPDATE ... SET bbox` must check the column exists rather than assume a
   table this extension wrote.
+- **An extension declaration is not a CRS statement.** The insert pragmas record a
+  source's `city.extensions` in the bookkeeping `city` of every object table, including
+  a package that has never been written and so had no footer at all. Such a `city`
+  carries no `version` and no `crs`, and `CrsStatedExpr` counts only a footer that
+  carries one of them -- counting any non-NULL `city` would turn "states nothing" into
+  "states unknown" and refuse the next insert of a georeferenced source.
+- **Extension names are rewritten in the staged relation, not in the reader.** The
+  readers speak CityJSON, `+` included, on every path (materialised, streaming,
+  FlatCityBuf's selective decode). `insert_cityjson` renames `+` attribute columns with
+  `ALTER TABLE ... RENAME COLUMN` on the staged temp table, rewrites `object_type` in the
+  staging `REPLACE`, and rewrites surface types with
+  `cityparquet_prefix_surface_types` -- and renames `facts.columns` to match, so every
+  generated `ALTER` on the destination names the staged column. Checks that depend on
+  what the destination already declares are generated, not decided: the declaration is
+  row data.
 - **`cityparquet_write` is a table function, not a pragma.** `KV_METADATA` accepts
   `getvariable()` (so a footer *value* can be computed in generated SQL) but cannot omit a
   *key*: a NULL value writes the literal string `"NULL"`. A solid-only table must write no
@@ -112,7 +127,7 @@ interchangeable. The package writer's result rows are a file inventory, not a re
   convention, which CityParquet adopts (spec `05-metadata.mdx`, "CRS rules"): a PROJJSON
   object means known; explicit `null` means the file holds CRS-bearing coordinates whose
   CRS is unknown or unresolvable; **absent means OGC:CRS84**. The key may be omitted only
-  by a file with no CRS-bearing coordinate at all — the sidecars, since geometry templates
+  by a file with no CRS-bearing coordinate at all — the sidecars, since relative geometries
   are in local, unplaced coordinates. Both writers always emit the key for an object
   table, mirror the same value onto every `city.columns[]` / `geo.columns[]` entry, and
   never guess. An unresolvable CRS is a warning; only an explicitly supplied `crs =>` that

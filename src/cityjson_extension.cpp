@@ -12,6 +12,7 @@
 #include "cityjson/cityparquet_insert.hpp"
 #include "cityjson/cityparquet_merge.hpp"
 #include "cityjson/cityparquet_write.hpp"
+#include "cityjson/cityparquet_extensions.hpp"
 #include "cityjson/cityparquet_appearance.hpp"
 #include "cityjson/appearance_table_function.hpp"
 #include "cityjson/copy_function.hpp"
@@ -64,6 +65,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register CityParquet package writer (cityparquet_write)
 	cityjson::RegisterCityParquetWriteFunction(loader);
+
+	// Register the extension-namespace helpers the package layer's SQL calls
+	cityjson::RegisterCityParquetExtensionFunctions(loader);
 
 	// Register cityjson_appearance_ids (sidecar ids referenced by an appearance cell)
 	cityjson::RegisterAppearanceIdsFunction(loader);

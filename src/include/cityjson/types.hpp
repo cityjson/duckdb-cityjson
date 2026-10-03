@@ -43,9 +43,9 @@ enum class ColumnType {
 
 	// Reserved columns the spec requires present (NULL-filled) even when nothing in
 	// this reader's data model populates them yet (02-object-table-schema.mdx).
-	AddressList,   // LIST(STRUCT(street, house_number, po_box, zip_code, city, state,
-	               //             country, free_text VARCHAR, location BLOB))
-	TemplateStruct, // STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
+	AddressList,            // LIST(STRUCT(street, house_number, po_box, zip_code, city, state,
+	                        //             country, free_text VARCHAR, location BLOB))
+	ImplicitGeometryStruct, // STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
 };
 
 /**

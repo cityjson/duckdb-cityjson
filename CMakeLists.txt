@@ -80,6 +80,7 @@ set(EXTENSION_SOURCES
     src/cityjson/cityjson_writer.cpp
     # CityParquet package layer
     src/cityjson/cityparquet_sql_common.cpp
+    src/cityjson/cityparquet_extensions.cpp
     src/cityjson/cityparquet_package.cpp
     src/cityjson/cityparquet_validate.cpp
     src/cityjson/cityparquet_reconcile.cpp

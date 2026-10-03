@@ -95,13 +95,19 @@ struct CityJSONSourceFacts {
 	std::vector<std::string> object_types;
 	//! metadata.referenceSystem, when the file declares one.
 	std::optional<std::string> reference_system;
+	//! The document's `extensions` member: the CityJSON Extensions it declares.
+	std::map<std::string, Extension> extensions;
+	//! Every distinct semantic surface type in the file, its geometry templates'
+	//! included, sorted. Like `object_types`, the complete set: an extension surface
+	//! type appearing only in the tail must still be given its namespace.
+	std::vector<std::string> surface_types;
 	//! Whether the interned sidecars would have any rows at all. A package's `materials`
 	//! table must not be created for a file that has none.
 	bool has_materials = false;
 	bool has_textures = false;
-	//! The document's templates, kept whole rather than reduced to a flag: the
-	//! geometry_templates sidecar's columns depend on which LoDs they use, and a caller
-	//! evolving a destination sidecar has to know them.
+	//! The document's CityJSON geometry templates, kept whole rather than reduced to a
+	//! flag: the implicit_geometries sidecar's columns depend on which LoDs they use, and
+	//! a caller evolving a destination sidecar has to know them.
 	GeometryTemplates geometry_templates;
 };
 

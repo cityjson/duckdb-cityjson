@@ -30,7 +30,7 @@ const std::vector<std::string> &ModuleTableNames() {
 }
 
 const std::vector<std::string> &SidecarTableNames() {
-	static const std::vector<std::string> names = {"materials", "textures", "geometry_templates"};
+	static const std::vector<std::string> names = {"materials", "textures", "implicit_geometries"};
 	return names;
 }
 

@@ -209,10 +209,12 @@ by **structural equality**, because CityJSON gives a material no identity of its
 own, and header-declared entries intern first so their ids keep their ordinal
 positions.
 
-Geometry templates sit slightly outside the model: they are in local, unplaced
-coordinates, exempt from the dataset transform and the file CRS, and an instance's
-own matrix places them. That exemption is why templates are the one thing in a
-package that legitimately declares no CRS.
+Implicit geometries sit slightly outside the model. The shared relative
+geometries in the `implicit_geometries` sidecar (CityJSON's geometry templates)
+are in local, unplaced coordinates, exempt from the dataset transform and the
+file CRS, and each object's `implicit_geometry` matrix and reference point place
+them. That exemption is why the sidecars are the one thing in a package that
+legitimately declares no CRS.
 
 ## 8. The package layer
 
@@ -242,6 +244,17 @@ spec forbids declaring GeoParquet metadata for a solid-only table — and SQL
 cannot branch the shape of a `COPY`, nor can DuckDB's key-value metadata option
 omit a key. So the writer is a table function assembling metadata in C++, at the
 cost of running on an internal connection and seeing only committed state.
+
+**CityJSON's `+` stops at the package boundary.** A package names everything a
+CityJSON Extension adds with the extension's namespace as a prefix
+(`energy_heatCapacity`), so one naming rule identifies every extension name and SQL
+never has to quote a `+`. The insert pragmas apply the namespace as they stage the
+source and record the declaration in each object table's bookkeeping `city`
+footer, from which `cityparquet_write` writes `city.extensions`; `COPY` turns the
+prefix back into `+` only when handed that declaration. The mapping is a
+declaration, not a guess: a source whose `+` names cannot be attributed to exactly
+one declared extension, or whose core names look like extension names, is
+refused.
 
 Derived state is the other organising idea here. `feature_id`, `bbox`, and the
 reciprocal hierarchy arrays are *computed*, not authored, so any structural edit

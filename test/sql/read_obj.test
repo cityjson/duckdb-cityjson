@@ -19,7 +19,7 @@ query I
 SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
 WHERE column_name NOT IN ('id','feature_id','object_type','parents','children','children_roles','address','bbox',
                           'geometry_lod2_2','geometry_properties_lod2_2','material_lod2_2','texture_lod2_2',
-                          'template','other');
+                          'implicit_geometry','other');
 ----
 0
 

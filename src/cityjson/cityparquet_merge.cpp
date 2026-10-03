@@ -40,6 +40,13 @@ std::string OffsetExpr(const std::string &sidecar) {
 	return "(SELECT off FROM " + OffsetTable(sidecar) + ")";
 }
 
+//! The `city.extensions` one source file declares, as a scalar subquery: NULL when it
+//! declares none, or has no footer.
+std::string SourceExtensionsExpr(const std::string &source, const std::string &table) {
+	return "(SELECT cityparquet_city_field(city, 'extensions') FROM " + QualifiedName(source, "__cityparquet") +
+	       " WHERE role = 'object' AND table_name = " + Literal(table) + ")";
+}
+
 } // namespace
 
 std::string BuildMergeSQL(ClientContext &context, const std::string &destination, const std::string &source,
@@ -102,6 +109,16 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 		                                   "cityparquet_write(..., crs => ...) and reload it before merging";
 		sql += CrsPreconditionSQL(wording, DeclaredCrsExpr(destination), CrsStatedExpr(destination),
 		                          DeclaredCrsExpr(source), CrsStatedExpr(source));
+	}
+
+	// Extension declarations travel with the files that carry the names (spec
+	// 06-extensions.mdx). A namespace the two packages declare for different
+	// extensions would denote two extensions in one package: cityparquet_merge_extensions
+	// refuses it, and running it here, before anything is written, leaves the
+	// destination untouched.
+	for (const auto &table : source_tables) {
+		sql += "SELECT COUNT(cityparquet_merge_extensions(city, " + SourceExtensionsExpr(source, table) + ")) FROM " +
+		       QualifiedName(destination, "__cityparquet") + " WHERE role = 'object';\n";
 	}
 
 	// ---- Phase 2: schema evolution, before any INSERT ----------------------
@@ -173,6 +190,14 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 		destination_columns[table] = existing;
 	}
 
+	// Every destination object footer, those just registered included, declares every
+	// namespace the merged files declare: the same declaration in every file.
+	for (const auto &table : source_tables) {
+		sql += "UPDATE " + QualifiedName(destination, "__cityparquet") +
+		       " SET city = cityparquet_merge_extensions(city, " + SourceExtensionsExpr(source, table) +
+		       ") WHERE role = 'object';\n";
+	}
+
 	// ---- Phase 3: sidecar merge with id remap ------------------------------
 	for (const auto &sidecar : source_sidecars) {
 		const auto in_destination =
@@ -186,9 +211,10 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			       QualifiedName(destination, "__cityparquet") + " WHERE table_name = " + Literal(sidecar) + ");\n";
 		} else {
 			// A sidecar needs schema evolution just as a module table does. The
-			// geometry_templates sidecar carries per-LoD columns, so two packages whose
-			// templates use different LoDs have genuinely different sidecar schemas and
-			// the INSERT below would name a column the destination has never had.
+			// implicit_geometries sidecar carries per-LoD columns, so two packages whose
+			// relative geometries use different LoDs have genuinely different sidecar
+			// schemas and the INSERT below would name a column the destination has never
+			// had.
 			auto existing = TableColumns(context, destination, sidecar);
 			for (const auto &column : TableColumns(context, source, sidecar)) {
 				if (FindColumn(existing, column.name) == nullptr) {
@@ -258,10 +284,10 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				values.push_back("id + " + OffsetExpr(sidecar));
 				continue;
 			}
-			// A geometry template holds appearance of its own, so its material and
+			// A relative geometry holds appearance of its own, so its material and
 			// texture references need the same shift the object rows got. Moving the
 			// sidecar rows while leaving their references behind would repoint every
-			// template at whichever definition already occupied that id.
+			// relative geometry at whichever definition already occupied that id.
 			const char *kind = nullptr;
 			if (has_materials && MatchesLodSuffix(lowered, "material_lod")) {
 				kind = "material";

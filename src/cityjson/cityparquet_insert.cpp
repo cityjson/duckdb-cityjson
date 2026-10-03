@@ -3,6 +3,7 @@
 #include "cityjson/function_docs.hpp"
 #include "cityjson/appearance_table_function.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/cityparquet_extensions.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
@@ -47,7 +48,7 @@ std::string SidecarFunction(const std::string &sidecar) {
 	if (sidecar == "textures") {
 		return "cityjson_textures";
 	}
-	return "cityjson_geometry_templates";
+	return "cityjson_implicit_geometries";
 }
 
 //! Open the source with the same factory the named read function uses, so the schema
@@ -75,6 +76,126 @@ std::string ReadCall(const std::string &reader_function, const std::string &path
 	return call + ")";
 }
 
+//! One name the source adds to a package, for the collision rule and its messages.
+struct SourceName {
+	const char *kind;
+	std::string name;
+};
+
+//! Every name the source adds that is NOT an extension name: its attribute columns,
+//! object types and semantic surface types without CityJSON's `+`.
+std::vector<SourceName> CoreNames(const CityJSONSourceFacts &facts) {
+	std::vector<SourceName> names;
+	for (const auto &column : facts.columns) {
+		if (!IsPlusName(column.name) && !IsReservedColumnName(column.name)) {
+			names.push_back({"attribute", column.name});
+		}
+	}
+	for (const auto &type : facts.object_types) {
+		if (!IsPlusName(type)) {
+			names.push_back({"object type", type});
+		}
+	}
+	for (const auto &type : facts.surface_types) {
+		if (!IsPlusName(type)) {
+			names.push_back({"semantic surface type", type});
+		}
+	}
+	return names;
+}
+
+//! An attribute name compared case-insensitively, because DuckDB's column names are;
+//! a type is compared exactly.
+std::string Comparable(const SourceName &entry) {
+	return std::string(entry.kind) == "attribute" ? StringUtil::Lower(entry.name) : entry.name;
+}
+
+//! True when `entry` starts with the prefix form of `ns`.
+bool StartsWithPrefix(const SourceName &entry, const std::string &ns) {
+	const auto name = Comparable(entry);
+	const auto prefix = ns + "_";
+	return name.size() > prefix.size() && name.compare(0, prefix.size(), prefix) == 0;
+}
+
+//! SQL that is true when the package's object footers declare the namespace `ns`.
+std::string DeclaresNamespaceExpr(const std::string &schema, const std::string &ns) {
+	return "EXISTS (SELECT 1 FROM " + QualifiedName(schema, "__cityparquet") +
+	       " WHERE role = 'object' AND cityparquet_city_field(cityparquet_city_field(city, 'extensions'), " +
+	       Literal(ns) + ") IS NOT NULL)";
+}
+
+//! The CityJSON Extension side of an insert (spec 06-extensions.mdx): the extension
+//! the source's `+` names belong to, checked and turned into its namespace.
+struct SourceExtension {
+	//! Empty when the source has no `+` name; otherwise the one declaration its names
+	//! are attributed to.
+	std::vector<ExtensionDeclaration> declarations;
+	std::string ns;
+};
+
+SourceExtension PlanSourceExtension(const CityJSONSourceFacts &facts, const std::string &path) {
+	std::string first_plus;
+	for (const auto &column : facts.columns) {
+		if (first_plus.empty() && IsPlusName(column.name)) {
+			first_plus = column.name;
+		}
+	}
+	for (const auto &type : facts.object_types) {
+		if (first_plus.empty() && IsPlusName(type)) {
+			first_plus = type;
+		}
+	}
+	for (const auto &type : facts.surface_types) {
+		if (first_plus.empty() && IsPlusName(type)) {
+			first_plus = type;
+		}
+	}
+	SourceExtension result;
+	if (first_plus.empty()) {
+		return result;
+	}
+	if (facts.extensions.empty()) {
+		throw BinderException("insert_cityjson: '%s' in '%s' carries CityJSON's extension marker, but the source "
+		                      "declares no extension; CityJSON requires every extension a document uses to be "
+		                      "declared in its `extensions` member",
+		                      first_plus, path);
+	}
+	if (facts.extensions.size() > 1) {
+		std::vector<std::string> names;
+		for (const auto &entry : facts.extensions) {
+			names.push_back(entry.first);
+		}
+		throw BinderException("insert_cityjson: '%s' declares %llu extensions (%s), so its `+` names cannot be "
+		                      "attributed by declaration alone; that needs the extensions' schema documents, and "
+		                      "attribution from extension schema documents is not implemented",
+		                      path, static_cast<uint64_t>(names.size()), Join(names, ", "));
+	}
+	result.declarations = DeclarationsFromCityJSON(facts.extensions, "insert_cityjson");
+	result.ns = result.declarations.front().ns;
+
+	// A core name that starts with the namespace's prefix would read back as an
+	// extension name: refused, rather than turned into `+` on export.
+	const auto &declaration = result.declarations.front();
+	for (const auto &entry : CoreNames(facts)) {
+		if (StartsWithPrefix(entry, declaration.ns)) {
+			throw BinderException("insert_cityjson: the %s '%s' in '%s' is not an extension name, but it starts "
+			                      "with '%s_', the prefix of the extension '%s' the source declares; on export it "
+			                      "would be indistinguishable from an extension name",
+			                      entry.kind, entry.name, path, declaration.ns, declaration.name);
+		}
+	}
+	return result;
+}
+
+//! The REPLACE expression giving a geometry_properties struct column's extension
+//! surface types the namespace prefix. Every other field is carried as it is.
+std::string PrefixedSurfacesExpr(const std::string &column, const std::string &ns) {
+	const auto q = Quoted(column);
+	return "CASE WHEN " + q + " IS NULL THEN NULL ELSE {'type': " + q +
+	       ".\"type\", 'surfaces': cityparquet_prefix_surface_types(" + q + ".surfaces, " + Literal(ns) +
+	       "), 'face_semantics': " + q + ".face_semantics, 'shells': " + q + ".shells} END AS " + q;
+}
+
 } // namespace
 
 std::string BuildInsertSQL(ClientContext &context, const std::string &schema, const std::string &path,
@@ -91,21 +212,52 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	read_options.sample_lines = options.sample_lines;
 
 	auto reader = OpenFor(context, reader_function, path, options.sample_lines);
-	const auto facts = InspectCityJSONSource(*reader, read_options, reader_function == "read_cityjsonseq");
+	auto facts = InspectCityJSONSource(*reader, read_options, reader_function == "read_cityjsonseq");
+
+	// ---- CityJSON Extensions (spec 06-extensions.mdx) -----------------------
+	// Every `+` name the source adds is stored with its extension's namespace as a
+	// prefix: attribute columns are renamed in the staged relation, object types and
+	// semantic surface types rewritten as they are staged. From here on `facts.columns`
+	// carries the package's names, so every ALTER below names the column as staged.
+	const auto extension = PlanSourceExtension(facts, path);
+	std::vector<std::pair<std::string, std::string>> renamed_columns;
+	bool prefixes_types = false;
+	bool prefixes_surfaces = false;
+	if (!extension.ns.empty()) {
+		for (auto &column : facts.columns) {
+			if (IsPlusName(column.name)) {
+				const auto renamed = PrefixPlusName(column.name, extension.ns);
+				renamed_columns.emplace_back(column.name, renamed);
+				column.name = renamed;
+			}
+		}
+		for (const auto &type : facts.object_types) {
+			prefixes_types = prefixes_types || IsPlusName(type);
+		}
+		for (const auto &type : facts.surface_types) {
+			prefixes_surfaces = prefixes_surfaces || IsPlusName(type);
+		}
+	}
 
 	// ---- Phase 0: routing, plan time, no data ------------------------------
 	// Every type must resolve to a module. Routing is total by specification, so an
 	// unplaceable type is an error -- dropping its rows would be a silent partial insert.
 	std::map<std::string, std::vector<std::string>> types_by_module;
 	for (const auto &object_type : facts.object_types) {
-		const auto module = ModuleForObjectType(object_type);
+		// An extension class routes by its name without the `+` when that is a core
+		// class (spec 06-extensions.mdx, "The ModuleKey"); it stays an extension class,
+		// stored under its prefixed name. Any other extension class would need the
+		// module its extension declares for it, which this extension does not read.
+		const bool is_extension = IsPlusName(object_type);
+		const auto module = ModuleForObjectType(is_extension ? object_type.substr(1) : object_type);
 		if (module.empty()) {
 			throw BinderException("insert_cityjson: object type '%s' in '%s' belongs to no CityGML module. "
 			                      "Extension types cannot be routed without their module declaration; "
 			                      "load the file with read_cityjson and insert the rows explicitly",
 			                      object_type, path);
 		}
-		types_by_module[module].push_back(CityGMLClassForCityJSONType(object_type));
+		types_by_module[module].push_back(is_extension ? PrefixPlusName(object_type, extension.ns)
+		                                               : CityGMLClassForCityJSONType(object_type));
 	}
 	if (!options.tables.empty()) {
 		for (auto it = types_by_module.begin(); it != types_by_module.end();) {
@@ -119,7 +271,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	}
 
 	// The columns each sidecar the source has will be staged with. materials and textures
-	// have a fixed shape; geometry_templates carries per-LoD columns and so its shape is
+	// have a fixed shape; implicit_geometries carries per-LoD columns and so its shape is
 	// a property of the file -- asked of the sidecar reader rather than reconstructed.
 	std::map<std::string, std::vector<ColumnInfo>> source_sidecar_columns;
 	auto record_sidecar = [&](const std::string &sidecar, const std::vector<std::string> &names,
@@ -148,8 +300,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		}
 		if (!facts.geometry_templates.Empty()) {
 			std::vector<std::string> lods;
-			GeometryTemplateColumns(facts.geometry_templates, names, types, lods);
-			record_sidecar("geometry_templates", names, types);
+			ImplicitGeometryColumns(facts.geometry_templates, names, types, lods);
+			record_sidecar("implicit_geometries", names, types);
 		}
 	}
 
@@ -171,17 +323,45 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// to the CityGML 3.0 class name here, at the boundary (spec
 	// 02-object-table-schema.mdx), so every routed literal below matches the staged
 	// value and the package stores the spec vocabulary.
-	const std::string remap_expr = "CASE object_type"
-	                               " WHEN 'TransportSquare' THEN 'Square'"
-	                               " WHEN 'GenericCityObject' THEN 'GenericOccupiedSpace'"
-	                               " WHEN 'BuildingStorey' THEN 'Storey'"
-	                               " WHEN 'TunnelHollowSpace' THEN 'HollowSpace'"
-	                               " ELSE object_type END";
-	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * REPLACE (" + remap_expr +
-	       " AS object_type) FROM " + ReadCall(reader_function, path, options, sidecar_appearance) + ";\n";
+	std::string remap_expr = "CASE object_type"
+	                         " WHEN 'TransportSquare' THEN 'Square'"
+	                         " WHEN 'GenericCityObject' THEN 'GenericOccupiedSpace'"
+	                         " WHEN 'BuildingStorey' THEN 'Storey'"
+	                         " WHEN 'TunnelHollowSpace' THEN 'HollowSpace'"
+	                         " ELSE object_type END";
+	if (prefixes_types) {
+		remap_expr = "CASE WHEN starts_with(object_type, '+') THEN " + Literal(extension.ns + "_") +
+		             " || substr(object_type, 2) ELSE " + remap_expr + " END";
+	}
+	std::vector<std::string> stage_replacements = {remap_expr + " AS object_type"};
+	if (prefixes_surfaces) {
+		for (const auto &column : facts.columns) {
+			if (column.kind == ColumnType::GeometryPropertiesStruct) {
+				stage_replacements.push_back(PrefixedSurfacesExpr(column.name, extension.ns));
+			}
+		}
+	}
+	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * REPLACE (" +
+	       Join(stage_replacements, ", ") + ") FROM " + ReadCall(reader_function, path, options, sidecar_appearance) +
+	       ";\n";
+	for (const auto &renamed : renamed_columns) {
+		sql += "ALTER TABLE " + std::string(kStage) + " RENAME COLUMN " + Quoted(renamed.first) + " TO " +
+		       Quoted(renamed.second) + ";\n";
+	}
 	for (const auto &sidecar : source_sidecars) {
-		sql += "CREATE OR REPLACE TEMP TABLE " + StageTable(sidecar) + " AS SELECT * FROM " + SidecarFunction(sidecar) +
-		       "(" + Literal(path) + ");\n";
+		// A relative geometry's semantic surfaces are named like an object's.
+		std::vector<std::string> sidecar_replacements;
+		if (prefixes_surfaces) {
+			for (const auto &column : source_sidecar_columns[sidecar]) {
+				if (MatchesLodSuffix(StringUtil::Lower(column.name), "geometry_properties_lod")) {
+					sidecar_replacements.push_back(PrefixedSurfacesExpr(column.name, extension.ns));
+				}
+			}
+		}
+		const auto projection =
+		    sidecar_replacements.empty() ? std::string("*") : "* REPLACE (" + Join(sidecar_replacements, ", ") + ")";
+		sql += "CREATE OR REPLACE TEMP TABLE " + StageTable(sidecar) + " AS SELECT " + projection + " FROM " +
+		       SidecarFunction(sidecar) + "(" + Literal(path) + ");\n";
 	}
 
 	// ---- Phase 2: preconditions, before any mutation ------------------------
@@ -274,6 +454,79 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		                                   "and reload it before inserting";
 		sql += OneCrsPerPackageSQL(wording.function, schema, "destination");
 		sql += CrsPreconditionSQL(wording, DeclaredCrsExpr(schema), CrsStatedExpr(schema), source_crs, "TRUE");
+	}
+
+	// The collision rule across the package (spec 06-extensions.mdx, "Collisions"):
+	// what the package declares is row data, so these checks are generated rather
+	// than decided here. First, an incoming core name must not start with the prefix
+	// of a namespace the package already declares.
+	{
+		std::map<std::string, SourceName> by_candidate;
+		for (const auto &entry : CoreNames(facts)) {
+			const auto name = Comparable(entry);
+			const auto underscore = name.find('_');
+			if (underscore == std::string::npos || underscore == 0 || underscore + 1 == name.size()) {
+				continue;
+			}
+			const auto candidate = name.substr(0, underscore);
+			if (IsValidExtensionNamespace(candidate) && candidate != extension.ns) {
+				by_candidate.emplace(candidate, entry);
+			}
+		}
+		for (const auto &entry : by_candidate) {
+			const auto message = "insert_cityjson: the " + std::string(entry.second.kind) + " '" + entry.second.name +
+			                     "' in '" + path + "' is not an extension name, but it starts with '" + entry.first +
+			                     "_', the prefix of an extension namespace the package declares; on export it "
+			                     "would be indistinguishable from an extension name";
+			sql += "SELECT error(" + Literal(message) + ") WHERE " + DeclaresNamespaceExpr(schema, entry.first) + ";\n";
+		}
+	}
+	// Second, a namespace this source brings into the package must not be the prefix
+	// of a core name already there -- unless the package already declares it, in which
+	// case those names are this extension's own.
+	if (!extension.ns.empty()) {
+		const auto &declaration = extension.declarations.front();
+		const auto prefix = declaration.ns + "_";
+		const auto undeclared = "NOT " + DeclaresNamespaceExpr(schema, declaration.ns);
+		const auto message = [&](const std::string &kind, const std::string &name_sql) {
+			return Literal("insert_cityjson: the package holds the " + kind + " '") + " || " + name_sql + " || " +
+			       Literal("', which is not an extension name but starts with '" + prefix +
+			               "', the prefix of the extension '" + declaration.name + "' that '" + path +
+			               "' declares; on export it would be indistinguishable from an extension name");
+		};
+		std::vector<std::string> types;
+		std::vector<std::string> surfaces;
+		for (const auto &table : destination_tables) {
+			for (const auto &column : TableColumns(context, schema, table)) {
+				const auto lowered = StringUtil::Lower(column.name);
+				if (!IsReservedColumnName(column.name) && lowered.size() > prefix.size() &&
+				    lowered.compare(0, prefix.size(), prefix) == 0) {
+					sql +=
+					    "SELECT error(" + message("attribute", Literal(column.name)) + ") WHERE " + undeclared + ";\n";
+				}
+				if (MatchesLodSuffix(lowered, "geometry_properties_lod") && HasSurfacesField(column.type)) {
+					surfaces.push_back("SELECT " + Quoted(column.name) + ".surfaces AS s FROM " +
+					                   QualifiedName(schema, table));
+				}
+			}
+			types.push_back("SELECT object_type AS t FROM " + QualifiedName(schema, table));
+		}
+		sql += "SELECT error(" + message("object type", "t") + ") FROM (" + Join(types, " UNION ALL ") +
+		       ") WHERE starts_with(t, " + Literal(prefix) + ") AND " + undeclared + ";\n";
+		if (!surfaces.empty()) {
+			// `surfaces` is JSON text; its writers differ in whitespace, never in keys.
+			sql += "SELECT error(" +
+			       message("semantic surface type",
+			               "regexp_extract(s, " + Literal("\"type\"\\s*:\\s*\"(" + prefix + "[^\"]*)\"") + ", 1)") +
+			       ") FROM (" + Join(surfaces, " UNION ALL ") + ") WHERE regexp_matches(s, " +
+			       Literal("\"type\"\\s*:\\s*\"" + prefix) + ") AND " + undeclared + ";\n";
+		}
+		// And the package must not already declare this namespace for another extension.
+		// cityparquet_merge_extensions refuses that; running it here, before anything is
+		// written, makes the refusal leave the package untouched.
+		sql += "SELECT COUNT(cityparquet_merge_extensions(city, " +
+		       Literal(DeclarationsToFooterJson(extension.declarations).dump()) + ")) FROM " +
+		       QualifiedName(schema, "__cityparquet") + " WHERE role = 'object';\n";
 	}
 
 	// ---- Phase 3: schema evolution, before any INSERT -----------------------
@@ -376,6 +629,14 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		}
 	}
 
+	// The extension's declaration goes onto every object table's footer, those this
+	// insert just registered included: each file that carries an extension name must
+	// declare its namespace, and every file declares it the same way.
+	if (!extension.ns.empty()) {
+		sql += "UPDATE " + QualifiedName(schema, "__cityparquet") + " SET city = cityparquet_merge_extensions(city, " +
+		       Literal(DeclarationsToFooterJson(extension.declarations).dump()) + ") WHERE role = 'object';\n";
+	}
+
 	// ---- Phase 4: sidecars, created before any offset is measured -----------
 	// The order matters and cost a build cycle: a package with no appearance has no
 	// `materials` table, so measuring max(id) against it before creating it fails.
@@ -396,10 +657,10 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			       QualifiedName(schema, "__cityparquet") + " WHERE table_name = " + Literal(sidecar) + ");\n";
 		} else {
 			// A sidecar needs schema evolution just as a module table does. The
-			// geometry_templates sidecar carries per-LoD columns, so a second file whose
-			// templates use a different LoD brings columns the destination has never
-			// seen, and INSERT ... BY NAME rejects a source column with no destination
-			// match.
+			// implicit_geometries sidecar carries per-LoD columns, so a second file whose
+			// relative geometries use a different LoD brings columns the destination has
+			// never seen, and INSERT ... BY NAME rejects a source column with no
+			// destination match.
 			const auto existing = TableColumns(context, schema, sidecar);
 			for (const auto &column : source_sidecar_columns[sidecar]) {
 				if (FindColumn(existing, column.name) == nullptr) {
@@ -453,10 +714,11 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// the references above are being rewritten with them.
 	for (const auto &sidecar : source_sidecars) {
 		std::vector<std::string> sidecar_replacements = {"id + " + OffsetExpr(sidecar) + " AS id"};
-		// A geometry template holds appearance of its own, so its material and texture
-		// references need the same shift the object rows got. Miss this and a template
-		// silently renders with whichever definition the destination already had at that
-		// id -- the sidecar rows would move while their references stayed behind.
+		// A relative geometry holds appearance of its own, so its material and texture
+		// references need the same shift the object rows got. Miss this and a relative
+		// geometry silently renders with whichever definition the destination already
+		// had at that id -- the sidecar rows would move while their references stayed
+		// behind.
 		for (const auto &column : source_sidecar_columns[sidecar]) {
 			const auto lowered = StringUtil::Lower(column.name);
 			if (lowered == "id") {

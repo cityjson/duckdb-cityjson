@@ -25,6 +25,18 @@ std::string Quoted(const std::string &name) {
 	return KeywordHelper::WriteOptionallyQuoted(name);
 }
 
+bool HasSurfacesField(const LogicalType &type) {
+	if (type.id() != LogicalTypeId::STRUCT) {
+		return false;
+	}
+	for (const auto &child : StructType::GetChildTypes(type)) {
+		if (child.first == "surfaces" && child.second.id() == LogicalTypeId::VARCHAR) {
+			return true;
+		}
+	}
+	return false;
+}
+
 std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &schema, const std::string &table) {
 	std::vector<ColumnInfo> columns;
 	// The non-templated GetEntry: Catalog::GetEntry<TableCatalogEntry> ODR-uses
@@ -99,7 +111,8 @@ std::string DeclaredCrsExpr(const std::string &schema) {
 
 std::string CrsStatedExpr(const std::string &schema) {
 	return "(SELECT COUNT(*) > 0 FROM " + QualifiedName(schema, "__cityparquet") +
-	       " WHERE role = 'object' AND city IS NOT NULL)";
+	       " WHERE role = 'object' AND city IS NOT NULL AND (cityparquet_city_field(city, 'version') IS NOT NULL OR "
+	       "cityparquet_city_field(city, 'crs') IS NOT NULL))";
 }
 
 std::string OneCrsPerPackageSQL(const std::string &function, const std::string &schema, const std::string &label) {

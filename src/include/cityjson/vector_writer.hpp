@@ -227,10 +227,10 @@ void WriteGeometryWKB(Vector *blob_vec, const std::vector<uint8_t> &wkb_data, si
 void WriteGeometryProperties(Vector *vec, const json &properties, size_t row);
 
 /**
- * Write a `template` cell to a struct vector.
- * Handles TemplateStruct: STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
+ * Write an `implicit_geometry` cell to a struct vector.
+ * Handles ImplicitGeometryStruct: STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
  *
- * No reader parses geometry-template instance data yet (spec "Optional data is
+ * No reader parses CityJSON GeometryInstance data yet (spec "Optional data is
  * NULL, not an omitted column" -- the column stays present regardless), so `value`
  * is null on every call today. A null or non-object `value` still gives the
  * `transformationMatrix` LIST child a well-formed (empty) list_entry_t, for the
@@ -239,10 +239,10 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row);
  * check that only looks at the struct's own validity bit.
  *
  * @param vec Pointer to struct vector
- * @param value JSON object containing template data, or null
+ * @param value JSON object containing implicit-geometry data, or null
  * @param row Row index in vector
  */
-void WriteTemplateStruct(Vector *vec, const json &value, size_t row);
+void WriteImplicitGeometryStruct(Vector *vec, const json &value, size_t row);
 
 } // namespace cityjson
 } // namespace duckdb

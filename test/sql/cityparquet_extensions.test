@@ -1,0 +1,301 @@
+# name: test/sql/cityparquet_extensions.test
+# description: CityJSON Extension names carry the extension namespace in a package, and their + on export
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 06-extensions.mdx. Every name a CityJSON Extension adds to a package carries
+# the extension's namespace as a prefix: `+heatCapacity` is stored as the column
+# `energy_heatCapacity`, the semantic surface `+PartyWallSurface` as
+# `energy_PartyWallSurface`, and the class `+Building` as the object_type
+# `energy_Building`. The namespace is the source's `extensions` key lower-cased with
+# everything outside [a-z0-9] removed ("Energy" -> energy), and the package declares
+# it once, in `city.extensions`. On export to CityJSON the prefix becomes `+` again
+# and the `extensions` member is rebuilt from that declaration.
+#
+# extension_energy.city.json declares one extension, Energy, and uses it three ways:
+# house-1 is a core Building with a `+heatCapacity` attribute and a
+# `+PartyWallSurface`; house-2 is a `+Building`, which routes to the Building
+# module's file because its name without the `+` is a core class.
+
+# --- the source speaks CityJSON ----------------------------------------------
+
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/extension_energy.city.json'))
+WHERE column_name = '+heatCapacity';
+----
+1
+
+# --- insert: every extension name gets the namespace prefix -----------------
+
+statement ok
+CREATE SCHEMA ext;
+
+statement ok
+CREATE TABLE ext.building AS SELECT * FROM read_cityjson('test/data/minimal.city.json');
+
+statement ok
+PRAGMA cityparquet_init('ext');
+
+statement ok
+PRAGMA insert_cityjson('ext', 'test/data/extension_energy.city.json');
+
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM ext.building) WHERE column_name LIKE '+%';
+----
+0
+
+query TR
+SELECT id, energy_heatCapacity FROM ext.building WHERE energy_heatCapacity IS NOT NULL ORDER BY id;
+----
+house-1	250.5
+house-2	125.0
+
+# The class without its `+` is a core class, so the row routes to building, but it
+# stays an extension class: its object_type carries the prefix.
+query TT
+SELECT id, object_type FROM ext.building ORDER BY id;
+----
+building1	Building
+house-1	Building
+house-2	energy_Building
+
+# The extended surface type is prefixed inside the surfaces JSON; core types are not.
+query TT
+SELECT geometry_properties_lod2_2.surfaces LIKE '%"type":"energy_PartyWallSurface"%',
+       geometry_properties_lod2_2.surfaces LIKE '%"type":"RoofSurface"%'
+FROM ext.building WHERE id = 'house-1';
+----
+true	true
+
+query I
+SELECT COUNT(*) FROM ext.building WHERE geometry_properties_lod2_2.surfaces LIKE '%+%';
+----
+0
+
+# The declaration, keyed by namespace, rides on every object table's footer.
+query T
+SELECT DISTINCT cityparquet_city_field(city, 'extensions') FROM ext.__cityparquet WHERE role = 'object';
+----
+{"energy":{"name":"Energy","url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}
+
+# A declaration alone states no CRS: the package still states nothing, so a source
+# in any CRS may go in, exactly as into a package with no footer at all.
+statement ok
+PRAGMA insert_cityjson('ext', 'test/data/insert_crs_28992.city.json');
+
+query T
+SELECT DISTINCT cityparquet_city_field(city, 'extensions') FROM ext.__cityparquet WHERE role = 'object';
+----
+{"energy":{"name":"Energy","url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}
+
+# --- what a source must get right --------------------------------------------
+
+# A `+` name with no declared extension: CityJSON requires the declaration.
+statement error
+PRAGMA insert_cityjson('ext', 'test/data/extension_undeclared.city.json');
+----
+declares no extension
+
+# Two declared extensions: attributing each `+` name needs their schema documents.
+statement error
+PRAGMA insert_cityjson('ext', 'test/data/extension_two_declared.city.json');
+----
+attribution from extension schema documents is not implemented
+
+# A core attribute that starts with a declared prefix would turn into an extension
+# name on export.
+statement error
+PRAGMA insert_cityjson('ext', 'test/data/extension_core_collision.city.json');
+----
+energy_label
+
+# "3D" derives `3d`, which does not start with a letter.
+statement error
+PRAGMA insert_cityjson('ext', 'test/data/extension_bad_namespace.city.json');
+----
+^[a-z][a-z0-9]*$
+
+# An extension class whose name is not a core class has no module to route to.
+statement error
+PRAGMA insert_cityjson('ext', 'test/data/extension_unroutable.city.json');
+----
+belongs to no CityGML module
+
+# The package already declares `energy`, so a core attribute `energy_label` from a
+# source that declares nothing is refused too.
+statement error
+PRAGMA insert_cityjson('ext', 'test/data/extension_core_lookalike.city.json');
+----
+energy_label
+
+# Every refusal above refused the whole insert.
+query I
+SELECT COUNT(*) FROM ext.building;
+----
+3
+
+# --- the package files -------------------------------------------------------
+
+statement ok
+SELECT * FROM cityparquet_write('ext', '__TEST_DIR__/ext_pkg', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/ext_pkg/building.parquet')
+WHERE decode(key) = 'city'
+  AND decode(value) LIKE '%"extensions":{"energy":{"name":"Energy","url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}%';
+----
+1
+
+query T
+SELECT name FROM parquet_schema('__TEST_DIR__/ext_pkg/building.parquet') WHERE name LIKE '%heatCapacity%';
+----
+energy_heatCapacity
+
+# The STAC Item's co_types mirror the source vocabulary, `+` included.
+query TT
+SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"city3d:co_types":["+Building","Building","CityFurniture"]%',
+       content LIKE '%energy_Building%'
+FROM read_text('__TEST_DIR__/ext_pkg/metadata.json');
+----
+true	false
+
+# --- export: the prefix becomes `+` again ------------------------------------
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/ext_pkg', 'back');
+
+statement ok
+COPY (SELECT * FROM back.building WHERE id LIKE 'house-%')
+TO '__TEST_DIR__/ext_out.city.jsonl' (
+    FORMAT cityjsonseq,
+    metadata_query 'SELECT max(cityparquet_city_field(city, ''extensions'')) AS extensions FROM back.__cityparquet WHERE role = ''object''');
+
+query TTTTT
+SELECT content LIKE '%"+heatCapacity":250.5%',
+       content LIKE '%"type":"+PartyWallSurface"%',
+       content LIKE '%"type":"+Building"%',
+       regexp_replace(content, '\s+', '', 'g')
+           LIKE '%"extensions":{"Energy":{"url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}%',
+       content LIKE '%energy\_%' ESCAPE '\'
+FROM read_text('__TEST_DIR__/ext_out.city.jsonl');
+----
+true	true	true	true	false
+
+query TT
+SELECT id, object_type FROM read_cityjsonseq('__TEST_DIR__/ext_out.city.jsonl') ORDER BY id;
+----
+house-1	Building
+house-2	+Building
+
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('__TEST_DIR__/ext_out.city.jsonl'))
+WHERE column_name = '+heatCapacity';
+----
+1
+
+# Without the declaration nothing is restored: a name is an extension name only
+# through a declared namespace.
+statement ok
+COPY (SELECT * FROM back.building WHERE id = 'house-1')
+TO '__TEST_DIR__/ext_undeclared.city.jsonl' (FORMAT cityjsonseq, crs 'EPSG:7415');
+
+query TT
+SELECT content LIKE '%"energy_heatCapacity":250.5%', content LIKE '%"extensions"%'
+FROM read_text('__TEST_DIR__/ext_undeclared.city.jsonl');
+----
+true	false
+
+# A CityJSON-to-CityJSON copy carries the source's own `extensions` member across.
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/extension_energy.city.json'))
+TO '__TEST_DIR__/ext_pass.city.json' (FORMAT cityjson);
+
+query TT
+SELECT regexp_replace(content, '\s+', '', 'g')
+           LIKE '%"extensions":{"Energy":{"url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}%',
+       content LIKE '%"+heatCapacity"%'
+FROM read_text('__TEST_DIR__/ext_pass.city.json');
+----
+true	true
+
+# --- a package holds no `+` name ---------------------------------------------
+
+# A hand-rolled load keeps the reader's CityJSON names, which a package cannot hold.
+statement ok
+CREATE SCHEMA raw;
+
+statement ok
+CREATE TABLE raw.building AS SELECT * FROM read_cityjson('test/data/extension_energy.city.json');
+
+statement ok
+PRAGMA cityparquet_init('raw');
+
+statement error
+SELECT * FROM cityparquet_write('raw', '__TEST_DIR__/raw_pkg', crs => 'EPSG:7415');
+----
+carries CityJSON's extension marker
+
+# --- merge carries the declaration -------------------------------------------
+
+statement ok
+CREATE SCHEMA mrg;
+
+statement ok
+CREATE TABLE mrg.building AS SELECT * FROM read_cityjson('test/data/multisolid.city.json');
+
+statement ok
+PRAGMA cityparquet_init('mrg');
+
+statement ok
+PRAGMA cityparquet_merge('mrg', 'ext');
+
+query T
+SELECT DISTINCT cityparquet_city_field(city, 'extensions') FROM mrg.__cityparquet WHERE role = 'object';
+----
+{"energy":{"name":"Energy","url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}
+
+query T
+SELECT object_type FROM mrg.building WHERE id = 'house-2';
+----
+energy_Building
+
+# A package that declares the same namespace for a different extension refuses the
+# merge before changing anything.
+statement ok
+CREATE SCHEMA clash;
+
+statement ok
+CREATE TABLE clash.building AS SELECT * FROM read_cityjson('test/data/hollow_solid.city.json');
+
+statement ok
+PRAGMA cityparquet_init('clash');
+
+statement ok
+UPDATE clash.__cityparquet
+SET city = '{"extensions":{"energy":{"name":"EnergyDraft","url":"https://example.org/extensions/draft.ext.json"}}}'
+WHERE role = 'object';
+
+statement error
+PRAGMA cityparquet_merge('clash', 'ext');
+----
+'energy'
+
+query I
+SELECT COUNT(*) FROM clash.building;
+----
+1
+
+# --- the helpers the generated SQL calls -------------------------------------
+
+query T
+SELECT cityparquet_prefix_surface_types('[{"type":"+PartyWallSurface"},{"type":"WallSurface"}]', 'energy');
+----
+[{"type":"energy_PartyWallSurface"},{"type":"WallSurface"}]
+
+query T
+SELECT cityparquet_merge_extensions(NULL, '{"energy":{"name":"Energy","url":"https://example.org/e.json"}}');
+----
+{"extensions":{"energy":{"name":"Energy","url":"https://example.org/e.json"}}}

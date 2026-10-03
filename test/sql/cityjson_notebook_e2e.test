@@ -182,7 +182,7 @@ SELECT count(*) FROM parquet_kv_metadata('__TEST_DIR__/delft_duckdb.parquet') WH
 query III
 SELECT (SELECT count(*) FROM cityjson_materials('https://storage.googleapis.com/cityjson/lod3_railway.city.json')) > 0,
        (SELECT count(*) FROM cityjson_textures('https://storage.googleapis.com/cityjson/lod3_railway.city.json')) >= 0,
-       (SELECT count(*) FROM cityjson_geometry_templates('https://storage.googleapis.com/cityjson/lod3_railway.city.json')) >= 0;
+       (SELECT count(*) FROM cityjson_implicit_geometries('https://storage.googleapis.com/cityjson/lod3_railway.city.json')) >= 0;
 ----
 true	true	true
 

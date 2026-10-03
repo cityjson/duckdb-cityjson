@@ -15,7 +15,7 @@ statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
 TO '__TEST_DIR__/nullcols.fcb' (FORMAT flatcitybuf);
 
-# 76 columns in, 76 columns out (74 plus the reserved `address` and `template`
+# 76 columns in, 76 columns out (74 plus the reserved `address` and `implicit_geometry`
 # columns every object table now carries -- spec 02-object-table-schema.mdx).
 query II
 SELECT

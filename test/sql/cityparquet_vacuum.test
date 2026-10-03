@@ -159,24 +159,25 @@ SELECT cityparquet_vacuum_sql('ams') LIKE '%DELETE FROM%NOT IN%';
 ----
 true
 
-# --- geometry templates hold appearance too ---------------------------------
+# --- relative geometries hold appearance too --------------------------------
 
-# A material referenced only by a geometry template must not be vacuumed: the
-# template sidecar carries its own appearance columns.
+# A material referenced only by a relative geometry must not be vacuumed: the
+# implicit_geometries sidecar carries its own appearance columns.
 #
-# id is BIGINT, matching the real geometry_templates.parquet schema
-# (cityjson_geometry_templates) -- ams.building now carries a reserved `template`
-# STRUCT(id BIGINT, ...) column (spec 02-object-table-schema.mdx), so
-# ReferencedIds compares template.id against this table's id and a VARCHAR here
-# would be a type mismatch, not merely an unrealistic fixture.
+# id is BIGINT, matching the real implicit_geometries.parquet schema
+# (cityjson_implicit_geometries) -- ams.building carries a reserved
+# `implicit_geometry` STRUCT(id BIGINT, ...) column (spec
+# 02-object-table-schema.mdx), so ReferencedIds compares implicit_geometry.id
+# against this table's id and a VARCHAR here would be a type mismatch, not merely
+# an unrealistic fixture.
 statement ok
-CREATE TABLE ams.geometry_templates (id BIGINT, material_lod1_0 MAP(VARCHAR, BIGINT[]));
+CREATE TABLE ams.implicit_geometries (id BIGINT, material_lod1_0 MAP(VARCHAR, BIGINT[]));
 
 statement ok
-INSERT INTO ams.geometry_templates VALUES (1, MAP {'visual': [42]}::MAP(VARCHAR, BIGINT[]));
+INSERT INTO ams.implicit_geometries VALUES (1, MAP {'visual': [42]}::MAP(VARCHAR, BIGINT[]));
 
 statement ok
-INSERT INTO ams.materials VALUES (42, 'used-only-by-a-template');
+INSERT INTO ams.materials VALUES (42, 'used-only-by-a-relative-geometry');
 
 statement ok
 PRAGMA cityparquet_init('ams');
@@ -189,12 +190,12 @@ SELECT COUNT(*) FROM ams.materials WHERE id = 42;
 ----
 1
 
-# The template row itself must survive too -- ams.building's `template` column
-# is always NULL (this reader does not populate it yet), so a real reference
-# to id 1 is nowhere for ReferencedIds to find. That must read as
-# "undeterminable", not "nothing references template 1".
+# The relative geometry row itself must survive too -- ams.building's
+# `implicit_geometry` column is always NULL (this reader does not populate it
+# yet), so a real reference to id 1 is nowhere for ReferencedIds to find. That
+# must read as "undeterminable", not "nothing references relative geometry 1".
 query I
-SELECT COUNT(*) FROM ams.geometry_templates;
+SELECT COUNT(*) FROM ams.implicit_geometries;
 ----
 1
 

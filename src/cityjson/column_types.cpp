@@ -53,7 +53,7 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 	case ColumnType::AddressList:
 		return "STRUCT(street VARCHAR, house_number VARCHAR, po_box VARCHAR, zip_code VARCHAR, city VARCHAR, "
 		       "state VARCHAR, country VARCHAR, free_text VARCHAR, location BLOB)[]";
-	case ColumnType::TemplateStruct:
+	case ColumnType::ImplicitGeometryStruct:
 		return "STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])";
 	default:
 		return "UNKNOWN";
@@ -93,7 +93,7 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 		return LogicalTypeId::MAP;
 	case ColumnType::AddressList:
 		return LogicalTypeId::LIST;
-	case ColumnType::TemplateStruct:
+	case ColumnType::ImplicitGeometryStruct:
 		return LogicalTypeId::STRUCT;
 	default:
 		return LogicalTypeId::INVALID;
@@ -206,10 +206,12 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		return LogicalType::LIST(LogicalType::STRUCT(fields));
 	}
 
-	case ColumnType::TemplateStruct: {
-		// Spec: geometry-template instance data. The matrix is a flat 16-element
-		// row-major 4x4, not a nested type -- there is no per-writer choice to
-		// preserve, and DOUBLE[] is what a consumer actually wants to index into.
+	case ColumnType::ImplicitGeometryStruct: {
+		// Spec: implicit geometry (CityGML ImplicitGeometry) -- the reference to a
+		// shared relative geometry, its reference point and its transformation
+		// matrix. The matrix is a flat 16-element row-major 4x4, not a nested type --
+		// there is no per-writer choice to preserve, and DOUBLE[] is what a consumer
+		// actually wants to index into.
 		child_list_t<LogicalType> children;
 		children.push_back(std::make_pair("id", LogicalType::BIGINT));
 		children.push_back(std::make_pair("point", LogicalType::BLOB));
@@ -431,7 +433,8 @@ bool ColumnTypeUtils::IsComplex(ColumnType type) {
 	return type == ColumnType::Json || type == ColumnType::VarcharArray || type == ColumnType::Geometry ||
 	       type == ColumnType::GeographicalExtent || type == ColumnType::GeometryWKB ||
 	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::MaterialMap ||
-	       type == ColumnType::TextureMap || type == ColumnType::AddressList || type == ColumnType::TemplateStruct;
+	       type == ColumnType::TextureMap || type == ColumnType::AddressList ||
+	       type == ColumnType::ImplicitGeometryStruct;
 }
 
 // ============================================================
@@ -442,7 +445,7 @@ std::vector<Column> GetDefinedColumns() {
 	// Spec 02-object-table-schema.mdx, "Reserved columns": this is the leading
 	// (head) run of the reserved order, up to but not including `bbox` -- callers
 	// splice geometry columns after this and LODTableUtils::GetTrailingColumns()
-	// (`template`, `other`) after that, before any attribute column.
+	// (`implicit_geometry`, `other`) after that, before any attribute column.
 	return {
 	    Column("id", ColumnType::Varchar),
 	    Column("feature_id", ColumnType::Varchar),
@@ -463,8 +466,8 @@ static std::string ToLowerAscii(const std::string &name) {
 
 bool IsReservedColumnName(const std::string &name) {
 	static const std::vector<std::string> reserved = {
-	    "id",    "feature_id", "object_type", "children", "children_roles", "parents",
-	    "other", "bbox",       "geometry",    "address",  "template"};
+	    "id",    "feature_id", "object_type", "children", "children_roles",   "parents",
+	    "other", "bbox",       "geometry",    "address",  "implicit_geometry"};
 	const std::string lowered = ToLowerAscii(name);
 	if (std::find(reserved.begin(), reserved.end(), lowered) != reserved.end()) {
 		return true;
