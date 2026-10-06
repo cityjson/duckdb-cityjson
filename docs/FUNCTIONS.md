@@ -735,6 +735,11 @@ Worth knowing:
   a sample cannot tell you a rare type appears only in the tail.
 - **Ids are identity.** An incoming id already in the destination refuses the
   entire insert.
+- **The package's column types win.** A geometry column the destination holds as
+  DuckDB `GEOMETRY` (the GeoParquet-declared LoD0 column of a package loaded with
+  `cityparquet_read`) stays `GEOMETRY`; the incoming WKB is converted into it. A
+  reserved nested column whose shape disagrees with the destination's refuses the
+  insert rather than being rewritten as text.
 - **The CRS must match**, and reprojection is never performed. The source's
   `metadata.referenceSystem` is resolved to PROJJSON first, so it is compared
   like with like. A package states **one** CRS for every row it holds, so an
