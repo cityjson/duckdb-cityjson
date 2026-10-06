@@ -43,6 +43,11 @@ bool HasSurfacesField(const LogicalType &type);
 //! coercing to text. Silently rewriting such a column to VARCHAR destroys it --
 //! `bbox.xmin` stops binding, and cityparquet_write can no longer emit the STRUCT
 //! the spec requires -- so this throws a BinderException instead.
+//!
+//! A geometry column is refused for the same reason: GEOMETRY and BLOB are two
+//! encodings of one WKB value, never text. A caller that can reconcile the pair
+//! (insert_cityjson converts staged WKB to the destination's GEOMETRY) does so before
+//! asking.
 LogicalType WidenedType(const LogicalType &destination, const LogicalType &source, const std::string &function,
                         const std::string &column_name);
 

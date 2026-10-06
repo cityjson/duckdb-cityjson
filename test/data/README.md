@@ -16,6 +16,15 @@ attribute; regenerating it from the current cityparquet-rs restores the reserved
 columns are the specification's typed MAPs, flat per WKB face, which is what
 `cityparquet_rs_appearance.test` pins.
 
+## delft_append.city.jsonl
+
+One 3DBAG feature -- a Building and its BuildingPart, ids suffixed `-appended` --
+as a CityJSONSeq with a header declaring EPSG:7415 and no appearance. It is the
+append input the CityParquet monorepo's database benchmark derives from the 3DBAG
+corpus for its `append-object` scenario, copied unchanged, so it was not produced
+by this extension. Its CRS matches `delft_subset.city.jsonl`'s and none of its ids
+occurs there, so it appends cleanly to a package built from that file.
+
 ## obj/
 
 Hand-written Wavefront OBJ fixtures for `read_obj`. `cube.obj` + `cube.mtl` is a closed

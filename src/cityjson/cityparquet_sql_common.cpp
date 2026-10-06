@@ -82,6 +82,12 @@ LogicalType WidenedType(const LogicalType &destination, const LogicalType &sourc
 		                      "reserved structural column",
 		                      function, column_name, destination.ToString(), source.ToString());
 	}
+	if (d == LogicalTypeId::GEOMETRY || s == LogicalTypeId::GEOMETRY) {
+		throw BinderException("%s: column '%s' cannot be widened -- the destination is %s and the incoming type "
+		                      "is %s. A geometry column holds WKB, never text; stringifying it would leave "
+		                      "nothing a geometry function or cityparquet_write could read",
+		                      function, column_name, destination.ToString(), source.ToString());
+	}
 	return LogicalType(LogicalTypeId::VARCHAR);
 }
 

@@ -531,6 +531,11 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 
 	// ---- Phase 3: schema evolution, before any INSERT -----------------------
 	PendingTables pending;
+	// Per destination table, the geometry columns it holds as DuckDB-native GEOMETRY
+	// (a GeoParquet-declared column comes back that way from cityparquet_read) where the
+	// staged source carries WKB BLOB. The column keeps the package's type; the routed
+	// INSERT converts the staged WKB into it.
+	std::map<std::string, std::vector<std::string>> geometry_from_wkb;
 	std::vector<ColumnInfo> incoming_geometry_columns;
 	bool incoming_has_bbox = false;
 	bool incoming_has_children_roles = false;
@@ -600,6 +605,10 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 				       Quoted(column.name) + " " + type.ToString() + ";\n";
 				existing.push_back({column.name, type});
 				evolved = true;
+				continue;
+			}
+			if (match->type.id() == LogicalTypeId::GEOMETRY && type.id() == LogicalTypeId::BLOB) {
+				geometry_from_wkb[table].push_back(column.name);
 				continue;
 			}
 			const auto widened = WidenedType(match->type, type, "insert_cityjson", column.name);
@@ -698,9 +707,17 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		replacements.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " + OffsetExpr(sidecar) +
 		                       ") AS " + Quoted(column.name));
 	}
-	const std::string projection = replacements.empty() ? "*" : "* REPLACE (" + Join(replacements, ", ") + ")";
-
 	for (const auto &entry : types_by_module) {
+		// ST_GeomFromWKB ships in DuckDB core, like the ST_AsWKB GeometryColumnRef emits.
+		auto table_replacements = replacements;
+		const auto promoted = geometry_from_wkb.find(entry.first);
+		if (promoted != geometry_from_wkb.end()) {
+			for (const auto &name : promoted->second) {
+				table_replacements.push_back("ST_GeomFromWKB(" + Quoted(name) + ") AS " + Quoted(name));
+			}
+		}
+		const std::string projection =
+		    table_replacements.empty() ? "*" : "* REPLACE (" + Join(table_replacements, ", ") + ")";
 		std::vector<std::string> literals;
 		literals.reserve(entry.second.size());
 		for (const auto &object_type : entry.second) {

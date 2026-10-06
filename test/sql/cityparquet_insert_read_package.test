@@ -1,0 +1,112 @@
+# name: test/sql/cityparquet_insert_read_package.test
+# description: insert_cityjsonseq into a package loaded by cityparquet_read keeps the package's column types
+# group: [sql]
+
+# A package written to disk and loaded back with cityparquet_read is not shaped like
+# one built from a CityJSON read: the GeoParquet-declared LoD 0 column comes back as
+# DuckDB-native GEOMETRY, while a freshly staged CityJSON source carries every
+# geometry column as WKB BLOB. Appending has to keep the package's GEOMETRY column
+# GEOMETRY and every reserved column at the type the specification fixes for it.
+#
+# delft_append.city.jsonl is one 3DBAG feature (a Building and its BuildingPart, ids
+# suffixed `-appended`) with no appearance, in the same CRS as delft_subset.
+
+require cityjson
+
+statement ok
+CREATE SCHEMA src;
+
+statement ok
+CREATE TABLE src.building AS
+  SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', appearance := 'sidecar');
+
+statement ok
+PRAGMA cityparquet_init('src');
+
+statement ok
+SELECT * FROM cityparquet_write('src', '__TEST_DIR__/read_pkg', crs => 'EPSG:7415');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/read_pkg', 'pkg');
+
+# The precondition: the loaded package really does hold a GEOMETRY column (carrying
+# the package CRS as its type parameter). Its exact type is kept for the comparison
+# after the insert.
+statement ok
+CREATE TABLE before_types AS SELECT column_name, column_type FROM (DESCRIBE pkg.building);
+
+query I
+SELECT starts_with(column_type, 'GEOMETRY') FROM before_types WHERE column_name = 'geometry_lod0_0';
+----
+true
+
+query I
+SELECT COUNT(*) FROM pkg.building;
+----
+20
+
+# --- appending an appearance-free CityJSONSeq ---------------------------------
+
+statement ok
+PRAGMA insert_cityjsonseq('pkg', 'test/data/delft_append.city.jsonl');
+
+query I
+SELECT COUNT(*) FROM pkg.building;
+----
+22
+
+# Every column the package already had keeps its exact type: the GEOMETRY column is
+# not stringified, and no reserved column is re-typed.
+query TTT
+SELECT b.column_name, b.column_type, a.column_type
+FROM before_types b JOIN (DESCRIBE pkg.building) a USING (column_name)
+WHERE a.column_type <> b.column_type;
+----
+
+# The appearance and geometry-properties columns keep the specification's nested types.
+query TT
+SELECT column_name, column_type FROM (DESCRIBE pkg.building)
+WHERE column_name IN ('geometry_lod2_2', 'geometry_properties_lod2_2',
+                      'material_lod2_2', 'texture_lod2_2', 'implicit_geometry', 'address')
+ORDER BY column_name;
+----
+address	STRUCT(street VARCHAR, house_number VARCHAR, po_box VARCHAR, zip_code VARCHAR, city VARCHAR, state VARCHAR, country VARCHAR, free_text VARCHAR, "location" BLOB)[]
+geometry_lod2_2	BLOB
+geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+implicit_geometry	STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
+material_lod2_2	MAP(VARCHAR, BIGINT[])
+texture_lod2_2	MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])
+
+# The appended objects read back: their geometry landed, their bbox was computed, and
+# the hierarchy between them resolves.
+query TIII
+SELECT id, geometry_lod0_0 IS NOT NULL OR geometry_lod2_2 IS NOT NULL, bbox IS NOT NULL,
+       material_lod2_2 IS NULL
+FROM pkg.building WHERE id LIKE '%-appended' ORDER BY id;
+----
+NL.IMBAG.Pand.0171100000002606-0-appended	1	1	1
+NL.IMBAG.Pand.0171100000002606-appended	1	1	1
+
+query T
+SELECT parents FROM pkg.building WHERE id = 'NL.IMBAG.Pand.0171100000002606-0-appended';
+----
+[NL.IMBAG.Pand.0171100000002606-appended]
+
+# The appended Building's footprint is a real GEOMETRY, equal to the WKB the source
+# carries for it.
+query I
+SELECT ST_AsWKB(p.geometry_lod0_0) = s.geometry_lod0_0
+FROM pkg.building p
+JOIN read_cityjsonseq('test/data/delft_append.city.jsonl') s USING (id)
+WHERE id = 'NL.IMBAG.Pand.0171100000002606-appended';
+----
+true
+
+# The package still validates.
+statement ok
+PRAGMA cityparquet_validate('pkg');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
