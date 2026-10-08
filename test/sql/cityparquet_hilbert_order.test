@@ -1,0 +1,93 @@
+# name: test/sql/cityparquet_hilbert_order.test
+# description: cityparquet_write orders each object table's rows along a Hilbert curve, keyed as cityparquet-rs keys them
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 03-geometry-semantics.mdx, "Spatial metadata": rows MAY be written in
+# Hilbert-curve order on the bbox centroid. The key is the reference writer's
+# (cityparquet-rs, crates/core/src/order.rs): a 2D curve of 2^16 cells per axis over
+# the x/y extent of every geometry in the package; each FEATURE's key is the curve
+# index of the centre of its own geometry's extent; whole features are sorted by it,
+# stably, so a feature's rows stay together and in their table order.
+
+# --- the key ------------------------------------------------------------------
+
+# The four quadrant centres of a unit extent, in the order an order-1 Hilbert curve
+# visits them: bottom-left, top-left, top-right, bottom-right.
+query IIII
+SELECT cityparquet_hilbert(0.25, 0.25, 0, 0, 1, 1) < cityparquet_hilbert(0.25, 0.75, 0, 0, 1, 1),
+       cityparquet_hilbert(0.25, 0.75, 0, 0, 1, 1) < cityparquet_hilbert(0.75, 0.75, 0, 0, 1, 1),
+       cityparquet_hilbert(0.75, 0.75, 0, 0, 1, 1) < cityparquet_hilbert(0.75, 0.25, 0, 0, 1, 1),
+       cityparquet_hilbert(0, 0, 0, 0, 1, 1) = 0;
+----
+true	true	true	true
+
+# The last cell of the curve is the bottom-right corner, and the index spans the
+# whole 32-bit range: (2^16)^2 cells.
+query I
+SELECT cityparquet_hilbert(1, 0, 0, 0, 1, 1);
+----
+4294967295
+
+# A point outside the extent clamps to the nearest edge cell; a degenerate axis maps
+# to cell 0; NULL in, NULL out.
+query IIII
+SELECT cityparquet_hilbert(-5, 5, 0, 0, 10, 10) = cityparquet_hilbert(0, 5, 0, 0, 10, 10),
+       cityparquet_hilbert(15, 5, 0, 0, 10, 10) = cityparquet_hilbert(10, 5, 0, 0, 10, 10),
+       cityparquet_hilbert(3, 4, 3, 4, 3, 4),
+       cityparquet_hilbert(NULL, 4, 0, 0, 10, 10) IS NULL;
+----
+true	true	0	true
+
+# --- the written order ----------------------------------------------------------
+
+statement ok
+CREATE SCHEMA h;
+
+statement ok
+CREATE TABLE h.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('h');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/hilbert', crs => 'EPSG:7415');
+
+# The order cityparquet-rs writes for the same source (`cityparquet convert
+# test/data/delft_subset.city.jsonl -o OUT`, default `--ordering hilbert`, order.rs as of
+# monorepo commit a5227e0), read back from its building.parquet by file row number. It is not
+# the source order: the source lists ...016459 second.
+query T
+SELECT string_agg(id, ' ' ORDER BY file_row_number)
+FROM read_parquet('__TEST_DIR__/hilbert/building.parquet', file_row_number := true);
+----
+NL.IMBAG.Pand.0503100000012869 NL.IMBAG.Pand.0503100000012869-0 NL.IMBAG.Pand.0503100000000137 NL.IMBAG.Pand.0503100000000137-0 NL.IMBAG.Pand.0503100000005156 NL.IMBAG.Pand.0503100000005156-0 NL.IMBAG.Pand.0503100000032443 NL.IMBAG.Pand.0503100000032443-0 NL.IMBAG.Pand.0503100000019510 NL.IMBAG.Pand.0503100000019510-0 NL.IMBAG.Pand.0503100000019492 NL.IMBAG.Pand.0503100000019492-0 NL.IMBAG.Pand.0503100000018426 NL.IMBAG.Pand.0503100000018426-0 NL.IMBAG.Pand.0503100000018501 NL.IMBAG.Pand.0503100000018501-0 NL.IMBAG.Pand.0503100000019786 NL.IMBAG.Pand.0503100000019786-0 NL.IMBAG.Pand.0503100000016459 NL.IMBAG.Pand.0503100000016459-0
+
+# Reordering moves rows, never changes them.
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, octet_length(geometry_lod2_2), bbox FROM read_parquet('__TEST_DIR__/hilbert/building.parquet')
+  EXCEPT ALL
+  SELECT id, octet_length(geometry_lod2_2), bbox FROM h.building);
+----
+0
+
+# `ordering => 'source'` writes the table's own order, as `--ordering source` does.
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/source_order', crs => 'EPSG:7415', ordering => 'source');
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, file_row_number AS n FROM read_parquet('__TEST_DIR__/source_order/building.parquet', file_row_number := true)
+  EXCEPT ALL
+  SELECT id, row_number() OVER (ORDER BY rowid) - 1 FROM h.building);
+----
+0
+
+statement error
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/bad_order', ordering => 'zorder');
+----
+ordering must be 'hilbert' or 'source'

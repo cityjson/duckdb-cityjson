@@ -22,6 +22,8 @@
 #include "duckdb/parser/keyword_helper.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <set>
 
 namespace duckdb {
@@ -74,6 +76,9 @@ struct WriteBindData : public TableFunctionData {
 	std::string source_format;
 	//! Write Parquet bloom filters on the object tables (`bloom => false` writes none).
 	bool bloom = true;
+	//! Order each object table's rows along a Hilbert curve (`ordering => 'hilbert'`, the
+	//! default), or keep the table's own order (`ordering => 'source'`).
+	bool hilbert = true;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<WriteBindData>();
@@ -83,11 +88,13 @@ struct WriteBindData : public TableFunctionData {
 		result->crs = crs;
 		result->source_format = source_format;
 		result->bloom = bloom;
+		result->hilbert = hilbert;
 		return std::move(result);
 	}
 	bool Equals(const FunctionData &other) const override {
 		auto &o = other.Cast<WriteBindData>();
-		return catalog == o.catalog && schema == o.schema && directory == o.directory && bloom == o.bloom;
+		return catalog == o.catalog && schema == o.schema && directory == o.directory && bloom == o.bloom &&
+		       hilbert == o.hilbert;
 	}
 };
 
@@ -532,7 +539,121 @@ std::string BloomCopyOptions(bool is_object, bool bloom) {
 	       ", WRITE_BLOOM_FILTER true, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.01";
 }
 
+//! The internal connection's temp table of per-feature Hilbert keys.
+constexpr const char *HILBERT_KEYS = "temp.__cityparquet_hilbert_keys";
+
+//! Fill HILBERT_KEYS with one key per feature that has geometry, the reference writer's
+//! (cityparquet-rs, `order.rs`): the curve is laid over the x/y extent of every geometry
+//! in every object table; a feature's point on it is the centre of the x/y extent of its
+//! own geometry, across every LoD and every object table its rows sit in. Extents come
+//! from the WKB, not from `bbox`, which also unions a source's declared extents. False
+//! when the package holds no geometry, so there is nothing to order by.
+bool WriteHilbertKeys(Connection &connection, ClientContext &context, const std::string &catalog,
+                      const std::string &schema, const std::vector<std::string> &tables) {
+	std::vector<std::string> extents;
+	for (const auto &table : tables) {
+		if (!HasColumn(context, schema, table, "feature_id")) {
+			continue;
+		}
+		for (const auto &column : GeometryLodColumns(context, schema, table)) {
+			const auto quoted = KeywordHelper::WriteOptionallyQuoted(column);
+			extents.push_back("SELECT feature_id, cityjson_wkb_extent(" +
+			                  GeometryColumnRef(quoted, ColumnDuckType(context, schema, table, column)) +
+			                  ") AS e FROM " + QualifiedName(catalog, schema, table) + " WHERE " + quoted +
+			                  " IS NOT NULL");
+		}
+	}
+	if (extents.empty()) {
+		return false;
+	}
+	Run(connection, "CREATE OR REPLACE TEMP TABLE " + std::string(HILBERT_KEYS) + " AS\nWITH extents AS (" +
+	                    Join(extents, "\n  UNION ALL ") +
+	                    "),\n"
+	                    "features AS (SELECT feature_id, (min(e.xmin) + max(e.xmax)) / 2 AS x, "
+	                    "(min(e.ymin) + max(e.ymax)) / 2 AS y FROM extents GROUP BY feature_id),\n"
+	                    "dataset AS (SELECT min(e.xmin) AS xmin, min(e.ymin) AS ymin, max(e.xmax) AS xmax, "
+	                    "max(e.ymax) AS ymax FROM extents)\n"
+	                    "SELECT feature_id, cityparquet_hilbert(x, y, xmin, ymin, xmax, ymax) AS hilbert_key "
+	                    "FROM features, dataset;");
+	return true;
+}
+
 } // namespace
+
+//! `v`'s cell along one axis of 2^16, clamped into the extent. order.rs `normalise_axis`.
+static uint32_t HilbertCell(double v, double min, double max) {
+	constexpr uint32_t SIDE = 1U << 16U;
+	const double span = max - min;
+	// `!(span > 0)` rather than `span <= 0`: a NaN span lands here too, as it lands on
+	// cell 0 in the reference writer (Rust's saturating float-to-int cast of NaN).
+	if (!(span > 0)) {
+		return 0;
+	}
+	double t = (v - min) / span;
+	if (!(t > 0)) {
+		t = 0; // also NaN
+	} else if (t > 1) {
+		t = 1;
+	}
+	// std::round, like Rust's f64::round, rounds half away from zero.
+	const double cell = std::round(t * (static_cast<double>(SIDE) - 1.0));
+	return std::min(static_cast<uint32_t>(cell), SIDE - 1);
+}
+
+uint32_t HilbertIndex(double x, double y, double xmin, double ymin, double xmax, double ymax) {
+	constexpr uint32_t SIDE = 1U << 16U;
+	uint32_t cx = HilbertCell(x, xmin, xmax);
+	uint32_t cy = HilbertCell(y, ymin, ymax);
+	// The classic xy2d (order.rs `xy2d` / `rotate`): each step takes one bit off both
+	// coordinates, the coarsest first, so the first quadrant choice dominates the index.
+	// The rotation reflects against the whole side, not the shrinking sub-square.
+	uint32_t d = 0;
+	for (uint32_t s = SIDE / 2; s > 0; s /= 2) {
+		const uint32_t rx = (cx & s) > 0 ? 1 : 0;
+		const uint32_t ry = (cy & s) > 0 ? 1 : 0;
+		d += s * s * ((3 * rx) ^ ry);
+		if (ry == 0) {
+			if (rx == 1) {
+				cx = SIDE - 1 - cx;
+				cy = SIDE - 1 - cy;
+			}
+			std::swap(cx, cy);
+		}
+	}
+	return d;
+}
+
+//! cityparquet_hilbert(x, y, xmin, ymin, xmax, ymax): NULL when any argument is.
+static void HilbertFunction(DataChunk &args, ExpressionState &, Vector &result) {
+	constexpr idx_t ARGUMENTS = 6;
+	std::array<UnifiedVectorFormat, ARGUMENTS> formats;
+	for (idx_t i = 0; i < ARGUMENTS; i++) {
+		args.data[i].ToUnifiedFormat(args.size(), formats[i]);
+	}
+	result.SetVectorType(::duckdb::VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<uint32_t>(result);
+	auto &validity = FlatVector::Validity(result);
+	for (idx_t row = 0; row < args.size(); row++) {
+		std::array<double, ARGUMENTS> values {};
+		bool valid = true;
+		for (idx_t i = 0; i < ARGUMENTS; i++) {
+			const auto index = formats[i].sel->get_index(row);
+			if (!formats[i].validity.RowIsValid(index)) {
+				valid = false;
+				break;
+			}
+			values[i] = UnifiedVectorFormat::GetData<double>(formats[i])[index];
+		}
+		if (!valid) {
+			validity.SetInvalid(row);
+			continue;
+		}
+		out[row] = HilbertIndex(values[0], values[1], values[2], values[3], values[4], values[5]);
+	}
+	if (args.AllConstant()) {
+		result.SetVectorType(::duckdb::VectorType::CONSTANT_VECTOR);
+	}
+}
 
 static unique_ptr<FunctionData> WriteBind(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names) {
@@ -550,6 +671,13 @@ static unique_ptr<FunctionData> WriteBind(ClientContext &context, TableFunctionB
 			result->source_format = StringValue::Get(entry.second);
 		} else if (entry.first == "bloom") {
 			result->bloom = BooleanValue::Get(entry.second);
+		} else if (entry.first == "ordering") {
+			const auto ordering = StringUtil::Lower(StringValue::Get(entry.second));
+			if (ordering != "hilbert" && ordering != "source") {
+				throw BinderException("cityparquet_write: ordering must be 'hilbert' or 'source', got '%s'",
+				                      StringValue::Get(entry.second));
+			}
+			result->hilbert = ordering == "hilbert";
 		}
 	}
 
@@ -700,6 +828,12 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		RefusePlusNames(connection, context, bind_data.catalog, bind_data.schema, sidecar, false);
 	}
 
+	// The Hilbert key of every feature, before any table is written: a feature's key
+	// comes from its geometry in EVERY object table, and the curve is laid over the
+	// extent of the whole package.
+	const bool hilbert =
+	    bind_data.hilbert && WriteHilbertKeys(connection, context, bind_data.catalog, bind_data.schema, object_tables);
+
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (!fs.DirectoryExists(bind_data.directory)) {
 		fs.CreateDirectory(bind_data.directory);
@@ -776,11 +910,19 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// suppressing the logical type, which follows the column's type rather
 		// than this setting. CityParquet's `geo` goes in through KV_METADATA, so
 		// the file carries exactly one, and it is this writer's.
-		Run(connection, "COPY (SELECT " +
-		                    CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation) +
-		                    " FROM " + QualifiedName(bind_data.catalog, bind_data.schema, table) + ") TO " +
-		                    Literal(path) + " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "}" +
-		                    BloomCopyOptions(is_object, bind_data.bloom) + ");");
+		// Whole features move, never single rows, and the rowid tie-break keeps rows of
+		// equal key -- a feature's own rows, and every feature without geometry, all of
+		// key 0 -- in the table's order: a stable sort, as the reference writer's is.
+		std::string order;
+		if (is_object && hilbert && HasColumn(context, bind_data.schema, table, "feature_id")) {
+			order = " ORDER BY coalesce((SELECT k.hilbert_key FROM " + std::string(HILBERT_KEYS) +
+			        " AS k WHERE k.feature_id = __cityparquet_rows.feature_id), 0), __cityparquet_rows.rowid";
+		}
+		Run(connection,
+		    "COPY (SELECT " + CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation) +
+		        " FROM " + QualifiedName(bind_data.catalog, bind_data.schema, table) + " AS __cityparquet_rows" +
+		        order + ") TO " + Literal(path) + " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv +
+		        "}" + BloomCopyOptions(is_object, bind_data.bloom) + ");");
 
 		WrittenFile written;
 		written.file = file;
@@ -949,6 +1091,16 @@ static void JsonFunction(DataChunk &args, ExpressionState &, Vector &result) {
 }
 
 void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
+	const auto dbl = LogicalType(LogicalTypeId::DOUBLE);
+	ScalarFunction hilbert_function("cityparquet_hilbert", {dbl, dbl, dbl, dbl, dbl, dbl},
+	                                LogicalType(LogicalTypeId::UINTEGER), HilbertFunction);
+	RegisterDocumented(loader, std::move(hilbert_function),
+	                   {{"x", "y", "xmin", "ymin", "xmax", "ymax"},
+	                    "Returns the position of (x, y) along a 2D Hilbert curve of 2^16 cells per axis laid over "
+	                    "the extent [xmin, xmax] x [ymin, ymax]: the row-ordering key cityparquet_write and "
+	                    "cityparquet-rs sort features by.",
+	                    "cityparquet_hilbert(0.75, 0.25, 0, 0, 1, 1)",
+	                    {"cityparquet", "spatial"}});
 	ScalarFunction json_function("cityparquet_json", {LogicalType(LogicalTypeId::VARCHAR)}, LogicalType::JSON(),
 	                             JsonFunction);
 	RegisterDocumented(loader, std::move(json_function),
@@ -964,6 +1116,7 @@ void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
 	func.named_parameters["crs"] = LogicalType(LogicalTypeId::VARCHAR);
 	func.named_parameters["source_format"] = LogicalType(LogicalTypeId::VARCHAR);
 	func.named_parameters["bloom"] = LogicalType(LogicalTypeId::BOOLEAN);
+	func.named_parameters["ordering"] = LogicalType(LogicalTypeId::VARCHAR);
 	RegisterDocumented(loader, std::move(func),
 	                   {{"schema", "directory"},
 	                    "Writes a CityParquet package schema out as a package directory: one Parquet file per table "

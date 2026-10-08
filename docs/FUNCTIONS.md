@@ -589,6 +589,14 @@ renumbering primitive `cityparquet_merge` and `insert_cityjson` generate calls t
 when folding one package's sidecar ids onto another's numbering; you rarely call
 it directly.
 
+### `cityparquet_hilbert(x, y, xmin, ymin, xmax, ymax)`
+
+The position of `(x, y)` along a 2D Hilbert curve of 2^16 cells per axis laid
+over the extent `[xmin, xmax] × [ymin, ymax]`, as a `UINTEGER` spanning the
+whole 32-bit range — the key [`cityparquet_write`](#the-package-round-trip)
+orders features by. A point outside the extent clamps to its edge cell, an empty
+axis maps every point to cell 0, and a NULL argument gives NULL.
+
 ### `cityparquet_json(text)`
 
 Returns its argument typed as DuckDB's `JSON`, after checking that it parses,
@@ -919,10 +927,10 @@ SELECT * FROM cityparquet_write('delft', 'out/', crs => 'EPSG:7415');
 -- metadata.json    | written |    0 |    6721
 ```
 
-It takes three named parameters: `crs` (below); `source_format`, which records
+It takes four named parameters: `crs` (below); `source_format`, which records
 the format the data originally came from into each file's `city` footer as
-`source_format`; and `bloom` (default `true`), which writes Parquet bloom
-filters on the object tables. DuckDB writes a filter only for a
+`source_format`; `ordering` (below); and `bloom` (default `true`), which writes
+Parquet bloom filters on the object tables. DuckDB writes a filter only for a
 dictionary-encoded column chunk, and its dictionary and bloom options apply to a
 whole file, so each object table is written with 122 880-row row groups and a
 dictionary cut-off of the same size under an 8 MiB dictionary-page cap. The
@@ -944,6 +952,25 @@ included. That is an observation on the packages measured, not a guarantee about
 any input. Sidecars carry no filter; `bloom => false` writes none at all. DuckDB
 itself consults the filters for `=` and `IN` predicates, including those pushed
 down from a join.
+
+**Rows are written in Hilbert-curve order** (`ordering => 'hilbert'`, the
+default), so that features near each other on the ground land in the same or
+adjacent row groups and a spatial filter prunes more of each file. The key is
+the reference writer's, so `cityparquet-rs` and this function order the same
+input the same way: a 2D curve of 2^16 cells per axis over the x/y extent of
+every geometry in the package, and for each **feature** (every row sharing a
+`feature_id`, across every object table) the curve position of the centre of
+its own geometry's x/y extent — taken from the WKB, not from `bbox`, which also
+carries a source's declared extents. Whole features move, never single rows,
+and rows of equal key — a feature's own rows, and every feature without
+geometry, which takes key 0 — keep the table's order. Sidecars keep their
+order. `ordering => 'source'` writes every table in its own order instead.
+`cityparquet_hilbert` is the key on its own:
+
+```sql
+SELECT cityparquet_hilbert(0.75, 0.25, 0, 0, 1, 1);
+-- 3758096383
+```
 
 …and load a package directory back into a fresh schema:
 
