@@ -16,6 +16,9 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/common/types/time.hpp"
+#include "duckdb/common/types/date.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
@@ -1005,6 +1008,45 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 				break;
 			}
 		}
+		// STAC requires every Item to carry properties.datetime. The honest value is the
+		// source's referenceDate, which a footer carries when its writer kept the source
+		// metadata (city.other.source_metadata, spec 07-mapping-cityjson.mdx); almost no
+		// source has one, so otherwise it is the time this package was written.
+		std::string datetime;
+		for (const auto &entry : carried) {
+			json parsed;
+			try {
+				parsed = json::parse(entry.second);
+			} catch (const std::exception &) {
+				continue;
+			}
+			const auto *date = parsed.is_object() ? &parsed : nullptr;
+			for (const char *key : {"other", "source_metadata", "referenceDate"}) {
+				if (date == nullptr || !date->is_object() || !date->contains(key)) {
+					date = nullptr;
+					break;
+				}
+				date = &(*date)[key];
+			}
+			if (date != nullptr && date->is_string()) {
+				const auto text = date->get<std::string>();
+				date_t day;
+				idx_t pos = 0;
+				bool special = false;
+				if (text.size() == 10 && Date::TryConvertDate(text.c_str(), text.size(), pos, day, special, true) ==
+				                             DateCastResult::SUCCESS) {
+					datetime = text + "T00:00:00Z";
+					break;
+				}
+			}
+		}
+		if (datetime.empty()) {
+			date_t day;
+			dtime_t time;
+			Timestamp::Convert(Timestamp::GetCurrentTimestamp(), day, time);
+			datetime = Date::ToString(day) + "T" + Time::ToString(dtime_t(time.micros - time.micros % 1000000)) + "Z";
+		}
+		properties["datetime"] = datetime;
 		// Every one of these is a union or a sum across the package's files. The footer
 		// answers only for the file it lives in.
 		properties["city3d:lods"] = json(inventory.lods);

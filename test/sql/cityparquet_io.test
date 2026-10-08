@@ -214,6 +214,13 @@ true
 # city3d:city_objects sums every object table: 20 buildings and parts, plus the
 # Bridge and the CityFurniture. Sidecar rows are definitions, not city objects,
 # and are reported per asset instead.
+# STAC requires an Item's properties.datetime. The source's referenceDate when a
+# package footer carries one (city.other.source_metadata), else the time of writing.
+query I
+SELECT regexp_matches(compact, '"properties":\{[^}]*"datetime":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"') FROM item;
+----
+true
+
 query I
 SELECT compact LIKE '%"city3d:city_objects":22%' FROM item;
 ----
