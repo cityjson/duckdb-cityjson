@@ -221,6 +221,14 @@ WKBDecodeResult WKBDecoder::Decode(const uint8_t *data, size_t size) {
 	WKBDecodeResult result;
 
 	switch (static_cast<WKBGeometryType>(wkb_type)) {
+	case WKBGeometryType::PointZ: {
+		// Not a CityJSON geometry type: the WKB of an implicit geometry's reference
+		// point. Its boundaries are the one coordinate, as a MultiPoint would hold it.
+		result.cityjson_type = "Point";
+		auto point = ReadPoint3D(data, offset, size, swap);
+		result.boundaries = json::array({json::array({point[0], point[1], point[2]})});
+		break;
+	}
 	case WKBGeometryType::MultiPointZ:
 		result.cityjson_type = "MultiPoint";
 		result.boundaries = DecodeMultiPoint(data, offset, size, swap);

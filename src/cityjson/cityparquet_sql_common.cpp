@@ -57,6 +57,14 @@ const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::
 	return nullptr;
 }
 
+std::string ShiftedImplicitGeometry(const std::string &offset_expr) {
+	return "CASE WHEN implicit_geometry IS NULL THEN NULL ELSE struct_pack(id := implicit_geometry.id + " +
+	       offset_expr +
+	       ", point := implicit_geometry.point, \"transformationMatrix\" := "
+	       "implicit_geometry.\"transformationMatrix\") "
+	       "END";
+}
+
 LogicalType WithoutJsonAlias(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::VARCHAR:

@@ -261,6 +261,7 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 | `transform_scale` | VARCHAR | Vertex quantisation scale `'x,y,z'` (default `'0.001,0.001,0.001'`) |
 | `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`) |
 | `metadata_from` | VARCHAR | Path to read metadata and appearance definitions from, when the source is not discoverable from the query itself |
+| `implicit_geometries_query` | VARCHAR | SQL returning `implicit_geometries` sidecar rows, written as the document's `geometry-templates` ([below](#required-columns)) |
 | `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct or a plain string), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
 | `attr_index` | VARCHAR | *(flatcitybuf)* comma-separated columns to give a B+tree index |
 | `branching_factor` | BIGINT | *(flatcitybuf)* B+tree branching factor |
@@ -338,7 +339,32 @@ columns, none of which is ever declared as an attribute column:
   member name it is read from and `location` a `MultiPoint` into the written
   vertex pool (CityJSON and CityJSONSeq; FlatCityBuf and the mesh formats carry
   no address);
-- `implicit_geometry` is not written.
+- `implicit_geometry` becomes a `GeometryInstance` in the CityObject's
+  `geometry` (CityJSON and CityJSONSeq), its one boundary the reference point
+  indexed into the written vertices and a NULL matrix written as the identity.
+  It needs the document's `geometry-templates` (below); a cell missing `id` or
+  `point`, naming a template there is none of, or holding a `point` that is not
+  WKB `PointZ` is an error.
+
+**Geometry templates.** The `geometry-templates` an instance's `template`
+indexes come from one of two places. With `implicit_geometries_query` — SQL
+returning `implicit_geometries` sidecar rows, such as `'SELECT * FROM
+pkg.implicit_geometries'` — each row becomes one template, in `id` order, from
+its populated `geometry_lod*` and `geometry_properties_lod*` columns, its
+vertices written as `vertices-templates` unquantised; an `implicit_geometry.id`
+is written as its row's position, and an id the query has no row for is an
+error. A relative geometry's `material_lod*` / `texture_lod*` cells hold sidecar
+ids, which the CityJSON family's appearance blocks cannot resolve, so they are
+not written. Without the option, a discovered source's own `geometry-templates`
+member is carried across, appearance and all — its texture UVs re-interned into
+the written `vertices-texture` — and `implicit_geometry.id` is the template
+index it was read as.
+
+```sql
+COPY (SELECT * FROM pkg.vegetation) TO 'vegetation.city.jsonl' (
+    FORMAT cityjsonseq, crs 'EPSG:7415',
+    implicit_geometries_query 'SELECT * FROM pkg.implicit_geometries');
+```
 
 **The wide CityParquet layout round-trips directly.** A Parquet object table goes
 back to CityJSON with no intermediate step, one multi-LoD CityObject per feature:
@@ -488,7 +514,9 @@ positions, which is what a plain CityJSON document yields.
 transform and the file CRS — an implicit geometry's `transformationMatrix` and
 reference point place it into the world — so their WKB holds raw doubles. Each
 row populates only its own LoD's columns, leaving the table sparse by
-construction.
+construction. A row's `id` is its template's position in the source, which is
+what an object's `implicit_geometry.id` holds in either appearance mode; the
+package pragmas renumber the two together.
 
 **Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; every
 `texture_lod*` cell replaces that with one `STRUCT(id BIGINT, uv DOUBLE[][])`
@@ -963,8 +991,9 @@ the reference writer's, so `cityparquet-rs` and this function order the same
 input the same way: a 2D curve of 2^16 cells per axis over the x/y extent of
 every geometry in the package, and for each **feature** (every row sharing a
 `feature_id`, across every object table) the curve position of the centre of
-its own geometry's x/y extent — taken from the WKB, not from `bbox`, which also
-carries a source's declared extents. Whole features move, never single rows,
+the x/y extent of every coordinate it carries — its geometry, and its implicit
+geometries' reference points and its addresses' locations — taken from the WKB,
+not from `bbox`, which also carries a source's declared extents. Whole features move, never single rows,
 and rows of equal key — a feature's own rows, and every feature without
 geometry, which takes key 0 — keep the table's order. Sidecars keep their
 order. `ordering => 'source'` writes every table in its own order instead.
@@ -1819,10 +1848,14 @@ Reserved columns appear in the order below, before every attribute column
 | `address` | STRUCT(`street, house_number, po_box, zip_code, city, state, country, free_text VARCHAR, location BLOB`)[] | The CityObject's `address` member, one struct per address (below); NULL when it has none |
 | `bbox` | STRUCT (`xmin … zmax DOUBLE`) | 3D extent in world coordinates (below) |
 | *(the per-LoD geometry group, below)* | | |
-| `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses CityJSON `GeometryInstance` geometries yet. `id` references an `implicit_geometries` row |
+| `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | The object's first CityJSON `GeometryInstance`: its `template` as `id` (an `implicit_geometries` row), its reference point as WKB `PointZ` in the file CRS, its row-major 4×4 `transformationMatrix`. NULL when it has none, or when the instance names no template or no resolvable point |
 | `other` | VARCHAR (JSON text) | Source members not mapped to a reserved or attribute column |
 
 Then **every attribute column** inferred from the data, last.
+
+An implicit geometry contributes nothing to `bbox`: its reference point is where
+the relative geometry is placed, not the extent of what it places, so an object
+with implicit geometry only has a NULL `bbox`.
 
 `bbox` is **unioned across every stored LoD and across the object's
 descendants** — so a parent `Building` whose 3D detail lives on its

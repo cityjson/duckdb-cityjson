@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cityjson/types.hpp"
+#include "cityjson/cityjson_types.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb.hpp"
@@ -230,19 +231,17 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row);
  * Write an `implicit_geometry` cell to a struct vector.
  * Handles ImplicitGeometryStruct: STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
  *
- * No reader parses CityJSON GeometryInstance data yet (spec "Optional data is
- * NULL, not an omitted column" -- the column stays present regardless), so `value`
- * is null on every call today. A null or non-object `value` still gives the
- * `transformationMatrix` LIST child a well-formed (empty) list_entry_t, for the
- * same reason WriteGeometryProperties does: an uninitialised one carries a garbage
- * offset/length a later flatten/copy pass would dereference, invisibly to any
- * check that only looks at the struct's own validity bit.
+ * A null `cell` writes a NULL struct, and still gives the `transformationMatrix`
+ * LIST child a well-formed (empty) list_entry_t, for the same reason
+ * WriteGeometryProperties does: an uninitialised one carries a garbage offset/length
+ * a later flatten/copy pass would dereference, invisibly to any check that only
+ * looks at the struct's own validity bit.
  *
  * @param vec Pointer to struct vector
- * @param value JSON object containing implicit-geometry data, or null
+ * @param cell The implicit geometry, or nullptr for none
  * @param row Row index in vector
  */
-void WriteImplicitGeometryStruct(Vector *vec, const json &value, size_t row);
+void WriteImplicitGeometryStruct(Vector *vec, const ImplicitGeometryCell *cell, size_t row);
 
 } // namespace cityjson
 } // namespace duckdb

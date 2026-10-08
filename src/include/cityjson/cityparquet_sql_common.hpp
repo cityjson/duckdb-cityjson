@@ -31,6 +31,10 @@ const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::
 //! True for a geometry_properties struct type carrying its `surfaces` JSON text field.
 bool HasSurfacesField(const LogicalType &type);
 
+//! `implicit_geometry` with its `id` shifted by `offset_expr`, onto the destination's
+//! implicit_geometries numbering; a NULL cell stays NULL.
+std::string ShiftedImplicitGeometry(const std::string &offset_expr);
+
 //! `type` with every JSON alias removed, nested ones included: JSON and VARCHAR hold
 //! the same text, and compare equal through this.
 LogicalType WithoutJsonAlias(const LogicalType &type);

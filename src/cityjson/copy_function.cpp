@@ -25,6 +25,10 @@
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include <fstream>
+#include <tuple>
+#include <map>
+#include <cstring>
+#include <algorithm>
 #include <limits>
 
 namespace duckdb {
@@ -128,6 +132,12 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->bbox_col = bbox_col;
 	result->other_col = other_col;
 	result->address_col = address_col;
+	result->implicit_geometry_col = implicit_geometry_col;
+	result->implicit_geometries_query = implicit_geometries_query;
+	result->geometry_templates = geometry_templates;
+	result->templates_by_id = templates_by_id;
+	result->template_count = template_count;
+	result->templates_from_query = templates_from_query;
 	result->geometry_properties_col = geometry_properties_col;
 	result->geometry_properties_by_name = geometry_properties_by_name;
 	result->appearance_by_name = appearance_by_name;
@@ -345,6 +355,72 @@ static uint16_t ParseTreeTuningOption(const Value &val, const std::string &optio
 // metadata: an OBJ source has no JSON to lift a per-feature block from, so its branch
 // reuses them rather than opening a second OBJReader over the same path and parsing
 // the whole file again.
+// Replace each texture ring's UV indices with the [u, v] pairs of `uv_pool`, in place:
+// a ring is an array of numbers (its texture id, then one UV index per vertex) or
+// [null]. The writer re-interns inline pairs into the pool it writes, exactly as it
+// does an object's.
+static void InlineTemplateUVs(json &values, const json &uv_pool) {
+	if (!values.is_array()) {
+		return;
+	}
+	const bool ring = !values.empty() && std::all_of(values.begin(), values.end(), [](const json &v) {
+		return v.is_number_integer() || v.is_null();
+	});
+	if (!ring) {
+		for (auto &child : values) {
+			InlineTemplateUVs(child, uv_pool);
+		}
+		return;
+	}
+	if (!values[0].is_number_integer()) {
+		return; // [null]: no texture
+	}
+	for (size_t k = 1; k < values.size(); k++) {
+		if (!values[k].is_number_unsigned() || values[k].get<uint64_t>() >= uv_pool.size()) {
+			throw InvalidInputException("COPY: a geometry template's texture refers to UV index %s, which the "
+			                            "source's vertices-texture does not have",
+			                            values[k].dump());
+		}
+		values[k] = uv_pool[values[k].get<size_t>()];
+	}
+}
+
+// The discovered source's `geometry-templates` member, unless implicit_geometries_query
+// already supplied the templates. `doc` is the whole document or the CityJSONSeq header.
+static void TakeSourceTemplates(const json &doc, CityJSONCopyBindData &bind_data) {
+	if (bind_data.templates_from_query) {
+		return;
+	}
+	auto found = doc.find("geometry-templates");
+	if (found == doc.end() || !found->is_object()) {
+		return;
+	}
+	json templates = *found;
+	static const json no_uvs = json::array();
+	const json *uv_pool = &no_uvs;
+	auto appearance = doc.find("appearance");
+	if (appearance != doc.end() && appearance->is_object() && appearance->contains("vertices-texture")) {
+		uv_pool = &(*appearance)["vertices-texture"];
+	}
+	if (templates.contains("templates") && templates["templates"].is_array()) {
+		for (auto &geometry : templates["templates"]) {
+			if (!geometry.is_object() || !geometry.contains("texture") || !geometry["texture"].is_object()) {
+				continue;
+			}
+			for (auto &theme : geometry["texture"].items()) {
+				if (theme.value().is_object() && theme.value().contains("values")) {
+					InlineTemplateUVs(theme.value()["values"], *uv_pool);
+				}
+			}
+		}
+	}
+	const auto list = templates.find("templates");
+	bind_data.template_count = list != templates.end() && list->is_array() ? list->size() : 0;
+	bind_data.geometry_templates = std::move(templates);
+}
+
+static void LoadTemplatesFromQuery(ClientContext &context, const std::string &query, CityJSONCopyBindData &bind_data);
+
 static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref, CityJSONReader &reader,
                                  const CityJSON &source_meta, CityJSONCopyBindData &bind_data) {
 	if (source_ref.kind == ReaderKind::Obj) {
@@ -402,7 +478,9 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 
 	if (source_ref.kind != ReaderKind::CityJSONSeq) {
 		// Whole-document CityJSON: one block, and no per-feature blocks exist.
-		bind_data.source_appearance_header = take_appearance(json_utils::ParseJson(content));
+		auto doc = json_utils::ParseJson(content);
+		bind_data.source_appearance_header = take_appearance(doc);
+		TakeSourceTemplates(doc, bind_data);
 		return;
 	}
 
@@ -426,6 +504,7 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 
 		if (first_line) {
 			bind_data.source_appearance_header = take_appearance(doc);
+			TakeSourceTemplates(doc, bind_data);
 			first_line = false;
 			continue;
 		}
@@ -542,6 +621,8 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 			bind_data->materials_query = val.ToString();
 		} else if (loption == "textures_query") {
 			bind_data->textures_query = val.ToString();
+		} else if (loption == "implicit_geometries_query") {
+			bind_data->implicit_geometries_query = val.ToString();
 		} else {
 			// A misspelled option used to be dropped silently, writing the output with
 			// the default the user thought they had overridden. Reject anything the
@@ -768,6 +849,9 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 		case CopyColumnRole::Address:
 			bind_data->address_col = i;
 			break;
+		case CopyColumnRole::ImplicitGeometry:
+			bind_data->implicit_geometry_col = i;
+			break;
 		default:
 			break;
 		}
@@ -792,6 +876,34 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 			                      "WKB BLOB (spec 02-object-table-schema.mdx, \"Addresses\"), got %s",
 			                      input.info.format, type.ToString());
 		}
+	}
+
+	// `implicit_geometry` is read field by field in the sink, `point` as WKB bytes: the
+	// spec's STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[]).
+	if (bind_data->implicit_geometry_col != DConstants::INVALID_INDEX) {
+		const auto &type = sql_types[bind_data->implicit_geometry_col];
+		bool shaped = type.id() == LogicalTypeId::STRUCT;
+		if (shaped) {
+			for (const auto &field : StructType::GetChildTypes(type)) {
+				if (field.first == "id") {
+					shaped = shaped && field.second.IsIntegral();
+				} else if (field.first == "point") {
+					shaped = shaped && field.second.id() == LogicalTypeId::BLOB;
+				} else if (field.first == "transformationMatrix") {
+					shaped = shaped && field.second.id() == LogicalTypeId::LIST &&
+					         ListType::GetChildType(field.second).IsNumeric();
+				}
+			}
+		}
+		if (!shaped) {
+			throw BinderException("COPY TO %s: the `implicit_geometry` column must be STRUCT(id BIGINT, point BLOB, "
+			                      "transformationMatrix DOUBLE[]) (spec 04-appearance-templates.mdx), got %s",
+			                      input.info.format, type.ToString());
+		}
+	}
+	if (bind_data->implicit_geometries_query.has_value()) {
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		LoadTemplatesFromQuery(context, *bind_data->implicit_geometries_query, *bind_data);
 	}
 
 	for (const auto &name : names) {
@@ -1162,6 +1274,232 @@ static size_t CountFaces(const std::string &type, const json &boundaries) {
 }
 
 // ============================================================
+// implicit_geometries_query: sidecar rows -> geometry-templates
+// ============================================================
+
+static bool IsCoordinate(const json &node) {
+	return node.is_array() && node.size() == 3 && node[0].is_number() && node[1].is_number() && node[2].is_number();
+}
+
+// Replace every [x, y, z] in `node` by its index in `pool`, interning exact doubles:
+// template vertices are the relative geometry's own local coordinates, never quantised.
+static void InternTemplateVertices(json &node, std::map<std::tuple<uint64_t, uint64_t, uint64_t>, size_t> &index,
+                                   json &pool) {
+	if (!node.is_array()) {
+		return;
+	}
+	for (auto &child : node) {
+		if (!IsCoordinate(child)) {
+			InternTemplateVertices(child, index, pool);
+			continue;
+		}
+		std::array<uint64_t, 3> bits {};
+		for (size_t axis = 0; axis < 3; axis++) {
+			const double value = child[axis].get<double>();
+			std::memcpy(&bits[axis], &value, sizeof(value));
+		}
+		const auto key = std::make_tuple(bits[0], bits[1], bits[2]);
+		auto found = index.find(key);
+		size_t position;
+		if (found != index.end()) {
+			position = found->second;
+		} else {
+			position = pool.size();
+			pool.push_back(child);
+			index.emplace(key, position);
+		}
+		child = static_cast<int64_t>(position);
+	}
+}
+
+// The `implicit_geometries` sidecar rows of `query` as the document's
+// geometry-templates: one template per row, in id order, each from the row's one
+// populated geometry_lod* column (its LoD from the column name) and its
+// geometry_properties. A relative geometry's material/texture cells hold sidecar ids,
+// which no CityJSON appearance block this COPY writes can resolve, so they are not
+// carried.
+static void LoadTemplatesFromQuery(ClientContext &context, const std::string &query, CityJSONCopyBindData &bind_data) {
+	Connection connection(*context.db);
+	auto result = connection.Query(query);
+	if (result->HasError()) {
+		throw BinderException("implicit_geometries_query failed: " + result->GetError());
+	}
+	const auto &names = result->names;
+	const auto &types = result->types;
+	idx_t id_col = DConstants::INVALID_INDEX;
+	std::vector<std::pair<idx_t, std::string>> geometry_cols; // column, LoD suffix
+	std::map<std::string, idx_t> properties_cols;
+	for (idx_t col = 0; col < names.size(); col++) {
+		const auto lowered = StringUtil::Lower(names[col]);
+		if (lowered == "id") {
+			if (!types[col].IsIntegral()) {
+				throw BinderException("implicit_geometries_query: `id` must be an integer column, got %s",
+				                      types[col].ToString());
+			}
+			id_col = col;
+		} else if (lowered.rfind("geometry_properties_lod", 0) == 0) {
+			if (types[col].id() == LogicalTypeId::STRUCT) {
+				properties_cols[lowered.substr(std::string("geometry_properties_").size())] = col;
+			}
+		} else if (lowered.rfind("geometry_lod", 0) == 0) {
+			if (types[col].id() != LogicalTypeId::BLOB) {
+				throw BinderException("implicit_geometries_query: `%s` must be a WKB BLOB, got %s", names[col],
+				                      types[col].ToString());
+			}
+			geometry_cols.emplace_back(col, lowered.substr(std::string("geometry_").size()));
+		}
+	}
+	if (id_col == DConstants::INVALID_INDEX) {
+		throw BinderException("implicit_geometries_query: the query has no `id` column");
+	}
+
+	std::map<int64_t, json> by_id;
+	for (idx_t row = 0; row < result->RowCount(); row++) {
+		const auto id_value = result->GetValue(id_col, row);
+		if (id_value.IsNull()) {
+			throw BinderException("implicit_geometries_query: a row has a NULL id");
+		}
+		const auto id = id_value.GetValue<int64_t>();
+		json geometry;
+		for (const auto &entry : geometry_cols) {
+			const auto value = result->GetValue(entry.first, row);
+			if (value.IsNull()) {
+				continue;
+			}
+			const auto &blob = StringValue::Get(value);
+			WKBDecodeResult decoded;
+			try {
+				decoded = WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob.data()), blob.size());
+			} catch (const CityJSONError &e) {
+				throw BinderException("implicit_geometries_query: relative geometry %lld is not valid WKB: %s",
+				                      static_cast<long long>(id), e.what());
+			}
+			geometry["type"] = decoded.cityjson_type;
+			geometry["lod"] = LODTableUtils::ParseLODFromSuffix(entry.second);
+			geometry["boundaries"] = decoded.boundaries;
+			auto properties = properties_cols.find(entry.second);
+			if (properties != properties_cols.end()) {
+				const auto props_value = result->GetValue(properties->second, row);
+				if (!props_value.IsNull()) {
+					const auto props = StructPropsToJson(props_value);
+					if (props.contains("type") && props["type"].is_string()) {
+						geometry["type"] = props["type"];
+					}
+					const std::string type = geometry["type"].get<std::string>();
+					const json no_shells = json::array();
+					const json &shells = props.contains("shells") ? props["shells"] : no_shells;
+					geometry["boundaries"] = RenestBoundaries(type, geometry["boundaries"], shells);
+					if (props.contains("surfaces") && props.contains("face_semantics")) {
+						geometry["semantics"] = {{"surfaces", props["surfaces"]},
+						                         {"values", RenestValues(type, props["face_semantics"], shells)}};
+					}
+				}
+			}
+			break; // a relative geometry is one geometry at one LoD
+		}
+		if (geometry.is_null()) {
+			throw BinderException("implicit_geometries_query: relative geometry %lld has no geometry",
+			                      static_cast<long long>(id));
+		}
+		if (!by_id.emplace(id, std::move(geometry)).second) {
+			throw BinderException("implicit_geometries_query: id %lld occurs twice", static_cast<long long>(id));
+		}
+	}
+
+	json templates = json::array();
+	json pool = json::array();
+	std::map<std::tuple<uint64_t, uint64_t, uint64_t>, size_t> index;
+	for (auto &entry : by_id) {
+		InternTemplateVertices(entry.second["boundaries"], index, pool);
+		bind_data.templates_by_id[entry.first] = static_cast<int64_t>(templates.size());
+		templates.push_back(std::move(entry.second));
+	}
+	bind_data.template_count = templates.size();
+	bind_data.geometry_templates = json {{"templates", std::move(templates)}, {"vertices-templates", std::move(pool)}};
+	bind_data.templates_from_query = true;
+}
+
+// One `implicit_geometry` cell as a CityJSON GeometryInstance whose one boundary is the
+// reference point's coordinate (the writer indexes it into the vertex pool it builds).
+// The cell's types were checked at bind; its bytes and values are still checked here.
+static json GeometryInstanceFromCell(const Value &cell, const CityJSONCopyBindData &bind_data,
+                                     const std::string &object_id) {
+	std::optional<int64_t> id;
+	const std::string *point = nullptr;
+	Value matrix;
+	const auto &fields = StructType::GetChildTypes(cell.type());
+	const auto &values = StructValue::GetChildren(cell);
+	for (idx_t f = 0; f < fields.size(); f++) {
+		if (values[f].IsNull()) {
+			continue;
+		}
+		if (fields[f].first == "id") {
+			id = values[f].GetValue<int64_t>();
+		} else if (fields[f].first == "point") {
+			point = &StringValue::Get(values[f]);
+		} else if (fields[f].first == "transformationMatrix") {
+			matrix = values[f];
+		}
+	}
+	if (!id.has_value() || point == nullptr) {
+		throw InvalidInputException("object %s: an implicit_geometry must carry both `id` and `point` (spec "
+		                            "04-appearance-templates.mdx)",
+		                            object_id);
+	}
+	if (!bind_data.geometry_templates.has_value()) {
+		throw InvalidInputException("object %s: has an implicit geometry, but this COPY has no geometry templates to "
+		                            "place it with; pass implicit_geometries_query (e.g. 'SELECT * FROM "
+		                            "pkg.implicit_geometries'), or COPY from the CityJSON source that has them",
+		                            object_id);
+	}
+	int64_t template_index = id.value();
+	if (bind_data.templates_from_query) {
+		auto found = bind_data.templates_by_id.find(id.value());
+		if (found == bind_data.templates_by_id.end()) {
+			throw InvalidInputException("object %s: its implicit_geometry refers to id %lld, but there is no "
+			                            "implicit_geometries row with id %lld",
+			                            object_id, static_cast<long long>(id.value()),
+			                            static_cast<long long>(id.value()));
+		}
+		template_index = found->second;
+	}
+	if (template_index < 0 || static_cast<size_t>(template_index) >= bind_data.template_count) {
+		throw InvalidInputException("object %s: its implicit_geometry refers to template %lld, which the "
+		                            "geometry-templates do not have",
+		                            object_id, static_cast<long long>(template_index));
+	}
+	WKBDecodeResult decoded;
+	try {
+		decoded = WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(point->data()), point->size());
+	} catch (const CityJSONError &e) {
+		throw InvalidInputException("object %s: implicit_geometry.point is not valid WKB: %s", object_id, e.what());
+	}
+	if (decoded.cityjson_type != "Point") {
+		throw InvalidInputException("object %s: implicit_geometry.point is a WKB %s, not the PointZ the spec requires",
+		                            object_id, decoded.cityjson_type);
+	}
+	// Absent means identity (spec); CityJSON requires the member.
+	json transformation = json::array({1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0});
+	if (!matrix.IsNull()) {
+		const auto &entries = ListValue::GetChildren(matrix);
+		if (entries.size() != 16 ||
+		    std::any_of(entries.begin(), entries.end(), [](const Value &v) { return v.IsNull(); })) {
+			throw InvalidInputException("object %s: implicit_geometry.transformationMatrix must be 16 numbers, a "
+			                            "row-major 4x4",
+			                            object_id);
+		}
+		transformation = json::array();
+		for (const auto &entry : entries) {
+			transformation.push_back(entry.GetValue<double>());
+		}
+	}
+	return json {{"type", "GeometryInstance"},
+	             {"template", template_index},
+	             {"boundaries", decoded.boundaries},
+	             {"transformationMatrix", std::move(transformation)}};
+}
+
+// ============================================================
 // COPY TO Sink
 // ============================================================
 
@@ -1524,6 +1862,17 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 			}
 		}
 
+		// The CityJSON family only: FlatCityBuf and the mesh formats carry neither an
+		// address nor a GeometryInstance.
+		const bool cityjson_family =
+		    bind_data.format == CopyFormat::CityJSON || bind_data.format == CopyFormat::CityJSONSeq;
+		if (cityjson_family && bind_data.implicit_geometry_col != DConstants::INVALID_INDEX) {
+			auto cell = input.data[bind_data.implicit_geometry_col].GetValue(row);
+			if (!cell.IsNull()) {
+				geometries.push_back(GeometryInstanceFromCell(cell, bind_data, city_obj_id));
+			}
+		}
+
 		if (!geometries.empty()) {
 			city_obj["geometry"] = geometries;
 		} else {
@@ -1594,10 +1943,7 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 		// The `address` column back into the CityObject's `address` member (spec
 		// 07-mapping-cityjson.mdx), each field under the member name it is read from;
 		// `location` goes out as a MultiPoint of coordinates, which the writer turns into
-		// indices into the vertex pool it builds. The CityJSON family only: FlatCityBuf
-		// and the mesh formats have no address.
-		const bool cityjson_family =
-		    bind_data.format == CopyFormat::CityJSON || bind_data.format == CopyFormat::CityJSONSeq;
+		// indices into the vertex pool it builds.
 		if (cityjson_family && bind_data.address_col != DConstants::INVALID_INDEX) {
 			auto address_val = input.data[bind_data.address_col].GetValue(row);
 			if (!address_val.IsNull() && address_val.type().id() == LogicalTypeId::LIST) {
@@ -1720,6 +2066,7 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 	} else {
 		write_meta.extensions = bind_data.source_extensions;
 	}
+	write_meta.geometry_templates = bind_data.geometry_templates;
 
 	// Write to the temp file path — DuckDB will rename it to the final path after Finalize
 	auto &output_path = gstate.temp_file_path;

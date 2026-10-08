@@ -26,6 +26,9 @@ struct CityJSONWriteMetadata {
 	//! The document's `extensions` member, keyed by extension name. Written by the
 	//! CityJSON and CityJSONSeq writers; the FlatCityBuf header is left without it.
 	std::optional<json> extensions;
+	//! The document's `geometry-templates` (`templates` + raw-double
+	//! `vertices-templates`), texture UVs inline. CityJSON and CityJSONSeq only.
+	std::optional<json> geometry_templates;
 };
 
 /**

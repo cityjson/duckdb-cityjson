@@ -26,6 +26,18 @@ first address carries every recognised member and a `location` MultiPoint over v
 0 and 4; the second only `locality`, plus a differently cased `Locality` and an `id`,
 neither of which maps. `cityjson_address.test` reads and writes it.
 
+## railway_vegetation.city.json
+
+`lod3_railway.city.json` (the CityGML LoD3 railway sample, as cityparquet-rs fetches it
+into `tests/fixtures/`) cut down to the objects with implicit geometry: its 15
+SolitaryVegetationObjects, each one `GeometryInstance` of one of the three geometry
+templates, and the CityObjectGroup whose children 14 of them are. The header,
+`transform`, `metadata`, `geometry-templates` and the appearance `materials` and
+`textures` are unchanged; `vertices` keeps only the 15 reference points and
+`vertices-texture` only the UVs the templates use, both re-indexed in first-use order
+(the templates' texture rings re-pointed to match). `cityjson_implicit_geometry.test`
+reads it.
+
 ## degenerate_rings.city.jsonl + degenerate_rings_appearance.city.jsonl
 
 Real objects with rings cut short by hand, for the readers' drop of rings that cannot

@@ -22,10 +22,10 @@ const char *const ORPHAN_TABLE = "cityparquet_orphan_rows";
 
 namespace {
 
-//! True when `table.implicit_geometry.id` holds at least one real (non-NULL) value. Every
-//! reader this extension ships writes `implicit_geometry` as an always-NULL reserved column
-//! (spec 02-object-table-schema.mdx: present but unpopulated is not the same claim
-//! as "nothing is referenced" -- see ReferencedIds below). Runs on a fresh internal
+//! True when `table.implicit_geometry.id` holds at least one real (non-NULL) value. The
+//! column is present whether or not anything populates it (spec
+//! 02-object-table-schema.mdx), and present but unpopulated is not the same claim as
+//! "nothing is referenced" -- see ReferencedIds below. Runs on a fresh internal
 //! connection, like cityparquet_write.cpp's `Run` helper, so it only sees committed
 //! state -- acceptable here because a pragma's generated SQL is itself expanded
 //! from pre-batch state (TRAPS.md, "Generated SQL and the pragma layer").
@@ -51,10 +51,9 @@ std::string ReferencedIds(ClientContext &context, const std::string &schema, con
 		// An implicit-geometry reference is a plain struct field, no JSON involved. A
 		// table without the `implicit_geometry` column at all contributes no
 		// references, and neither does one whose `implicit_geometry` column exists but
-		// has never been populated with a real value -- every reader this extension
-		// ships writes `implicit_geometry` as an always-NULL reserved column today (spec
-		// 02-object-table-schema.mdx: the column is present regardless of whether
-		// anything populates it). Without this second check, a WHERE
+		// holds no real value -- a writer that does not carry implicit geometries
+		// still has the column (spec 02-object-table-schema.mdx: it is present
+		// regardless of whether anything populates it). Without this second check, a WHERE
 		// implicit_geometry IS NOT NULL term over an all-NULL column returns zero rows,
 		// which is indistinguishable in SQL from "this table genuinely references
 		// nothing" -- and `x NOT IN (<empty set>)` is true for every row, so

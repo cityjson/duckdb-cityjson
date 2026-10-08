@@ -709,6 +709,11 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		replacements.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " + OffsetExpr(sidecar) +
 		                       ") AS " + Quoted(column.name));
 	}
+	// An object's implicit geometry references a relative geometry whose id the sidecar
+	// insert below shifts, so the reference moves with it.
+	if (!facts.geometry_templates.Empty()) {
+		replacements.push_back(ShiftedImplicitGeometry(OffsetExpr("implicit_geometries")) + " AS implicit_geometry");
+	}
 	for (const auto &entry : types_by_module) {
 		// ST_GeomFromWKB ships in DuckDB core, like the ST_AsWKB GeometryColumnRef emits.
 		auto table_replacements = replacements;

@@ -160,14 +160,14 @@ SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM ams.vegetation) WHERE column_name =
 ----
 1
 
-# A GeometryInstance's `boundaries` is a single placement-point index, which
-# GetObjectExtent reads like any other boundary index -- a real, if degenerate
-# (single-point), extent, not NULL. Both instances get one.
-query I
-SELECT COUNT(*) FROM ams.vegetation
-WHERE object_type = 'SolitaryVegetationObject' AND bbox IS NOT NULL;
+# Both carry their implicit geometry, whose reference point is where the relative
+# geometry is placed, not the extent of what it places: it contributes nothing to
+# `bbox`, which stays NULL for an object with implicit geometry only.
+query II
+SELECT COUNT(*) FILTER (WHERE implicit_geometry IS NOT NULL), COUNT(*) FILTER (WHERE bbox IS NULL)
+FROM ams.vegetation WHERE object_type = 'SolitaryVegetationObject';
 ----
-2
+2	2
 
 # --- the package stays consistent throughout ---------------------------------
 

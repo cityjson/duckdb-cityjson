@@ -140,7 +140,14 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 		// GeometryPropertiesStruct is above: its LIST child (transformationMatrix) needs
 		// a well-formed list_entry_t even on a null row.
 		if (col.kind == ColumnType::ImplicitGeometryStruct) {
-			WriteImplicitGeometryStruct(wrappers[col_idx].AsStructMut(), json(nullptr), output_row);
+			std::optional<ImplicitGeometryCell> cell;
+			try {
+				cell = CityObjectUtils::GetImplicitGeometry(city_obj, vertex_pool, bind_data.metadata.transform);
+			} catch (const CityJSONError &e) {
+				throw ConversionException("object '%s': %s", city_obj_id, e.what());
+			}
+			WriteImplicitGeometryStruct(wrappers[col_idx].AsStructMut(), cell.has_value() ? &cell.value() : nullptr,
+			                            output_row);
 			continue;
 		}
 		// `address` value-at-a-time, like the appearance cells: sparse and nested.

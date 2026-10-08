@@ -137,6 +137,18 @@ public:
 	 * and `location` -- a MultiPoint indexing `vertices` -- as WKB MultiPointZ. NULL when
 	 * the object has no address. See AddressMemberNames for the member vocabulary.
 	 */
+	/**
+	 * The object's `implicit_geometry` (spec 04-appearance-templates.mdx): from its
+	 * first GeometryInstance, the template index, the reference point resolved against
+	 * `vertices` into WKB PointZ, and the transformation matrix. nullopt when the object
+	 * has none, or when the instance names no template or no resolvable point -- the
+	 * spec requires both on a non-null value. A matrix that is not 16 numbers is invalid
+	 * input and throws.
+	 */
+	static std::optional<ImplicitGeometryCell> GetImplicitGeometry(const CityObject &object,
+	                                                               const std::vector<std::array<double, 3>> *vertices,
+	                                                               const std::optional<Transform> &transform);
+
 	static Value GetAddressValue(const CityObject &object, const std::vector<std::array<double, 3>> *vertices,
 	                             const std::optional<Transform> &transform);
 };

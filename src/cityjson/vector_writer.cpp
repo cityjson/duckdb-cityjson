@@ -526,7 +526,7 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 // Implicit Geometry Struct
 // ============================================================
 
-void WriteImplicitGeometryStruct(Vector *vec, const json &value, size_t row) {
+void WriteImplicitGeometryStruct(Vector *vec, const ImplicitGeometryCell *cell, size_t row) {
 	// STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
 	auto &children = StructVector::GetEntries(*vec);
 	auto &id_vec = *children[0];
@@ -537,22 +537,18 @@ void WriteImplicitGeometryStruct(Vector *vec, const json &value, size_t row) {
 	// well-formed (empty) list_entry_t on its LIST child, or a later flatten/copy
 	// pass dereferences uninitialised list metadata regardless of the struct's own
 	// validity bit.
-	const bool is_null = value.is_null() || !value.is_object();
-	if (is_null) {
+	if (cell == nullptr) {
 		FlatVector::SetNull(*vec, row, true);
-	}
-
-	if (!is_null && value.contains("id") && value["id"].is_number_integer()) {
-		FlatVector::GetData<int64_t>(id_vec)[row] = value["id"].get<int64_t>();
-	} else {
 		FlatVector::SetNull(id_vec, row, true);
+		FlatVector::SetNull(point_vec, row, true);
+	} else {
+		FlatVector::GetData<int64_t>(id_vec)[row] = cell->id;
+		FlatVector::GetData<string_t>(point_vec)[row] = StringVector::AddStringOrBlob(
+		    point_vec, reinterpret_cast<const char *>(cell->point.data()), cell->point.size());
 	}
 
-	// `point`: no reader resolves a GeometryInstance's reference point yet.
-	FlatVector::SetNull(point_vec, row, true);
-
-	if (!is_null && value.contains("transformationMatrix") && value["transformationMatrix"].is_array()) {
-		AppendDoubleList(matrix_vec, value["transformationMatrix"], row);
+	if (cell != nullptr && cell->transformation_matrix.has_value()) {
+		AppendDoubleList(matrix_vec, json(cell->transformation_matrix.value()), row);
 	} else {
 		FlatVector::GetData<list_entry_t>(matrix_vec)[row] = list_entry_t(0, 0);
 		FlatVector::SetNull(matrix_vec, row, true);

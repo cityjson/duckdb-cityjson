@@ -70,8 +70,8 @@ public:
 	 * "Reserved columns").
 	 *
 	 * Columns, in order:
-	 * - implicit_geometry: STRUCT -- always NULL until a reader parses CityJSON
-	 *   GeometryInstance geometries
+	 * - implicit_geometry: STRUCT -- the object's first GeometryInstance, NULL when
+	 *   it has none
 	 * - other: JSON
 	 *
 	 * @return Vector of trailing reserved column definitions

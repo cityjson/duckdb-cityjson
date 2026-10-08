@@ -1,0 +1,228 @@
+# name: test/sql/cityjson_implicit_geometry.test
+# description: a GeometryInstance reads into implicit_geometry and is written back with its geometry-templates
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 02-object-table-schema.mdx / 04-appearance-templates.mdx: an object's implicit
+# geometry is the `implicit_geometry` struct -- the `implicit_geometries` id of the
+# shared relative geometry, the reference point as WKB PointZ in the file CRS, and the
+# flat row-major 4x4 transformationMatrix -- and the relative geometries are the
+# sidecar. 07-mapping-cityjson.mdx: `template` -> id, `transformationMatrix` ->
+# transformationMatrix, the instance's reference point -> point;
+# `geometry-templates` -> the sidecar.
+#
+# railway_vegetation.city.json is lod3_railway.city.json cut down to its 15
+# SolitaryVegetationObjects -- each a GeometryInstance of one of the three textured,
+# materialled templates -- and the CityObjectGroup holding 14 of them
+# (test/data/README.md).
+
+# --- read ---------------------------------------------------------------------------
+
+query II
+SELECT implicit_geometry.id, COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json')
+GROUP BY ALL ORDER BY ALL;
+----
+0	10
+1	4
+2	1
+NULL	1
+
+# GMLID_SO0443764_1492_9667: template 0 at vertex [744, 6163, 1219], dequantised by the
+# transform (scale 0.001, translate [0.56, 0.64, 7.579]); an identity matrix.
+query IIIIII
+SELECT cityjson_wkb_geometry_type(implicit_geometry.point), round(e.xmin, 3), round(e.ymin, 3), round(e.zmin, 3),
+       e.xmin = e.xmax AND e.ymin = e.ymax AND e.zmin = e.zmax, implicit_geometry.transformationMatrix
+FROM (SELECT implicit_geometry, cityjson_wkb_extent(implicit_geometry.point) AS e
+      FROM read_cityjson('test/data/railway_vegetation.city.json') WHERE id = 'GMLID_SO0443764_1492_9667');
+----
+Point Z	1.304	6.803	8.798	true	[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+# Every id resolves against the sidecar the same file yields.
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json') o
+WHERE implicit_geometry IS NOT NULL
+  AND implicit_geometry.id NOT IN (SELECT id FROM cityjson_implicit_geometries('test/data/railway_vegetation.city.json'));
+----
+0
+
+# An implicit geometry places a relative geometry, and its reference point is not the
+# extent of what it places; it contributes no extent to `bbox`.
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json') WHERE bbox IS NOT NULL;
+----
+0
+
+# --- written back from the source ----------------------------------------------------
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/railway_vegetation.city.json'))
+TO '__TEST_DIR__/vegetation.city.json' (FORMAT cityjson);
+
+statement ok
+COPY (SELECT * FROM read_cityjson('test/data/railway_vegetation.city.json'))
+TO '__TEST_DIR__/vegetation.city.jsonl' (FORMAT cityjsonseq);
+
+# The instance is a GeometryInstance again, its one boundary an index into the written
+# vertices. Points are compared to 1e-9: the written vertices are quantised against
+# this COPY's own transform, not the source's, so a coordinate may come back one ULP
+# away.
+query I
+SELECT regexp_matches(content, '"GMLID_SO092422_3593_9527":\{"attributes":\{[^}]*\},"geometry":\[\{"boundaries":\[[0-9]+\],"template":2,"transformationMatrix":\[1\.0,0\.0,0\.0,0\.0,0\.0,1\.0,0\.0,0\.0,0\.0,0\.0,1\.0,0\.0,0\.0,0\.0,0\.0,1\.0\],"type":"GeometryInstance"\}\]')
+FROM read_text('__TEST_DIR__/vegetation.city.json');
+----
+true
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, implicit_geometry.id, implicit_geometry.transformationMatrix,
+         [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
+  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e FROM read_cityjson('test/data/railway_vegetation.city.json'))
+  EXCEPT ALL
+  SELECT id, implicit_geometry.id, implicit_geometry.transformationMatrix,
+         [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
+  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e FROM read_cityjson('__TEST_DIR__/vegetation.city.json')));
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, implicit_geometry.id, implicit_geometry.transformationMatrix,
+         [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
+  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e FROM read_cityjson('test/data/railway_vegetation.city.json'))
+  EXCEPT ALL
+  SELECT id, implicit_geometry.id, implicit_geometry.transformationMatrix,
+         [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
+  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e FROM read_cityjsonseq('__TEST_DIR__/vegetation.city.jsonl')));
+----
+0
+
+# The templates travel with them, appearance and all, in both layouts.
+query I
+SELECT COUNT(*) FROM (
+  SELECT * FROM cityjson_implicit_geometries('test/data/railway_vegetation.city.json')
+  EXCEPT ALL
+  SELECT * FROM cityjson_implicit_geometries('__TEST_DIR__/vegetation.city.json'));
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT * FROM cityjson_implicit_geometries('test/data/railway_vegetation.city.json')
+  EXCEPT ALL
+  SELECT * FROM cityjson_implicit_geometries('__TEST_DIR__/vegetation.city.jsonl'));
+----
+0
+
+# --- through a package ---------------------------------------------------------------
+
+# A package that already holds relative geometries (railway_appearance's three), so the
+# incoming ones are renumbered -- and every implicit_geometry.id with them.
+statement ok
+CREATE SCHEMA v;
+
+statement ok
+CREATE TABLE v.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('v');
+
+statement ok
+PRAGMA insert_cityjsonseq('v', 'test/data/railway_appearance.city.jsonl');
+
+statement ok
+PRAGMA insert_cityjson('v', 'test/data/railway_vegetation.city.json');
+
+query II
+SELECT implicit_geometry.id, COUNT(*) FROM v.vegetation GROUP BY ALL ORDER BY ALL;
+----
+3	10
+4	4
+5	1
+
+# Each id still names its own template: the relative geometry it resolves to is the one
+# the source's template index named.
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json') s
+JOIN v.vegetation p USING (id)
+JOIN cityjson_implicit_geometries('test/data/railway_vegetation.city.json') t ON t.id = s.implicit_geometry.id
+JOIN v.implicit_geometries pt ON pt.id = p.implicit_geometry.id
+WHERE t.geometry_lod3_0 = pt.geometry_lod3_0 AND s.implicit_geometry.point = p.implicit_geometry.point;
+----
+15
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('v', '__TEST_DIR__/vegetation_pkg', crs => 'EPSG:7415');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/vegetation_pkg', 'vr');
+
+# Back to CityJSON from the package: the sidecar rows become the geometry-templates,
+# numbered by position, and each instance's template follows its id.
+statement ok
+COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/vegetation_pkg.city.jsonl'
+(FORMAT cityjsonseq, crs 'EPSG:7415', implicit_geometries_query 'SELECT * FROM vr.implicit_geometries');
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, implicit_geometry.transformationMatrix, [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
+  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e
+        FROM read_cityjson('test/data/railway_vegetation.city.json') WHERE implicit_geometry IS NOT NULL)
+  EXCEPT ALL
+  SELECT id, implicit_geometry.transformationMatrix, [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
+  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e
+        FROM read_cityjsonseq('__TEST_DIR__/vegetation_pkg.city.jsonl')));
+----
+0
+
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json') s
+JOIN read_cityjsonseq('__TEST_DIR__/vegetation_pkg.city.jsonl') o USING (id)
+JOIN cityjson_implicit_geometries('test/data/railway_vegetation.city.json') t ON t.id = s.implicit_geometry.id
+JOIN cityjson_implicit_geometries('__TEST_DIR__/vegetation_pkg.city.jsonl') ot ON ot.id = o.implicit_geometry.id
+WHERE t.geometry_lod3_0 = ot.geometry_lod3_0
+  AND t.geometry_properties_lod3_0 IS NOT DISTINCT FROM ot.geometry_properties_lod3_0;
+----
+15
+
+# An id the query's rows do not have cannot be placed.
+statement error
+COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/dangling.city.jsonl'
+(FORMAT cityjsonseq, crs 'EPSG:7415', implicit_geometries_query 'SELECT * FROM vr.implicit_geometries WHERE id <> 5');
+----
+no implicit_geometries row with id 5
+
+# Merging moves the references with the rows: the destination already holds three
+# relative geometries, so every incoming id is shifted by three and still resolves to the
+# same geometry.
+statement ok
+CREATE SCHEMA m;
+
+statement ok
+CREATE TABLE m.building AS SELECT * FROM read_cityjsonseq('test/data/delft_append.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('m');
+
+statement ok
+PRAGMA insert_cityjsonseq('m', 'test/data/railway_appearance.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_merge('m', 'v', tables = ['vegetation', 'generics']);
+
+query II
+SELECT implicit_geometry.id, COUNT(*) FROM m.vegetation GROUP BY ALL ORDER BY ALL;
+----
+6	10
+7	4
+8	1
+
+query I
+SELECT COUNT(*) FROM v.vegetation s JOIN m.vegetation d USING (id)
+JOIN v.implicit_geometries st ON st.id = s.implicit_geometry.id
+JOIN m.implicit_geometries dt ON dt.id = d.implicit_geometry.id
+WHERE st.geometry_lod3_0 = dt.geometry_lod3_0;
+----
+15

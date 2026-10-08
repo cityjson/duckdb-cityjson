@@ -253,7 +253,12 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			const bool is_texture =
 			    MatchesLodSuffix(lowered, "texture_lod") &&
 			    std::find(source_sidecars.begin(), source_sidecars.end(), "textures") != source_sidecars.end();
-			if (is_material) {
+			const bool is_implicit = lowered == "implicit_geometry" &&
+			                         std::find(source_sidecars.begin(), source_sidecars.end(), "implicit_geometries") !=
+			                             source_sidecars.end();
+			if (is_implicit) {
+				values.push_back(ShiftedImplicitGeometry(OffsetExpr("implicit_geometries")));
+			} else if (is_material) {
 				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
 				                 OffsetExpr("materials") + ")");
 			} else if (is_texture) {

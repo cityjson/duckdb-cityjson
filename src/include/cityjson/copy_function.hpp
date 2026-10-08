@@ -38,7 +38,7 @@ enum class CopyColumnRole {
 	Bbox,               // derived bounding box — recomputed on read, ignored on write
 	Other,              // extension fields
 	Address,            // reserved `address` column — written as the CityObject's `address` member
-	ImplicitGeometry,   // reserved `implicit_geometry` column — no writer round-trips it yet
+	ImplicitGeometry,   // reserved `implicit_geometry` column — written as a GeometryInstance
 	Attribute           // everything else -> attributes map
 };
 
@@ -126,6 +126,18 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::optional<json> source_appearance_header;
 	std::map<std::string, json> source_appearance_by_feature;
 
+	// The document's `geometry-templates` member, its texture rings' UV indices
+	// resolved to inline [u, v] pairs so the writer can re-intern them into the pool it
+	// writes. From `implicit_geometries_query` (the sidecar rows, one template each in
+	// id order) or else the discovered source's own member. `templates_by_id` maps an
+	// `implicit_geometry.id` to its template index for the former; for the latter the
+	// id IS the index.
+	std::optional<std::string> implicit_geometries_query;
+	std::optional<json> geometry_templates;
+	std::map<int64_t, int64_t> templates_by_id;
+	size_t template_count = 0;
+	bool templates_from_query = false;
+
 	// Column mapping
 	std::vector<std::string> column_names;
 	std::vector<LogicalType> column_types;
@@ -145,6 +157,7 @@ struct CityJSONCopyBindData : public FunctionData {
 	idx_t bbox_col = DConstants::INVALID_INDEX;
 	idx_t other_col = DConstants::INVALID_INDEX;
 	idx_t address_col = DConstants::INVALID_INDEX;
+	idx_t implicit_geometry_col = DConstants::INVALID_INDEX;
 	// Legacy single properties column / fallback when a geometry column has no per-LOD
 	// properties counterpart (e.g. the old geom_lod* layout).
 	idx_t geometry_properties_col = DConstants::INVALID_INDEX;

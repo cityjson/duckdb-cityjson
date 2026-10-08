@@ -378,6 +378,14 @@ Geometry Geometry::FromJson(const json &obj) {
 	result.semantics = GetOptionalObject(obj, "semantics");
 	result.material = GetOptionalObject(obj, "material");
 	result.texture = GetOptionalObject(obj, "texture");
+	if (result.type == "GeometryInstance") {
+		if (obj.contains("template") && obj["template"].is_number_integer()) {
+			result.template_index = obj["template"].get<int64_t>();
+		}
+		if (obj.contains("transformationMatrix")) {
+			result.transformation_matrix = obj["transformationMatrix"];
+		}
+	}
 	NormaliseRings(result);
 
 	return result;
@@ -394,6 +402,12 @@ json Geometry::ToJson() const {
 	}
 	if (texture.has_value()) {
 		result["texture"] = texture.value();
+	}
+	if (template_index.has_value()) {
+		result["template"] = template_index.value();
+	}
+	if (transformation_matrix.has_value()) {
+		result["transformationMatrix"] = transformation_matrix.value();
 	}
 
 	return result;

@@ -116,7 +116,8 @@ static void CollectAndReplaceVertices(json &boundaries,
 
 // Determine nesting depth of geometry boundaries based on geometry type
 static int GetBoundaryDepth(const std::string &geom_type) {
-	if (geom_type == "MultiPoint") {
+	// A GeometryInstance's boundaries are its one reference-point vertex.
+	if (geom_type == "MultiPoint" || geom_type == "GeometryInstance") {
 		return 1;
 	}
 	if (geom_type == "MultiLineString") {
@@ -394,8 +395,25 @@ void CityJSONWriter::WriteCityJSON(
 	// `vertices-texture` is rebuilt fresh from what this document's geometry
 	// actually references (BuildAppearanceBlock, which also mutates `all_objects`'
 	// texture cells in place -- inline [u, v] pairs become pool indices).
+	// The templates' texture UVs, inline like an object's, go into the same pool: a
+	// template indexes the document's one `vertices-texture`. Interned through a
+	// placeholder object appended after the vertex pool was built, since template
+	// vertices are `vertices-templates`, never `vertices`.
+	const bool has_templates = metadata.geometry_templates.has_value();
+	if (has_templates) {
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		all_objects.emplace_back(std::string(),
+		                         json {{"geometry", metadata.geometry_templates->value("templates", json::array())}});
+	}
 	if (auto app = BuildAppearanceBlock(appearance, all_objects)) {
 		root["appearance"] = std::move(app.value());
+	}
+	if (has_templates) {
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		json templates = *metadata.geometry_templates;
+		templates["templates"] = std::move(all_objects.back().second["geometry"]);
+		all_objects.pop_back();
+		root["geometry-templates"] = std::move(templates);
 	}
 
 	root["CityObjects"] = json::object();
@@ -458,7 +476,19 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 	// The material/texture definitions the per-geometry refs index into. Without
 	// them the refs dangle and the output is invalid CityJSON.
-	if (appearance_header.has_value() && !appearance_header->empty()) {
+	if (metadata.geometry_templates.has_value()) {
+		// The header's appearance serves the templates: its `vertices-texture` is rebuilt
+		// from their inline UVs, exactly as a feature's is from its own geometry.
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		json templates = *metadata.geometry_templates;
+		std::vector<std::pair<std::string, json>> holder;
+		holder.emplace_back(std::string(), json {{"geometry", templates.value("templates", json::array())}});
+		if (auto app = BuildAppearanceBlock(appearance_header, holder)) {
+			header["appearance"] = std::move(app.value());
+		}
+		templates["templates"] = std::move(holder.back().second["geometry"]);
+		header["geometry-templates"] = std::move(templates);
+	} else if (appearance_header.has_value() && !appearance_header->empty()) {
 		header["appearance"] = appearance_header.value();
 	}
 

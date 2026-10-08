@@ -334,6 +334,12 @@ std::optional<GeographicalExtent> CityObjectUtils::GetObjectExtent(const std::st
 std::optional<GeographicalExtent> CityObjectUtils::GetGeometryExtent(const Geometry &geometry,
                                                                      const std::vector<std::array<double, 3>> &vertices,
                                                                      const std::optional<Transform> &transform) {
+	// A GeometryInstance's one vertex is the reference point its relative geometry is
+	// placed at, not an extent of what it places: it contributes none, as in the
+	// reference writer.
+	if (geometry.type == "GeometryInstance") {
+		return std::nullopt;
+	}
 	GeographicalExtent extent;
 	bool found = false;
 	CollectExtentRecursive(geometry.boundaries, vertices, transform, extent, found);
@@ -398,6 +404,51 @@ Value CityObjectUtils::GetAddressValue(const CityObject &object, const std::vect
 		entries.push_back(Value::STRUCT(std::move(fields)));
 	}
 	return Value::LIST(struct_type, std::move(entries));
+}
+
+} // namespace cityjson
+} // namespace duckdb
+
+namespace duckdb {
+namespace cityjson {
+
+std::optional<ImplicitGeometryCell>
+CityObjectUtils::GetImplicitGeometry(const CityObject &object, const std::vector<std::array<double, 3>> *vertices,
+                                     const std::optional<Transform> &transform) {
+	for (const auto &geometry : object.geometry) {
+		if (geometry.type != "GeometryInstance") {
+			continue;
+		}
+		// The first instance only: the column holds one (spec open question).
+		if (!geometry.template_index.has_value() || vertices == nullptr || !geometry.boundaries.is_array() ||
+		    geometry.boundaries.empty() || !geometry.boundaries[0].is_number_unsigned()) {
+			return std::nullopt;
+		}
+		const auto index = geometry.boundaries[0].get<uint64_t>();
+		if (index >= vertices->size()) {
+			return std::nullopt;
+		}
+		ImplicitGeometryCell cell;
+		cell.id = geometry.template_index.value();
+		const auto &vertex = (*vertices)[index];
+		cell.point = WKBEncoder::EncodePoint(transform.has_value() ? transform->Apply(vertex) : vertex);
+		if (geometry.transformation_matrix.has_value()) {
+			const auto &matrix = geometry.transformation_matrix.value();
+			if (!matrix.is_array() || matrix.size() != 16 ||
+			    !std::all_of(matrix.begin(), matrix.end(), [](const json &v) { return v.is_number(); })) {
+				throw CityJSONError::InvalidGeometry("a GeometryInstance's transformationMatrix must be 16 numbers "
+				                                     "(a row-major 4x4), got " +
+				                                     matrix.dump());
+			}
+			std::vector<double> values;
+			for (const auto &value : matrix) {
+				values.push_back(value.get<double>());
+			}
+			cell.transformation_matrix = std::move(values);
+		}
+		return cell;
+	}
+	return std::nullopt;
 }
 
 } // namespace cityjson

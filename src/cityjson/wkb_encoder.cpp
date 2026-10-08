@@ -70,6 +70,13 @@ std::vector<uint8_t> WKBEncoder::EncodeAsType(const Geometry &geometry, WKBGeome
 	return out;
 }
 
+std::vector<uint8_t> WKBEncoder::EncodePoint(const std::array<double, 3> &point) {
+	std::vector<uint8_t> out;
+	WriteHeader(out, WKBGeometryType::PointZ);
+	WritePoint3D(out, point);
+	return out;
+}
+
 WKBGeometryType WKBEncoder::GetOGCType(const std::string &cityjson_type) {
 	auto it = CITYJSON_TO_OGC_TYPE.find(cityjson_type);
 	if (it != CITYJSON_TO_OGC_TYPE.end()) {

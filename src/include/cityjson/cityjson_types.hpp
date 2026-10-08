@@ -159,6 +159,11 @@ struct Geometry {
 	//! because the dropped ring was their exterior. Carried for the reader to report.
 	size_t dropped_rings = 0;
 	size_t dropped_surfaces = 0;
+	//! A GeometryInstance's `template` (an index into the document's
+	//! geometry-templates) and `transformationMatrix`; its `boundaries` hold the one
+	//! reference-point vertex.
+	std::optional<int64_t> template_index;
+	std::optional<json> transformation_matrix;
 
 	Geometry() = default;
 	Geometry(std::string type, std::string lod, json boundaries);
@@ -298,6 +303,14 @@ struct Texture {
  * transform — an instance's own transformationMatrix and reference point place it into
  * the world — so `vertices` here are raw doubles, not quantised integers.
  */
+struct ImplicitGeometryCell {
+	int64_t id = 0;
+	//! The reference point, WKB PointZ in the file CRS.
+	std::vector<uint8_t> point;
+	//! Row-major 4x4; absent means identity.
+	std::optional<std::vector<double>> transformation_matrix;
+};
+
 struct GeometryTemplates {
 	std::vector<Geometry> templates;
 	std::vector<std::array<double, 3>> vertices;
