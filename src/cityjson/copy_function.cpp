@@ -1371,8 +1371,8 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 			try {
 				decoded = WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob.data()), blob.size());
 			} catch (const CityJSONError &e) {
-				throw BinderException("implicit_geometries_query: relative geometry %d is not valid WKB: %s",
-				                      id, e.what());
+				throw BinderException("implicit_geometries_query: relative geometry %d is not valid WKB: %s", id,
+				                      e.what());
 			}
 			geometry["type"] = decoded.cityjson_type;
 			geometry["lod"] = LODTableUtils::ParseLODFromSuffix(entry.second);
@@ -1398,8 +1398,7 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 			break; // a relative geometry is one geometry at one LoD
 		}
 		if (geometry.is_null()) {
-			throw BinderException("implicit_geometries_query: relative geometry %d has no geometry",
-			                      id);
+			throw BinderException("implicit_geometries_query: relative geometry %d has no geometry", id);
 		}
 		if (!by_id.emplace(id, std::move(geometry)).second) {
 			throw BinderException("implicit_geometries_query: id %d occurs twice", id);
@@ -1458,8 +1457,7 @@ static json GeometryInstanceFromCell(const Value &cell, const CityJSONCopyBindDa
 		if (found == bind_data.templates_by_id.end()) {
 			throw InvalidInputException("object %s: its implicit_geometry refers to id %d, but there is no "
 			                            "implicit_geometries row with id %d",
-			                            object_id, id.value(),
-			                            id.value());
+			                            object_id, id.value(), id.value());
 		}
 		template_index = found->second;
 	}

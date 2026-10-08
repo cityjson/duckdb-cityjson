@@ -267,10 +267,9 @@ std::string BuildInitSQL(ClientContext &context, const std::string &schema) {
 
 	const auto bookkeeping = QualifiedName(schema, "__cityparquet");
 	std::string sql;
-	// `city` is VARCHAR holding JSON text, not the JSON type: the JSON type lives in
-	// the json extension, which this one does not require, and the rest of this
-	// extension already carries JSON as VARCHAR (geometry_properties_lod*.surfaces,
-	// other).
+	// `city` is VARCHAR holding JSON text, not the JSON type: the JSON type's name and
+	// functions live in the json extension, which this one does not require, and
+	// `city` is only ever read through cityparquet_city_field.
 	sql += "CREATE TABLE IF NOT EXISTS " + bookkeeping +
 	       " (table_name VARCHAR, file_name VARCHAR, role VARCHAR, city VARCHAR);\n";
 
