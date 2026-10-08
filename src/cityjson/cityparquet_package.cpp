@@ -198,9 +198,9 @@ std::vector<std::string> ColumnsWithPrefix(ClientContext &context, const std::st
 
 } // namespace
 
-std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema) {
+std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema, bool allow_none) {
 	auto found = Intersect(TablesInSchema(context, schema), ModuleTableNames());
-	if (found.empty()) {
+	if (found.empty() && !allow_none) {
 		throw BinderException("cityparquet: schema '%s' has no CityParquet object table "
 		                      "(expected one of building, bridge, tunnel, construction, transportation, "
 		                      "vegetation, relief, water_body, land_use, city_furniture, generics)",
@@ -262,7 +262,9 @@ std::string AllObjectsCTE(ClientContext &context, const std::string &schema,
 namespace {
 
 std::string BuildInitSQL(ClientContext &context, const std::string &schema) {
-	auto object_tables = ObjectTablesInSchema(context, schema);
+	// An empty schema initialises too: it is how a package is started, and the first
+	// insert creates the module tables it needs.
+	auto object_tables = ObjectTablesInSchema(context, schema, true);
 	auto sidecar_tables = SidecarTablesInSchema(context, schema);
 
 	const auto bookkeeping = QualifiedName(schema, "__cityparquet");
@@ -303,6 +305,48 @@ std::string BuildInitSQL(ClientContext &context, const std::string &schema) {
 //! nothing in this extension consumes a CRS: it is compared for equality (the merge and
 //! insert mismatch checks, which skip on NULL) and re-emitted, never used to transform a
 //! coordinate. The day something does reproject, it must read the raw footer, not this.
+void SetCityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnifiedVectorFormat city_format;
+	UnifiedVectorFormat field_format;
+	UnifiedVectorFormat value_format;
+	args.data[0].ToUnifiedFormat(args.size(), city_format);
+	args.data[1].ToUnifiedFormat(args.size(), field_format);
+	args.data[2].ToUnifiedFormat(args.size(), value_format);
+	const auto *cities = UnifiedVectorFormat::GetData<string_t>(city_format);
+	const auto *fields = UnifiedVectorFormat::GetData<string_t>(field_format);
+	const auto *values = UnifiedVectorFormat::GetData<string_t>(value_format);
+	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<string_t>(result);
+	for (idx_t row = 0; row < args.size(); row++) {
+		const auto city_index = city_format.sel->get_index(row);
+		const auto field_index = field_format.sel->get_index(row);
+		const auto value_index = value_format.sel->get_index(row);
+		if (!field_format.validity.RowIsValid(field_index) || !value_format.validity.RowIsValid(value_index)) {
+			FlatVector::SetNull(result, row, true);
+			continue;
+		}
+		json city = json::object();
+		if (city_format.validity.RowIsValid(city_index)) {
+			try {
+				auto parsed = json_utils::ParseJson(cities[city_index].GetString());
+				if (parsed.is_object()) {
+					city = std::move(parsed);
+				}
+			} catch (const std::exception &) {
+				// unreadable: start from an empty object
+			}
+		}
+		json value;
+		try {
+			value = json_utils::ParseJson(values[value_index].GetString());
+		} catch (const std::exception &e) {
+			throw InvalidInputException("cityparquet_set_city_field: the value is not JSON: %s", e.what());
+		}
+		city[fields[field_index].GetString()] = std::move(value);
+		out[row] = StringVector::AddString(result, city.dump());
+	}
+}
+
 void CityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::ExecuteWithNulls<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(),
@@ -425,6 +469,18 @@ void RegisterCityParquetPackageFunctions(ExtensionLoader &loader) {
 	                    "Returns the SQL that PRAGMA cityparquet_init would run for a schema, without running it.",
 	                    "cityparquet_init_sql('delft')",
 	                    {"cityparquet", "package"}});
+
+	ScalarFunction set_city_field(
+	    "cityparquet_set_city_field",
+	    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
+	    LogicalType(LogicalTypeId::VARCHAR), SetCityFieldFunction);
+	set_city_field.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	RegisterDocumented(loader, std::move(set_city_field),
+	                   {{"city", "field", "value"},
+	                    "Returns a CityParquet city footer JSON string with one top-level field set to the JSON "
+	                    "text `value`; a NULL or unreadable footer starts as an empty object.",
+	                    R"(cityparquet_set_city_field(NULL, 'crs', '{"id": {"authority": "EPSG", "code": 7415}}'))",
+	                    {"cityparquet", "metadata"}});
 
 	ScalarFunction city_field("cityparquet_city_field",
 	                          {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},

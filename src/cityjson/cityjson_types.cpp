@@ -895,6 +895,7 @@ CityJSON CityJSON::FromJson(const json &obj) {
 
 	// Parse extensions
 	if (obj.contains("extensions") && obj["extensions"].is_object()) {
+		result.has_extensions_member = true;
 		for (auto &[ext_name, ext_data] : obj["extensions"].items()) {
 			result.extensions[ext_name] = Extension::FromJson(ext_data);
 		}

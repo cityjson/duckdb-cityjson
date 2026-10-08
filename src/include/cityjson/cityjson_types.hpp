@@ -377,11 +377,14 @@ struct CityJSONFeature {
  * Main CityJSON container
  */
 struct CityJSON {
-	std::string version;                                        // CityJSON version (e.g., "2.0")
-	std::optional<Transform> transform;                         // Transform for vertex compression
-	std::optional<CRS> crs;                                     // Coordinate reference system
-	std::optional<Metadata> metadata;                           // Dataset metadata
-	std::map<std::string, Extension> extensions;                // Active extensions
+	std::string version;                         // CityJSON version (e.g., "2.0")
+	std::optional<Transform> transform;          // Transform for vertex compression
+	std::optional<CRS> crs;                      // Coordinate reference system
+	std::optional<Metadata> metadata;            // Dataset metadata
+	std::map<std::string, Extension> extensions; // Active extensions
+	//! Whether the document has an `extensions` member at all: an empty one declares
+	//! no extension but is still the source's member, and stays one on export.
+	bool has_extensions_member = false;
 	std::optional<std::vector<std::array<double, 3>>> vertices; // Shared vertex pool (optional)
 	std::optional<Appearance> appearance;                       // Material/texture definitions
 	std::optional<GeometryTemplates> geometry_templates;        // Reusable template geometries

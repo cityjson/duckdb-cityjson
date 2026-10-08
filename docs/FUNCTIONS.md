@@ -649,6 +649,12 @@ SELECT cityparquet_json('{"roofType": "1000"}');
 -- {"roofType": "1000"}
 ```
 
+### `cityparquet_set_city_field(city, field, value)`
+
+Returns the `city` footer JSON string with one top-level field set to the JSON text
+`value`; a NULL or unreadable footer starts as an empty object. What
+`insert_cityjson` records a package's first CRS with.
+
 ### `cityparquet_city_field(city, field)`
 
 Reads one field out of a `city` footer JSON string. Note that a footer which is
@@ -755,6 +761,26 @@ to state it again, or use `cityparquet_read` and keep it throughout.
 
 `cityparquet_init` is idempotent; re-run it after adding a table.
 
+**Starting a package from CityJSON** needs no table of your own: initialise an empty
+schema, and the first insert creates every module table it needs and takes its CRS
+from the source.
+
+```sql
+CREATE SCHEMA delft;
+```
+
+```sql
+PRAGMA cityparquet_init('delft');
+```
+
+```sql
+PRAGMA insert_cityjsonseq('delft', 'delft.city.jsonl');
+```
+
+```sql
+SELECT * FROM cityparquet_write('delft', 'out/');   -- no crs => needed
+```
+
 > **Submit these as separate statements.** DuckDB expands *every* pragma in a
 > submitted script before running *any* of it, so a generator batched with the
 > `CREATE SCHEMA` that precedes it sees a catalog without that schema and fails.
@@ -814,6 +840,10 @@ Worth knowing:
   warning names the column and both types. A column that already holds the wider
   type (`DOUBLE` for an integer, `VARCHAR` for anything) is left as it is.
   `cityparquet_merge` widens the same way.
+- **A package's first source gives it its CRS.** A package that states no CRS and
+  holds no object yet records the source's `metadata.referenceSystem`, resolved to
+  PROJJSON, as every object table's `crs`. A package that already holds rows but
+  states no CRS (a hand-rolled load) is not given one.
 - **The CRS must match**, and reprojection is never performed. The source's
   `metadata.referenceSystem` is resolved to PROJJSON first, so it is compared
   like with like. A package states **one** CRS for every row it holds, so an
@@ -853,8 +883,10 @@ SELECT DISTINCT cityparquet_city_field(city, 'extensions') FROM pkg.__cityparque
 -- {"energy":{"name":"Energy","url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}
 ```
 
-A declaration on its own states no CRS: a package that has not been written yet
-still states nothing, and accepts a source in any CRS.
+A declaration on its own states no CRS. A source whose `extensions` member is
+present but empty declares nothing, and the package records the empty member
+(`city.extensions: {}`), so an export writes `"extensions": {}` again; `COPY` from
+such a source keeps it the same way.
 
 What a source must get right, each a hard error that refuses the whole insert:
 

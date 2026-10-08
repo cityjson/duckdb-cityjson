@@ -706,7 +706,7 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 			}
 			// The source's `+` names reach the rows unchanged, so its declarations go
 			// back out as they came in.
-			if (!source_meta.extensions.empty()) {
+			if (!source_meta.extensions.empty() || source_meta.has_extensions_member) {
 				json extensions = json::object();
 				for (const auto &entry : source_meta.extensions) {
 					json extension = {{"url", entry.second.url}, {"version", entry.second.version}};

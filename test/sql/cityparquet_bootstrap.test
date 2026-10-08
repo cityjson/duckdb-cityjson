@@ -1,0 +1,113 @@
+# name: test/sql/cityparquet_bootstrap.test
+# description: a package starts from an empty schema, takes its CRS from its first source, and keeps an empty extensions member
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# --- starting from nothing ------------------------------------------------------------
+
+statement ok
+CREATE SCHEMA p;
+
+# cityparquet_init initialises an empty schema: the bookkeeping table, no rows.
+statement ok
+PRAGMA cityparquet_init('p');
+
+query I
+SELECT COUNT(*) FROM p.__cityparquet;
+----
+0
+
+# The first insert creates the module tables it needs.
+statement ok
+PRAGMA insert_cityjsonseq('p', 'test/data/delft_subset.city.jsonl');
+
+query II
+SELECT table_name, COUNT(*) OVER () FROM p.__cityparquet;
+----
+building	1
+
+query I
+SELECT COUNT(*) FROM p.building;
+----
+20
+
+# --- the CRS comes from the source ----------------------------------------------------
+
+# Spec 05-metadata.mdx, "CRS rules": a source identifier MUST be resolved to PROJJSON at
+# import. A package that states no CRS and holds no object yet takes its first source's.
+query I
+SELECT cityparquet_city_field(cityparquet_city_field(city, 'crs'), 'id') FROM p.__cityparquet WHERE table_name = 'building';
+----
+{"authority":"EPSG","code":7415}
+
+# From then on it is the package's CRS: the same CRS inserts, another is refused.
+statement ok
+PRAGMA insert_cityjsonseq('p', 'test/data/delft_append.city.jsonl');
+
+statement error
+PRAGMA insert_cityjson('p', 'test/data/insert_crs_28992.city.json');
+----
+CRS mismatch
+
+# And the write states it with no crs => of its own.
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('p', '__TEST_DIR__/bootstrap');
+
+query I
+SELECT decode(value) LIKE '%"crs":{%"code":7415%' FROM parquet_kv_metadata('__TEST_DIR__/bootstrap/building.parquet')
+WHERE decode(key) = 'city';
+----
+true
+
+# --- an empty extensions member ----------------------------------------------------------
+
+# railway_appearance.city.jsonl declares `"extensions": {}` -- no extension, but the
+# member is there, and an export keeps it; railway_vegetation.city.json has none.
+statement ok
+CREATE SCHEMA e;
+
+statement ok
+PRAGMA cityparquet_init('e');
+
+statement ok
+PRAGMA insert_cityjsonseq('e', 'test/data/railway_appearance.city.jsonl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('e', '__TEST_DIR__/empty_ext');
+
+query I
+SELECT decode(value) LIKE '%"extensions":{}%' FROM parquet_kv_metadata('__TEST_DIR__/empty_ext/bridge.parquet')
+WHERE decode(key) = 'city';
+----
+true
+
+statement ok
+CREATE SCHEMA n;
+
+statement ok
+PRAGMA cityparquet_init('n');
+
+statement ok
+PRAGMA insert_cityjson('n', 'test/data/railway_vegetation.city.json');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('n', '__TEST_DIR__/no_ext');
+
+query I
+SELECT decode(value) LIKE '%"extensions"%' FROM parquet_kv_metadata('__TEST_DIR__/no_ext/vegetation.parquet')
+WHERE decode(key) = 'city';
+----
+false
+
+# COPY keeps the member the same way.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO '__TEST_DIR__/empty_ext.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT string_split(content, chr(10))[1] LIKE '%"extensions":{}%' FROM read_text('__TEST_DIR__/empty_ext.city.jsonl');
+----
+true

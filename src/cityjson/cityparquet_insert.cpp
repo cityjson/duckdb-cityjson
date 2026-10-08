@@ -312,7 +312,9 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		}
 	}
 
-	const auto destination_tables = ObjectTablesInSchema(context, schema);
+	// None yet is a package being started: every table this source needs is created
+	// (create_tables), and the CRS is taken from it.
+	const auto destination_tables = ObjectTablesInSchema(context, schema, true);
 	const auto destination_sidecars = SidecarTablesInSchema(context, schema);
 
 	std::string sql;
@@ -387,10 +389,12 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		for (const auto &table : destination_tables) {
 			destination_ids.push_back("SELECT id FROM " + QualifiedName(schema, table));
 		}
-		sql += "SELECT error('insert_cityjson: duplicate id ' || id ||\n"
-		       "  ' -- the destination already contains it; ids are identity, so the insert is refused rather '\n"
-		       "  'than renaming silently') FROM " +
-		       routed + " s WHERE s.id IN (" + Join(destination_ids, " UNION ALL ") + ");\n";
+		if (!destination_ids.empty()) { // a package being started holds nothing to collide with
+			sql += "SELECT error('insert_cityjson: duplicate id ' || id ||\n"
+			       "  ' -- the destination already contains it; ids are identity, so the insert is refused rather '\n"
+			       "  'than renaming silently') FROM " +
+			       routed + " s WHERE s.id IN (" + Join(destination_ids, " UNION ALL ") + ");\n";
+		}
 	}
 
 	// A parent an incoming row names must exist, either among the rows being inserted or
@@ -424,8 +428,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// carries no footer to compare against. The source is therefore resolved through the
 	// same ProjjsonForReferenceSystem the writers use, and re-dumped, so both sides are
 	// the same canonical text for the same CRS.
+	std::string source_crs = "NULL::VARCHAR";
 	{
-		std::string source_crs = "NULL::VARCHAR";
 		if (facts.reference_system.has_value()) {
 			auto projjson = ProjjsonForReferenceSystem(facts.reference_system.value());
 			if (projjson.has_value()) {
@@ -642,10 +646,30 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		}
 	}
 
+	// A package that states no CRS and holds no object yet takes its first source's
+	// (spec 05-metadata.mdx: a source identifier MUST be resolved to PROJJSON at import),
+	// recorded in the footer every object table's file is written with -- the tables
+	// this insert registered above included. Placed after their registration and before
+	// any row goes in, so "holds no object" still reads the destination as it was. Rows
+	// already in a package that states nothing (a hand-rolled load) are not given a CRS
+	// they might not have; such a package keeps stating nothing.
+	if (source_crs != "NULL::VARCHAR") {
+		std::vector<std::string> counts;
+		for (const auto &table : destination_tables) {
+			counts.push_back("(SELECT COUNT(*) FROM " + QualifiedName(schema, table) + ")");
+		}
+		const auto empty = counts.empty() ? std::string("TRUE") : "(" + Join(counts, " + ") + ") = 0";
+		sql += "UPDATE " + QualifiedName(schema, "__cityparquet") +
+		       " SET city = cityparquet_set_city_field(city, 'crs', " + source_crs +
+		       ") WHERE role = 'object' AND NOT " + CrsStatedExpr(schema) + " AND " + empty + ";\n";
+	}
+
 	// The extension's declaration goes onto every object table's footer, those this
 	// insert just registered included: each file that carries an extension name must
 	// declare its namespace, and every file declares it the same way.
-	if (!extension.ns.empty()) {
+	// A source with an empty `extensions` member declares none, but records that it
+	// has the member (`city.extensions: {}`), so an export restores it.
+	if (!extension.ns.empty() || facts.has_extensions_member) {
 		sql += "UPDATE " + QualifiedName(schema, "__cityparquet") + " SET city = cityparquet_merge_extensions(city, " +
 		       Literal(DeclarationsToFooterJson(extension.declarations).dump()) + ") WHERE role = 'object';\n";
 	}

@@ -61,7 +61,10 @@ std::string CityJSONTypeForCityGMLClass(const std::string &citygml_class);
 
 //! Object tables actually present in `schema`, sorted. Throws BinderException when the
 //! schema contains none — that is not a CityParquet package.
-std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema);
+//! `allow_none` returns an empty list for a schema that holds none yet -- a package being
+//! started -- instead of refusing it.
+std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema,
+                                              bool allow_none = false);
 
 //! Sidecar tables actually present in `schema`, sorted. May legitimately be empty: a
 //! source with no appearance produces no sidecars.

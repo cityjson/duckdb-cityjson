@@ -97,6 +97,8 @@ struct CityJSONSourceFacts {
 	std::optional<std::string> reference_system;
 	//! The document's `extensions` member: the CityJSON Extensions it declares.
 	std::map<std::string, Extension> extensions;
+	//! Whether it has an `extensions` member, empty or not.
+	bool has_extensions_member = false;
 	//! Every distinct semantic surface type in the file, its geometry templates'
 	//! included, sorted. Like `object_types`, the complete set: an extension surface
 	//! type appearing only in the tail must still be given its namespace.

@@ -309,7 +309,7 @@ std::string BuildReconcilePrelude(ClientContext &context, const std::string &sch
 
 std::string BuildReconcileSQL(ClientContext &context, const std::string &schema, const std::vector<std::string> &checks,
                               const PendingTables &pending, const std::string &added_ids) {
-	auto object_tables = ObjectTablesInSchema(context, schema);
+	auto object_tables = ObjectTablesInSchema(context, schema, !pending.empty());
 	for (const auto &entry : pending) {
 		if (std::find(object_tables.begin(), object_tables.end(), entry.first) == object_tables.end()) {
 			object_tables.push_back(entry.first);

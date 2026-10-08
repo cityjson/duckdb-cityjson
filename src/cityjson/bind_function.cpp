@@ -160,6 +160,7 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 	}
 	facts.object_types.assign(types.begin(), types.end());
 	facts.extensions = probe.metadata.extensions;
+	facts.has_extensions_member = probe.metadata.has_extensions_member;
 
 	// Likewise complete: a surface type is renamed by namespace wherever it occurs.
 	std::set<std::string> surface_types;
