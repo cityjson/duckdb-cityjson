@@ -50,6 +50,25 @@ to its first two vertices. `degenerate_rings_appearance.city.jsonl` is
 materialled CityFurniture's surface 1 exterior ring and its surface 46 interior ring
 (16 vertices) each cut to their first two vertices. Everything else is unchanged.
 
+## cityparquet_rs_delft/
+
+`delft_subset.city.jsonl` as cityparquet-rs (monorepo commit f9e0374) writes it:
+`cityparquet convert delft_subset.city.jsonl -o OUT --lod0 --ordering hilbert`,
+unedited. The destination of `cityparquet_append.test`'s Delft append -- a package this
+extension did not write, in the shape the database benchmark appends into.
+
+## railway_append.city.jsonl
+
+Appearance-bearing and implicit-geometry objects of `lod3_railway.city.json` to append to
+`cityparquet_rs_minimal/`, every id (and every `parents` / `children` entry) suffixed
+`-appended` so none collides: `railway_appearance.city.jsonl`'s textured Bridge and
+materialled CityFurniture, unchanged otherwise, then two features holding the 15
+implicit-geometry objects and their CityObjectGroup, each with the reference points it
+uses as its own `vertices`. The header is `railway_appearance.city.jsonl`'s, with
+`lod3_railway`'s own `geometry-templates` and appearance `materials` / `textures`, and a
+`vertices-texture` cut to the UVs the templates use (re-indexed in first-use order, the
+templates' texture rings re-pointed to match).
+
 ## delft_append.city.jsonl
 
 One 3DBAG feature -- a Building and its BuildingPart, ids suffixed `-appended` --

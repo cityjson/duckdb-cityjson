@@ -789,9 +789,17 @@ Worth knowing:
   entire insert.
 - **The package's column types win.** A geometry column the destination holds as
   DuckDB `GEOMETRY` (the GeoParquet-declared LoD0 column of a package loaded with
-  `cityparquet_read`) stays `GEOMETRY`; the incoming WKB is converted into it. A
-  reserved nested column whose shape disagrees with the destination's refuses the
-  insert rather than being rewritten as text.
+  `cityparquet_read`) stays `GEOMETRY`; the incoming WKB is converted into it, and a
+  `JSON` column takes the incoming JSON text as it is. A column whose shape is nested
+  — a reserved struct, or a list-valued attribute — and disagrees with the incoming
+  one refuses the insert rather than being rewritten as text: DuckDB's text form of
+  a list is not JSON.
+- **An attribute typed differently is widened, and logged.** The package's column
+  takes the specification's promotion for mixed attribute types — `BIGINT` to
+  `DOUBLE`, any other scalar mix to `VARCHAR` — for every row it holds, and a
+  warning names the column and both types. A column that already holds the wider
+  type (`DOUBLE` for an integer, `VARCHAR` for anything) is left as it is.
+  `cityparquet_merge` widens the same way.
 - **The CRS must match**, and reprojection is never performed. The source's
   `metadata.referenceSystem` is resolved to PROJJSON first, so it is compared
   like with like. A package states **one** CRS for every row it holds, so an

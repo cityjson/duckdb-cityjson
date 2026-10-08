@@ -5,6 +5,8 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/logging/logger.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 
 namespace duckdb {
@@ -95,6 +97,9 @@ LogicalType WidenedType(const LogicalType &destination, const LogicalType &sourc
 	}
 	const auto d = destination.id();
 	const auto s = source.id();
+	const auto is_nested = [](LogicalTypeId id) {
+		return id == LogicalTypeId::STRUCT || id == LogicalTypeId::LIST || id == LogicalTypeId::MAP;
+	};
 	const bool d_int = d == LogicalTypeId::BIGINT || d == LogicalTypeId::INTEGER;
 	const bool s_double = s == LogicalTypeId::DOUBLE || s == LogicalTypeId::FLOAT;
 	if (d_int && s_double) {
@@ -103,9 +108,9 @@ LogicalType WidenedType(const LogicalType &destination, const LogicalType &sourc
 	if (d == LogicalTypeId::DOUBLE && (s == LogicalTypeId::BIGINT || s == LogicalTypeId::INTEGER)) {
 		return LogicalType(LogicalTypeId::INVALID); // destination already wider
 	}
-	const auto is_nested = [](LogicalTypeId id) {
-		return id == LogicalTypeId::STRUCT || id == LogicalTypeId::LIST || id == LogicalTypeId::MAP;
-	};
+	if (d == LogicalTypeId::VARCHAR && !is_nested(s) && s != LogicalTypeId::GEOMETRY && s != LogicalTypeId::BLOB) {
+		return LogicalType(LogicalTypeId::INVALID); // text already holds any scalar
+	}
 	if (is_nested(d) || is_nested(s)) {
 		throw BinderException("%s: column '%s' cannot be widened -- the destination is %s and the incoming type "
 		                      "is %s. A nested type disagreeing in shape means the two sides disagree about the "
@@ -120,6 +125,15 @@ LogicalType WidenedType(const LogicalType &destination, const LogicalType &sourc
 		                      function, column_name, destination.ToString(), source.ToString());
 	}
 	return LogicalType(LogicalTypeId::VARCHAR);
+}
+
+void LogWidening(ClientContext &context, const std::string &function, const std::string &table,
+                 const std::string &column_name, const LogicalType &from, const LogicalType &incoming,
+                 const LogicalType &to) {
+	DUCKDB_LOG_WARNING(context,
+	                   "%s: column '%s' of %s holds %s and the incoming rows %s, so the column is widened to %s for "
+	                   "every row, the promotion the specification gives mixed attribute types",
+	                   function, column_name, table, from.ToString(), incoming.ToString(), to.ToString());
 }
 
 std::string GeometryColumnRef(const std::string &quoted_name, const LogicalType &type) {

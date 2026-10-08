@@ -1,0 +1,257 @@
+# name: test/sql/cityparquet_append.test
+# description: appending CityJSON to a package cityparquet-rs wrote keeps every object, reference and type intact
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# The package side of these appends was written by cityparquet-rs, not by this
+# extension (test/data/README.md), so the destination's types, footers and sidecars
+# are the reference writer's. Two appends:
+#
+# - delft: cityparquet_rs_delft (delft_subset, `--lod0`) + delft_append.city.jsonl, a
+#   3DBAG Building and its BuildingPart -- the database benchmark's append-object.
+# - railway: cityparquet_rs_minimal (lod3_railway, with its materials, textures and
+#   implicit geometries) + railway_append.city.jsonl -- a textured Bridge, a
+#   materialled CityFurniture and 15 implicit-geometry objects, every id suffixed
+#   `-appended` -- so every sidecar id is renumbered against sidecars read from disk.
+
+# --- delft -----------------------------------------------------------------------------
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'd');
+
+statement ok
+CREATE TABLE d_types AS SELECT column_name, data_type FROM duckdb_columns()
+WHERE schema_name = 'd' AND table_name = 'building';
+
+statement ok
+PRAGMA insert_cityjsonseq('d', 'test/data/delft_append.city.jsonl');
+
+# Nothing the package declared changes type: the incoming file agrees with it.
+query III
+SELECT b.column_name, b.data_type, a.data_type FROM d_types b
+JOIN duckdb_columns() a ON a.schema_name = 'd' AND a.table_name = 'building' AND a.column_name = b.column_name
+WHERE a.data_type <> b.data_type;
+----
+
+query II
+SELECT COUNT(*), COUNT(*) FILTER (WHERE id LIKE '%-appended') FROM d.building;
+----
+22	2
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('d', '__TEST_DIR__/delft_appended');
+
+# Every object of both inputs is in the written file, with its geometry. (`bbox` is
+# re-derived from the stored geometry by the insert, so a package row's box no longer
+# unions the source's declared extent; it still contains every geometry the row holds.)
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, object_type, octet_length(geometry_lod1_2), octet_length(geometry_lod2_2)
+  FROM read_parquet('test/data/cityparquet_rs_delft/building.parquet')
+  UNION ALL
+  SELECT id, object_type, octet_length(geometry_lod1_2), octet_length(geometry_lod2_2)
+  FROM read_cityjsonseq('test/data/delft_append.city.jsonl')
+  EXCEPT ALL
+  SELECT id, object_type, octet_length(geometry_lod1_2), octet_length(geometry_lod2_2)
+  FROM read_parquet('__TEST_DIR__/delft_appended/building.parquet'));
+----
+0
+
+query I
+SELECT COUNT(*) FROM (SELECT bbox, cityjson_wkb_extent(geometry_lod2_2) AS e
+                      FROM read_parquet('__TEST_DIR__/delft_appended/building.parquet') WHERE geometry_lod2_2 IS NOT NULL)
+WHERE NOT (bbox.xmin <= e.xmin AND bbox.ymin <= e.ymin AND bbox.zmin <= e.zmin
+           AND bbox.xmax >= e.xmax AND bbox.ymax >= e.ymax AND bbox.zmax >= e.zmax);
+----
+0
+
+query I
+SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/delft_appended/building.parquet');
+----
+22
+
+# --- railway -----------------------------------------------------------------------------
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'r');
+
+# Every material reference of the package, resolved to the material it names, before
+# the append -- the package's own objects must resolve the same way after it.
+statement ok
+CREATE TABLE r_materials_before AS
+SELECT o.id, f.i, m.name FROM (
+  SELECT id, unnest(material_lod3_0['visual']) AS mid, unnest(range(len(material_lod3_0['visual']))) AS i
+  FROM r.bridge WHERE material_lod3_0 IS NOT NULL) f
+JOIN r.bridge o USING (id) LEFT JOIN r.materials m ON m.id = f.mid;
+
+statement ok
+PRAGMA insert_cityjsonseq('r', 'test/data/railway_append.city.jsonl');
+
+query II
+SELECT object_type, COUNT(*) FROM (
+  SELECT object_type, id FROM r.bridge UNION ALL SELECT object_type, id FROM r.city_furniture
+  UNION ALL SELECT object_type, id FROM r.vegetation UNION ALL SELECT object_type, id FROM r.generics)
+WHERE id LIKE '%-appended' GROUP BY ALL ORDER BY ALL;
+----
+Bridge	1
+CityFurniture	1
+CityObjectGroup	1
+SolitaryVegetationObject	15
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT o.id, f.i, m.name FROM (
+    SELECT id, unnest(material_lod3_0['visual']) AS mid, unnest(range(len(material_lod3_0['visual']))) AS i
+    FROM r.bridge WHERE material_lod3_0 IS NOT NULL) f
+  JOIN r.bridge o USING (id) LEFT JOIN r.materials m ON m.id = f.mid
+  EXCEPT ALL SELECT * FROM r_materials_before);
+----
+0
+
+# The appended CityFurniture's materials: per face, the definition the source named.
+query I
+SELECT COUNT(*) FROM (
+  SELECT f.i, m.name, m.diffuseColor FROM (
+    SELECT unnest(material_lod3_0['visual']) AS mid, unnest(range(len(material_lod3_0['visual']))) AS i
+    FROM read_cityjsonseq('test/data/railway_append.city.jsonl', appearance := 'sidecar')
+    WHERE object_type = 'CityFurniture') f
+  LEFT JOIN cityjson_materials('test/data/railway_append.city.jsonl') m ON m.id = f.mid
+  EXCEPT ALL
+  SELECT f.i, m.name, m.diffuseColor FROM (
+    SELECT unnest(material_lod3_0['visual']) AS mid, unnest(range(len(material_lod3_0['visual']))) AS i
+    FROM r.city_furniture WHERE id LIKE '%-appended') f
+  LEFT JOIN r.materials m ON m.id = f.mid);
+----
+0
+
+query I
+SELECT COUNT(*) FROM r.city_furniture, unnest(material_lod3_0['visual']) AS t(mid)
+WHERE id LIKE '%-appended' AND mid IS NOT NULL;
+----
+101
+
+# The appended Bridge's textures: per face, per ring, the image the source named and
+# the same [u, v] pairs.
+query I
+SELECT COUNT(*) FROM (
+  SELECT g.i, x.image_uri, f.ring.uv FROM (
+    SELECT unnest(texture_lod3_0['visual']) AS face, unnest(range(len(texture_lod3_0['visual']))) AS i
+    FROM read_cityjsonseq('test/data/railway_append.city.jsonl', appearance := 'sidecar')
+    WHERE object_type = 'Bridge') g, unnest(g.face) AS f(ring)
+  LEFT JOIN cityjson_textures('test/data/railway_append.city.jsonl') x ON x.id = f.ring.id
+  EXCEPT ALL
+  SELECT g.i, x.image_uri, f.ring.uv FROM (
+    SELECT unnest(texture_lod3_0['visual']) AS face, unnest(range(len(texture_lod3_0['visual']))) AS i
+    FROM r.bridge WHERE id LIKE '%-appended') g, unnest(g.face) AS f(ring)
+  LEFT JOIN r.textures x ON x.id = f.ring.id);
+----
+0
+
+# Not vacuous: all 30 of the Bridge's rings are textured, and the incoming ids sit past
+# the 85 materials and 34 textures cityparquet-rs wrote.
+query III
+SELECT COUNT(x.image_uri), min(f.ring.id) >= 34,
+       (SELECT min(m) >= 85 FROM r.city_furniture, unnest(material_lod3_0['visual']) AS t(m) WHERE id LIKE '%-appended')
+FROM (SELECT unnest(texture_lod3_0['visual']) AS face FROM r.bridge WHERE id LIKE '%-appended') g,
+     unnest(g.face) AS f(ring) LEFT JOIN r.textures x ON x.id = f.ring.id;
+----
+30	true	true
+
+# Each appended implicit geometry resolves to the relative geometry its source
+# template index named, wherever the renumbering put it.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_append.city.jsonl') s
+JOIN r.vegetation p USING (id)
+JOIN cityjson_implicit_geometries('test/data/railway_append.city.jsonl') t ON t.id = s.implicit_geometry.id
+JOIN r.implicit_geometries pt ON pt.id = p.implicit_geometry.id
+WHERE t.geometry_lod3_0 = pt.geometry_lod3_0 AND s.implicit_geometry.point = p.implicit_geometry.point
+  AND p.implicit_geometry.id >= 3;
+----
+15
+
+# The package validates, and writes out.
+statement ok
+PRAGMA cityparquet_validate('r');
+
+query I
+SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
+----
+0
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('r', '__TEST_DIR__/railway_appended');
+
+query I
+SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/railway_appended/vegetation.parquet') WHERE implicit_geometry IS NOT NULL;
+----
+30
+
+# --- types that disagree ------------------------------------------------------------------
+
+# When a package and the incoming file type an attribute differently, the package's
+# column takes the promotion the specification gives mixed attribute types (02-object-
+# table-schema.mdx, "Attribute types and promotion") -- BIGINT to DOUBLE, any other
+# scalar mix to VARCHAR -- for every row, and says so. A destination that already holds
+# the wider type is left alone. Here the package's columns are retyped first, as an
+# earlier source might have typed them; the incoming data is delft_append's own.
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'w');
+
+statement ok
+ALTER TABLE w.building ALTER COLUMN b3_h_dak_max SET DATA TYPE BIGINT USING round(b3_h_dak_max)::BIGINT;
+
+statement ok
+ALTER TABLE w.building ALTER COLUMN b3_bouwlagen SET DATA TYPE BOOLEAN USING b3_bouwlagen > 2;
+
+statement ok
+ALTER TABLE w.building ALTER COLUMN oorspronkelijkbouwjaar SET DATA TYPE VARCHAR;
+
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET logging_level = 'WARNING';
+
+statement ok
+PRAGMA insert_cityjsonseq('w', 'test/data/delft_append.city.jsonl');
+
+query II
+SELECT column_name, data_type FROM duckdb_columns()
+WHERE schema_name = 'w' AND table_name = 'building'
+  AND column_name IN ('b3_h_dak_max', 'b3_bouwlagen', 'oorspronkelijkbouwjaar') ORDER BY ALL;
+----
+b3_bouwlagen	VARCHAR
+b3_h_dak_max	DOUBLE
+oorspronkelijkbouwjaar	VARCHAR
+
+# Two widenings, each reported; the VARCHAR column needed none.
+query I
+SELECT COUNT(DISTINCT message) FROM duckdb_logs
+WHERE message LIKE 'insert_cityjson: column %' AND message LIKE '%widened%';
+----
+2
+
+query II
+SELECT b3_bouwlagen, oorspronkelijkbouwjaar FROM w.building WHERE id = 'NL.IMBAG.Pand.0171100000002606-appended';
+----
+3	1982
+
+statement ok
+SET enable_logging = false;
+
+# A nested type that disagrees is refused rather than stringified: DuckDB's text form
+# of a LIST is not JSON, so the lattice's JSON fallback for structured values cannot be
+# written without the json extension, and anything else would corrupt the column.
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'n');
+
+statement ok
+ALTER TABLE n.building ALTER COLUMN b3_bouwlagen SET DATA TYPE BIGINT[] USING [b3_bouwlagen];
+
+statement error
+PRAGMA insert_cityjsonseq('n', 'test/data/delft_append.city.jsonl');
+----
+column 'b3_bouwlagen' cannot be widened

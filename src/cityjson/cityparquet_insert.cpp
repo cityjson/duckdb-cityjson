@@ -615,6 +615,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			}
 			const auto widened = WidenedType(match->type, type, "insert_cityjson", column.name);
 			if (widened.id() != LogicalTypeId::INVALID) {
+				LogWidening(context, "insert_cityjson", QualifiedName(schema, table), column.name, match->type, type,
+				            widened);
 				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ALTER COLUMN " + Quoted(column.name) +
 				       " SET DATA TYPE " + widened.ToString() + ";\n";
 			}

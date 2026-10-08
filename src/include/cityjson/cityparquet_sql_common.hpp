@@ -39,9 +39,12 @@ std::string ShiftedImplicitGeometry(const std::string &offset_expr);
 //! the same text, and compare equal through this.
 LogicalType WithoutJsonAlias(const LogicalType &type);
 
-//! The promotion lattice: BIGINT -> DOUBLE is a safe widening; anything else scalar
-//! that disagrees falls back to VARCHAR. INVALID means the destination already
-//! accommodates the source. `function` and `column_name` name the caller and the
+//! The promotion lattice (spec 02-object-table-schema.mdx, "Attribute types and
+//! promotion"), applied across the data a package holds after an insert or merge:
+//! BIGINT -> DOUBLE is a safe widening; anything else scalar that disagrees falls back
+//! to VARCHAR. INVALID means the destination already accommodates the source -- a
+//! DOUBLE takes a BIGINT, a VARCHAR any scalar. A caller that widens says so with
+//! LogWidening: the column's type changes for the rows already there. `function` and `column_name` name the caller and the
 //! column being evolved, for the exception below.
 //!
 //! A nested type (STRUCT/LIST/MAP) on either side is refused outright rather than
@@ -58,6 +61,11 @@ LogicalType WithoutJsonAlias(const LogicalType &type);
 //! asking.
 LogicalType WidenedType(const LogicalType &destination, const LogicalType &source, const std::string &function,
                         const std::string &column_name);
+
+//! The warning a caller logs when it widens `column_name` of `table`.
+void LogWidening(ClientContext &context, const std::string &function, const std::string &table,
+                 const std::string &column_name, const LogicalType &from, const LogicalType &incoming,
+                 const LogicalType &to);
 
 //! A column reference for a WKB-consuming SQL expression, converting DuckDB-native
 //! GEOMETRY to WKB BLOB via ST_AsWKB. Any column named in a package's `geo` footer is
