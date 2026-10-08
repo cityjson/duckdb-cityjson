@@ -95,3 +95,26 @@ query I
 SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/address_pkg.city.jsonl') WHERE len(address) = 2;
 ----
 1
+
+# --- untrusted input ----------------------------------------------------------------
+
+# A `location` cut short mid-coordinate is refused with an error, never read past.
+statement ok
+CREATE TABLE truncated AS
+SELECT * REPLACE (list_transform(address, a -> struct_pack(street := a.street, house_number := a.house_number,
+         po_box := a.po_box, zip_code := a.zip_code, city := a.city, state := a.state, country := a.country,
+         free_text := a.free_text, location := unhex(substr(hex(a.location), 1, 40)))) AS address)
+FROM read_cityjsonseq('test/data/address_location.city.jsonl');
+
+statement error
+COPY (SELECT * FROM truncated) TO '__TEST_DIR__/truncated.city.jsonl' (FORMAT cityjsonseq);
+----
+address location is not valid WKB
+
+# An address whose `location` is not a BLOB is refused at bind.
+statement error
+COPY (SELECT * REPLACE ([{'city': 'Espoo', 'location': 42}] AS address)
+      FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/bad_address.city.jsonl' (FORMAT cityjsonseq);
+----
+must be a LIST of STRUCT whose `location` is a WKB BLOB

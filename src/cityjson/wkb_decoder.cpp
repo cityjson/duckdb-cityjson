@@ -1,6 +1,7 @@
 #include "cityjson/wkb_decoder.hpp"
 #include "cityjson/wkb_encoder.hpp" // for WKBGeometryType, WKB_NDR, WKB_XDR
 #include "cityjson/error.hpp"
+#include <algorithm>
 #include <cstring>
 
 namespace duckdb {
@@ -75,8 +76,9 @@ json WKBDecoder::DecodePolygonRings(const uint8_t *data, size_t &offset, size_t 
 	for (uint32_t r = 0; r < num_rings; r++) {
 		uint32_t num_points = ReadUInt32(data, offset, size, poly_swap);
 
+		// The count is untrusted input: reserve no more than the bytes left can hold.
 		std::vector<std::array<double, 3>> points;
-		points.reserve(num_points);
+		points.reserve(std::min<size_t>(num_points, (size - offset) / (3 * sizeof(double))));
 		for (uint32_t p = 0; p < num_points; p++) {
 			points.push_back(ReadPoint3D(data, offset, size, poly_swap));
 		}

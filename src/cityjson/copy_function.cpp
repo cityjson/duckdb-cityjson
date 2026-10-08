@@ -773,6 +773,27 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 		}
 	}
 
+	// `address` is read field by field in the sink, and its `location` as WKB bytes, so
+	// its shape is checked here: the spec's LIST of STRUCT, `location` a BLOB.
+	if (bind_data->address_col != DConstants::INVALID_INDEX) {
+		const auto &type = sql_types[bind_data->address_col];
+		const bool list_of_struct =
+		    type.id() == LogicalTypeId::LIST && ListType::GetChildType(type).id() == LogicalTypeId::STRUCT;
+		bool location_blob = list_of_struct;
+		if (list_of_struct) {
+			for (const auto &field : StructType::GetChildTypes(ListType::GetChildType(type))) {
+				if (field.first == "location" && field.second.id() != LogicalTypeId::BLOB) {
+					location_blob = false;
+				}
+			}
+		}
+		if (!location_blob) {
+			throw BinderException("COPY TO %s: the `address` column must be a LIST of STRUCT whose `location` is a "
+			                      "WKB BLOB (spec 02-object-table-schema.mdx, \"Addresses\"), got %s",
+			                      input.info.format, type.ToString());
+		}
+	}
+
 	for (const auto &name : names) {
 		bind_data->output_names.push_back(RestorePlusName(name, bind_data->extension_declarations));
 	}
@@ -1593,12 +1614,22 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 							continue;
 						}
 						if (fields[f].first == "location") {
-							const auto blob = values[f].GetValueUnsafe<string_t>();
-							auto decoded =
-							    WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
-							if (decoded.cityjson_type == "MultiPoint") {
-								address["location"] = {{"type", "MultiPoint"}, {"boundaries", decoded.boundaries}};
+							// BLOB, checked at bind; the bytes are still untrusted WKB.
+							const auto &blob = StringValue::Get(values[f]);
+							WKBDecodeResult decoded;
+							try {
+								decoded =
+								    WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob.data()), blob.size());
+							} catch (const CityJSONError &e) {
+								throw InvalidInputException("object %s: address location is not valid WKB: %s",
+								                            city_obj_id, e.what());
 							}
+							if (decoded.cityjson_type != "MultiPoint") {
+								throw InvalidInputException(
+								    "object %s: address location is a WKB %s, not the MultiPointZ the spec requires",
+								    city_obj_id, decoded.cityjson_type);
+							}
+							address["location"] = {{"type", "MultiPoint"}, {"boundaries", decoded.boundaries}};
 							continue;
 						}
 						for (const auto &name : AddressMemberNames()) {
