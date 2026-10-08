@@ -16,7 +16,6 @@
 #include "duckdb/parser/keyword_helper.hpp"
 
 #include <algorithm>
-#include <functional>
 #include <map>
 #include <set>
 
@@ -405,13 +404,17 @@ std::vector<std::string> FileColumnNames(Connection &connection, const std::stri
 	for (idx_t row = 0; row < result->RowCount(); row++) {
 		rows.emplace_back(result->GetValue(0, row).ToString(), result->GetValue(1, row).GetValue<int64_t>());
 	}
-	std::function<size_t(size_t)> skip = [&](size_t at) {
-		const auto children = at < rows.size() ? rows[at].second : 0;
-		size_t next = at + 1;
-		for (int64_t child = 0; child < children; child++) {
-			next = skip(next);
+	// Past the subtree rooted at `at`, iteratively: a footer can declare nesting as deep
+	// as it likes in its flat element list, so a recursion per level would hand the stack
+	// to the file. `pending` counts the subtree's elements not yet stepped over.
+	const auto skip = [&rows](size_t at) {
+		size_t pending = 1;
+		while (pending > 0 && at < rows.size()) {
+			pending += static_cast<size_t>(std::max<int64_t>(rows[at].second, 0));
+			pending--;
+			at++;
 		}
-		return next;
+		return at;
 	};
 	std::vector<std::string> names;
 	if (rows.empty()) {

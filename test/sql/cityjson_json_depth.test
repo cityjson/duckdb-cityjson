@@ -83,3 +83,49 @@ query I
 SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/deep_pkg/building.parquet');
 ----
 20
+
+# --- a LIST value, written as a JSON array ----------------------------------------------
+# cityparquet_to_json and COPY turn a LIST attribute into a JSON array one level per list
+# level; the same limit holds, so a list nested 257 deep is refused, not recursed into.
+
+query I
+SELECT length(CAST(cityparquet_to_json([[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]) AS VARCHAR));
+----
+513
+
+statement error
+SELECT cityparquet_to_json([[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]);
+----
+nests deeper than 256 levels
+
+statement ok
+CREATE TABLE deep_list AS
+SELECT * EXCLUDE (other), [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]] AS nest256, [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]] AS nest257, other
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 1;
+
+statement ok
+COPY (SELECT * EXCLUDE (nest257) FROM deep_list) TO '__TEST_DIR__/deep256.city.jsonl' (FORMAT cityjsonseq);
+
+statement error
+COPY (SELECT * EXCLUDE (nest256) FROM deep_list) TO '__TEST_DIR__/deep257.city.jsonl' (FORMAT cityjsonseq);
+----
+nests deeper than 256 levels
+
+# A package file whose schema nests: cityparquet_read walks the footer's flat element
+# list without a stack frame per level -- a footer may declare any depth there -- and
+# finds the top-level columns as they are. (DuckDB's own Parquet reader slows
+# exponentially with list depth and stops at 255 definition levels, so the file a test
+# can read back nests 20.)
+statement ok
+COPY (SELECT * EXCLUDE (other), [[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]] AS nest20, other
+      FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 1)
+TO '__TEST_DIR__/deep_pkg/building.parquet' (FORMAT parquet);
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/deep_pkg', 'deep_read');
+
+query II
+SELECT COUNT(*) FILTER (WHERE column_name IN ('nest20', 'other')), COUNT(*) FILTER (WHERE column_name LIKE '%\_1' ESCAPE '\')
+FROM information_schema.columns WHERE table_schema = 'deep_read' AND table_name = 'building';
+----
+2	0

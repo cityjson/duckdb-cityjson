@@ -948,7 +948,10 @@ unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context,
 // Helper: convert DuckDB Value to JSON
 // ============================================================
 
-json AttributeValueToJson(const Value &val) {
+//! AttributeValueToJson at list nesting `depth`: a LIST nested deeper than the JSON
+//! parse limit is refused, as the same depth spelled as JSON text would be, rather than
+//! recursed into one stack frame per level.
+static json AttributeValueToJsonAt(const Value &val, size_t depth) {
 	if (val.IsNull()) {
 		return json();
 	}
@@ -997,9 +1000,13 @@ json AttributeValueToJson(const Value &val) {
 	case LogicalTypeId::TIME:
 		return json(Time::ToString(dtime_t(TimeValue::Get(val))));
 	case LogicalTypeId::LIST: {
+		if (depth + 1 > json_utils::MAX_JSON_DEPTH) {
+			throw CityJSONError::InvalidJson("a list nests deeper than " + std::to_string(json_utils::MAX_JSON_DEPTH) +
+			                                 " levels, which this extension does not write as JSON");
+		}
 		json out = json::array();
 		for (const auto &child : ListValue::GetChildren(val)) {
-			out.push_back(AttributeValueToJson(child));
+			out.push_back(AttributeValueToJsonAt(child, depth + 1));
 		}
 		return out;
 	}
@@ -1007,6 +1014,10 @@ json AttributeValueToJson(const Value &val) {
 		// For complex types, try to convert to string
 		return json(val.ToString());
 	}
+}
+
+json AttributeValueToJson(const Value &val) {
+	return AttributeValueToJsonAt(val, 0);
 }
 
 // Convert a DuckDB LIST value (possibly nested, possibly with NULL elements) to
@@ -2093,8 +2104,8 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 				try {
 					attributes[bind_data.output_names[col]] = AttributeValueToJson(val);
 				} catch (const CityJSONError &e) {
-					throw InvalidInputException("COPY TO cityjson: attribute '%s' of object '%s' is typed JSON but "
-					                            "does not hold JSON text: %s",
+					throw InvalidInputException("COPY TO cityjson: attribute '%s' of object '%s' cannot be written "
+					                            "as JSON: %s",
 					                            bind_data.output_names[col], city_obj_id, e.what());
 				}
 			}
