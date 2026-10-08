@@ -58,7 +58,7 @@ SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/hilbert', crs => 'EPSG
 
 # The order cityparquet-rs writes for the same source (`cityparquet convert
 # test/data/delft_subset.city.jsonl -o OUT`, default `--ordering hilbert`, order.rs as of
-# monorepo commit a5227e0), read back from its building.parquet by file row number. It is not
+# monorepo commit a5227e0; re-checked at f9e0374), read back from its building.parquet by file row number. It is not
 # the source order: the source lists ...016459 second.
 query T
 SELECT string_agg(id, ' ' ORDER BY file_row_number)
