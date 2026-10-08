@@ -221,6 +221,37 @@ SELECT regexp_matches(compact, '"properties":\{[^}]*"datetime":"[0-9]{4}-[0-9]{2
 ----
 true
 
+# A referenceDate in the footer's source metadata wins: a date as midnight UTC, a full
+# RFC 3339 timestamp as it stands. cityparquet_rs_delft's footer carries the source
+# metadata cityparquet-rs keeps (city.other.source_metadata); 3DBAG's has no
+# referenceDate, so one is given it here.
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'dated');
+
+statement ok
+UPDATE dated.__cityparquet SET city = replace(city, '"source_metadata":{', '"source_metadata":{"referenceDate":"2021-06-30T12:34:56+02:00",')
+WHERE table_name = 'building';
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('dated', '__TEST_DIR__/dated_rfc');
+
+query I
+SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"datetime":"2021-06-30T12:34:56+02:00"%' FROM read_text('__TEST_DIR__/dated_rfc/metadata.json');
+----
+true
+
+statement ok
+UPDATE dated.__cityparquet SET city = replace(city, '"referenceDate":"2021-06-30T12:34:56+02:00"', '"referenceDate":"2021-06-30"')
+WHERE table_name = 'building';
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('dated', '__TEST_DIR__/dated_day');
+
+query I
+SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"datetime":"2021-06-30T00:00:00Z"%' FROM read_text('__TEST_DIR__/dated_day/metadata.json');
+----
+true
+
 query I
 SELECT compact LIKE '%"city3d:city_objects":22%' FROM item;
 ----

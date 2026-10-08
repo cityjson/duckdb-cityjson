@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <regex>
 #include <cmath>
 #include <set>
 
@@ -355,6 +356,34 @@ void RefusePlusNames(Connection &connection, ClientContext &context, const std::
 			refuse("the object type '" + found->GetValue(0, 0).ToString() + "'");
 		}
 	}
+}
+
+//! A CityJSON referenceDate as STAC's RFC 3339 `datetime`, as the reference writer
+//! takes it: a full RFC 3339 timestamp as it stands, a bare date as midnight UTC, and
+//! anything else -- an impossible date, a timestamp without an offset -- as nothing.
+std::string StacDatetime(const std::string &text) {
+	static const std::regex rfc3339(R"(^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$)");
+	static const std::regex day(R"(^\d{4}-\d{2}-\d{2}$)");
+	const bool full = std::regex_match(text, rfc3339);
+	if (!full && !std::regex_match(text, day)) {
+		return std::string();
+	}
+	date_t parsed;
+	idx_t pos = 0;
+	bool special = false;
+	if (Date::TryConvertDate(text.c_str(), 10, pos, parsed, special, true) != DateCastResult::SUCCESS) {
+		return std::string();
+	}
+	if (full) {
+		const auto hour = std::stoi(text.substr(11, 2));
+		const auto minute = std::stoi(text.substr(14, 2));
+		const auto second = std::stoi(text.substr(17, 2));
+		if (hour > 23 || minute > 59 || second > 60) {
+			return std::string();
+		}
+		return text;
+	}
+	return text + "T00:00:00Z";
 }
 
 //! Refuses an object table whose `other` holds JSON that is not an object (spec
@@ -1115,13 +1144,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 				date = &(*date)[key];
 			}
 			if (date != nullptr && date->is_string()) {
-				const auto text = date->get<std::string>();
-				date_t day;
-				idx_t pos = 0;
-				bool special = false;
-				if (text.size() == 10 && Date::TryConvertDate(text.c_str(), text.size(), pos, day, special, true) ==
-				                             DateCastResult::SUCCESS) {
-					datetime = text + "T00:00:00Z";
+				datetime = StacDatetime(date->get<std::string>());
+				if (!datetime.empty()) {
 					break;
 				}
 			}

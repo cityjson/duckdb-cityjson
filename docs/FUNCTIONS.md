@@ -1099,7 +1099,8 @@ every `city3d:*` field is a union or sum across the package. It carries the
 Projection extension (`proj:projjson`, `proj:bbox`) and each asset's `file:size`,
 but no per-asset row count. `properties.datetime`, which STAC requires, is the
 source's `referenceDate` when a footer carries the source metadata
-(`city.other.source_metadata`), and otherwise the time of writing, in UTC. `geometry` stays null: STAC wants EPSG:4326 there and
+(`city.other.source_metadata`) — a full RFC 3339 timestamp as it stands, a bare
+date as midnight UTC — and otherwise the time of writing, in UTC. `geometry` stays null: STAC wants EPSG:4326 there and
 a package's coordinates are not, so `proj:bbox` carries the real extent.
 
 Atomicity is **per file at best**. A Parquet file that already exists is replaced
