@@ -59,6 +59,33 @@ SELECT (SELECT texture_lod3_0['visual'][2] FROM read_cityjsonseq('test/data/rail
 ----
 true
 
+# Material, value by value: the cut CityFurniture's list is the uncut one's with surface
+# 1's entry taken out.
+query I
+SELECT (SELECT list_concat(material_lod3_0['visual'][1:1], material_lod3_0['visual'][3:])
+        FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl') WHERE id = 'GMLID_855011_330784_753')
+     = (SELECT material_lod3_0['visual'] FROM read_cityjsonseq('test/data/degenerate_rings_appearance.city.jsonl')
+        WHERE id = 'GMLID_855011_330784_753');
+----
+true
+
+# Texture, ring by ring, on a textured surface with a hole: textured_holes.city.json is
+# lod3_railway's Building GMLID_BUI130363_1235_6047 (19 textured surfaces; surface 0 an
+# exterior ring and a hole, surface 4 an exterior ring and two holes), and
+# degenerate_rings_texture.city.json the same with surface 0's hole and surface 4's
+# exterior ring cut to two vertices. Surface 0 keeps its exterior ring's texture and
+# loses the hole's; surface 4 goes; every other face keeps its rings unchanged.
+query IIII
+WITH uncut AS (SELECT texture_lod3_0['visual'] AS t, geometry_properties_lod3_0.face_semantics AS f
+               FROM read_cityjson('test/data/textured_holes.city.json')),
+     cut AS (SELECT texture_lod3_0['visual'] AS t, geometry_properties_lod3_0.face_semantics AS f
+             FROM read_cityjson('test/data/degenerate_rings_texture.city.json'))
+SELECT len(cut.t), len(uncut.t[1]), cut.t[1] = uncut.t[1][1:1],
+       cut.t[2:] = list_concat(uncut.t[2:4], uncut.t[6:]) AND cut.f = list_concat(uncut.f[1:4], uncut.f[6:])
+FROM uncut, cut;
+----
+18	2	true	true
+
 # Reported, naming the object and what went.
 query I
 SELECT COUNT(*) > 0 FROM duckdb_logs

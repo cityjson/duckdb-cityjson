@@ -69,6 +69,15 @@ uses as its own `vertices`. The header is `railway_appearance.city.jsonl`'s, wit
 `vertices-texture` cut to the UVs the templates use (re-indexed in first-use order, the
 templates' texture rings re-pointed to match).
 
+## textured_holes.city.json + degenerate_rings_texture.city.json
+
+`lod3_railway.city.json` cut down to one Building, `GMLID_BUI130363_1235_6047`: 19
+textured `MultiSurface` surfaces, surface 0 an exterior ring with one hole and surface 4
+one with two. Its vertices and the UVs it uses are re-indexed in first-use order, the
+appearance `materials` and `textures` arrays kept whole. `degenerate_rings_texture` is
+the same object with surface 0's hole and surface 4's exterior ring cut to their first
+two vertices, for `cityjson_degenerate_rings.test`'s ring-level texture check.
+
 ## delft_append.city.jsonl
 
 One 3DBAG feature -- a Building and its BuildingPart, ids suffixed `-appended` --
