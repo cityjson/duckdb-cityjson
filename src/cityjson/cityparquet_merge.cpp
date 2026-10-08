@@ -177,7 +177,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				// IF NOT EXISTS so that batching several merges in one submission -- where
 				// each generator sees the pre-batch catalog -- cannot fail on a duplicate.
 				sql += "ALTER TABLE " + QualifiedName(destination, table) + " ADD COLUMN IF NOT EXISTS " +
-				       Quoted(column.name) + " " + column.type.ToString() + ";\n";
+				       Quoted(column.name) + " " + SqlTypeName(column.type) + ";\n";
 				existing.push_back(column);
 				continue;
 			}
@@ -186,7 +186,8 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				LogWidening(context, "cityparquet_merge", QualifiedName(destination, table), column.name, match->type,
 				            column.type, widened);
 				sql += "ALTER TABLE " + QualifiedName(destination, table) + " ALTER COLUMN " + Quoted(column.name) +
-				       " SET DATA TYPE " + widened.ToString() + ";\n";
+				       " SET DATA TYPE " + SqlTypeName(widened) + WidenedUsing(match->type, widened, column.name) +
+				       ";\n";
 			}
 		}
 		destination_columns[table] = existing;
@@ -221,7 +222,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			for (const auto &column : TableColumns(context, source, sidecar)) {
 				if (FindColumn(existing, column.name) == nullptr) {
 					sql += "ALTER TABLE " + QualifiedName(destination, sidecar) + " ADD COLUMN IF NOT EXISTS " +
-					       Quoted(column.name) + " " + column.type.ToString() + ";\n";
+					       Quoted(column.name) + " " + SqlTypeName(column.type) + ";\n";
 				}
 			}
 		}
@@ -242,7 +243,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			if (!HasColumn(incoming, column.name)) {
 				// A column the destination has and the source does not: NULL, cast so the
 				// INSERT's types line up.
-				values.push_back("NULL::" + column.type.ToString());
+				values.push_back("NULL::" + SqlTypeName(column.type));
 				continue;
 			}
 			const auto lowered = StringUtil::Lower(column.name);
@@ -266,6 +267,8 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			} else if (is_texture) {
 				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
 				                 OffsetExpr("textures") + ")");
+			} else if (NeedsJsonEncoding(column.type, FindColumn(incoming, column.name)->type, column.name)) {
+				values.push_back("cityparquet_to_json(" + Quoted(column.name) + ")");
 			} else {
 				values.push_back(Quoted(column.name));
 			}

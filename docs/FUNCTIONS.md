@@ -653,6 +653,19 @@ SELECT cityparquet_json('{"roofType": "1000"}');
 -- {"roofType": "1000"}
 ```
 
+### `cityparquet_to_json(value)`
+
+Returns an attribute value as the JSON it stands for, typed `JSON`: a string
+quoted, a number or boolean as itself, a date or time as its ISO 8601 string, a
+timestamp as ISO 8601 in UTC, a list as an array, `JSON` as itself; NULL stays
+NULL. It is the encoding `insert_cityjson` and `cityparquet_merge` give an
+attribute column's values when the column becomes `JSON`:
+
+```sql
+SELECT cityparquet_to_json('Asuinrakennus');
+-- "Asuinrakennus"
+```
+
 ### `cityparquet_set_city_field(city, field, value)`
 
 Returns the `city` footer JSON string with one top-level field set to the JSON text
@@ -840,10 +853,14 @@ Worth knowing:
   a list is not JSON.
 - **An attribute typed differently is widened, and logged.** The package's column
   takes the specification's promotion for mixed attribute types — `BIGINT` to
-  `DOUBLE`, any other scalar mix to `VARCHAR` — for every row it holds, and a
-  warning names the column and both types. A column that already holds the wider
-  type (`DOUBLE` for an integer, `VARCHAR` for anything) is left as it is.
-  `cityparquet_merge` widens the same way.
+  `DOUBLE`, a mix with `JSON` (an object or array on one side) to `JSON`, any
+  other scalar mix to `VARCHAR` — for every row it holds, and a warning names the
+  column and both types. Values entering a `JSON` column from a non-`JSON` side
+  are encoded as the JSON they stand for (`cityparquet_to_json`): a string
+  becomes a JSON string, not text a JSON reader would refuse. A column that
+  already holds the wider type (`DOUBLE` for an integer, `JSON` for any scalar,
+  `VARCHAR` for any scalar) is left as it is. `cityparquet_merge` widens the
+  same way.
 - **A package's first source gives it its CRS.** A package that states no CRS and
   holds no object yet records the source's `metadata.referenceSystem`, resolved to
   PROJJSON, as every object table's `crs`. A package that already holds rows but
@@ -1926,7 +1943,17 @@ Reserved columns appear in the order below, before every attribute column
 | `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | The object's first CityJSON `GeometryInstance`: its `template` as `id` (an `implicit_geometries` row), its reference point as WKB `PointZ` in the file CRS, its row-major 4×4 `transformationMatrix`. NULL when it has none, or when the instance names no template or no resolvable point |
 | `other` | VARCHAR (JSON text) | Source members not mapped to a reserved or attribute column |
 
-Then **every attribute column** inferred from the data, last.
+Then **every attribute column** inferred from the data, last. A JSON boolean,
+integer, number or string becomes `BOOLEAN`, `BIGINT`, `DOUBLE` or `VARCHAR` (a
+string that reads as a date, time or timestamp becomes `DATE`, `TIME` or
+`TIMESTAMP WITH TIME ZONE`), an array of strings `VARCHAR[]`, and an object or a
+heterogeneous array DuckDB's `JSON`. An attribute whose samples disagree takes the
+specification's promotion: `BIGINT` with `DOUBLE` is `DOUBLE`, a mix including an
+object or an array is `JSON`, any other mix `VARCHAR`. `JSON` is the type, not
+just the text: `cityparquet_write` writes the column as Parquet JSON and `COPY`
+restores each value as the object or array it spells. Unlike `other`, which is
+`JSON` by name and so stays `VARCHAR`, a `JSON` attribute column needs the `json`
+extension for text functions — cast it to `VARCHAR` first.
 
 An implicit geometry contributes nothing to `bbox`: its reference point is where
 the relative geometry is placed, not the extent of what it places, so an object

@@ -65,6 +65,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register CityParquet package writer (cityparquet_write)
 	cityjson::RegisterCityParquetWriteFunction(loader);
+	// DuckDB's JSON type under a name generated SQL can use: `JSON` itself belongs to
+	// the json extension, which this one does not depend on (SqlTypeName).
+	loader.RegisterType("CITYPARQUET_JSON", LogicalType::JSON());
 
 	// Register the extension-namespace helpers the package layer's SQL calls
 	cityjson::RegisterCityParquetExtensionFunctions(loader);

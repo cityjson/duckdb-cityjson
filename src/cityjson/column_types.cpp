@@ -117,7 +117,13 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 	case ColumnType::Time:
 		return LogicalType::TIME;
 	case ColumnType::Json:
-		return LogicalType::VARCHAR; // JSON stored as VARCHAR
+		// An attribute whose value is an object or a heterogeneous array (spec
+		// 02-object-table-schema.mdx, "Attribute types and promotion") is typed JSON,
+		// so the type travels with the column: cityparquet_write annotates it with the
+		// Parquet JSON logical type and COPY TO restores the value as JSON rather than
+		// as a string holding its text. The reserved `other` column is the exception
+		// the readers make (BindCityJSONReadRaw); see GeometryPropertiesStruct below.
+		return LogicalType::JSON();
 
 	case ColumnType::VarcharArray: {
 		// LIST(VARCHAR)
@@ -411,7 +417,15 @@ ColumnType ColumnTypeUtils::ResolveFromSamples(const std::vector<ColumnType> &ty
 		return ColumnType::Double;
 	}
 
-	// Otherwise, fall back to Varchar for inconsistency
+	// A structured value among the samples falls back to JSON, which holds every
+	// sample as written; VARCHAR would hold an object or an array as its text and
+	// so lose it (spec 02-object-table-schema.mdx: "anything not safely unifiable ->
+	// VARCHAR, or JSON for structured values").
+	for (const auto &type : types) {
+		if (type == ColumnType::Json || type == ColumnType::VarcharArray) {
+			return ColumnType::Json;
+		}
+	}
 	return ColumnType::Varchar;
 }
 

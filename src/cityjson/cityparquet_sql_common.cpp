@@ -87,8 +87,52 @@ LogicalType WithoutJsonAlias(const LogicalType &type) {
 	}
 }
 
+std::string SqlTypeName(const LogicalType &type) {
+	if (type.IsJSONType()) {
+		return "CITYPARQUET_JSON";
+	}
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT: {
+		vector<string> fields;
+		for (const auto &child : StructType::GetChildTypes(type)) {
+			fields.push_back(Quoted(child.first) + " " + SqlTypeName(child.second));
+		}
+		return "STRUCT(" + StringUtil::Join(fields, ", ") + ")";
+	}
+	case LogicalTypeId::LIST:
+		return SqlTypeName(ListType::GetChildType(type)) + "[]";
+	case LogicalTypeId::MAP:
+		return "MAP(" + SqlTypeName(MapType::KeyType(type)) + ", " + SqlTypeName(MapType::ValueType(type)) + ")";
+	default:
+		return type.ToString();
+	}
+}
+
+std::string WidenedUsing(const LogicalType &from, const LogicalType &to, const std::string &column_name) {
+	if (!NeedsJsonEncoding(to, from, column_name)) {
+		return "";
+	}
+	return " USING cityparquet_to_json(" + Quoted(column_name) + ")";
+}
+
+bool NeedsJsonEncoding(const LogicalType &destination, const LogicalType &source, const std::string &column_name) {
+	return destination.IsJSONType() && !source.IsJSONType() && !StringUtil::CIEquals(column_name, "other");
+}
+
 LogicalType WidenedType(const LogicalType &destination, const LogicalType &source, const std::string &function,
                         const std::string &column_name) {
+	// An attribute column typed JSON on one side only: one side holds structured
+	// values, so the column is JSON (spec 02-object-table-schema.mdx, "Attribute types
+	// and promotion": "JSON for structured values"), and the other side's values are
+	// encoded as the JSON they stand for (cityparquet_to_json). `other` is JSON on both
+	// sides whatever its type says: the readers hand it over as VARCHAR.
+	const bool json_side = destination.IsJSONType() != source.IsJSONType();
+	const auto &plain = destination.IsJSONType() ? source : destination;
+	const bool encodable = plain.id() != LogicalTypeId::GEOMETRY && plain.id() != LogicalTypeId::BLOB &&
+	                       plain.id() != LogicalTypeId::STRUCT && plain.id() != LogicalTypeId::MAP;
+	if (json_side && encodable && !StringUtil::CIEquals(column_name, "other")) {
+		return destination.IsJSONType() ? LogicalType(LogicalTypeId::INVALID) : LogicalType::JSON();
+	}
 	// JSON is text with a name: a package loaded from a file that declares the JSON
 	// logical type holds it as JSON, a CityJSON reader as VARCHAR, and the two are the
 	// same column.

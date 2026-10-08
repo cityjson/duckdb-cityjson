@@ -218,6 +218,12 @@ void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data, G
                            LocalFunctionData &lstate);
 void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate);
 
+//! An attribute cell as the CityJSON value it stands for: a JSON-typed cell parsed
+//! (it holds JSON text), a LIST as an array, a timestamp as ISO 8601 in UTC, SQL NULL
+//! as JSON null. COPY TO writes attributes through it; cityparquet_to_json encodes a
+//! column with it when an insert or merge widens the column to JSON.
+json AttributeValueToJson(const Value &val);
+
 void RegisterCityJSONCopyFunction(ExtensionLoader &loader);
 void RegisterCityJSONSeqCopyFunction(ExtensionLoader &loader);
 

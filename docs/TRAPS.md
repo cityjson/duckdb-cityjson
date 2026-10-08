@@ -70,6 +70,12 @@ extension only generates text.
   explicit cast needs no extension), and a type comparison must go through
   `WithoutJsonAlias` -- `STRUCT(surfaces JSON)` and `STRUCT(surfaces VARCHAR)` are the
   same column, and `WidenedType` would otherwise refuse an insert into a read package.
+  An attribute column whose values are objects is the exception: its JSON-ness has no
+  name to ride on, so the readers type it `JSON`. Generated SQL names that type
+  `CITYPARQUET_JSON` (`SqlTypeName`), an alias the extension registers, because the
+  name `JSON` belongs to the `json` extension; and for an attribute, JSON against
+  VARCHAR is a real difference — an object against a string — that `WidenedType`
+  resolves to `JSON`, encoding the other side with `cityparquet_to_json`.
 - **`parquet_kv_metadata` returns BLOB.** Use `decode(value)`, not `value::VARCHAR` —
   the cast escapes bytes and the JSON no longer parses.
 - **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.

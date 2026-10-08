@@ -546,6 +546,9 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// staged source carries WKB BLOB. The column keeps the package's type; the routed
 	// INSERT converts the staged WKB into it.
 	std::map<std::string, std::vector<std::string>> geometry_from_wkb;
+	// Per module table, the attribute columns whose destination is JSON while the
+	// staged values are not: they go in encoded (NeedsJsonEncoding).
+	std::map<std::string, std::vector<std::string>> json_encoded;
 	std::vector<ColumnInfo> incoming_geometry_columns;
 	bool incoming_has_bbox = false;
 	bool incoming_has_children_roles = false;
@@ -595,7 +598,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			// added. Evolving unconditionally afterwards makes the branch idempotent.
 			for (const auto &column : facts.columns) {
 				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ADD COLUMN IF NOT EXISTS " +
-				       Quoted(column.name) + " " + ColumnTypeUtils::ToDuckDBType(column.kind).ToString() + ";\n";
+				       Quoted(column.name) + " " + SqlTypeName(ColumnTypeUtils::ToDuckDBType(column.kind)) + ";\n";
 			}
 			// It does not exist for the reconcile that follows either, so its columns are
 			// handed over rather than looked up.
@@ -612,7 +615,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 				// IF NOT EXISTS because two inserts batched in one submission each see the
 				// pre-batch catalog and would otherwise collide on the same new column.
 				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ADD COLUMN IF NOT EXISTS " +
-				       Quoted(column.name) + " " + type.ToString() + ";\n";
+				       Quoted(column.name) + " " + SqlTypeName(type) + ";\n";
 				existing.push_back({column.name, type});
 				evolved = true;
 				continue;
@@ -621,12 +624,16 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 				geometry_from_wkb[table].push_back(column.name);
 				continue;
 			}
+			if (NeedsJsonEncoding(match->type, type, column.name)) {
+				json_encoded[table].push_back(column.name);
+			}
 			const auto widened = WidenedType(match->type, type, "insert_cityjson", column.name);
 			if (widened.id() != LogicalTypeId::INVALID) {
 				LogWidening(context, "insert_cityjson", QualifiedName(schema, table), column.name, match->type, type,
 				            widened);
 				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ALTER COLUMN " + Quoted(column.name) +
-				       " SET DATA TYPE " + widened.ToString() + ";\n";
+				       " SET DATA TYPE " + SqlTypeName(widened) + WidenedUsing(match->type, widened, column.name) +
+				       ";\n";
 			}
 		}
 		if (evolved) {
@@ -706,7 +713,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			for (const auto &column : source_sidecar_columns[sidecar]) {
 				if (FindColumn(existing, column.name) == nullptr) {
 					sql += "ALTER TABLE " + QualifiedName(schema, sidecar) + " ADD COLUMN IF NOT EXISTS " +
-					       Quoted(column.name) + " " + column.type.ToString() + ";\n";
+					       Quoted(column.name) + " " + SqlTypeName(column.type) + ";\n";
 				}
 			}
 		}
@@ -751,6 +758,12 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		if (promoted != geometry_from_wkb.end()) {
 			for (const auto &name : promoted->second) {
 				table_replacements.push_back("ST_GeomFromWKB(" + Quoted(name) + ") AS " + Quoted(name));
+			}
+		}
+		const auto encoded = json_encoded.find(entry.first);
+		if (encoded != json_encoded.end()) {
+			for (const auto &name : encoded->second) {
+				table_replacements.push_back("cityparquet_to_json(" + Quoted(name) + ") AS " + Quoted(name));
 			}
 		}
 		const std::string projection =

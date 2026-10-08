@@ -242,7 +242,12 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 
 	for (const auto &col : result.columns) {
 		names.push_back(col.name);
-		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
+		// `other` stays VARCHAR, like `geometry_properties_lod*.surfaces`: a JSON column
+		// needs the json extension even for LIKE, and both are JSON by name, so
+		// cityparquet_write annotates them without the type's help. An attribute column
+		// has no fixed name, so its JSON-ness has to ride on its type.
+		const bool reserved_json = col.kind == ColumnType::Json && col.name == "other";
+		return_types.push_back(reserved_json ? LogicalType::VARCHAR : ColumnTypeUtils::ToDuckDBType(col.kind));
 	}
 
 	return result;

@@ -183,4 +183,5 @@ three features (lines 16875, 16509 and 43164) of the real Helsinki textured City
 roof ring of four UVs. `BID_087ea02f…`'s ring `[0, 2, 4, 6, 0]` is explicitly closed, so
 its four UVs are one per vertex; `BID_e47016b2…`'s `[0, 4, 4, 6, 1]` repeats a vertex in
 place and `BID_ce1e6c36…`'s `[0, 4, 6, 8, 1]` has five distinct vertices, so both are
-one UV short. `cityjson_texture_closed_ring.test` reads it.
+one UV short. `cityjson_texture_closed_ring.test` reads it, and
+`cityparquet_json_attribute.test` inserts it for its `Integrate_LoD[1]` objects.

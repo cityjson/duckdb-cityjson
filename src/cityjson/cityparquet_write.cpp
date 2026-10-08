@@ -5,6 +5,7 @@
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/copy_function.hpp"
 #include "cityjson/crs_projjson.hpp"
 #include "cityjson/json_utils.hpp"
 #include "cityjson/lod_table.hpp"
@@ -274,7 +275,9 @@ std::string ColumnExpression(const ColumnDefinition &column, const std::set<std:
                              const std::string &crs) {
 	{
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.Name());
-		if (StringUtil::Lower(column.Name()) == "other") {
+		// `other` by name; a JSON attribute column (an object or heterogeneous array,
+		// spec 02-object-table-schema.mdx) by its type. Both are checked to parse.
+		if (StringUtil::Lower(column.Name()) == "other" || column.Type().IsJSONType()) {
 			return "cityparquet_json(CAST(" + quoted + " AS VARCHAR)) AS " + quoted;
 		}
 		if (HasSurfacesField(column.Type())) {
@@ -1264,6 +1267,27 @@ static void JsonFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	result.Reinterpret(input);
 }
 
+static void ToJsonFunction(DataChunk &args, ExpressionState &, Vector &result) {
+	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<string_t>(result);
+	auto &validity = FlatVector::Validity(result);
+	for (idx_t row = 0; row < args.size(); row++) {
+		const auto value = args.data[0].GetValue(row);
+		if (value.IsNull()) {
+			validity.SetInvalid(row);
+			continue;
+		}
+		try {
+			out[row] = StringVector::AddString(result, AttributeValueToJson(value).dump());
+		} catch (const CityJSONError &e) {
+			throw InvalidInputException("cityparquet_to_json: %s", e.what());
+		}
+	}
+	if (args.AllConstant()) {
+		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
+	}
+}
+
 void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
 	const auto dbl = LogicalType(LogicalTypeId::DOUBLE);
 	ScalarFunction hilbert_function("cityparquet_hilbert", {dbl, dbl, dbl, dbl, dbl, dbl},
@@ -1282,6 +1306,17 @@ void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
 	                    "Returns its argument typed as JSON, after checking that it parses, so that a Parquet "
 	                    "COPY annotates the column with the JSON logical type; errors on text that is not JSON.",
 	                    R"(cityparquet_json('{"roofType": "1000"}'))",
+	                    {"cityparquet", "package"}});
+
+	ScalarFunction to_json_function("cityparquet_to_json", {LogicalType::ANY}, LogicalType::JSON(), ToJsonFunction);
+	to_json_function.null_handling = FunctionNullHandling::DEFAULT_NULL_HANDLING;
+	RegisterDocumented(loader, std::move(to_json_function),
+	                   {{"value"},
+	                    "Returns an attribute value as the JSON it stands for -- a string quoted, a number or "
+	                    "boolean as itself, a timestamp as an ISO 8601 string in UTC, a list as an array, JSON as "
+	                    "itself -- the encoding an insert or merge gives the values of an attribute column it "
+	                    "widens to JSON.",
+	                    "cityparquet_to_json('Asuinrakennus')",
 	                    {"cityparquet", "package"}});
 
 	TableFunction func("cityparquet_write", {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},

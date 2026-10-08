@@ -948,12 +948,17 @@ unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context,
 // Helper: convert DuckDB Value to JSON
 // ============================================================
 
-static json ValueToJson(const Value &val) {
+json AttributeValueToJson(const Value &val) {
 	if (val.IsNull()) {
 		return json();
 	}
 
 	auto &type = val.type();
+	// A JSON-typed value is JSON text: restored as the value it spells, not as a
+	// string holding that text.
+	if (type.IsJSONType()) {
+		return json_utils::ParseJson(StringValue::Get(val));
+	}
 	switch (type.id()) {
 	case LogicalTypeId::BOOLEAN:
 		return json(BooleanValue::Get(val));
@@ -991,6 +996,13 @@ static json ValueToJson(const Value &val) {
 		return json(Date::ToString(DateValue::Get(val)));
 	case LogicalTypeId::TIME:
 		return json(Time::ToString(dtime_t(TimeValue::Get(val))));
+	case LogicalTypeId::LIST: {
+		json out = json::array();
+		for (const auto &child : ListValue::GetChildren(val)) {
+			out.push_back(AttributeValueToJson(child));
+		}
+		return out;
+	}
 	default:
 		// For complex types, try to convert to string
 		return json(val.ToString());
@@ -2075,8 +2087,15 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 		for (idx_t col = 0; col < bind_data.column_roles.size(); col++) {
 			if (bind_data.column_roles[col] == CopyColumnRole::Attribute) {
 				auto val = input.data[col].GetValue(row);
-				if (!val.IsNull()) {
-					attributes[bind_data.output_names[col]] = ValueToJson(val);
+				if (val.IsNull()) {
+					continue;
+				}
+				try {
+					attributes[bind_data.output_names[col]] = AttributeValueToJson(val);
+				} catch (const CityJSONError &e) {
+					throw InvalidInputException("COPY TO cityjson: attribute '%s' of object '%s' is typed JSON but "
+					                            "does not hold JSON text: %s",
+					                            bind_data.output_names[col], city_obj_id, e.what());
 				}
 			}
 		}

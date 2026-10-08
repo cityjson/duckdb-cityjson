@@ -39,6 +39,19 @@ std::string ShiftedImplicitGeometry(const std::string &offset_expr);
 //! the same text, and compare equal through this.
 LogicalType WithoutJsonAlias(const LogicalType &type);
 
+//! `type` as generated SQL can name it: a JSON type, nested ones included, as
+//! CITYPARQUET_JSON, the alias the extension registers so that its SQL can create a
+//! JSON column without the json extension, whose type the name JSON belongs to.
+std::string SqlTypeName(const LogicalType &type);
+
+//! True when an attribute column's destination is JSON and the incoming values are
+//! not: they go in through cityparquet_to_json, as the JSON they stand for.
+bool NeedsJsonEncoding(const LogicalType &destination, const LogicalType &source, const std::string &column_name);
+
+//! The `USING` clause an `ALTER COLUMN ... SET DATA TYPE` from `from` to `to` needs:
+//! the rows' values encoded as JSON when `to` is an attribute column's JSON, else none.
+std::string WidenedUsing(const LogicalType &from, const LogicalType &to, const std::string &column_name);
+
 //! The promotion lattice (spec 02-object-table-schema.mdx, "Attribute types and
 //! promotion"), applied across the data a package holds after an insert or merge:
 //! BIGINT -> DOUBLE is a safe widening; anything else scalar that disagrees falls back
@@ -46,6 +59,11 @@ LogicalType WithoutJsonAlias(const LogicalType &type);
 //! DOUBLE takes a BIGINT, a VARCHAR any scalar. A caller that widens says so with
 //! LogWidening: the column's type changes for the rows already there. `function` and `column_name` name the caller and
 //! the column being evolved, for the exception below.
+//!
+//! An attribute column typed JSON on one side only becomes JSON (the "JSON for
+//! structured values" fallback); a caller widening a column to JSON converts its rows
+//! with cityparquet_to_json, and one inserting non-JSON values into a JSON column
+//! encodes them the same way (NeedsJsonEncoding).
 //!
 //! A nested type (STRUCT/LIST/MAP) on either side is refused outright rather than
 //! stringified: reserved structural columns (`bbox`, `children`, `children_roles`, a
