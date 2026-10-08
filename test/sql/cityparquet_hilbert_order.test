@@ -42,6 +42,18 @@ SELECT cityparquet_hilbert(-5, 5, 0, 0, 10, 10) = cityparquet_hilbert(0, 5, 0, 0
 ----
 true	true	0	true
 
+# Exact keys of four delft_subset features: each feature's x/y centre and the x/y
+# extent of the file's geometry, as the reader reports them, and the key cityparquet-rs
+# gives them -- computed by order.rs's own `hilbert_index` (monorepo commit a5227e0),
+# compiled on its own with rustc, not by this function.
+query IIII
+SELECT cityparquet_hilbert(84901.650125, 446452.86099999998, 84593.249624999997, 446447.01899999997, 85566.847624999995, 446889.73999999999),
+       cityparquet_hilbert(84740.881624999995, 446643.79450000002, 84593.249624999997, 446447.01899999997, 85566.847624999995, 446889.73999999999),
+       cityparquet_hilbert(84595.378624999998, 446461.18849999999, 84593.249624999997, 446447.01899999997, 85566.847624999995, 446889.73999999999),
+       cityparquet_hilbert(85565.300124999994, 446830.28599999996, 84593.249624999997, 446447.01899999997, 85566.847624999995, 446889.73999999999);
+----
+329563540	834472771	4212220	2885953603
+
 # --- the written order ----------------------------------------------------------
 
 statement ok
