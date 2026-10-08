@@ -504,10 +504,11 @@ neither reported.
   `small.city.jsonl`, `small.city.json`, `small.fcb` and the CityParquet package
   `small/building.parquet` + `metadata.json`, none written by this extension — so a
   disagreement between two of our readers is evidence about us rather than a circular
-  oracle. All three CityJSON-family readers agree at 68 columns with a zero name+type
-  diff; CityParquet is a superset by the reserved `address` and `template` columns,
-  plus `other_attributes` -- an ordinary attribute column that fixture's writer
-  happens to carry, not this format's reserved `other` escape hatch.
+  oracle. All three CityJSON-family readers agree at 70 columns with a zero name+type
+  diff. The hosted CityParquet file predates the spec's `implicit_geometry` name and
+  carries `template` instead, plus `other_attributes` -- an ordinary attribute column
+  that fixture's writer happens to carry, not this format's reserved `other` escape
+  hatch; every other column the readers emit is in it.
 - **Do not assert WKB byte-equality between the two JSON readers on that corpus**, however
   much sharing `wkb_encoder.cpp` invites it. Its two files are quantised against different
   transform origins (`translate` `[85088.390625, 446394.25, 45.648…]` vs
