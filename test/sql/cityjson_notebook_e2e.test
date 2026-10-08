@@ -20,11 +20,10 @@
 # data.3dbag.nl, bump the version in the path rather than suspecting insert_cityjson.
 # The reader decompresses by magic bytes, so the `.gz` path reads without a flag.
 #
-# docs/TESTING.md is a transcript of a DuckDB notebook someone drove by hand
-# against real datasets. This file is that walkthrough as a test. The notebook's
-# local fixtures lived in a sibling repo of the parent workspace, which this repo
-# cannot reference -- so each one is read from the URL it was published at
-# instead. Nothing is downloaded in advance; the readers fetch over HTTP.
+# docs/TESTING.md is a walkthrough of a DuckDB notebook against real datasets. This
+# file is that walkthrough as a test. Every dataset is read from the URL it was
+# published at; nothing is downloaded in advance. Cells 26 and 27 read two small
+# fixtures of this repository (test/data/README.md).
 #
 # Cell 4 is not here. It needs `spatial`, and `require spatial` skips the whole
 # file rather than one query, so it lives in cityjson_notebook_geoparquet.test.
@@ -301,15 +300,18 @@ true	true	true
 
 # Cell 18 -- and the `city` footer beside it. The notebook read this from the
 # package directory; it is written into each object table's own footer.
-query II
+query IIII
 WITH meta AS (
   SELECT decode(value)::JSON AS city
   FROM parquet_kv_metadata('__TEST_DIR__/pkg_out/building.parquet')
   WHERE key::VARCHAR = 'city'
 )
-SELECT count(*) = 1, bool_and(city ->> '$.version' IS NOT NULL) FROM meta;
+SELECT count(*) = 1, bool_and(city ->> '$.version' IS NOT NULL),
+       bool_and(city ->> '$.primary_column' IS NOT NULL),
+       bool_and(list_contains(json_extract_string(city, '$.columns[*].name'), city ->> '$.primary_column'))
+FROM meta;
 ----
-true	true
+true	true	true	true
 
 # Cell 19 -- cityparquet_read builds the schema back from the directory. Rows and
 # columns must survive the round trip; that is the whole point of writing it out.
@@ -370,3 +372,94 @@ SELECT (SELECT count(*) FROM read_flatcitybuf('https://flatcitybuf.open3d.city/d
                                                xmin := 84000, ymin := 446000, xmax := 85000, ymax := 447000));
 ----
 true
+
+# ============================================================
+# Cells 23-27 -- what a package is for, on the same real data
+# ============================================================
+
+# Cell 23 -- a package started from an empty schema takes its first source's CRS.
+statement ok
+CREATE SCHEMA fresh;
+
+statement ok
+PRAGMA cityparquet_init('fresh');
+
+statement ok
+PRAGMA insert_cityjsonseq('fresh', 'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+
+statement ok
+SELECT * FROM cityparquet_write('fresh', '__TEST_DIR__/fresh');
+
+query II
+SELECT (SELECT count(*) FROM read_parquet('__TEST_DIR__/fresh/building.parquet'))
+         = (SELECT count(*) FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')),
+       (SELECT decode(value)::JSON ->> '$.crs.id.code' FROM parquet_kv_metadata('__TEST_DIR__/fresh/building.parquet')
+        WHERE decode(key) = 'city');
+----
+true	7415
+
+# Cell 24 -- Hilbert order puts consecutive rows nearer each other than source order.
+statement ok
+SELECT count(*) FROM cityparquet_write('fresh', '__TEST_DIR__/fresh_source', ordering => 'source');
+
+query I
+WITH r AS (
+  SELECT 'hilbert' AS ordering, file_row_number AS n, (bbox.xmin + bbox.xmax) / 2 AS x, (bbox.ymin + bbox.ymax) / 2 AS y
+  FROM read_parquet('__TEST_DIR__/fresh/building.parquet', file_row_number := true) WHERE object_type = 'Building'
+  UNION ALL
+  SELECT 'source', file_row_number, (bbox.xmin + bbox.xmax) / 2, (bbox.ymin + bbox.ymax) / 2
+  FROM read_parquet('__TEST_DIR__/fresh_source/building.parquet', file_row_number := true) WHERE object_type = 'Building'),
+steps AS (
+  SELECT ordering, median(sqrt((x - px) ^ 2 + (y - py) ^ 2)) AS step
+  FROM (SELECT *, lag(x) OVER w AS px, lag(y) OVER w AS py FROM r WINDOW w AS (PARTITION BY ordering ORDER BY n))
+  GROUP BY ordering)
+SELECT (SELECT step FROM steps WHERE ordering = 'hilbert') < (SELECT step FROM steps WHERE ordering = 'source');
+----
+true
+
+# Cell 25 -- lod3_railway's implicit geometries read, and go back out with their templates.
+statement ok
+COPY (SELECT * FROM read_cityjson('https://storage.googleapis.com/cityjson/lod3_railway.city.json')
+      WHERE object_type IN ('SolitaryVegetationObject', 'CityObjectGroup'))
+TO '__TEST_DIR__/vegetation.city.json' (FORMAT cityjson);
+
+query II
+SELECT (SELECT count(*) FROM read_cityjson('__TEST_DIR__/vegetation.city.json') WHERE implicit_geometry IS NOT NULL)
+         = (SELECT count(*) FROM read_cityjson('https://storage.googleapis.com/cityjson/lod3_railway.city.json')
+            WHERE implicit_geometry IS NOT NULL),
+       (SELECT count(*) FROM (SELECT * FROM cityjson_implicit_geometries('https://storage.googleapis.com/cityjson/lod3_railway.city.json')
+                              EXCEPT ALL
+                              SELECT * FROM cityjson_implicit_geometries('__TEST_DIR__/vegetation.city.json')));
+----
+true	0
+
+# Cell 26 -- an address round trip.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/address.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT count(*) FROM (
+  SELECT id, address FROM read_cityjsonseq('test/data/address_location.city.jsonl')
+  EXCEPT ALL
+  SELECT id, address FROM read_cityjsonseq('__TEST_DIR__/address.city.jsonl'));
+----
+0
+
+# Cell 27 -- an append into a package cityparquet-rs wrote keeps the package's own boxes.
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'rsd');
+
+statement ok
+PRAGMA insert_cityjsonseq('rsd', 'test/data/delft_append.city.jsonl');
+
+statement ok
+SELECT * FROM cityparquet_write('rsd', '__TEST_DIR__/rs_appended');
+
+query II
+SELECT count(*) FILTER (WHERE id LIKE '%-appended'),
+       count(*) FILTER (WHERE s.bbox IS DISTINCT FROM o.bbox AND s.id IS NOT NULL)
+FROM read_parquet('__TEST_DIR__/rs_appended/building.parquet') o
+LEFT JOIN read_parquet('test/data/cityparquet_rs_delft/building.parquet') s USING (id);
+----
+2	0

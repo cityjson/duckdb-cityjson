@@ -189,7 +189,9 @@ test-remote:
 
 # The docs/TESTING.md notebook walkthrough, end to end: read every format, build a
 # CityParquet package, insert a second file into it, write it out and read it back,
-# then the FlatCityBuf spatial and attribute filters. Downloads nothing in advance
+# the FlatCityBuf spatial and attribute filters, then a package started from an empty
+# schema, Hilbert order, implicit geometry, an address round trip and an append into
+# a cityparquet-rs package. Downloads nothing in advance
 # -- every fixture is fetched by the query that needs it, which costs around 120 MB
 # of transfer for 25 MB of data, because nothing is cached between queries.
 # Opt-in; `make test` skips it.
