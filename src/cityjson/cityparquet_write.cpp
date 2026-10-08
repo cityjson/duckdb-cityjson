@@ -544,33 +544,48 @@ constexpr const char *HILBERT_KEYS = "temp.__cityparquet_hilbert_keys";
 
 //! Fill HILBERT_KEYS with one key per feature that has geometry, the reference writer's
 //! (cityparquet-rs, `order.rs`): the curve is laid over the x/y extent of every geometry
-//! in every object table; a feature's point on it is the centre of the x/y extent of its
-//! own geometry, across every LoD and every object table its rows sit in. Extents come
-//! from the WKB, not from `bbox`, which also unions a source's declared extents. False
-//! when the package holds no geometry, so there is nothing to order by.
+//! in every object table; a feature's point on it is the centre of the x/y extent of
+//! every coordinate its rows carry, across every object table -- its geometry at every
+//! LoD, and also its implicit geometries' reference points and its addresses'
+//! locations, which are in a feature's vertex pool but are not geometry the curve is
+//! laid over. Extents come from the WKB, not from `bbox`, which also unions a source's
+//! declared extents. False when the package holds no geometry, so there is nothing to
+//! order by.
 bool WriteHilbertKeys(Connection &connection, ClientContext &context, const std::string &catalog,
                       const std::string &schema, const std::vector<std::string> &tables) {
 	std::vector<std::string> extents;
+	std::vector<std::string> placed;
 	for (const auto &table : tables) {
 		if (!HasColumn(context, schema, table, "feature_id")) {
 			continue;
 		}
+		const auto qualified = QualifiedName(catalog, schema, table);
 		for (const auto &column : GeometryLodColumns(context, schema, table)) {
 			const auto quoted = KeywordHelper::WriteOptionallyQuoted(column);
 			extents.push_back("SELECT feature_id, cityjson_wkb_extent(" +
 			                  GeometryColumnRef(quoted, ColumnDuckType(context, schema, table, column)) +
-			                  ") AS e FROM " + QualifiedName(catalog, schema, table) + " WHERE " + quoted +
-			                  " IS NOT NULL");
+			                  ") AS e FROM " + qualified + " WHERE " + quoted + " IS NOT NULL");
+		}
+		if (HasColumn(context, schema, table, "implicit_geometry")) {
+			placed.push_back("SELECT feature_id, cityjson_wkb_extent(implicit_geometry.point) AS e FROM " + qualified +
+			                 " WHERE implicit_geometry.point IS NOT NULL");
+		}
+		if (HasColumn(context, schema, table, "address")) {
+			placed.push_back("SELECT feature_id, cityjson_wkb_extent(a.location) AS e FROM (SELECT feature_id, "
+			                 "unnest(address) AS a FROM " +
+			                 qualified + ") WHERE a.location IS NOT NULL");
 		}
 	}
 	if (extents.empty()) {
 		return false;
 	}
+	auto everything = extents;
+	everything.insert(everything.end(), placed.begin(), placed.end());
 	Run(connection, "CREATE OR REPLACE TEMP TABLE " + std::string(HILBERT_KEYS) + " AS\nWITH extents AS (" +
-	                    Join(extents, "\n  UNION ALL ") +
+	                    Join(extents, "\n  UNION ALL ") + "),\ncoordinates AS (" + Join(everything, "\n  UNION ALL ") +
 	                    "),\n"
 	                    "features AS (SELECT feature_id, (min(e.xmin) + max(e.xmax)) / 2 AS x, "
-	                    "(min(e.ymin) + max(e.ymax)) / 2 AS y FROM extents GROUP BY feature_id),\n"
+	                    "(min(e.ymin) + max(e.ymax)) / 2 AS y FROM coordinates GROUP BY feature_id),\n"
 	                    "dataset AS (SELECT min(e.xmin) AS xmin, min(e.ymin) AS ymin, max(e.xmax) AS xmax, "
 	                    "max(e.ymax) AS ymax FROM extents)\n"
 	                    "SELECT feature_id, cityparquet_hilbert(x, y, xmin, ymin, xmax, ymax) AS hilbert_key "
