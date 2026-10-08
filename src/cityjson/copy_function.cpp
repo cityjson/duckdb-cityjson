@@ -277,7 +277,7 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 			// A package's `city.extensions` (cityparquet_city_field(city, 'extensions')).
 			json parsed;
 			try {
-				parsed = json::parse(val.ToString());
+				parsed = json_utils::ParseJson(val.ToString());
 			} catch (const std::exception &e) {
 				throw BinderException("metadata_query: `extensions` is not valid JSON: " + std::string(e.what()));
 			}

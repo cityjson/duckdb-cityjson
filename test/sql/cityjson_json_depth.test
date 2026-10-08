@@ -1,0 +1,85 @@
+# name: test/sql/cityjson_json_depth.test
+# description: JSON nested deeper than the parse limit is refused with an error, never by exhausting the stack
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# nlohmann parses iteratively but copies and serialises recursively, so a valid JSON
+# text nested a million levels deep -- which a CityJSON file, a cell or a Parquet footer
+# can hold -- took the process down wherever this extension parsed it and then used the
+# result. Every parse now refuses nesting deeper than 256 levels first; real CityJSON
+# nests about a dozen.
+
+# The limit itself: 256 levels parse, 257 do not.
+query I
+SELECT cityparquet_json(repeat('[', 256) || repeat(']', 256)) IS NOT NULL;
+----
+true
+
+statement error
+SELECT cityparquet_json(repeat('[', 257) || repeat(']', 257));
+----
+nests deeper than 256 levels
+
+# A CityJSONSeq feature whose attribute nests a hundred thousand levels deep: delft_subset's
+# header, then one such feature, written out as plain lines.
+statement ok
+COPY (SELECT line FROM (
+  SELECT 0 AS o, string_split((SELECT content FROM read_text('test/data/delft_subset.city.jsonl')), chr(10))[1] AS line
+  UNION ALL
+  SELECT 1, '{"type":"CityJSONFeature","id":"deep","CityObjects":{"deep":{"type":"Building","attributes":{"nest":'
+            || repeat('[', 100000) || repeat(']', 100000) || '}}},"vertices":[]}') ORDER BY o)
+TO '__TEST_DIR__/deep.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement error
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/deep.city.jsonl');
+----
+nests deeper than 256 levels
+
+# The same depth in a table's `other`, going out through COPY and through the package
+# writer.
+statement ok
+CREATE SCHEMA d;
+
+statement ok
+CREATE TABLE d.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('d');
+
+statement ok
+UPDATE d.building SET other = '{"nest":' || repeat('[', 1000000) || repeat(']', 1000000) || '}'
+WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+
+statement error
+COPY (SELECT * FROM d.building) TO '__TEST_DIR__/deep_out.city.jsonl' (FORMAT cityjsonseq);
+----
+nests deeper than 256 levels
+
+statement error
+SELECT COUNT(*) FROM cityparquet_write('d', '__TEST_DIR__/deep_pkg', crs => 'EPSG:7415');
+----
+nests deeper than 256 levels
+
+# And in a package's carried footer: unreadable, so the writer regenerates it, and
+# cityparquet_city_field reads nothing from it.
+statement ok
+UPDATE d.building SET other = NULL;
+
+statement ok
+UPDATE d.__cityparquet SET city = '{"other":' || repeat('[', 1000000) || repeat(']', 1000000) || '}';
+
+query I
+SELECT cityparquet_city_field(city, 'other') IS NULL FROM d.__cityparquet;
+----
+true
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('d', '__TEST_DIR__/deep_pkg', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/deep_pkg/building.parquet');
+----
+20

@@ -552,7 +552,7 @@ std::string BuildCityJson(const std::string &carried, const json &crs, const std
 	json city = json::object();
 	if (!carried.empty()) {
 		try {
-			auto parsed = json::parse(carried);
+			auto parsed = json_utils::ParseJson(carried);
 			if (parsed.is_object()) {
 				city = std::move(parsed);
 			}
@@ -863,7 +863,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		for (const auto &entry : carried) {
 			json parsed;
 			try {
-				parsed = json::parse(entry.second);
+				parsed = json_utils::ParseJson(entry.second);
 			} catch (const std::exception &) {
 				continue;
 			}
@@ -893,7 +893,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 				// not recognise -- it takes referenceSystem spellings, not PROJJSON. Only
 				// an object counts: a bare number or string parses as JSON but is not a
 				// CRS, and writing it would be the guess the specification forbids.
-				auto parsed = json::parse(crs_source);
+				auto parsed = json_utils::ParseJson(crs_source);
 				if (parsed.is_object()) {
 					crs_json = std::move(parsed);
 				}
@@ -931,7 +931,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 	for (const auto &entry : carried) {
 		json parsed;
 		try {
-			parsed = json::parse(entry.second);
+			parsed = json_utils::ParseJson(entry.second);
 		} catch (const std::exception &) {
 			continue;
 		}
@@ -1113,7 +1113,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		for (const auto &entry : carried) {
 			json parsed;
 			try {
-				parsed = json::parse(entry.second);
+				parsed = json_utils::ParseJson(entry.second);
 			} catch (const std::exception &) {
 				continue;
 			}
@@ -1131,7 +1131,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		for (const auto &entry : carried) {
 			json parsed;
 			try {
-				parsed = json::parse(entry.second);
+				parsed = json_utils::ParseJson(entry.second);
 			} catch (const std::exception &) {
 				continue;
 			}
@@ -1249,9 +1249,16 @@ static void JsonFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			continue;
 		}
 		const auto text = values[index];
-		if (!json::accept(text.GetData(), text.GetData() + text.GetSize())) {
+		bool deep = false;
+		try {
+			json_utils::CheckJsonDepth(text.GetData(), text.GetSize());
+		} catch (const CityJSONError &) {
+			deep = true;
+		}
+		if (deep || !json::accept(text.GetData(), text.GetData() + text.GetSize())) {
 			const auto shown = text.GetSize() > 80 ? text.GetString().substr(0, 80) + "..." : text.GetString();
-			throw InvalidInputException("cityparquet_json: '%s' is not valid JSON", shown);
+			throw InvalidInputException("cityparquet_json: '%s' is not valid JSON, or nests deeper than %d levels",
+			                            shown, static_cast<int64_t>(json_utils::MAX_JSON_DEPTH));
 		}
 	}
 	result.Reinterpret(input);

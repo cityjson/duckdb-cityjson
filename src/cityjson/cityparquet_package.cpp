@@ -309,7 +309,7 @@ void CityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) 
 	    [&](string_t city, string_t field, ValidityMask &mask, idx_t idx) {
 		    json parsed;
 		    try {
-			    parsed = json::parse(city.GetString());
+			    parsed = json_utils::ParseJson(city.GetString());
 		    } catch (const std::exception &) {
 			    mask.SetInvalid(idx);
 			    return string_t();

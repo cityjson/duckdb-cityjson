@@ -130,6 +130,17 @@ a test asserts it with `SET enable_logging = true; SET logging_level = 'WARNING'
 query on `duckdb_logs`, whose in-memory storage the CLI replaces — the two views are not
 interchangeable. The package writer's result rows are a file inventory, not a report.
 
+### JSON nesting depth
+
+Every JSON text this extension parses -- a CityJSON file or line, a cell, a Parquet
+footer -- goes through `json_utils::ParseJson` / `ParseJsonFile`, or calls
+`json_utils::CheckJsonDepth` first, which refuses nesting deeper than
+`MAX_JSON_DEPTH` (256). nlohmann parses and destroys iteratively, but copies and
+`dump()`s recursively, so a valid text nested a million levels deep crashes the
+process at the first copy. A bare `json::parse` on input is therefore a bug. The
+FlatCityBuf library's own decode of an attribute's JSON payload is outside this guard
+(the selective path, `fcb_selective_convert.cpp`, is inside it).
+
 ## CRS
 
 - **The footer's `crs` is tri-state, and absent is not "unknown".** GeoParquet's

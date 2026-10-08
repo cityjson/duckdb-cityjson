@@ -50,7 +50,34 @@ std::string ReadFileContent(duckdb::ClientContext &context, const std::string &f
 	return content;
 }
 
+void CheckJsonDepth(const char *text, size_t size) {
+	size_t depth = 0;
+	bool in_string = false;
+	for (size_t i = 0; i < size; i++) {
+		const char c = text[i];
+		if (in_string) {
+			if (c == '\\') {
+				i++; // the escaped character, whatever it is
+			} else if (c == '"') {
+				in_string = false;
+			}
+			continue;
+		}
+		if (c == '"') {
+			in_string = true;
+		} else if (c == '[' || c == '{') {
+			if (++depth > MAX_JSON_DEPTH) {
+				throw CityJSONError::InvalidJson("JSON nests deeper than " + std::to_string(MAX_JSON_DEPTH) +
+				                                 " levels, which this extension does not parse");
+			}
+		} else if ((c == ']' || c == '}') && depth > 0) {
+			depth--;
+		}
+	}
+}
+
 json ParseJson(const std::string &str) {
+	CheckJsonDepth(str.data(), str.size());
 	try {
 		return json::parse(str);
 	} catch (const json::parse_error &e) {
@@ -64,10 +91,12 @@ json ParseJsonFile(const std::string &file_path) {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path);
 	}
 
+	std::stringstream buffer;
+	buffer << file.rdbuf();
+	const auto content = buffer.str();
+	CheckJsonDepth(content.data(), content.size());
 	try {
-		json result;
-		file >> result;
-		return result;
+		return json::parse(content);
 	} catch (const json::parse_error &e) {
 		throw CityJSONError::InvalidJson("Failed to parse JSON from file: " + std::string(e.what()), file_path);
 	} catch (const std::exception &e) {

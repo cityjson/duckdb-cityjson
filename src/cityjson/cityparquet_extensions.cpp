@@ -188,7 +188,7 @@ namespace {
 
 json ParseOrThrow(const std::string &text, const char *function, const char *what) {
 	try {
-		return json::parse(text);
+		return json_utils::ParseJson(text);
 	} catch (const std::exception &e) {
 		throw InvalidInputException("%s: %s is not valid JSON: %s", function, what, e.what());
 	}
