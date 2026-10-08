@@ -73,12 +73,44 @@ statement ok
 PRAGMA cityparquet_init('bad');
 
 statement ok
-UPDATE bad.building SET other = 'not json' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+UPDATE bad.building SET other = '{not json' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 
 statement error
 SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
 ----
 not valid JSON
+
+# Valid JSON is not enough for an object table's `other`: spec 02-object-table-schema
+# .mdx requires a JSON object, whose members a reader restores as attributes.
+statement ok
+UPDATE bad.building SET other = '[1, 2]' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+
+statement error
+SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+----
+not a JSON object
+
+statement ok
+UPDATE bad.building SET other = '42' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+
+statement error
+SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+----
+not a JSON object
+
+statement ok
+UPDATE bad.building SET other = ' "text"' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+
+statement error
+SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+----
+not a JSON object
+
+statement ok
+UPDATE bad.building SET other = ' {"surveyed": true}' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
 
 # Reading the JSON-typed package back, through cityparquet_read: an insert of a
 # CityJSON source (whose reader carries JSON as VARCHAR) widens nothing and refuses

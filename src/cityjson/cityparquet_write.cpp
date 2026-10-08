@@ -357,6 +357,27 @@ void RefusePlusNames(Connection &connection, ClientContext &context, const std::
 	}
 }
 
+//! Refuses an object table whose `other` holds JSON that is not an object (spec
+//! 02-object-table-schema.mdx, "The `other` column": a reader restores every entry
+//! into the object's attributes, and MUST reject a cell that is not an object). Text
+//! that is not JSON at all is refused by cityparquet_json as the file is written.
+void RefuseNonObjectOther(Connection &connection, ClientContext &context, const std::string &catalog,
+                          const std::string &schema, const std::string &table) {
+	if (!HasColumn(context, schema, table, "other")) {
+		return;
+	}
+	auto found =
+	    Run(connection, "SELECT id FROM " + QualifiedName(catalog, schema, table) +
+	                        " WHERE other IS NOT NULL AND NOT starts_with(ltrim(CAST(other AS VARCHAR), ' \t\n\r'), "
+	                        "'{') LIMIT 1");
+	if (found->RowCount() > 0) {
+		throw InvalidInputException("cityparquet_write: object '%s' of '%s.%s' has an `other` that is not a JSON "
+		                            "object; its members are restored as attributes, so it must be one (spec "
+		                            "02-object-table-schema.mdx)",
+		                            found->GetValue(0, 0).ToString(), schema, table);
+	}
+}
+
 //! Fold one object table into the package-level inventory.
 void CollectInventory(Connection &connection, const std::string &catalog, const std::string &schema,
                       const std::string &table, int64_t rows, const std::vector<ColumnFacts> &facts,
@@ -901,6 +922,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 	// directory as it was.
 	for (const auto &table : object_tables) {
 		RefusePlusNames(connection, context, bind_data.catalog, bind_data.schema, table, true);
+		RefuseNonObjectOther(connection, context, bind_data.catalog, bind_data.schema, table);
 	}
 	for (const auto &sidecar : sidecars) {
 		RefusePlusNames(connection, context, bind_data.catalog, bind_data.schema, sidecar, false);

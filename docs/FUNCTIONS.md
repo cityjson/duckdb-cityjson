@@ -1056,7 +1056,8 @@ an LoD column every row leaves NULL, and its three companions, are not written.
 `other` column (object tables and the `materials` / `textures` sidecars) and the
 `surfaces` field of every `geometry_properties_lod*` struct as Parquet JSON, and
 refuses a cell that does not parse — a Parquet reader validates a JSON column
-and would refuse the whole file. A package read back holds those columns as
+and would refuse the whole file — and an object table's `other` that is not a
+JSON object, since a reader restores its members as attributes. A package read back holds those columns as
 DuckDB `JSON`; a package written as plain UTF8 holds them as `VARCHAR`. Both
 insert into, merge with and write out of each other alike. DuckDB's text
 functions do not take `JSON` without the `json` extension, so cast first:
