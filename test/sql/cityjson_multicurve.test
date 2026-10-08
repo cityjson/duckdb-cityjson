@@ -1,0 +1,76 @@
+# name: test/sql/cityjson_multicurve.test
+# description: geometry_properties.type holds the CityGML CM type -- MultiCurve for CityJSON's MultiLineString -- and exports as CityJSON
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 03-geometry-semantics.mdx: `type` is the CM geometry type. Its names coincide with
+# CityJSON's for every type but one: CityJSON `MultiLineString` is the CM `MultiCurve`.
+# footprint_outlines.city.jsonl is delft_subset's first two features with each
+# Building's LoD0 footprint surfaces turned into closed outlines, a MultiLineString
+# (test/data/README.md); no published fixture at hand carries one.
+
+query II
+SELECT geometry_properties_lod0_0.type, cityjson_wkb_geometry_type(geometry_lod0_0)
+FROM read_cityjsonseq('test/data/footprint_outlines.city.jsonl') WHERE object_type = 'Building' ORDER BY id;
+----
+MultiCurve	MultiLineString Z
+MultiCurve	MultiLineString Z
+
+# The other types are unchanged.
+query I
+SELECT DISTINCT geometry_properties_lod2_2.type FROM read_cityjsonseq('test/data/footprint_outlines.city.jsonl')
+WHERE geometry_lod2_2 IS NOT NULL;
+----
+Solid
+
+# Back out to CityJSON, the CityJSON name: the read and a package's stored struct alike.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/footprint_outlines.city.jsonl'))
+TO '__TEST_DIR__/outlines.city.jsonl' (FORMAT cityjsonseq);
+
+query II
+SELECT content LIKE '%"type":"MultiLineString"%', content LIKE '%MultiCurve%' FROM read_text('__TEST_DIR__/outlines.city.jsonl');
+----
+true	false
+
+statement ok
+CREATE SCHEMA o;
+
+statement ok
+PRAGMA cityparquet_init('o');
+
+statement ok
+PRAGMA insert_cityjsonseq('o', 'test/data/footprint_outlines.city.jsonl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('o', '__TEST_DIR__/outlines_pkg');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/outlines_pkg', 'or_');
+
+query I
+SELECT DISTINCT geometry_properties_lod0_0.type FROM or_.building WHERE geometry_lod0_0 IS NOT NULL;
+----
+MultiCurve
+
+statement ok
+COPY (SELECT * FROM or_.building) TO '__TEST_DIR__/outlines_pkg.city.jsonl' (FORMAT cityjsonseq);
+
+query II
+SELECT content LIKE '%"type":"MultiLineString"%', content LIKE '%MultiCurve%' FROM read_text('__TEST_DIR__/outlines_pkg.city.jsonl');
+----
+true	false
+
+# The outlines themselves survive, to the export's 1 mm quantisation (its default
+# transform, not the source's).
+query I
+SELECT COUNT(*) FROM (SELECT id, octet_length(geometry_lod0_0) AS n, cityjson_wkb_extent(geometry_lod0_0) AS e
+                      FROM read_cityjsonseq('test/data/footprint_outlines.city.jsonl') WHERE geometry_lod0_0 IS NOT NULL) s
+JOIN (SELECT id, octet_length(geometry_lod0_0) AS n, cityjson_wkb_extent(geometry_lod0_0) AS e
+      FROM read_cityjsonseq('__TEST_DIR__/outlines_pkg.city.jsonl')) o USING (id)
+WHERE s.n = o.n AND abs(s.e.xmin - o.e.xmin) < 0.001 AND abs(s.e.ymax - o.e.ymax) < 0.001;
+----
+2

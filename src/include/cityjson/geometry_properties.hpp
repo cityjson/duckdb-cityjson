@@ -31,5 +31,14 @@ public:
 	static json Serialize(const Geometry &geometry);
 };
 
+/**
+ * `geometry_properties.type` is the CityGML CM geometry type (spec
+ * 03-geometry-semantics.mdx). The names coincide with CityJSON's for every type but
+ * one: CityJSON's `MultiLineString` is the CM's `MultiCurve`. These map between the two,
+ * passing every other name through.
+ */
+std::string CityGMLGeometryType(const std::string &cityjson_type);
+std::string CityJSONGeometryType(const std::string &citygml_type);
+
 } // namespace cityjson
 } // namespace duckdb

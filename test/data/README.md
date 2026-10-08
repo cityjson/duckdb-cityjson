@@ -78,6 +78,15 @@ appearance `materials` and `textures` arrays kept whole. `degenerate_rings_textu
 the same object with surface 0's hole and surface 4's exterior ring cut to their first
 two vertices, for `cityjson_degenerate_rings.test`'s ring-level texture check.
 
+## footprint_outlines.city.jsonl
+
+`delft_subset.city.jsonl`'s header and first two features, with each Building's LoD0
+footprint (a `MultiSurface`) turned into its outlines -- every surface's exterior ring,
+closed, as one `MultiLineString` -- and its semantics dropped; the BuildingParts are
+unchanged. No published fixture at hand carries a `MultiLineString`, the one CityJSON
+geometry type whose CityGML CM name (`MultiCurve`) differs; `cityjson_multicurve.test`
+reads it.
+
 ## delft_append.city.jsonl
 
 One 3DBAG feature -- a Building and its BuildingPart, ids suffixed `-appended` --

@@ -4,6 +4,7 @@
 #include "cityjson/cityjson_writer.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/geometry_properties.hpp"
 #include "cityjson/city_object_utils.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -1480,7 +1481,7 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 				if (!props_value.IsNull()) {
 					const auto props = StructPropsToJson(props_value);
 					if (props.contains("type") && props["type"].is_string()) {
-						geometry["type"] = props["type"];
+						geometry["type"] = CityJSONGeometryType(props["type"].get<std::string>());
 					}
 					const std::string type = geometry["type"].get<std::string>();
 					const json no_shells = json::array();
@@ -1824,8 +1825,10 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 			}
 			try {
 				// The precise CityJSON geometry type is authoritative (spec §8 `type`).
+				// The struct holds the CityGML CM type; CityJSON spells MultiCurve
+				// MultiLineString.
 				if (props.contains("type") && props["type"].is_string()) {
-					geom["type"] = props["type"].get<std::string>();
+					geom["type"] = CityJSONGeometryType(props["type"].get<std::string>());
 				}
 				// LoD: normally set from the column name; an un-suffixed column carries
 				// it inside the JSON instead (spec §8 permitted extra key).

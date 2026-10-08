@@ -5,14 +5,21 @@
 namespace duckdb {
 namespace cityjson {
 
+std::string CityGMLGeometryType(const std::string &cityjson_type) {
+	return cityjson_type == "MultiLineString" ? "MultiCurve" : cityjson_type;
+}
+
+std::string CityJSONGeometryType(const std::string &citygml_type) {
+	return citygml_type == "MultiCurve" ? "MultiLineString" : citygml_type;
+}
+
 json GeometryPropertiesSerializer::Serialize(const Geometry &geometry) {
 	// Spec §8 flattened, face-aligned form: {type, surfaces?, face_semantics?, shells?}.
-	// `type` is the CityJSON string type; the int type code / cityjsonType of the
-	// old form are dropped. There is no `lod` key: the LoD is carried by the column
+	// `type` is the CityGML CM geometry type. There is no `lod` key: the LoD is carried by the column
 	// name (geometry_properties_lod2_2), and in the single-LoD `lod=` reading mode
 	// the caller supplied it and GetGeometryAtLOD matched it exactly.
 	json result;
-	result["type"] = geometry.type;
+	result["type"] = CityGMLGeometryType(geometry.type);
 
 	const std::string &t = geometry.type;
 	const bool is_solid = (t == "Solid");

@@ -341,7 +341,9 @@ break:
    path produced it — full or selective decode, streaming or materialised.
 3. **The LoD lives in the column name**, never in a value. That is what keeps it
    recoverable on export.
-4. **The geometry property struct is the only source of CityJSON geometry type.**
+4. **The geometry property struct is the only source of the geometry type.** It holds
+   the CityGML CM name (`MultiCurve` where CityJSON says `MultiLineString`), mapped
+   back on export.
 5. **Source vertex order and ring winding are preserved** on both encode and
    decode.
 6. **Derived state is re-derivable.** Nothing that can be recomputed from

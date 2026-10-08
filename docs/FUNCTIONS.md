@@ -2011,7 +2011,7 @@ STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGE
 
 | Field | Present when | Meaning |
 | ----- | ------------ | ------- |
-| `type` | always | CityJSON geometry type (`"Solid"`, `"MultiSurface"`, …) |
+| `type` | always | CityGML CM geometry type (`"Solid"`, `"MultiSurface"`, …) — CityJSON's name for every type but `MultiLineString`, which is `"MultiCurve"`; a COPY to CityJSON writes `MultiLineString` again |
 | `surfaces` | source has semantics | The CityJSON `surfaces` array verbatim as JSON text (`VARCHAR`; written to a package as the Parquet JSON logical type) |
 | `face_semantics` | source has semantics | One entry per WKB face, in WKB face order — the index of that face's surface in `surfaces`, or NULL |
 | `shells` | solid-family geometry | Per-solid, then per-shell face counts — always two levels deep, so a lone `Solid` is `[[12, 4]]` |
