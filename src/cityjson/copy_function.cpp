@@ -1371,8 +1371,8 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 			try {
 				decoded = WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob.data()), blob.size());
 			} catch (const CityJSONError &e) {
-				throw BinderException("implicit_geometries_query: relative geometry %lld is not valid WKB: %s",
-				                      static_cast<long long>(id), e.what());
+				throw BinderException("implicit_geometries_query: relative geometry %d is not valid WKB: %s",
+				                      id, e.what());
 			}
 			geometry["type"] = decoded.cityjson_type;
 			geometry["lod"] = LODTableUtils::ParseLODFromSuffix(entry.second);
@@ -1398,11 +1398,11 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 			break; // a relative geometry is one geometry at one LoD
 		}
 		if (geometry.is_null()) {
-			throw BinderException("implicit_geometries_query: relative geometry %lld has no geometry",
-			                      static_cast<long long>(id));
+			throw BinderException("implicit_geometries_query: relative geometry %d has no geometry",
+			                      id);
 		}
 		if (!by_id.emplace(id, std::move(geometry)).second) {
-			throw BinderException("implicit_geometries_query: id %lld occurs twice", static_cast<long long>(id));
+			throw BinderException("implicit_geometries_query: id %d occurs twice", id);
 		}
 	}
 
@@ -1456,17 +1456,17 @@ static json GeometryInstanceFromCell(const Value &cell, const CityJSONCopyBindDa
 	if (bind_data.templates_from_query) {
 		auto found = bind_data.templates_by_id.find(id.value());
 		if (found == bind_data.templates_by_id.end()) {
-			throw InvalidInputException("object %s: its implicit_geometry refers to id %lld, but there is no "
-			                            "implicit_geometries row with id %lld",
-			                            object_id, static_cast<long long>(id.value()),
-			                            static_cast<long long>(id.value()));
+			throw InvalidInputException("object %s: its implicit_geometry refers to id %d, but there is no "
+			                            "implicit_geometries row with id %d",
+			                            object_id, id.value(),
+			                            id.value());
 		}
 		template_index = found->second;
 	}
 	if (template_index < 0 || static_cast<size_t>(template_index) >= bind_data.template_count) {
-		throw InvalidInputException("object %s: its implicit_geometry refers to template %lld, which the "
+		throw InvalidInputException("object %s: its implicit_geometry refers to template %d, which the "
 		                            "geometry-templates do not have",
-		                            object_id, static_cast<long long>(template_index));
+		                            object_id, template_index);
 	}
 	WKBDecodeResult decoded;
 	try {

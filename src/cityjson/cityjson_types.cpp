@@ -309,6 +309,7 @@ std::vector<json *> ValuesArrays(std::optional<json> &member, bool themed) {
 
 std::vector<json *> ChildArrays(const std::vector<json *> &parents, size_t index) {
 	std::vector<json *> out;
+	out.reserve(parents.size());
 	for (auto *parent : parents) {
 		out.push_back(ChildArray(parent, index));
 	}
