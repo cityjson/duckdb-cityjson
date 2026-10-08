@@ -3,6 +3,7 @@
 #include "cityjson/types.hpp"
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/json_utils.hpp"
+#include "duckdb/common/types/value.hpp"
 #include <set>
 #include <vector>
 #include <string>
@@ -129,7 +130,26 @@ public:
 	 */
 	static json GetGeometryPropertiesStruct(const Geometry &geometry,
 	                                        const std::optional<std::string> &object_id = std::nullopt);
+
+	/**
+	 * The object's `address` column value (spec 02-object-table-schema.mdx,
+	 * "Addresses"): one struct per source address, each recognised member in its field
+	 * and `location` -- a MultiPoint indexing `vertices` -- as WKB MultiPointZ. NULL when
+	 * the object has no address. See AddressMemberNames for the member vocabulary.
+	 */
+	static Value GetAddressValue(const CityObject &object, const std::vector<std::array<double, 3>> *vertices,
+	                             const std::optional<Transform> &transform);
 };
+
+/**
+ * The CityJSON address member each `address` struct field is read from and written
+ * back to, in struct field order (street, house_number, po_box, zip_code, city, state,
+ * country, free_text). CityJSON prescribes no member names; `thoroughfareName`,
+ * `thoroughfareNumber`, `postcode`, `locality` and `country` are CityJSON 2.0.1's own
+ * documented example, `postBox`, `administrativeArea` and `freeText` name the three
+ * fields it has no example for. A member spelt otherwise is not retained.
+ */
+const std::vector<std::pair<std::string, std::string>> &AddressMemberNames();
 
 } // namespace cityjson
 } // namespace duckdb

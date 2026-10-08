@@ -37,7 +37,7 @@ enum class CopyColumnRole {
 	Appearance,         // material_lod* / texture_lod* (per-LoD appearance, §11)
 	Bbox,               // derived bounding box — recomputed on read, ignored on write
 	Other,              // extension fields
-	Address,            // reserved `address` column — no writer round-trips it yet
+	Address,            // reserved `address` column — written as the CityObject's `address` member
 	ImplicitGeometry,   // reserved `implicit_geometry` column — no writer round-trips it yet
 	Attribute           // everything else -> attributes map
 };
@@ -144,6 +144,7 @@ struct CityJSONCopyBindData : public FunctionData {
 	// back to `bbox`, else the member is omitted (see CityJSONCopyToSink).
 	idx_t bbox_col = DConstants::INVALID_INDEX;
 	idx_t other_col = DConstants::INVALID_INDEX;
+	idx_t address_col = DConstants::INVALID_INDEX;
 	// Legacy single properties column / fallback when a geometry column has no per-LOD
 	// properties counterpart (e.g. the old geom_lod* layout).
 	idx_t geometry_properties_col = DConstants::INVALID_INDEX;

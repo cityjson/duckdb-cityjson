@@ -159,6 +159,21 @@ std::vector<std::array<int64_t, 3>> CityJSONWriter::BuildVertexPool(std::vector<
 		}
 	}
 
+	// An address `location` is a MultiPoint into the same pool.
+	for (auto &[obj_id, obj_json] : objects) {
+		auto address = obj_json.find("address");
+		if (address == obj_json.end() || !address->is_array()) {
+			continue;
+		}
+		for (auto &entry : *address) {
+			if (entry.is_object() && entry.contains("location") && entry["location"].is_object() &&
+			    entry["location"].contains("boundaries")) {
+				CollectAndReplaceVertices(entry["location"]["boundaries"], vertex_map, vertex_pool, transform,
+				                          GetBoundaryDepth("MultiPoint"));
+			}
+		}
+	}
+
 	return vertex_pool;
 }
 

@@ -135,7 +135,7 @@ public:
  * 4. parents: LIST(VARCHAR)
  * 5. children: LIST(VARCHAR)
  * 6. children_roles: LIST(VARCHAR)
- * 7. address: LIST(STRUCT) -- always NULL until a reader parses source addresses
+ * 7. address: LIST(STRUCT) -- the CityObject's address member, NULL when it has none
  *
  * A caller assembles the full reserved order by inserting the geometry columns
  * after this, then `LODTableUtils::GetTrailingColumns()` (`implicit_geometry`, `other`),

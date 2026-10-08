@@ -1,0 +1,97 @@
+# name: test/sql/cityjson_address.test
+# description: a CityJSON address reads into the reserved address column and is written back as the CityObject's address member
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 02-object-table-schema.mdx, "Addresses": `address` is a LIST of structs of the
+# lean 3DCityDB field set, `location` a WKB MultiPointZ in the file CRS; 07-mapping-
+# cityjson.mdx maps the CityJSON `address` member onto it. CityJSON prescribes no
+# member names; the recognised ones are CityJSON 2.0.1's own documented example
+# (`country`, `locality`, `thoroughfareName`, `thoroughfareNumber`, `postcode`,
+# `location`) plus `administrativeArea`, `postBox` and `freeText` for the struct's
+# three remaining fields. Anything else in an address is not retained.
+#
+# address_location.city.jsonl is a real 3D Helsinki building whose address was
+# filled in by hand (test/data/README.md): a full first address whose location is
+# vertices 0 and 4, and a second with only `locality` -- and a differently cased
+# `Locality` and an `id`, neither of which maps.
+
+query IIIIIIIIII
+SELECT a.street, a.house_number, a.po_box, a.zip_code, a.city, a.state, a.country, a.free_text,
+       cityjson_wkb_geometry_type(a.location), a.location IS NULL
+FROM (SELECT unnest(address) AS a FROM read_cityjsonseq('test/data/address_location.city.jsonl'));
+----
+Mannerheimintie	1	PL 1	00100	Helsinki	Uusimaa	Finland	Main entrance	MultiPoint Z	false
+NULL	NULL	NULL	NULL	Espoo	NULL	NULL	NULL	NULL	true
+
+# The location is the two vertices, dequantised by the document's transform.
+query IIIIII
+SELECT round(e.xmin, 3), round(e.ymin, 3), round(e.zmin, 3), round(e.xmax, 3), round(e.ymax, 3), round(e.zmax, 3)
+FROM (SELECT cityjson_wkb_extent(address[1].location) AS e
+      FROM read_cityjsonseq('test/data/address_location.city.jsonl'));
+----
+25492827.173	6679442.054	21.487	25492829.152	6679443.5	21.487
+
+# The address is a column of its own, not an attribute: `other` does not carry it.
+query I
+SELECT other IS NULL OR other NOT LIKE '%address%' FROM read_cityjsonseq('test/data/address_location.city.jsonl');
+----
+true
+
+# --- written back --------------------------------------------------------------
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/address.city.jsonl' (FORMAT cityjsonseq);
+
+# The member is the CityObject's `address`, under the names it was read from, with the
+# location a MultiPoint indexing the feature's vertices.
+query I
+SELECT regexp_matches(content, '"address":\[\{"administrativeArea":"Uusimaa","country":"Finland","freeText":"Main entrance","locality":"Helsinki","location":\{"boundaries":\[[0-9]+,[0-9]+\],"type":"MultiPoint"\},"postBox":"PL 1","postcode":"00100","thoroughfareName":"Mannerheimintie","thoroughfareNumber":"1"\},\{"locality":"Espoo"\}\]')
+FROM read_text('__TEST_DIR__/address.city.jsonl');
+----
+true
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, address FROM read_cityjsonseq('test/data/address_location.city.jsonl')
+  EXCEPT ALL
+  SELECT id, address FROM read_cityjsonseq('__TEST_DIR__/address.city.jsonl'));
+----
+0
+
+# --- through a package ------------------------------------------------------------
+
+statement ok
+CREATE SCHEMA a;
+
+statement ok
+CREATE TABLE a.building AS SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('a');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('a', '__TEST_DIR__/address_pkg', crs => 'EPSG:7415');
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/address_pkg', 'ar');
+
+statement ok
+COPY (SELECT * FROM ar.building) TO '__TEST_DIR__/address_pkg.city.jsonl' (FORMAT cityjsonseq, crs 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, address FROM read_cityjsonseq('test/data/address_location.city.jsonl')
+  EXCEPT ALL
+  SELECT id, address FROM read_cityjsonseq('__TEST_DIR__/address_pkg.city.jsonl'));
+----
+0
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/address_pkg.city.jsonl') WHERE len(address) = 2;
+----
+1

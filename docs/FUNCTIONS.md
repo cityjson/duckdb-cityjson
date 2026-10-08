@@ -327,15 +327,18 @@ simply nothing to index.
 | `geometry` / `geometry_lod*` | No | WKB `BLOB` **or** DuckDB `GEOMETRY` |
 | `geometry_properties*` | No | CityParquet STRUCT **or** JSON text |
 
-Everything else is written as a CityJSON attribute, with one exception: `bbox`,
-`other`, `address` and `implicit_geometry` are **recognised but not
-round-tripped** — a writer neither serialises their value into the output
-CityJSON nor declares them as attribute columns. `bbox` is derived and recomputed
-on read, so writing it back would be redundant; `other`, `address` and
-`implicit_geometry` are not written yet (a future writer would reassemble
-`other`'s members onto the CityObject, `address` into the CityJSON `address`
-member and `implicit_geometry` into a `GeometryInstance`, rather than flattening
-any of the three into `attributes`).
+Everything else is written as a CityJSON attribute, except four reserved
+columns, none of which is ever declared as an attribute column:
+
+- `bbox` becomes the CityObject's `geographicalExtent` (below);
+- `other`'s members are restored into the CityObject's `attributes`; a cell that
+  is not a JSON object, or a member that duplicates an attribute column, is an
+  error;
+- `address` becomes the CityObject's `address` member, each field under the
+  member name it is read from and `location` a `MultiPoint` into the written
+  vertex pool (CityJSON and CityJSONSeq; FlatCityBuf and the mesh formats carry
+  no address);
+- `implicit_geometry` is not written.
 
 **The wide CityParquet layout round-trips directly.** A Parquet object table goes
 back to CityJSON with no intermediate step, one multi-LoD CityObject per feature:
@@ -1813,7 +1816,7 @@ Reserved columns appear in the order below, before every attribute column
 | `parents` | VARCHAR[] | Parent CityObject ids |
 | `children` | VARCHAR[] | Child CityObject ids |
 | `children_roles` | VARCHAR[] | Roles, positionally aligned with `children` |
-| `address` | STRUCT[] | Reserved; always NULL — no reader parses source addresses yet |
+| `address` | STRUCT(`street, house_number, po_box, zip_code, city, state, country, free_text VARCHAR, location BLOB`)[] | The CityObject's `address` member, one struct per address (below); NULL when it has none |
 | `bbox` | STRUCT (`xmin … zmax DOUBLE`) | 3D extent in world coordinates (below) |
 | *(the per-LoD geometry group, below)* | | |
 | `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses CityJSON `GeometryInstance` geometries yet. `id` references an `implicit_geometries` row |
@@ -1826,6 +1829,34 @@ descendants** — so a parent `Building` whose 3D detail lives on its
 `BuildingPart` children still gets a full-height extent, not a flat one. (The
 single exception is `lod =>` mode, which has only the one requested LoD to work
 from.)
+
+**`address`** holds each source address's recognised members and its
+`location` — the CityJSON `MultiPoint` resolved against the vertex pool into WKB
+`MultiPointZ`, in the file CRS. CityJSON prescribes no member names; the ones
+read, and written back by `COPY`, are CityJSON 2.0.1's documented example plus
+three for the fields it has no example for:
+
+| Field | CityJSON member |
+| ----- | --------------- |
+| `street` | `thoroughfareName` |
+| `house_number` | `thoroughfareNumber` |
+| `po_box` | `postBox` |
+| `zip_code` | `postcode` |
+| `city` | `locality` |
+| `state` | `administrativeArea` |
+| `country` | `country` |
+| `free_text` | `freeText` |
+
+A member spelt any other way (`Locality`, `countryName`) and any non-string
+value are not retained, as the specification's lean address allows; a `location`
+that does not resolve is NULL.
+
+```sql
+SELECT a.street, a.city, cityjson_wkb_geometry_type(a.location)
+FROM (SELECT unnest(address) AS a FROM read_cityjsonseq('test/data/address_location.city.jsonl'));
+-- Mannerheimintie | Helsinki | MultiPoint Z
+-- NULL            | Espoo    | NULL
+```
 
 A query selecting a reserved column **by name** is unaffected by this order; one
 selecting by ordinal position (`SELECT #4`, or a `SELECT *` a caller then indexes

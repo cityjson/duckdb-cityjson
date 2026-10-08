@@ -76,14 +76,10 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		return roles;
 	}
 
-	// `address` and `implicit_geometry`: reserved columns the spec requires present
-	// (spec "Optional data is NULL, not an omitted column"), but nothing in
-	// CityObject parses source address members or GeometryInstance data yet. Always
-	// NULL rather than surfacing a same-named source attribute here -- CityObject
-	// carries no field for either, so there is nothing to report but NULL without
-	// inventing it. (A source attribute literally named "address" or
-	// "implicit_geometry" is reserved-name-colliding input; it is preserved in
-	// `other`, not here.)
+	// `address` and `implicit_geometry` are written by the scan from the object's own
+	// address member and GeometryInstance (they need its vertex pool), never from a
+	// same-named source attribute: that is reserved-name-colliding input, preserved in
+	// `other`.
 	if (col.name == "address" || col.name == "implicit_geometry") {
 		return json(nullptr);
 	}
@@ -345,6 +341,63 @@ std::optional<GeographicalExtent> CityObjectUtils::GetGeometryExtent(const Geome
 		return std::nullopt;
 	}
 	return extent;
+}
+
+} // namespace cityjson
+} // namespace duckdb
+
+namespace duckdb {
+namespace cityjson {
+
+const std::vector<std::pair<std::string, std::string>> &AddressMemberNames() {
+	static const std::vector<std::pair<std::string, std::string>> names = {
+	    {"street", "thoroughfareName"}, {"house_number", "thoroughfareNumber"},
+	    {"po_box", "postBox"},          {"zip_code", "postcode"},
+	    {"city", "locality"},           {"state", "administrativeArea"},
+	    {"country", "country"},         {"free_text", "freeText"}};
+	return names;
+}
+
+Value CityObjectUtils::GetAddressValue(const CityObject &object, const std::vector<std::array<double, 3>> *vertices,
+                                       const std::optional<Transform> &transform) {
+	const auto list_type = ColumnTypeUtils::ToDuckDBType(ColumnType::AddressList);
+	if (!object.address.has_value() || !object.address->is_array()) {
+		return Value(list_type);
+	}
+	const auto &struct_type = ListType::GetChildType(list_type);
+	duckdb::vector<Value> entries;
+	for (const auto &address : object.address.value()) {
+		child_list_t<Value> fields;
+		for (const auto &field : AddressMemberNames()) {
+			const auto member = address.is_object() ? address.find(field.second) : address.end();
+			// A member that is not a string is not an address field this format can hold.
+			if (address.is_object() && member != address.end() && member->is_string()) {
+				fields.emplace_back(field.first, Value(member->get<std::string>()));
+			} else {
+				fields.emplace_back(field.first, Value(LogicalType(LogicalTypeId::VARCHAR)));
+			}
+		}
+		// `location` is a MultiPoint indexing the vertex pool; the column holds the
+		// geometry itself, so a location that does not resolve -- wrong type, a bad
+		// index -- is NULL rather than a dangling reference.
+		Value location {LogicalType(LogicalTypeId::BLOB)};
+		if (address.is_object() && address.contains("location") && address["location"].is_object() &&
+		    vertices != nullptr) {
+			const auto &geometry = address["location"];
+			if (geometry.value("type", "") == "MultiPoint" && geometry.contains("boundaries")) {
+				try {
+					auto wkb =
+					    WKBEncoder::Encode(Geometry("MultiPoint", "", geometry["boundaries"]), *vertices, transform);
+					location = Value::BLOB(wkb.data(), wkb.size());
+				} catch (const std::exception &) {
+					location = Value(LogicalType(LogicalTypeId::BLOB));
+				}
+			}
+		}
+		fields.emplace_back("location", std::move(location));
+		entries.push_back(Value::STRUCT(std::move(fields)));
+	}
+	return Value::LIST(struct_type, std::move(entries));
 }
 
 } // namespace cityjson

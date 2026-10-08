@@ -4,6 +4,7 @@
 #include "cityjson/cityjson_writer.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/city_object_utils.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "cityjson/copy_source_ref.hpp"
@@ -75,13 +76,9 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 	if (name == "other") {
 		return CopyColumnRole::Other;
 	}
-	// Reserved (spec 02-object-table-schema.mdx) but always NULL today: no reader
-	// populates either from source data, and no writer here reassembles a CityJSON
-	// `address` member or GeometryInstance from one. Excluded from
-	// CopyColumnRole::Attribute so a NULL `address`/`implicit_geometry` column is never
-	// written as a literal CityJSON attribute, nor declared into an FCB header's
-	// attribute schema (copy_function.cpp's declared_attr_columns) -- same
-	// acceptable-loss treatment as Bbox and Other already get.
+	// Reserved (spec 02-object-table-schema.mdx): rebuilt into the CityObject's own
+	// `address` member and GeometryInstance, never written as a CityJSON attribute nor
+	// declared into an FCB header's attribute schema (declared_attr_columns).
 	if (name == "address") {
 		return CopyColumnRole::Address;
 	}
@@ -130,6 +127,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->geometry_col = geometry_col;
 	result->bbox_col = bbox_col;
 	result->other_col = other_col;
+	result->address_col = address_col;
 	result->geometry_properties_col = geometry_properties_col;
 	result->geometry_properties_by_name = geometry_properties_by_name;
 	result->appearance_by_name = appearance_by_name;
@@ -766,6 +764,9 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 			break;
 		case CopyColumnRole::Other:
 			bind_data->other_col = i;
+			break;
+		case CopyColumnRole::Address:
+			bind_data->address_col = i;
 			break;
 		default:
 			break;
@@ -1567,6 +1568,51 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 		}
 		if (!attributes.empty()) {
 			city_obj["attributes"] = attributes;
+		}
+
+		// The `address` column back into the CityObject's `address` member (spec
+		// 07-mapping-cityjson.mdx), each field under the member name it is read from;
+		// `location` goes out as a MultiPoint of coordinates, which the writer turns into
+		// indices into the vertex pool it builds. The CityJSON family only: FlatCityBuf
+		// and the mesh formats have no address.
+		const bool cityjson_family =
+		    bind_data.format == CopyFormat::CityJSON || bind_data.format == CopyFormat::CityJSONSeq;
+		if (cityjson_family && bind_data.address_col != DConstants::INVALID_INDEX) {
+			auto address_val = input.data[bind_data.address_col].GetValue(row);
+			if (!address_val.IsNull() && address_val.type().id() == LogicalTypeId::LIST) {
+				json addresses = json::array();
+				for (const auto &entry : ListValue::GetChildren(address_val)) {
+					if (entry.IsNull() || entry.type().id() != LogicalTypeId::STRUCT) {
+						continue;
+					}
+					json address = json::object();
+					const auto &fields = StructType::GetChildTypes(entry.type());
+					const auto &values = StructValue::GetChildren(entry);
+					for (idx_t f = 0; f < fields.size(); f++) {
+						if (values[f].IsNull()) {
+							continue;
+						}
+						if (fields[f].first == "location") {
+							const auto blob = values[f].GetValueUnsafe<string_t>();
+							auto decoded =
+							    WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+							if (decoded.cityjson_type == "MultiPoint") {
+								address["location"] = {{"type", "MultiPoint"}, {"boundaries", decoded.boundaries}};
+							}
+							continue;
+						}
+						for (const auto &name : AddressMemberNames()) {
+							if (name.first == fields[f].first) {
+								address[name.second] = values[f].ToString();
+							}
+						}
+					}
+					addresses.push_back(std::move(address));
+				}
+				if (!addresses.empty()) {
+					city_obj["address"] = std::move(addresses);
+				}
+			}
 		}
 
 		// `geographicalExtent` is derived from `bbox`: the format stores one

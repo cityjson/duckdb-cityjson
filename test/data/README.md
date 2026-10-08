@@ -16,6 +16,16 @@ attribute; regenerating it from the current cityparquet-rs restores the reserved
 columns are the specification's typed MAPs, flat per WKB face, which is what
 `cityparquet_rs_appearance.test` pins.
 
+## address_location.city.jsonl
+
+One real 3D Helsinki building (a CityJSONSeq header and one feature, copied from
+cityparquet-rs's `crates/core/tests/data/`) whose `address` member was filled in by
+hand, because the published Helsinki data spells its address members `Country` /
+`Locality` / `ThoroughfareName` and so exercises none of the recognised vocabulary. The
+first address carries every recognised member and a `location` MultiPoint over vertices
+0 and 4; the second only `locality`, plus a differently cased `Locality` and an `id`,
+neither of which maps. `cityjson_address.test` reads and writes it.
+
 ## degenerate_rings.city.jsonl + degenerate_rings_appearance.city.jsonl
 
 Real objects with rings cut short by hand, for the readers' drop of rings that cannot

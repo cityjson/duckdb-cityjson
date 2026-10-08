@@ -422,6 +422,8 @@ CityObject CityObject::FromJson(const json &obj) {
 			for (auto &[attr_key, attr_value] : value.items()) {
 				result.attributes[attr_key] = attr_value;
 			}
+		} else if (key == "address" && value.is_array()) {
+			result.address = value;
 		} else if (key != "type" && key != "geometry" && key != "children" && key != "parents" &&
 		           key != "geographicalExtent" && key != "children_roles") {
 			result.attributes[key] = value;
@@ -493,6 +495,10 @@ json CityObject::ToJson() const {
 	// Add geographical extent
 	if (geographical_extent.has_value()) {
 		result["geographicalExtent"] = geographical_extent->ToJson();
+	}
+
+	if (address.has_value()) {
+		result["address"] = address.value();
 	}
 
 	// Add children
