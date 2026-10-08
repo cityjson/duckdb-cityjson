@@ -1312,6 +1312,86 @@ static void InternTemplateVertices(json &node, std::map<std::tuple<uint64_t, uin
 	}
 }
 
+// The rows of a materials or textures sidecar query as CityJSON `appearance`
+// definitions, in id order, each sidecar column under the member name it was read
+// from (spec 04-appearance-templates.mdx; `other`'s members restored alongside), and
+// each id's position in that array.
+static json SidecarDefinitions(ClientContext &context, const std::string &query, const char *what,
+                               std::map<int64_t, int64_t> &position) {
+	Connection connection(*context.db);
+	auto result = connection.Query(query);
+	if (result->HasError()) {
+		throw BinderException("%s query failed: %s", what, result->GetError());
+	}
+	static const std::map<std::string, std::string> renamed = {{"image_uri", "image"}, {"image_type", "type"}};
+	const auto &names = result->names;
+	idx_t id_col = DConstants::INVALID_INDEX;
+	for (idx_t col = 0; col < names.size(); col++) {
+		if (StringUtil::Lower(names[col]) == "id" && result->types[col].IsIntegral()) {
+			id_col = col;
+		}
+	}
+	if (id_col == DConstants::INVALID_INDEX) {
+		throw BinderException("%s query: no integer `id` column", what);
+	}
+	std::map<int64_t, json> by_id;
+	for (idx_t row = 0; row < result->RowCount(); row++) {
+		const auto id_value = result->GetValue(id_col, row);
+		if (id_value.IsNull()) {
+			throw BinderException("%s query: a row has a NULL id", what);
+		}
+		json definition = json::object();
+		for (idx_t col = 0; col < names.size(); col++) {
+			const auto value = result->GetValue(col, row);
+			if (col == id_col || value.IsNull() || names[col] == "image_data") {
+				continue;
+			}
+			if (names[col] == "other") {
+				json other;
+				try {
+					other = json_utils::ParseJson(value.ToString());
+				} catch (const std::exception &) {
+					throw BinderException("%s query: `other` of %d is not JSON", what, id_value.GetValue<int64_t>());
+				}
+				if (other.is_object()) {
+					for (auto &member : other.items()) {
+						definition[member.key()] = member.value();
+					}
+				}
+				continue;
+			}
+			const auto found = renamed.find(names[col]);
+			const auto key = found == renamed.end() ? names[col] : found->second;
+			switch (value.type().id()) {
+			case LogicalTypeId::BOOLEAN:
+				definition[key] = BooleanValue::Get(value);
+				break;
+			case LogicalTypeId::LIST: {
+				json list = json::array();
+				for (const auto &item : ListValue::GetChildren(value)) {
+					list.push_back(item.IsNull() ? json() : json(item.GetValue<double>()));
+				}
+				definition[key] = std::move(list);
+				break;
+			}
+			default:
+				if (value.type().IsNumeric()) {
+					definition[key] = value.GetValue<double>();
+				} else {
+					definition[key] = value.ToString();
+				}
+			}
+		}
+		by_id[id_value.GetValue<int64_t>()] = std::move(definition);
+	}
+	json definitions = json::array();
+	for (auto &entry : by_id) {
+		position[entry.first] = static_cast<int64_t>(definitions.size());
+		definitions.push_back(std::move(entry.second));
+	}
+	return definitions;
+}
+
 // The `implicit_geometries` sidecar rows of `query` as the document's
 // geometry-templates: one template per row, in id order, each from the row's one
 // populated geometry_lod* column (its LoD from the column name) and its
@@ -1329,6 +1409,8 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 	idx_t id_col = DConstants::INVALID_INDEX;
 	std::vector<std::pair<idx_t, std::string>> geometry_cols; // column, LoD suffix
 	std::map<std::string, idx_t> properties_cols;
+	std::map<std::string, idx_t> material_cols;
+	std::map<std::string, idx_t> texture_cols;
 	for (idx_t col = 0; col < names.size(); col++) {
 		const auto lowered = StringUtil::Lower(names[col]);
 		if (lowered == "id") {
@@ -1337,6 +1419,10 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 				                      types[col].ToString());
 			}
 			id_col = col;
+		} else if (lowered.rfind("material_lod", 0) == 0 && types[col] == MaterialCellType()) {
+			material_cols[lowered.substr(std::string("material_").size())] = col;
+		} else if (lowered.rfind("texture_lod", 0) == 0 && types[col] == TextureCellType()) {
+			texture_cols[lowered.substr(std::string("texture_").size())] = col;
 		} else if (lowered.rfind("geometry_properties_lod", 0) == 0) {
 			if (types[col].id() == LogicalTypeId::STRUCT) {
 				properties_cols[lowered.substr(std::string("geometry_properties_").size())] = col;
@@ -1361,6 +1447,17 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 		}
 		const auto id = id_value.GetValue<int64_t>();
 		json geometry;
+		// A relative geometry is one geometry at one LoD (spec 04-appearance-templates
+		// .mdx): exactly one populated LoD group per row.
+		idx_t populated = 0;
+		for (const auto &entry : geometry_cols) {
+			populated += result->GetValue(entry.first, row).IsNull() ? 0 : 1;
+		}
+		if (populated != 1) {
+			throw BinderException("implicit_geometries_query: relative geometry %d populates %d LoD geometry columns; "
+			                      "a relative geometry is one geometry at one LoD",
+			                      id, static_cast<int64_t>(populated));
+		}
 		for (const auto &entry : geometry_cols) {
 			const auto value = result->GetValue(entry.first, row);
 			if (value.IsNull()) {
@@ -1393,9 +1490,21 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 						geometry["semantics"] = {{"surfaces", props["surfaces"]},
 						                         {"values", RenestValues(type, props["face_semantics"], shells)}};
 					}
+					geometry["__shells"] = shells;
 				}
 			}
-			break; // a relative geometry is one geometry at one LoD
+			// Appearance in sidecar ids, flat per face; resolved below, once the
+			// definitions are known.
+			auto material = material_cols.find(entry.second);
+			if (material != material_cols.end() && !result->GetValue(material->second, row).IsNull()) {
+				geometry["__material"] =
+				    MaterialCellToFlatJson(MaterialCellFromValue(result->GetValue(material->second, row)));
+			}
+			auto texture = texture_cols.find(entry.second);
+			if (texture != texture_cols.end() && !result->GetValue(texture->second, row).IsNull()) {
+				geometry["__texture"] =
+				    TextureCellToFlatJson(TextureCellFromValue(result->GetValue(texture->second, row)));
+			}
 		}
 		if (geometry.is_null()) {
 			throw BinderException("implicit_geometries_query: relative geometry %d has no geometry", id);
@@ -1403,6 +1512,87 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 		if (!by_id.emplace(id, std::move(geometry)).second) {
 			throw BinderException("implicit_geometries_query: id %d occurs twice", id);
 		}
+	}
+
+	// The definitions the relative geometries' appearance names, as the document's
+	// `appearance` block, and each sidecar id's position in it.
+	bool wants_materials = false;
+	bool wants_textures = false;
+	for (const auto &entry : by_id) {
+		wants_materials = wants_materials || entry.second.contains("__material");
+		wants_textures = wants_textures || entry.second.contains("__texture");
+	}
+	json appearance = json::object();
+	std::map<int64_t, int64_t> material_position;
+	std::map<int64_t, int64_t> texture_position;
+	auto load_definitions = [&](const std::optional<std::string> &definitions_query, const char *what,
+	                            const char *option, std::map<int64_t, int64_t> &position) {
+		if (!definitions_query.has_value()) {
+			throw BinderException("implicit_geometries_query: the relative geometries carry %s, which are sidecar ids; "
+			                      "pass %s (e.g. 'SELECT * FROM pkg.%s') so they can be written",
+			                      what, option, what);
+		}
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- checked just above
+		appearance[what] = SidecarDefinitions(context, *definitions_query, what, position);
+	};
+	if (wants_materials) {
+		load_definitions(bind_data.materials_query, "materials", "materials_query", material_position);
+	}
+	if (wants_textures) {
+		load_definitions(bind_data.textures_query, "textures", "textures_query", texture_position);
+	}
+	if (!appearance.empty()) {
+		if (bind_data.source_appearance_header.has_value() && !bind_data.source_appearance_header->empty()) {
+			throw BinderException("implicit_geometries_query: the relative geometries' appearance would replace the "
+			                      "discovered source's own appearance block; COPY from the package's tables instead");
+		}
+		bind_data.source_appearance_header = appearance;
+	}
+	auto position_of = [](const std::map<int64_t, int64_t> &position, const json &id, const char *what) -> json {
+		if (!id.is_number_integer()) {
+			return id;
+		}
+		auto found = position.find(id.get<int64_t>());
+		if (found == position.end()) {
+			throw BinderException("implicit_geometries_query: a relative geometry refers to %s id %d, which the "
+			                      "query's definitions do not have",
+			                      what, id.get<int64_t>());
+		}
+		return json(found->second);
+	};
+	for (auto &entry : by_id) {
+		auto &geometry = entry.second;
+		const std::string type = geometry["type"].get<std::string>();
+		const json shells = geometry.contains("__shells") ? geometry["__shells"] : json::array();
+		if (geometry.contains("__material")) {
+			json nested = json::object();
+			for (auto &theme : geometry["__material"].items()) {
+				json values = theme.value().value("values", json::array());
+				for (auto &value : values) {
+					value = position_of(material_position, value, "material");
+				}
+				nested[theme.key()] = json {{"values", RenestValues(type, values, shells)}};
+			}
+			geometry["material"] = std::move(nested);
+		}
+		if (geometry.contains("__texture")) {
+			json nested = json::object();
+			for (auto &theme : geometry["__texture"].items()) {
+				json values = theme.value().value("values", json::array());
+				for (auto &face : values) {
+					for (auto &ring : face) {
+						if (ring.is_array() && !ring.empty()) {
+							ring[0] = position_of(texture_position, ring[0], "texture");
+						}
+					}
+				}
+				nested[theme.key()] = json {{"values", RenestValues(type, values, shells)}};
+			}
+			geometry["texture"] = std::move(nested);
+		}
+		geometry.erase("__material");
+		geometry.erase("__texture");
+		geometry.erase("__shells");
 	}
 
 	json templates = json::array();

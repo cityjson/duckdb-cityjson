@@ -261,7 +261,7 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 | `transform_scale` | VARCHAR | Vertex quantisation scale `'x,y,z'` (default `'0.001,0.001,0.001'`) |
 | `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`) |
 | `metadata_from` | VARCHAR | Path to read metadata and appearance definitions from, when the source is not discoverable from the query itself |
-| `implicit_geometries_query` | VARCHAR | SQL returning `implicit_geometries` sidecar rows, written as the document's `geometry-templates` ([below](#required-columns)) |
+| `implicit_geometries_query` | VARCHAR | SQL returning `implicit_geometries` sidecar rows, written as the document's `geometry-templates` ([below](#required-columns)); their appearance takes its definitions from `materials_query` / `textures_query` |
 | `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct or a plain string), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
 | `attr_index` | VARCHAR | *(flatcitybuf)* comma-separated columns to give a B+tree index |
 | `branching_factor` | BIGINT | *(flatcitybuf)* B+tree branching factor |
@@ -350,12 +350,17 @@ columns, none of which is ever declared as an attribute column:
 indexes come from one of two places. With `implicit_geometries_query` — SQL
 returning `implicit_geometries` sidecar rows, such as `'SELECT * FROM
 pkg.implicit_geometries'` — each row becomes one template, in `id` order, from
-its populated `geometry_lod*` and `geometry_properties_lod*` columns, its
+its one populated LoD group (a row populating none or several is an error), its
 vertices written as `vertices-templates` unquantised; an `implicit_geometry.id`
 is written as its row's position, and an id the query has no row for is an
 error. A relative geometry's `material_lod*` / `texture_lod*` cells hold sidecar
-ids, which the CityJSON family's appearance blocks cannot resolve, so they are
-not written. Without the option, a discovered source's own `geometry-templates`
+ids, so they need the definitions: `materials_query` and `textures_query` —
+`'SELECT * FROM pkg.materials'`, `'SELECT * FROM pkg.textures'` — become the
+document's `appearance` `materials` and `textures` (in `id` order, each sidecar
+column under its CityJSON member name, `other`'s members restored), the cells
+are re-pointed at their positions, and the texture UVs are interned into the
+written `vertices-texture`. Templates carrying appearance without the matching
+query are refused rather than written without it. Without the option, a discovered source's own `geometry-templates`
 member is carried across, appearance and all — its texture UVs re-interned into
 the written `vertices-texture` — and `implicit_geometry.id` is the template
 index it was read as.
@@ -363,7 +368,8 @@ index it was read as.
 ```sql
 COPY (SELECT * FROM pkg.vegetation) TO 'vegetation.city.jsonl' (
     FORMAT cityjsonseq, crs 'EPSG:7415',
-    implicit_geometries_query 'SELECT * FROM pkg.implicit_geometries');
+    implicit_geometries_query 'SELECT * FROM pkg.implicit_geometries',
+    materials_query 'SELECT * FROM pkg.materials', textures_query 'SELECT * FROM pkg.textures');
 ```
 
 **The wide CityParquet layout round-trips directly.** A Parquet object table goes
@@ -507,8 +513,10 @@ every definition in one place — the header carries some, each feature carries 
 ones it uses under its *own* local indices, so a feature's material `0` is not in
 general the header's material `0`. The sidecar is the interned union across the
 whole file, matched by structural equality (CityJSON gives a material no identity
-of its own). Header entries intern first, so their ids stay their ordinal
-positions, which is what a plain CityJSON document yields.
+of its own). Header entries intern first, so their ids are their ordinal
+positions unless the header repeats a definition, and every reference to the
+header — a plain CityJSON document's objects, the geometry templates — resolves
+through that interning.
 
 **Relative geometries are in local coordinates**, exempt from the dataset
 transform and the file CRS — an implicit geometry's `transformationMatrix` and

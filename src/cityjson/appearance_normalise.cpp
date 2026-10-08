@@ -80,9 +80,11 @@ std::string TextureKey(const Texture &texture) {
 int64_t AppearanceIndex::ResolveMaterial(const std::string &feature_id, int64_t local_index) const {
 	auto entry = material_map.find(feature_id);
 	if (entry == material_map.end()) {
-		// No definitions of its own: the local index is already the global id. This is
-		// the plain-CityJSON case, where there is only one appearance object.
-		return local_index >= 0 && local_index < static_cast<int64_t>(materials.size()) ? local_index : -1;
+		// No definitions of its own: the index is the header's -- the plain-CityJSON
+		// case, where there is only one appearance object, and the templates'.
+		return local_index >= 0 && local_index < static_cast<int64_t>(header_materials.size())
+		           ? header_materials[static_cast<size_t>(local_index)]
+		           : -1;
 	}
 	if (local_index < 0 || local_index >= static_cast<int64_t>(entry->second.size())) {
 		return -1;
@@ -93,7 +95,9 @@ int64_t AppearanceIndex::ResolveMaterial(const std::string &feature_id, int64_t 
 int64_t AppearanceIndex::ResolveTexture(const std::string &feature_id, int64_t local_index) const {
 	auto entry = texture_map.find(feature_id);
 	if (entry == texture_map.end()) {
-		return local_index >= 0 && local_index < static_cast<int64_t>(textures.size()) ? local_index : -1;
+		return local_index >= 0 && local_index < static_cast<int64_t>(header_textures.size())
+		           ? header_textures[static_cast<size_t>(local_index)]
+		           : -1;
 	}
 	if (local_index < 0 || local_index >= static_cast<int64_t>(entry->second.size())) {
 		return -1;
@@ -106,14 +110,14 @@ AppearanceIndex AppearanceIndex::Build(const CityJSON &header, const std::vector
 	std::map<std::string, int64_t> material_ids;
 	std::map<std::string, int64_t> texture_ids;
 
-	// Header first, so its entries keep their ordinal positions as ids. A plain CityJSON
-	// document has only this, so its ids are exactly the source array positions.
+	// Header first, so its entries take the lowest ids -- their ordinal positions, unless
+	// two of them are equal, which intern to one.
 	if (header.appearance.has_value()) {
 		for (const auto &material : header.appearance->materials) {
-			Intern(MaterialKey(material), material, material_ids, index.materials);
+			index.header_materials.push_back(Intern(MaterialKey(material), material, material_ids, index.materials));
 		}
 		for (const auto &texture : header.appearance->textures) {
-			Intern(TextureKey(texture), texture, texture_ids, index.textures);
+			index.header_textures.push_back(Intern(TextureKey(texture), texture, texture_ids, index.textures));
 		}
 	}
 
