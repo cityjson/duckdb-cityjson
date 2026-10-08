@@ -505,7 +505,9 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 					    "SELECT error(" + message("attribute", Literal(column.name)) + ") WHERE " + undeclared + ";\n";
 				}
 				if (MatchesLodSuffix(lowered, "geometry_properties_lod") && HasSurfacesField(column.type)) {
-					surfaces.push_back("SELECT " + Quoted(column.name) + ".surfaces AS s FROM " +
+					// Cast: a package loaded from a file that declares the JSON logical type
+					// holds `surfaces` as JSON, which regexp_matches does not take.
+					surfaces.push_back("SELECT CAST(" + Quoted(column.name) + ".surfaces AS VARCHAR) AS s FROM " +
 					                   QualifiedName(schema, table));
 				}
 			}

@@ -589,6 +589,19 @@ renumbering primitive `cityparquet_merge` and `insert_cityjson` generate calls t
 when folding one package's sidecar ids onto another's numbering; you rarely call
 it directly.
 
+### `cityparquet_json(text)`
+
+Returns its argument typed as DuckDB's `JSON`, after checking that it parses,
+and errors on text that is not JSON. A Parquet `COPY` annotates a `JSON` column
+with the Parquet JSON logical type, so this is how `cityparquet_write` declares
+`other` and `surfaces` without the `json` extension, which owns the `JSON` type
+name:
+
+```sql
+SELECT cityparquet_json('{"roofType": "1000"}');
+-- {"roofType": "1000"}
+```
+
 ### `cityparquet_city_field(city, field)`
 
 Reads one field out of a `city` footer JSON string. Note that a footer which is
@@ -950,6 +963,20 @@ SELECT COUNT(*) FROM loaded.building;
 footer into `__cityparquet` — the one thing a hand-rolled `read_parquet` load
 throws away. `cityparquet_write` regenerates each file's `city` and `geo` footers
 from the data and writes a `metadata.json` STAC Item.
+
+**JSON columns carry the JSON logical type.** `cityparquet_write` writes every
+`other` column (object tables and the `materials` / `textures` sidecars) and the
+`surfaces` field of every `geometry_properties_lod*` struct as Parquet JSON, and
+refuses a cell that does not parse — a Parquet reader validates a JSON column
+and would refuse the whole file. A package read back holds those columns as
+DuckDB `JSON`; a package written as plain UTF8 holds them as `VARCHAR`. Both
+insert into, merge with and write out of each other alike. DuckDB's text
+functions do not take `JSON` without the `json` extension, so cast first:
+
+```sql
+SELECT id FROM loaded.building
+WHERE CAST(geometry_properties_lod2_2.surfaces AS VARCHAR) LIKE '%RoofSurface%' LIMIT 1;
+```
 
 The written package opens as GeoParquet — note that its LoD0 column comes back as
 DuckDB's first-class `GEOMETRY` type, so `ST_AsText` reads it directly and
@@ -1763,7 +1790,7 @@ Reserved columns appear in the order below, before every attribute column
 | `bbox` | STRUCT (`xmin … zmax DOUBLE`) | 3D extent in world coordinates (below) |
 | *(the per-LoD geometry group, below)* | | |
 | `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses CityJSON `GeometryInstance` geometries yet. `id` references an `implicit_geometries` row |
-| `other` | JSON (VARCHAR) | Source members not mapped to a reserved or attribute column |
+| `other` | VARCHAR (JSON text) | Source members not mapped to a reserved or attribute column |
 
 Then **every attribute column** inferred from the data, last.
 
@@ -1823,7 +1850,7 @@ STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGE
 | Field | Present when | Meaning |
 | ----- | ------------ | ------- |
 | `type` | always | CityJSON geometry type (`"Solid"`, `"MultiSurface"`, …) |
-| `surfaces` | source has semantics | The CityJSON `surfaces` array verbatim as JSON text |
+| `surfaces` | source has semantics | The CityJSON `surfaces` array verbatim as JSON text (`VARCHAR`; written to a package as the Parquet JSON logical type) |
 | `face_semantics` | source has semantics | One entry per WKB face, in WKB face order — the index of that face's surface in `surfaces`, or NULL |
 | `shells` | solid-family geometry | Per-solid, then per-shell face counts — always two levels deep, so a lone `Solid` is `[[12, 4]]` |
 

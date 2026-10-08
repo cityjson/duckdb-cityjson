@@ -58,9 +58,18 @@ extension only generates text.
 - **No subqueries inside lambda bodies.** `list_filter(l, x -> x IN (SELECT ...))` is
   rejected; hoist the set into a session variable and use
   `list_contains(getvariable(...), x)`.
-- **The `JSON` type and `json_extract` are unavailable.** They live in the `json`
-  extension, which this one does not require. JSON is carried as `VARCHAR` and parsed in
-  C++ with the vendored nlohmann::json. In tests, match with `LIKE`.
+- **The `JSON` type name and `json_extract` are unavailable.** They live in the `json`
+  extension, which this one does not require: `CAST(x AS JSON)` fails to bind. The
+  readers carry JSON as `VARCHAR`, parsed in C++ with the vendored nlohmann::json; in
+  tests, match with `LIKE`. The JSON *type* itself is core (`LogicalType::JSON()`, a
+  `VARCHAR` with an alias), so `cityparquet_json` returns it and `cityparquet_write`
+  declares `other` / `surfaces` with it. That makes a package read back from disk hold
+  `JSON` columns, which text functions (`LIKE`, `regexp_matches`, a `VARCHAR`
+  parameter) refuse to bind without the `json` extension's implicit cast. Generated SQL
+  that applies one to `surfaces` or `other` must `CAST(... AS VARCHAR)` first (an
+  explicit cast needs no extension), and a type comparison must go through
+  `WithoutJsonAlias` -- `STRUCT(surfaces JSON)` and `STRUCT(surfaces VARCHAR)` are the
+  same column, and `WidenedType` would otherwise refuse an insert into a read package.
 - **`parquet_kv_metadata` returns BLOB.** Use `decode(value)`, not `value::VARCHAR` —
   the cast escapes bytes and the JSON no longer parses.
 - **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.

@@ -186,12 +186,37 @@ LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, co
 //! solid column's `PolyhedralSurface Z` is outside DuckDB's geometry model, so
 //! `ST_GeomFromWKB` would reject it here, and a reader meeting the annotation
 //! would reject it there.
+//!
+//! The JSON columns -- `other` (object tables and the materials / textures sidecars)
+//! and the `surfaces` field of every geometry-properties struct -- go out through
+//! cityparquet_json, whose result carries DuckDB's JSON type, which the Parquet
+//! writer annotates with the JSON logical type (spec 02-object-table-schema.mdx). The
+//! tables hold them as text, or as JSON when loaded from a file that declared it, so
+//! both are cast to text first.
 std::string CopySourceList(ClientContext &context, const std::string &schema, const std::string &table,
                            const std::set<std::string> &legal_geometry, const std::string &crs) {
 	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
 	vector<string> parts;
 	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.Name());
+		if (StringUtil::Lower(column.Name()) == "other") {
+			parts.push_back("cityparquet_json(CAST(" + quoted + " AS VARCHAR)) AS " + quoted);
+			continue;
+		}
+		if (HasSurfacesField(column.Type())) {
+			// Rebuilt field by field so only `surfaces` changes type; the CASE keeps a
+			// NULL struct NULL, which struct_pack alone would turn into a struct of NULLs.
+			vector<string> fields;
+			for (const auto &child : StructType::GetChildTypes(column.Type())) {
+				const auto field = KeywordHelper::WriteOptionallyQuoted(child.first);
+				const auto ref = quoted + "." + field;
+				fields.push_back(field + " := " +
+				                 (child.first == "surfaces" ? "cityparquet_json(CAST(" + ref + " AS VARCHAR))" : ref));
+			}
+			parts.push_back("CASE WHEN " + quoted + " IS NULL THEN NULL ELSE struct_pack(" +
+			                StringUtil::Join(fields, ", ") + ") END AS " + quoted);
+			continue;
+		}
 		const auto is_geometry = column.Type().id() == LogicalTypeId::GEOMETRY;
 		if (legal_geometry.count(column.Name()) > 0) {
 			// Annotated: keep it GEOMETRY-typed through the COPY, promoting the
@@ -241,11 +266,13 @@ void RefusePlusNames(Connection &connection, ClientContext &context, const std::
 		}
 		const bool is_properties = MatchesLodSuffix(StringUtil::Lower(column.name), "geometry_properties_lod");
 		if (is_properties && HasSurfacesField(column.type)) {
-			const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.name);
-			auto found = Run(connection, "SELECT regexp_extract(" + quoted + ".surfaces, " +
+			// Cast: `surfaces` is JSON in a table loaded from a file that declares it, and
+			// regexp_* take text.
+			const auto surfaces = "CAST(" + KeywordHelper::WriteOptionallyQuoted(column.name) + ".surfaces AS VARCHAR)";
+			auto found = Run(connection, "SELECT regexp_extract(" + surfaces + ", " +
 			                                 Literal(R"re("type"\s*:\s*"(\+[^"]*)")re") + ", 1) FROM " +
-			                                 QualifiedName(catalog, schema, table) + " WHERE regexp_matches(" + quoted +
-			                                 ".surfaces, " + Literal(R"re("type"\s*:\s*"\+)re") + ") LIMIT 1");
+			                                 QualifiedName(catalog, schema, table) + " WHERE regexp_matches(" +
+			                                 surfaces + ", " + Literal(R"re("type"\s*:\s*"\+)re") + ") LIMIT 1");
 			if (found->RowCount() > 0) {
 				refuse("the semantic surface type '" + found->GetValue(0, 0).ToString() + "' in '" + column.name + "'");
 			}
@@ -899,7 +926,38 @@ static void WriteScan(ClientContext &, TableFunctionInput &data, DataChunk &outp
 	output.SetCardinality(emitted);
 }
 
+//! Marks text as JSON: the value unchanged, typed as DuckDB's JSON, which the Parquet
+//! writer annotates with the JSON logical type. Each value is checked first, since a
+//! Parquet reader validates a JSON column and refuses the whole file over one bad cell.
+static void JsonFunction(DataChunk &args, ExpressionState &, Vector &result) {
+	auto &input = args.data[0];
+	UnifiedVectorFormat format;
+	input.ToUnifiedFormat(args.size(), format);
+	const auto *values = UnifiedVectorFormat::GetData<string_t>(format);
+	for (idx_t row = 0; row < args.size(); row++) {
+		const auto index = format.sel->get_index(row);
+		if (!format.validity.RowIsValid(index)) {
+			continue;
+		}
+		const auto text = values[index];
+		if (!json::accept(text.GetData(), text.GetData() + text.GetSize())) {
+			const auto shown = text.GetSize() > 80 ? text.GetString().substr(0, 80) + "..." : text.GetString();
+			throw InvalidInputException("cityparquet_json: '%s' is not valid JSON", shown);
+		}
+	}
+	result.Reinterpret(input);
+}
+
 void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
+	ScalarFunction json_function("cityparquet_json", {LogicalType(LogicalTypeId::VARCHAR)}, LogicalType::JSON(),
+	                             JsonFunction);
+	RegisterDocumented(loader, std::move(json_function),
+	                   {{"text"},
+	                    "Returns its argument typed as JSON, after checking that it parses, so that a Parquet "
+	                    "COPY annotates the column with the JSON logical type; errors on text that is not JSON.",
+	                    R"(cityparquet_json('{"roofType": "1000"}'))",
+	                    {"cityparquet", "package"}});
+
 	TableFunction func("cityparquet_write", {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	                   WriteScan, WriteBind);
 	func.init_global = WriteInitGlobal;

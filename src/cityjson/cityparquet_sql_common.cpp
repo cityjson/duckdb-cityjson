@@ -57,9 +57,32 @@ const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::
 	return nullptr;
 }
 
+LogicalType WithoutJsonAlias(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::VARCHAR:
+		return LogicalType(LogicalTypeId::VARCHAR);
+	case LogicalTypeId::STRUCT: {
+		child_list_t<LogicalType> children;
+		for (const auto &child : StructType::GetChildTypes(type)) {
+			children.emplace_back(child.first, WithoutJsonAlias(child.second));
+		}
+		return LogicalType::STRUCT(std::move(children));
+	}
+	case LogicalTypeId::LIST:
+		return LogicalType::LIST(WithoutJsonAlias(ListType::GetChildType(type)));
+	case LogicalTypeId::MAP:
+		return LogicalType::MAP(WithoutJsonAlias(MapType::KeyType(type)), WithoutJsonAlias(MapType::ValueType(type)));
+	default:
+		return type;
+	}
+}
+
 LogicalType WidenedType(const LogicalType &destination, const LogicalType &source, const std::string &function,
                         const std::string &column_name) {
-	if (destination == source) {
+	// JSON is text with a name: a package loaded from a file that declares the JSON
+	// logical type holds it as JSON, a CityJSON reader as VARCHAR, and the two are the
+	// same column.
+	if (WithoutJsonAlias(destination) == WithoutJsonAlias(source)) {
 		return LogicalType(LogicalTypeId::INVALID);
 	}
 	const auto d = destination.id();

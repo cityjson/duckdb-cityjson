@@ -31,6 +31,10 @@ const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::
 //! True for a geometry_properties struct type carrying its `surfaces` JSON text field.
 bool HasSurfacesField(const LogicalType &type);
 
+//! `type` with every JSON alias removed, nested ones included: JSON and VARCHAR hold
+//! the same text, and compare equal through this.
+LogicalType WithoutJsonAlias(const LogicalType &type);
+
 //! The promotion lattice: BIGINT -> DOUBLE is a safe widening; anything else scalar
 //! that disagrees falls back to VARCHAR. INVALID means the destination already
 //! accommodates the source. `function` and `column_name` name the caller and the

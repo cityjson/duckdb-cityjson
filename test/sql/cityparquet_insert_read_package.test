@@ -63,7 +63,8 @@ FROM before_types b JOIN (DESCRIBE pkg.building) a USING (column_name)
 WHERE a.column_type <> b.column_type;
 ----
 
-# The appearance and geometry-properties columns keep the specification's nested types.
+# The appearance and geometry-properties columns keep the specification's nested types,
+# `surfaces` the JSON type the written file declares for it.
 query TT
 SELECT column_name, column_type FROM (DESCRIBE pkg.building)
 WHERE column_name IN ('geometry_lod2_2', 'geometry_properties_lod2_2',
@@ -72,7 +73,7 @@ ORDER BY column_name;
 ----
 address	STRUCT(street VARCHAR, house_number VARCHAR, po_box VARCHAR, zip_code VARCHAR, city VARCHAR, state VARCHAR, country VARCHAR, free_text VARCHAR, "location" BLOB)[]
 geometry_lod2_2	BLOB
-geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
 implicit_geometry	STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
 material_lod2_2	MAP(VARCHAR, BIGINT[])
 texture_lod2_2	MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])

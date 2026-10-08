@@ -163,15 +163,13 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		// fixed shape (each may carry different attributes); the rest are typed so a
 		// query engine reads them without parsing. There is deliberately no `lod`
 		// field -- the column name carries the level of detail.
-		// `surfaces` is VARCHAR rather than LogicalType::JSON(). The spec's "JSON"
-		// names the logical content, not a physical annotation, and DuckDB's JSON
-		// type buys nothing here while costing real usability: it is a VARCHAR alias
-		// whose operators (`->`, `.field`) bind to json_extract from the `json`
-		// extension, which this extension does not depend on and which is not loaded
-		// by default -- so even `surfaces LIKE '%RoofSurface%'` fails to bind. It
-		// would not buy interoperability either: cityparquet-rs marks the same field
-		// with the Arrow extension name `arrow.json`, not the Parquet JSON logical
-		// type DuckDB emits, so the two never agreed via this mechanism anyway.
+		// `surfaces` is VARCHAR rather than LogicalType::JSON() in what the readers
+		// emit. DuckDB's JSON type is a VARCHAR alias whose operators (`->`,
+		// `.field`) and implicit casts come from the `json` extension, which this
+		// extension does not depend on -- so on a JSON column even `surfaces LIKE
+		// '%RoofSurface%'` fails to bind. The Parquet JSON logical type the spec
+		// requires is added where a package is written: cityparquet_write passes the
+		// field through cityparquet_json.
 		child_list_t<LogicalType> children;
 		children.push_back(std::make_pair("type", LogicalType::VARCHAR));
 		children.push_back(std::make_pair("surfaces", LogicalType::VARCHAR));

@@ -1,0 +1,149 @@
+# name: test/sql/cityparquet_json_type.test
+# description: cityparquet_write annotates the JSON columns with the Parquet JSON logical type, and every reader accepts it
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 02-object-table-schema.mdx and 04-appearance-templates.mdx type the object
+# table's `other`, `geometry_properties_lod*.surfaces` and the materials / textures
+# sidecars' `other` as JSON. In a Parquet file that is the JSON logical type, not a
+# plain UTF8 string a reader would have to guess the meaning of.
+#
+# The package: delft_subset (semantic surfaces on every LoD) and railway_appearance
+# (materials, textures and geometry templates), neither written by this extension.
+
+statement ok
+CREATE SCHEMA j;
+
+statement ok
+CREATE TABLE j.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('j');
+
+statement ok
+PRAGMA insert_cityjsonseq('j', 'test/data/railway_appearance.city.jsonl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('j', '__TEST_DIR__/json_pkg', crs => 'EPSG:7415');
+
+# Every `other` and every `surfaces`, in every file, object table or sidecar.
+query TTI
+SELECT regexp_extract(file_name, '[^/]+$'), name, COUNT(*)
+FROM parquet_schema('__TEST_DIR__/json_pkg/*.parquet')
+WHERE name IN ('other', 'surfaces') AND logical_type = 'JsonType()' AND converted_type = 'JSON'
+GROUP BY ALL ORDER BY ALL;
+----
+bridge.parquet	other	1
+bridge.parquet	surfaces	1
+building.parquet	other	1
+building.parquet	surfaces	4
+city_furniture.parquet	other	1
+city_furniture.parquet	surfaces	1
+implicit_geometries.parquet	surfaces	1
+materials.parquet	other	1
+textures.parquet	other	1
+
+query I
+SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/json_pkg/*.parquet')
+WHERE name IN ('other', 'surfaces') AND logical_type IS DISTINCT FROM 'JsonType()';
+----
+0
+
+# The annotation is the only change: the text is the same text.
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, CAST(geometry_properties_lod2_2.surfaces AS VARCHAR) FROM read_parquet('__TEST_DIR__/json_pkg/building.parquet')
+  EXCEPT ALL
+  SELECT id, geometry_properties_lod2_2.surfaces FROM j.building);
+----
+0
+
+# A cell that is not JSON cannot be written as JSON: a Parquet reader validates a
+# JSON column and would refuse the whole file, so the writer refuses it first.
+statement ok
+CREATE SCHEMA bad;
+
+statement ok
+CREATE TABLE bad.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('bad');
+
+statement ok
+UPDATE bad.building SET other = 'not json' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
+
+statement error
+SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+----
+not valid JSON
+
+# Reading the JSON-typed package back, through cityparquet_read: an insert of a
+# CityJSON source (whose reader carries JSON as VARCHAR) widens nothing and refuses
+# nothing, and the package writes out again.
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/json_pkg', 'jr');
+
+statement ok
+PRAGMA insert_cityjsonseq('jr', 'test/data/delft_append.city.jsonl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('jr', '__TEST_DIR__/json_pkg_again', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/json_pkg_again/building.parquet')
+WHERE name IN ('other', 'surfaces') AND logical_type = 'JsonType()';
+----
+5
+
+# ...and back to CityJSON, semantics intact.
+statement ok
+COPY (SELECT * FROM jr.building) TO '__TEST_DIR__/json_pkg.city.jsonl' (FORMAT cityjsonseq, crs 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, geometry_properties_lod2_2.surfaces, geometry_properties_lod2_2.face_semantics
+  FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
+  EXCEPT ALL
+  SELECT id, geometry_properties_lod2_2.surfaces, geometry_properties_lod2_2.face_semantics
+  FROM read_cityjsonseq('__TEST_DIR__/json_pkg.city.jsonl'));
+----
+0
+
+# A hand-rolled load keeps the file's JSON type in the table; inserting into it and
+# writing it out work the same.
+statement ok
+CREATE SCHEMA h;
+
+statement ok
+CREATE TABLE h.building AS SELECT * FROM read_parquet('__TEST_DIR__/json_pkg/building.parquet');
+
+statement ok
+PRAGMA cityparquet_init('h');
+
+statement ok
+PRAGMA insert_cityjsonseq('h', 'test/data/delft_append.city.jsonl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/json_pkg_hand', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/json_pkg_hand/building.parquet') WHERE id LIKE '%-appended%';
+----
+2
+
+# A package whose writer used plain UTF8 (cityparquet_rs_minimal, written by
+# cityparquet-rs) reads as before and is written back with the JSON type.
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'rs');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('rs', '__TEST_DIR__/rs_rewritten', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/rs_rewritten/building.parquet')
+WHERE name IN ('other', 'surfaces') AND logical_type IS DISTINCT FROM 'JsonType()';
+----
+0
