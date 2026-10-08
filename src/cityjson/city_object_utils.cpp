@@ -144,9 +144,13 @@ std::vector<Column> CityObjectUtils::InferAttributeColumns(const std::vector<Cit
 					continue;
 				}
 
-				// Infer type from value
-				ColumnType inferred_type = ColumnTypeUtils::InferFromJson(attr_value);
-				attribute_types[attr_key].push_back(inferred_type);
+				// A null is the absence of a value and carries no type: it registers the
+				// attribute but casts no vote. An attribute null everywhere resolves from
+				// no samples, to VARCHAR.
+				auto &types = attribute_types[attr_key];
+				if (!attr_value.is_null()) {
+					types.push_back(ColumnTypeUtils::InferFromJson(attr_value));
+				}
 			}
 		}
 	}
