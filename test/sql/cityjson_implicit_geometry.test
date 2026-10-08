@@ -226,3 +226,31 @@ JOIN m.implicit_geometries dt ON dt.id = d.implicit_geometry.id
 WHERE st.geometry_lod3_0 = dt.geometry_lod3_0;
 ----
 15
+
+# --- untrusted input -------------------------------------------------------------------
+
+# A reference point cut short mid-coordinate is refused with an error, never read past.
+statement error
+COPY (SELECT * REPLACE (struct_pack(id := implicit_geometry.id,
+                                    point := unhex(substr(hex(implicit_geometry.point), 1, 20)),
+                                    "transformationMatrix" := implicit_geometry."transformationMatrix") AS implicit_geometry)
+      FROM read_cityjson('test/data/railway_vegetation.city.json') WHERE implicit_geometry IS NOT NULL)
+TO '__TEST_DIR__/truncated_point.city.json' (FORMAT cityjson);
+----
+implicit_geometry.point is not valid WKB
+
+# A column of another shape is refused at bind.
+statement error
+COPY (SELECT * REPLACE ({'id': 0, 'point': 'not wkb'} AS implicit_geometry)
+      FROM read_cityjson('test/data/railway_vegetation.city.json'))
+TO '__TEST_DIR__/bad_implicit.city.json' (FORMAT cityjson);
+----
+the `implicit_geometry` column must be STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
+
+# So is a relative geometry that is not WKB.
+statement error
+COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/bad_template.city.jsonl'
+(FORMAT cityjsonseq, crs 'EPSG:7415',
+ implicit_geometries_query 'SELECT id, unhex(substr(hex(geometry_lod3_0), 1, 30)) AS geometry_lod3_0 FROM vr.implicit_geometries');
+----
+is not valid WKB
