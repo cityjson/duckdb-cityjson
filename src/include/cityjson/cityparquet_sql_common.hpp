@@ -44,8 +44,8 @@ LogicalType WithoutJsonAlias(const LogicalType &type);
 //! BIGINT -> DOUBLE is a safe widening; anything else scalar that disagrees falls back
 //! to VARCHAR. INVALID means the destination already accommodates the source -- a
 //! DOUBLE takes a BIGINT, a VARCHAR any scalar. A caller that widens says so with
-//! LogWidening: the column's type changes for the rows already there. `function` and `column_name` name the caller and the
-//! column being evolved, for the exception below.
+//! LogWidening: the column's type changes for the rows already there. `function` and `column_name` name the caller and
+//! the column being evolved, for the exception below.
 //!
 //! A nested type (STRUCT/LIST/MAP) on either side is refused outright rather than
 //! stringified: reserved structural columns (`bbox`, `children`, `children_roles`, a
