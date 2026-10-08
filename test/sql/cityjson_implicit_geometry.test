@@ -254,3 +254,37 @@ COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/bad_template.city.jsonl'
  implicit_geometries_query 'SELECT id, unhex(substr(hex(geometry_lod3_0), 1, 30)) AS geometry_lod3_0 FROM vr.implicit_geometries');
 ----
 is not valid WKB
+
+# --- a package this extension did not write -------------------------------------------
+
+# cityparquet_rs_minimal is cityparquet-rs's package of the same lod3_railway source:
+# its relative geometries and implicit_geometry cells are byte for byte what this
+# reader makes of the same objects, and they export the same way.
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'rs');
+
+query I
+SELECT COUNT(*) FROM rs.implicit_geometries r
+JOIN cityjson_implicit_geometries('test/data/railway_vegetation.city.json') d USING (id)
+WHERE r.geometry_lod3_0 = d.geometry_lod3_0;
+----
+3
+
+query I
+SELECT COUNT(*) FROM rs.vegetation r JOIN read_cityjson('test/data/railway_vegetation.city.json') d USING (id)
+WHERE r.implicit_geometry = d.implicit_geometry;
+----
+15
+
+statement ok
+COPY (SELECT * FROM rs.vegetation) TO '__TEST_DIR__/rs_vegetation.city.jsonl'
+(FORMAT cityjsonseq, implicit_geometries_query 'SELECT * FROM rs.implicit_geometries');
+
+query I
+SELECT COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json') s
+JOIN read_cityjsonseq('__TEST_DIR__/rs_vegetation.city.jsonl') o USING (id)
+JOIN cityjson_implicit_geometries('test/data/railway_vegetation.city.json') t ON t.id = s.implicit_geometry.id
+JOIN cityjson_implicit_geometries('__TEST_DIR__/rs_vegetation.city.jsonl') ot ON ot.id = o.implicit_geometry.id
+WHERE t.geometry_lod3_0 = ot.geometry_lod3_0;
+----
+15

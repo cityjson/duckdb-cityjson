@@ -134,16 +134,30 @@ SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/json_pkg_hand/building.parquet')
 ----
 2
 
-# A package whose writer used plain UTF8 (cityparquet_rs_minimal, written by
-# cityparquet-rs) reads as before and is written back with the JSON type.
+# A package whose files carry plain UTF8 text -- a COPY of a CityJSON read, which holds
+# JSON as VARCHAR -- reads as before and is written back with the JSON type.
+# (The package directory is made by writing it first; its one table is then replaced.)
 statement ok
-PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'rs');
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/utf8_pkg', crs => 'EPSG:7415');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('rs', '__TEST_DIR__/rs_rewritten', crs => 'EPSG:7415');
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO '__TEST_DIR__/utf8_pkg/building.parquet' (FORMAT parquet);
 
 query I
-SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/rs_rewritten/building.parquet')
+SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/utf8_pkg/building.parquet')
+WHERE name IN ('other', 'surfaces') AND converted_type = 'UTF8';
+----
+5
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/utf8_pkg', 'u');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('u', '__TEST_DIR__/utf8_rewritten', crs => 'EPSG:7415');
+
+query I
+SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/utf8_rewritten/building.parquet')
 WHERE name IN ('other', 'surfaces') AND logical_type IS DISTINCT FROM 'JsonType()';
 ----
 0

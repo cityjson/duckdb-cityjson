@@ -5,10 +5,10 @@
     "https://cityjson.github.io/stac-city3d/v0.2.0/schema.json",
     "https://stac-extensions.github.io/file/v2.1.0/schema.json"
   ],
-  "id": "rs_minimal",
+  "id": "rs_min_full",
   "geometry": null,
   "properties": {
-    "datetime": "2026-09-04T22:42:51Z",
+    "datetime": "2026-10-08T09:16:34Z",
     "city3d:version": "2.0",
     "city3d:city_objects": 121,
     "city3d:lods": [
@@ -52,15 +52,25 @@
   },
   "links": [],
   "assets": {
-    "data": {
-      "href": "./building.parquet",
-      "title": "3D city model data",
+    "vegetation.parquet": {
+      "href": "./vegetation.parquet",
       "type": "application/vnd.apache.parquet",
       "roles": [
-        "data"
+        "data",
+        "cityparquet-objects"
       ],
-      "file:size": 61589,
-      "file:checksum": "12207e5d81f1b5cd0b8bb266b9de1220053dfe26e6f584f317418f681ca26ba87c21"
+      "file:size": 11346,
+      "file:checksum": "12207993fe9ca626c859e9a9d54d3d1c647e3a45cde4938505bc12f1939c1950e9f6"
+    },
+    "generics.parquet": {
+      "href": "./generics.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-objects"
+      ],
+      "file:size": 329878,
+      "file:checksum": "122074ae4b574c376fef024f1342cdb1af1c71023fef71318af34b101dabdaaa6a11"
     },
     "bridge.parquet": {
       "href": "./bridge.parquet",
@@ -69,8 +79,8 @@
         "data",
         "cityparquet-objects"
       ],
-      "file:size": 118051,
-      "file:checksum": "12206c83ee0f09dea9cee1ff4bc5ee3bf99ae5b2842a765fe7a43dae4f444a0c55eb"
+      "file:size": 119193,
+      "file:checksum": "122015880413e0b953bc42f3890d2902cccc3091aeed06722445256a84d7452cf808"
     },
     "building.parquet": {
       "href": "./building.parquet",
@@ -79,8 +89,38 @@
         "data",
         "cityparquet-objects"
       ],
-      "file:size": 61589,
-      "file:checksum": "12207e5d81f1b5cd0b8bb266b9de1220053dfe26e6f584f317418f681ca26ba87c21"
+      "file:size": 62031,
+      "file:checksum": "1220579542726a70be74504f3fe373a098e3720cec10daf712562bba707bbae4259b"
+    },
+    "materials.parquet": {
+      "href": "./materials.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-sidecar"
+      ],
+      "file:size": 6241,
+      "file:checksum": "1220090361739b43071ecf98db220bad0e9d9f96913eb0b243dbb06bffa25eaf8b04"
+    },
+    "textures.parquet": {
+      "href": "./textures.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-sidecar"
+      ],
+      "file:size": 3570,
+      "file:checksum": "1220d6e983d2f3aa6a06689c6488b9267768c3aa9d0e8f25c7badaee967e4f91f175"
+    },
+    "implicit_geometries.parquet": {
+      "href": "./implicit_geometries.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-sidecar"
+      ],
+      "file:size": 21144,
+      "file:checksum": "122022e93a9aa11b10c46b12b32bb6b178a1002eaace0e81503ea257f8bc37b17f92"
     }
   }
 }

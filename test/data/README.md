@@ -1,20 +1,21 @@
 ## cityparquet_rs_minimal/
 
-A CityParquet package written by the reference implementation (cityparquet-rs) from
-`lod3_railway.city.json`. It exists so the package-layer tests read a file this
-extension did not produce: a reader and writer that agree on a wrong encoding pass
-every assertion made against each other.
+A CityParquet package written by the reference implementation (cityparquet-rs, monorepo
+commit f9e0374) from `lod3_railway.city.json`: `cityparquet convert lod3_railway.city.json
+-o OUT --lod0`. It exists so the package-layer tests read files this extension did not
+produce: a reader and writer that agree on a wrong encoding pass every assertion made
+against each other.
 
-Trimmed to `building.parquet` + `bridge.parquet` + `metadata.json` (the full
-conversion produces twelve object/sidecar tables); `metadata.json`'s `assets` map is
-hand-edited to match. The point of the fixture is the schema and footer conventions
-`building.parquet` carries -- notably the reserved `address` column -- not the row
-count or the full module set. It was written before the `implicit_geometry` rename and
-carries a `template` column instead, which this extension reads as an ordinary
-attribute; regenerating it from the current cityparquet-rs restores the reserved
-`implicit_geometry` coverage. Its `material_lod*` / `texture_lod*`
-columns are the specification's typed MAPs, flat per WKB face, which is what
-`cityparquet_rs_appearance.test` pins.
+Trimmed to the `building`, `bridge`, `vegetation` and `generics` object tables and all
+three sidecars (`materials`, `textures`, `implicit_geometries`) -- the full conversion
+also writes `city_furniture`, `relief`, `transportation`, `tunnel` and `water_body` --
+with `metadata.json`'s `assets` cut to match; nothing else is edited. `generics` is kept
+because it holds the CityObjectGroup the vegetation objects belong to. `--lod0` gives
+`building` a GeoParquet-legal `geometry_lod0_0`, which DuckDB reads as `GEOMETRY`. The
+`other` and `surfaces` columns carry the Parquet JSON logical type; the
+`material_lod*` / `texture_lod*` columns are the specification's typed MAPs, flat per WKB
+face, which is what `cityparquet_rs_appearance.test` pins. `cityparquet validate` reports
+no error and no warning on it.
 
 ## address_location.city.jsonl
 
