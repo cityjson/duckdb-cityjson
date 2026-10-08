@@ -11,9 +11,12 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 
@@ -389,6 +392,82 @@ void InitSQLScalar(DataChunk &args, ExpressionState &state, Vector &result) {
 
 } // namespace
 
+namespace {
+
+//! A Parquet file's top-level column names as the file spells them, in order: the
+//! root's children in parquet_schema's depth-first listing, each nested subtree skipped.
+std::vector<std::string> FileColumnNames(Connection &connection, const std::string &path) {
+	auto result = connection.Query("SELECT name, COALESCE(num_children, 0) FROM parquet_schema(" + Literal(path) + ")");
+	if (result->HasError()) {
+		throw IOException("cityparquet_read: cannot read the schema of '%s': %s", path, result->GetError());
+	}
+	std::vector<std::pair<std::string, int64_t>> rows;
+	for (idx_t row = 0; row < result->RowCount(); row++) {
+		rows.emplace_back(result->GetValue(0, row).ToString(), result->GetValue(1, row).GetValue<int64_t>());
+	}
+	std::function<size_t(size_t)> skip = [&](size_t at) {
+		const auto children = at < rows.size() ? rows[at].second : 0;
+		size_t next = at + 1;
+		for (int64_t child = 0; child < children; child++) {
+			next = skip(next);
+		}
+		return next;
+	};
+	std::vector<std::string> names;
+	if (rows.empty()) {
+		return names;
+	}
+	size_t at = 1;
+	for (int64_t child = 0; child < rows[0].second && at < rows.size(); child++) {
+		names.push_back(rows[at].first);
+		at = skip(at);
+	}
+	return names;
+}
+
+//! The projection that loads an object table. A column whose name differs from an
+//! earlier one only by case -- an attribute `ID` beside the reserved `id`, which spec 02
+//! allows since its reserved names are exact -- cannot be a DuckDB column of its own:
+//! read_parquet renames it (`ID_1`), and COPY would restore the attribute under that
+//! name. It goes into `other` instead, under its own name, the column for an attribute
+//! that has none of its own.
+std::string ObjectTableProjection(Connection &connection, const std::string &path) {
+	const auto file_names = FileColumnNames(connection, path);
+	auto described =
+	    connection.Query("SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet(" + Literal(path) + "))");
+	if (described->HasError()) {
+		throw IOException("cityparquet_read: cannot read '%s': %s", path, described->GetError());
+	}
+	if (described->RowCount() != file_names.size()) {
+		return "*";
+	}
+	std::vector<std::pair<std::string, std::string>> folded; // DuckDB name, file name
+	bool has_other = false;
+	for (idx_t i = 0; i < described->RowCount(); i++) {
+		const auto name = described->GetValue(0, i).ToString();
+		has_other = has_other || name == "other";
+		if (name != file_names[i]) {
+			folded.emplace_back(name, file_names[i]);
+		}
+	}
+	if (folded.empty()) {
+		return "*";
+	}
+	std::string other = has_other ? "CAST(other AS VARCHAR)" : "CAST(NULL AS VARCHAR)";
+	vector<string> excluded;
+	for (const auto &entry : folded) {
+		const auto column = KeywordHelper::WriteOptionallyQuoted(entry.first);
+		excluded.push_back(column);
+		other = "CASE WHEN " + column + " IS NULL THEN " + other + " ELSE cityparquet_set_city_field(" + other + ", " +
+		        Literal(entry.second) + ", CAST(cityparquet_to_json(" + column + ") AS VARCHAR)) END";
+	}
+	other = "cityparquet_json(" + other + ")";
+	const auto exclude = "* EXCLUDE (" + StringUtil::Join(excluded, ", ") + ")";
+	return has_other ? exclude + " REPLACE (" + other + " AS other)" : exclude + ", " + other + " AS other";
+}
+
+} // namespace
+
 std::string BuildReadSQL(ClientContext &context, const std::string &directory, const std::string &schema) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (!fs.DirectoryExists(directory)) {
@@ -427,13 +506,15 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory, c
 	sql += "CREATE OR REPLACE TABLE " + bookkeeping +
 	       " (table_name VARCHAR, file_name VARCHAR, role VARCHAR, city VARCHAR);\n";
 
+	Connection connection(DatabaseInstance::GetDatabase(context));
 	for (const auto &table : found) {
 		const auto file = table + ".parquet";
 		const auto path = fs.JoinPath(directory, file);
-		sql += "CREATE OR REPLACE TABLE " + QualifiedName(schema, table) + " AS SELECT * FROM read_parquet(" +
-		       Literal(path) + ");\n";
 		const bool is_object =
 		    std::find(ModuleTableNames().begin(), ModuleTableNames().end(), table) != ModuleTableNames().end();
+		const auto projection = is_object ? ObjectTableProjection(connection, path) : "*";
+		sql += "CREATE OR REPLACE TABLE " + QualifiedName(schema, table) + " AS SELECT " + projection +
+		       " FROM read_parquet(" + Literal(path) + ");\n";
 		// decode(), not a cast: parquet_kv_metadata returns BLOB, and casting it to
 		// VARCHAR escapes bytes so the JSON no longer parses.
 		sql += "INSERT INTO " + bookkeeping + " (table_name, file_name, role, city) SELECT " + Literal(table) + ", " +

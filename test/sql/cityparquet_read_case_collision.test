@@ -1,0 +1,48 @@
+# name: test/sql/cityparquet_read_case_collision.test
+# description: a package column whose name differs from another only by case is read into `other`, under its own name
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# cityparquet_rs_helsinki: a real Helsinki building as cityparquet-rs writes it, with
+# the attribute `ID` (767157.0) a column of its own beside the reserved `id`. Spec 02's
+# reserved names are exact, so the package is valid; DuckDB's column names are not
+# case-sensitive, so read_parquet would hand the attribute over as `ID_1`, and COPY
+# would write it back under that name. The reader moves it into `other` instead -- the
+# column for an attribute with no column of its own -- under its own name, so it is
+# restored as the attribute it was.
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_helsinki', 'h');
+
+query I
+SELECT COUNT(*) FROM information_schema.columns
+WHERE table_schema = 'h' AND table_name = 'building' AND column_name ILIKE 'id%';
+----
+1
+
+query T
+SELECT CAST(other AS VARCHAR) FROM h.building;
+----
+{"ID":767157.0}
+
+statement ok
+COPY (SELECT * FROM h.building) TO '__TEST_DIR__/h.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0')
+   AND NOT regexp_matches(content, '"ID_1"')
+FROM read_text('__TEST_DIR__/h.city.jsonl');
+----
+true
+
+# The attribute is not lost on the way back out either.
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/h_pkg');
+
+query T
+SELECT CAST(other AS VARCHAR) FROM read_parquet('__TEST_DIR__/h_pkg/building.parquet');
+----
+{"ID":767157.0}

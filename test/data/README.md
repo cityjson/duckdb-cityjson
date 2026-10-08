@@ -185,3 +185,11 @@ its four UVs are one per vertex; `BID_e47016b2…`'s `[0, 4, 4, 6, 1]` repeats a
 place and `BID_ce1e6c36…`'s `[0, 4, 6, 8, 1]` has five distinct vertices, so both are
 one UV short. `cityjson_texture_closed_ring.test` reads it, and
 `cityparquet_json_attribute.test` inserts it for its `Integrate_LoD[1]` objects.
+
+## cityparquet_rs_helsinki/
+
+`address_location.city.jsonl` as cityparquet-rs (monorepo commit 9e5de83) writes it:
+`cityparquet convert address_location.city.jsonl -o OUT`, unedited. Its Helsinki
+attribute `ID` is a column of its own beside the reserved `id` -- legal Parquet, since the
+specification's reserved names are exact -- which a case-insensitive DuckDB cannot hold
+as two columns. `cityparquet_read_case_collision.test` reads it.

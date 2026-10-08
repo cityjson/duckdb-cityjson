@@ -738,6 +738,13 @@ SELECT table_name, role, city IS NOT NULL AS has_footer FROM delft.__cityparquet
 -- building | object | true
 ```
 
+An object table column whose name differs from another's only by case — an
+attribute `ID` beside the reserved `id`, which the specification allows because
+its reserved names are exact — cannot be a DuckDB column of its own, since DuckDB
+names are case-insensitive. `cityparquet_read` moves its values into `other`
+under the attribute's name, so `COPY` restores the attribute as it was, and a
+package written back holds it there.
+
 **A hand-rolled `read_parquet` load is not equivalent.** It gives you the same
 rows, but `read_parquet` returns only the data — the Parquet footer is discarded
 and cannot be recovered afterwards:

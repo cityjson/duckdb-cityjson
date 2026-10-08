@@ -1,0 +1,185 @@
+{
+  "type": "Feature",
+  "stac_version": "1.1.0",
+  "stac_extensions": [
+    "https://cityjson.github.io/stac-city3d/v0.2.0/schema.json",
+    "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
+    "https://stac-extensions.github.io/file/v2.1.0/schema.json"
+  ],
+  "id": "cityparquet_rs_helsinki",
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+      [
+        [
+          129.7433600280324,
+          -21.972695710952532
+        ],
+        [
+          129.74340225805457,
+          -21.972695710952532
+        ],
+        [
+          129.74340225805457,
+          -21.97265776315437
+        ],
+        [
+          129.7433600280324,
+          -21.97265776315437
+        ],
+        [
+          129.7433600280324,
+          -21.972695710952532
+        ]
+      ]
+    ]
+  },
+  "bbox": [
+    129.7433600280324,
+    -21.972695710952532,
+    15.38,
+    129.74340225805457,
+    -21.97265776315437,
+    22.810000000000002
+  ],
+  "properties": {
+    "datetime": "2026-10-08T12:56:08Z",
+    "city3d:version": "2.0",
+    "city3d:city_objects": 1,
+    "city3d:lods": [
+      "1.0",
+      "2.0"
+    ],
+    "city3d:co_types": [
+      "Building"
+    ],
+    "city3d:attributes": [
+      {
+        "name": "BREC_BuildingHeightNN",
+        "type": "Number"
+      },
+      {
+        "name": "BREC_RoofNames",
+        "type": "String"
+      },
+      {
+        "name": "CODE",
+        "type": "String"
+      },
+      {
+        "name": "C_KAYTTARK",
+        "type": "String"
+      },
+      {
+        "name": "GroundLevel",
+        "type": "Number"
+      },
+      {
+        "name": "HighestRoof",
+        "type": "Number"
+      },
+      {
+        "name": "ID",
+        "type": "Number"
+      },
+      {
+        "name": "Integrate_LoD[1]",
+        "type": "Object"
+      },
+      {
+        "name": "KG_KRAKENN",
+        "type": "Number"
+      },
+      {
+        "name": "Katuosoite",
+        "type": "String"
+      },
+      {
+        "name": "Kayttotarkoitus",
+        "type": "String"
+      },
+      {
+        "name": "Kerroksia",
+        "type": "Number"
+      },
+      {
+        "name": "Kerrosala",
+        "type": "Number"
+      },
+      {
+        "name": "Kokonaisala",
+        "type": "Number"
+      },
+      {
+        "name": "LowestRoof",
+        "type": "Number"
+      },
+      {
+        "name": "RATU",
+        "type": "Number"
+      },
+      {
+        "name": "REPAIRED",
+        "type": "String"
+      },
+      {
+        "name": "Rakennuksen_tila",
+        "type": "String"
+      },
+      {
+        "name": "Rakennusaine",
+        "type": "String"
+      },
+      {
+        "name": "TILA_KOODI",
+        "type": "Number"
+      },
+      {
+        "name": "Tilavuus",
+        "type": "Number"
+      },
+      {
+        "name": "UUID",
+        "type": "String"
+      },
+      {
+        "name": "VTJ_PRT",
+        "type": "String"
+      },
+      {
+        "name": "Valmistunut",
+        "type": "Date"
+      },
+      {
+        "name": "creationDate",
+        "type": "Date"
+      },
+      {
+        "name": "measuredHeight",
+        "type": "Number"
+      },
+      {
+        "name": "roofType",
+        "type": "String"
+      }
+    ],
+    "city3d:semantic_surfaces": true,
+    "city3d:textures": false,
+    "city3d:materials": false,
+    "cityparquet:version": "0.1.0-draft",
+    "proj:code": "EPSG:7415"
+  },
+  "links": [],
+  "assets": {
+    "building.parquet": {
+      "href": "./building.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-objects"
+      ],
+      "file:size": 36333,
+      "file:checksum": "122097283f697d337611740776e90019f4e9b8a808b2fbf3412879eee08ce42b7ff5"
+    }
+  }
+}
