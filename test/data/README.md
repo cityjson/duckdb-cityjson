@@ -174,3 +174,13 @@ from one that does not. `copy_gltf.test` reads the `TEXCOORD_0` bytes out of the
 `.bin` and compares them against the float32 pair it expects. `quad_texture.png` is a
 real 1x1 PNG and is on disk beside the fixture, because the flip is only written for
 a face whose texture image could actually be loaded.
+
+## helsinki_tex_uv_count.city.jsonl
+
+Copied unchanged from cityparquet-rs's `crates/core/tests/data/`: the header line and
+three features (lines 16875, 16509 and 43164) of the real Helsinki textured CityJSONSeq
+(`Helsinki_tex.city.jsonl`, City of Helsinki, CC BY 4.0), each with one textured LoD2
+roof ring of four UVs. `BID_087ea02f…`'s ring `[0, 2, 4, 6, 0]` is explicitly closed, so
+its four UVs are one per vertex; `BID_e47016b2…`'s `[0, 4, 4, 6, 1]` repeats a vertex in
+place and `BID_ce1e6c36…`'s `[0, 4, 6, 8, 1]` has five distinct vertices, so both are
+one UV short. `cityjson_texture_closed_ring.test` reads it.

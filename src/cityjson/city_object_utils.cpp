@@ -19,6 +19,13 @@ namespace cityjson {
 void ReportDroppedRings(ClientContext &context, const CityJSONFeature &feature) {
 	for (const auto &[id, object] : feature.city_objects) {
 		for (const auto &geometry : object.geometry) {
+			if (geometry.short_uv_rings > 0) {
+				DUCKDB_LOG_WARNING(context,
+				                   "cityjson: object '%s' (%s, lod %s): left %llu textured ring(s) untextured that "
+				                   "have fewer UV indices than vertices, so which vertex lacks one is not stated",
+				                   id, geometry.type, geometry.lod,
+				                   static_cast<unsigned long long>(geometry.short_uv_rings));
+			}
 			if (geometry.dropped_rings == 0) {
 				continue;
 			}

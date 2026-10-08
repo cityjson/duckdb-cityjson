@@ -116,6 +116,13 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 			}
 			for (idx_t i = 0; i < result->templates.templates.size(); i++) {
 				const auto &geometry = result->templates.templates[i];
+				if (geometry.short_uv_rings > 0) {
+					DUCKDB_LOG_WARNING(context,
+					                   "%s: template %llu (%s, lod %s): left %llu textured ring(s) untextured that "
+					                   "have fewer UV indices than vertices, so which vertex lacks one is not stated",
+					                   function_name, static_cast<unsigned long long>(i), geometry.type, geometry.lod,
+					                   static_cast<unsigned long long>(geometry.short_uv_rings));
+				}
 				if (geometry.dropped_rings > 0) {
 					DUCKDB_LOG_WARNING(context,
 					                   "%s: template %llu (%s, lod %s): dropped %llu ring(s) with fewer than three "

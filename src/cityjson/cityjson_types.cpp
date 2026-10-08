@@ -222,6 +222,38 @@ bool IsDegenerateRing(const json &ring) {
 	return ring.is_array() && ring.size() < 3;
 }
 
+//! Strip the closing repeats a source ring carries (`[0, 2, 4, 6, 0]`): a CityJSON
+//! ring is implicitly closed, so the repeat is no vertex of its own and takes no UV;
+//! the WKB ring closes itself. Stripping stops at three vertices, so it never turns
+//! a ring degenerate -- `[a, b, a]` stays as it is. The same rule as cityparquet-rs's
+//! writer (`normalise_ring`), so both write the same ring.
+void StripClosingRepeats(json &ring) {
+	if (!ring.is_array()) {
+		return;
+	}
+	while (ring.size() > 3 && ring.front() == ring.back()) {
+		ring.erase(ring.size() - 1);
+	}
+}
+
+//! Count the textured rings of `surface` whose texture entry `[texId, uv...]` holds
+//! fewer UV indices than the ring has vertices. `rings` is the surface's entry in one
+//! texture theme's `values`: one entry per ring, `[null]` for an untextured one.
+size_t CountShortUvRings(const json &surface, const json *rings) {
+	if (rings == nullptr || !rings->is_array()) {
+		return 0;
+	}
+	size_t count = 0;
+	for (size_t r = 0; r < surface.size() && r < rings->size(); r++) {
+		const auto &entry = (*rings)[r];
+		if (!entry.is_array() || entry.empty() || entry[0].is_null() || !surface[r].is_array()) {
+			continue;
+		}
+		count += entry.size() - 1 < surface[r].size() ? 1 : 0;
+	}
+	return count;
+}
+
 void EraseAt(json *array, size_t index) {
 	if (array != nullptr && array->is_array() && index < array->size()) {
 		array->erase(index);
@@ -253,10 +285,14 @@ void NormaliseSurfaceList(json &surfaces, const std::vector<json *> &per_surface
 			continue;
 		}
 		size_t short_rings = 0;
-		for (const auto &ring : surface) {
+		for (auto &ring : surface) {
+			StripClosingRepeats(ring);
 			short_rings += IsDegenerateRing(ring) ? 1 : 0;
 		}
 		if (short_rings == 0) {
+			for (auto *values : per_ring) {
+				geometry.short_uv_rings += CountShortUvRings(surface, ChildArray(values, i));
+			}
 			continue;
 		}
 		geometry.dropped_rings += short_rings;
@@ -279,6 +315,9 @@ void NormaliseSurfaceList(json &surfaces, const std::vector<json *> &per_surface
 			for (auto *values : per_ring) {
 				EraseAt(ChildArray(values, i), r);
 			}
+		}
+		for (auto *values : per_ring) {
+			geometry.short_uv_rings += CountShortUvRings(surface, ChildArray(values, i));
 		}
 	}
 }

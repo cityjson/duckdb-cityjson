@@ -529,7 +529,11 @@ package pragmas renumber the two together.
 **Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; every
 `texture_lod*` cell replaces that with one `STRUCT(id BIGINT, uv DOUBLE[][])`
 per ring — `id` the ring's (local or sidecar) texture id, `uv` one `[u, v]`
-pair per ring vertex, and an untextured ring holds `{NULL, NULL}`. Both
+pair per ring vertex, and an untextured ring holds `{NULL, NULL}`. A ring with
+fewer UV indices than vertices is left untextured, since which vertex lacks its
+UV is not stated, and the reader logs a warning naming the object and the count;
+a source ring explicitly closed (`[0, 2, 4, 6, 0]`) is four vertices, so four
+UVs are one per vertex. Both
 `'local'` and `'sidecar'` mode build this same struct; only `id`'s numbering
 differs. The builder walks the same per-type face nesting `face_semantics` does
 (`FlattenPerFace`) — a fixed depth per geometry type, not a recursion to whatever
@@ -1996,8 +2000,12 @@ warning naming the object, the geometry and what went. A surface whose exterior
 ring is dropped goes with it, together with its semantic value and its material
 and texture entries, so `face_semantics`, `shells` and the appearance cells stay
 aligned with the WKB faces; a dropped interior ring takes only its texture ring.
-A ring of three or more vertices is written as the source gives it, zero-area or
-not — the format represents geometry, it does not validate it.
+A source ring explicitly closed, its first index repeated at the end
+(`[0, 2, 4, 6, 0]`), loses the repeat — a CityJSON ring is implicitly closed —
+while more than three vertices remain, so `[a, b, a]` keeps its three; the WKB
+closes it like any other ring. Beyond that, a ring of three or more vertices is
+written as the source gives it, zero-area or not — the format represents
+geometry, it does not validate it.
 
 ### `geometry_properties` — the part WKB cannot hold
 

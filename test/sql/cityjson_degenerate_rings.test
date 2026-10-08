@@ -40,14 +40,15 @@ WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
 
 # Textured MultiSurface: surface 0 and its texture entry go (30 -> 29 faces, 3999 -> 3866
 # bytes). Materialled MultiSurface: surface 1 and its material entry go and surface 46
-# loses its interior ring (101 -> 100 faces, 15726 - 133 - 412 = 15181 bytes).
+# loses its interior ring (101 -> 100 faces, 15702 - 133 - 412 = 15157 bytes; the uncut
+# object is 15702 bytes, cityjson_wkb_ring_closing.test).
 query IIIII
 SELECT id, substr(hex(geometry_lod3_0), 11, 8), octet_length(geometry_lod3_0),
        len(texture_lod3_0['visual']), len(material_lod3_0['visual'])
 FROM read_cityjsonseq('test/data/degenerate_rings_appearance.city.jsonl')
 ORDER BY id;
 ----
-GMLID_855011_330784_753	64000000	15181	NULL	100
+GMLID_855011_330784_753	64000000	15157	NULL	100
 GMLID_BUI100628_817_8083	1D000000	3866	29	NULL
 
 # The texture that stays aligned: the uncut Bridge's surface 1 is the cut one's surface 0.

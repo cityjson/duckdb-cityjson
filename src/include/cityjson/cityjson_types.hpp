@@ -159,6 +159,10 @@ struct Geometry {
 	//! because the dropped ring was their exterior. Carried for the reader to report.
 	size_t dropped_rings = 0;
 	size_t dropped_surfaces = 0;
+	//! Textured rings with fewer UV indices than vertices, which the readers leave
+	//! untextured: which vertex lacks its UV is not stated (CityJSON 2.0.1 §6.2 asks
+	//! for one per vertex). Carried for the reader to report.
+	size_t short_uv_rings = 0;
 	//! A GeometryInstance's `template` (an index into the document's
 	//! geometry-templates) and `transformationMatrix`; its `boundaries` hold the one
 	//! reference-point vertex.

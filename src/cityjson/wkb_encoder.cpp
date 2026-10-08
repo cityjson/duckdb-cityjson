@@ -243,9 +243,10 @@ void WKBEncoder::EncodePolygon(std::vector<uint8_t> &out, const json &surface,
 		}
 
 		// OGC requires a closed ring's first and last points to be identical.
-		// CityJSON rings never repeat the first vertex, so closing is always
-		// needed here -- a ring whose first and last vertex indices already
-		// coincide is not "already closed", it is a degenerate ring (e.g. an
+		// CityJSON rings never repeat the first vertex, and Geometry::FromJson has
+		// already stripped a closing repeat a source ring carried, so closing is
+		// always needed here -- a three-vertex ring whose first and last indices
+		// coincide is not "already closed", it is a degenerate ring (an
 		// out-and-back edge with zero area), and it still needs the closing
 		// vertex appended like any other ring.
 		bool needs_closing = !ring.empty();
