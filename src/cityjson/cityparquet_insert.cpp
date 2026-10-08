@@ -204,6 +204,9 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// `appearance` parameter, so asking for sidecar mode there is a bind error rather
 	// than a no-op.
 	const bool sidecar_appearance = reader_function != "read_flatcitybuf";
+	// The staged read asks for sidecar ids only when the source has appearance to
+	// renumber: building the sidecar index reads the whole file once more, and without
+	// materials or textures the two modes yield the same rows.
 
 	CityJSONReadOptions read_options;
 	read_options.sidecar_appearance = sidecar_appearance;
@@ -344,7 +347,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		}
 	}
 	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * REPLACE (" +
-	       Join(stage_replacements, ", ") + ") FROM " + ReadCall(reader_function, path, options, sidecar_appearance) +
+	       Join(stage_replacements, ", ") + ") FROM " +
+	       ReadCall(reader_function, path, options, sidecar_appearance && (facts.has_materials || facts.has_textures)) +
 	       ";\n";
 	for (const auto &renamed : renamed_columns) {
 		sql += "ALTER TABLE " + std::string(kStage) + " RENAME COLUMN " + Quoted(renamed.first) + " TO " +
