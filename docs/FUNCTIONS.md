@@ -763,8 +763,14 @@ One call. Each object is routed to its **CityGML module** table — `Building` a
 `BuildingPart` both to `building`, `Road` and `Square` both to `transportation` —
 creating the module tables and sidecars the source needs, renumbering incoming
 material / texture / implicit-geometry ids so they cannot collide with existing ones,
-rewriting every reference to match, and re-deriving `feature_id`, the reciprocal
-hierarchy and `bbox` afterwards.
+rewriting every reference to match, and re-deriving `feature_id` and the reciprocal
+hierarchy afterwards. `bbox` is extended, not re-derived: an incoming object keeps
+the box its reader gave it (its own geometry and descendants, with the source's
+declared extent unioned in), widened by any descendant already in the package; an
+existing object is widened only by incoming descendants; and every other row keeps
+its `bbox` exactly as stored — including a declared extent another writer unioned
+into it, which re-deriving from geometry would narrow away and an export would then
+lose.
 
 PRAGMA named parameters use `=`, **not** `:=`:
 
@@ -954,7 +960,8 @@ Sidecar ids are renumbered onto the destination's numbering and every incoming
 reference shifted to match. The offset is `dst_max + 1 − src_min`, not
 `dst_max + 1`: a source id may be negative, and adding `dst_max + 1` alone could
 land back inside the occupied range. Schema evolution runs before any insert;
-derived state is re-derived after.
+derived state is re-derived after, `bbox` extended exactly as `insert_cityjson`
+extends it.
 
 ### The package round trip
 

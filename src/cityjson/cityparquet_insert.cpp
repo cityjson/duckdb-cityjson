@@ -768,7 +768,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	}
 
 	// ---- Phase 6: derived state ---------------------------------------------
-	sql += BuildReconcileSQL(context, schema, {}, pending);
+	// Incremental bbox: the stored boxes of rows already in the package stay as they are.
+	sql += BuildReconcileSQL(context, schema, {}, pending, "SELECT id FROM " + std::string(kStage));
 
 	sql += "DROP TABLE IF EXISTS " + std::string(kStage) + ";\n";
 	for (const auto &sidecar : source_sidecars) {

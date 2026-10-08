@@ -218,6 +218,56 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 	return sql;
 }
 
+//! The bbox phase of an insert or merge: see BuildReconcileSQL's `added_ids`. Stored
+//! boxes are only ever unioned, never re-derived, so a row's box stays a superset of
+//! everything it held -- and a row no added object descends into is not written at all.
+std::string AddedBboxPhase(ClientContext &context, const std::string &schema,
+                           const std::vector<std::string> &object_tables, const PendingTables &pending,
+                           const std::string &added_ids) {
+	std::vector<std::string> stored;
+	std::vector<std::string> with_bbox;
+	for (const auto &table : object_tables) {
+		auto pending_entry = pending.find(table);
+		const bool has_bbox =
+		    pending_entry == pending.end() ? HasBboxColumn(context, schema, table) : pending_entry->second.has_bbox;
+		if (!has_bbox) {
+			continue;
+		}
+		with_bbox.push_back(table);
+		stored.push_back("SELECT id, bbox FROM " + QualifiedName(schema, table));
+	}
+	if (with_bbox.empty()) {
+		return std::string();
+	}
+	std::string sql = "CREATE OR REPLACE TEMP TABLE __cp_added AS SELECT DISTINCT id FROM (" + added_ids + ");\n";
+	sql += "CREATE OR REPLACE TEMP TABLE __cp_own AS\n" + Join(stored, "\nUNION ALL\n") + ";\n";
+	sql += "CREATE OR REPLACE TEMP TABLE __cp_anc AS\n"
+	       "WITH RECURSIVE anc(node, ancestor) AS (\n"
+	       "  SELECT id, id FROM __cp_nodes\n"
+	       "  UNION\n"
+	       "  SELECT a.node, e.parent FROM anc a JOIN __cp_edges e ON e.child = a.ancestor\n"
+	       ")\n"
+	       "SELECT node, ancestor FROM anc;\n";
+	// What reaches an ancestor: its own stored box, and an added descendant's -- or, for
+	// an added ancestor, every descendant's. Only ancestors with an added node on either
+	// end are kept.
+	sql += "CREATE OR REPLACE TEMP TABLE __cp_bbox AS\n"
+	       "SELECT a.ancestor AS id, MIN(o.bbox.xmin) AS xmin, MIN(o.bbox.ymin) AS ymin, MIN(o.bbox.zmin) AS zmin, "
+	       "MAX(o.bbox.xmax) AS xmax, MAX(o.bbox.ymax) AS ymax, MAX(o.bbox.zmax) AS zmax\n"
+	       "FROM __cp_anc a JOIN __cp_own o ON o.id = a.node\n"
+	       "WHERE a.node = a.ancestor OR a.node IN (SELECT id FROM __cp_added) "
+	       "OR a.ancestor IN (SELECT id FROM __cp_added)\n"
+	       "GROUP BY a.ancestor\n"
+	       "HAVING bool_or(a.node IN (SELECT id FROM __cp_added) OR a.ancestor IN (SELECT id FROM __cp_added));\n";
+	for (const auto &table : with_bbox) {
+		sql += "UPDATE " + QualifiedName(schema, table) +
+		       " t SET bbox = {'xmin': b.xmin, 'ymin': b.ymin, 'zmin': b.zmin, 'xmax': b.xmax, 'ymax': b.ymax, "
+		       "'zmax': b.zmax} FROM __cp_bbox b WHERE b.id = t.id AND b.xmin IS NOT NULL;\n";
+	}
+	sql += "DROP TABLE IF EXISTS __cp_added;\n";
+	return sql;
+}
+
 std::string DropTemps() {
 	return "DROP TABLE IF EXISTS __cp_roots;\n"
 	       "DROP TABLE IF EXISTS __cp_kids;\n"
@@ -258,7 +308,7 @@ std::string BuildReconcilePrelude(ClientContext &context, const std::string &sch
 }
 
 std::string BuildReconcileSQL(ClientContext &context, const std::string &schema, const std::vector<std::string> &checks,
-                              const PendingTables &pending) {
+                              const PendingTables &pending, const std::string &added_ids) {
 	auto object_tables = ObjectTablesInSchema(context, schema);
 	for (const auto &entry : pending) {
 		if (std::find(object_tables.begin(), object_tables.end(), entry.first) == object_tables.end()) {
@@ -286,7 +336,8 @@ std::string BuildReconcileSQL(ClientContext &context, const std::string &schema,
 		sql += FeatureIdPhase(schema, object_tables);
 	}
 	if (Wants(checks, "bbox")) {
-		sql += BboxPhase(context, schema, object_tables, pending);
+		sql += added_ids.empty() ? BboxPhase(context, schema, object_tables, pending)
+		                         : AddedBboxPhase(context, schema, object_tables, pending, added_ids);
 	}
 	sql += DropTemps();
 	return sql;

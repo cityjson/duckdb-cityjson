@@ -44,9 +44,7 @@ SELECT COUNT(*), COUNT(*) FILTER (WHERE id LIKE '%-appended') FROM d.building;
 statement ok
 SELECT COUNT(*) FROM cityparquet_write('d', '__TEST_DIR__/delft_appended');
 
-# Every object of both inputs is in the written file, with its geometry. (`bbox` is
-# re-derived from the stored geometry by the insert, so a package row's box no longer
-# unions the source's declared extent; it still contains every geometry the row holds.)
+# Every object of both inputs is in the written file, with its geometry.
 query I
 SELECT COUNT(*) FROM (
   SELECT id, object_type, octet_length(geometry_lod1_2), octet_length(geometry_lod2_2)
@@ -60,11 +58,40 @@ SELECT COUNT(*) FROM (
 ----
 0
 
+# The package's own rows keep their `bbox` bit for bit. cityparquet-rs unions each
+# object's declared geographicalExtent into it, which here is wider than the geometry
+# (the 3DBAG extents are float32-rounded outwards) -- re-deriving it from the geometry
+# would narrow it, and rs's export, which rebuilds geographicalExtent from `bbox`, would
+# then change objects the append never touched.
 query I
-SELECT COUNT(*) FROM (SELECT bbox, cityjson_wkb_extent(geometry_lod2_2) AS e
-                      FROM read_parquet('__TEST_DIR__/delft_appended/building.parquet') WHERE geometry_lod2_2 IS NOT NULL)
-WHERE NOT (bbox.xmin <= e.xmin AND bbox.ymin <= e.ymin AND bbox.zmin <= e.zmin
-           AND bbox.xmax >= e.xmax AND bbox.ymax >= e.ymax AND bbox.zmax >= e.zmax);
+SELECT COUNT(*) FROM read_parquet('test/data/cityparquet_rs_delft/building.parquet') s
+JOIN read_parquet('__TEST_DIR__/delft_appended/building.parquet') o USING (id)
+WHERE s.bbox <> o.bbox;
+----
+0
+
+# Not vacuous: re-deriving `bbox` from the geometry, as cityparquet_reconcile does,
+# changes the box of every one of the ten Buildings.
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'd2');
+
+statement ok
+CREATE TABLE d2_before AS SELECT id, bbox FROM d2.building;
+
+statement ok
+PRAGMA cityparquet_reconcile('d2', checks = ['bbox']);
+
+query I
+SELECT COUNT(*) FROM d2_before b JOIN d2.building a USING (id) WHERE a.bbox <> b.bbox;
+----
+10
+
+# The appended rows' `bbox` is the reader's: own geometry and descendants, with the
+# source's declared extent unioned in.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_append.city.jsonl') s
+JOIN read_parquet('__TEST_DIR__/delft_appended/building.parquet') o USING (id)
+WHERE s.bbox <> o.bbox;
 ----
 0
 
@@ -88,7 +115,21 @@ SELECT o.id, f.i, m.name FROM (
 JOIN r.bridge o USING (id) LEFT JOIN r.materials m ON m.id = f.mid;
 
 statement ok
+CREATE TABLE r_bbox_before AS
+SELECT id, bbox FROM r.building UNION ALL SELECT id, bbox FROM r.bridge
+UNION ALL SELECT id, bbox FROM r.vegetation UNION ALL SELECT id, bbox FROM r.generics;
+
+statement ok
 PRAGMA insert_cityjsonseq('r', 'test/data/railway_append.city.jsonl');
+
+# The package's own rows keep their boxes bit for bit.
+query I
+SELECT COUNT(*) FROM r_bbox_before b JOIN (
+  SELECT id, bbox FROM r.building UNION ALL SELECT id, bbox FROM r.bridge
+  UNION ALL SELECT id, bbox FROM r.vegetation UNION ALL SELECT id, bbox FROM r.generics) a USING (id)
+WHERE a.bbox IS DISTINCT FROM b.bbox;
+----
+0
 
 query II
 SELECT object_type, COUNT(*) FROM (

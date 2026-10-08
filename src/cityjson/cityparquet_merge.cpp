@@ -314,7 +314,12 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 	}
 
 	// ---- Phase 5: derived state --------------------------------------------
-	sql += BuildReconcileSQL(context, destination, {}, pending);
+	// Incremental bbox: the destination's own rows keep their stored boxes.
+	std::vector<std::string> added;
+	for (const auto &table : source_tables) {
+		added.push_back("SELECT id FROM " + QualifiedName(source, table));
+	}
+	sql += BuildReconcileSQL(context, destination, {}, pending, Join(added, " UNION ALL "));
 	return sql;
 }
 
