@@ -226,6 +226,7 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 			throw BinderException("Failed to read data: " + std::string(e.what()));
 		}
 		result.scan_plan = result.chunks.BuildScanPlan();
+		ReportDroppedRings(context, result.chunks.records);
 	}
 
 	InferCityJSONColumns(result, reader, options.sample_lines);

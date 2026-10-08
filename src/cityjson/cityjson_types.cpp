@@ -215,6 +215,143 @@ Geometry::Geometry(std::string type, std::string lod, json boundaries)
     : type(std::move(type)), lod(std::move(lod)), boundaries(std::move(boundaries)) {
 }
 
+namespace {
+
+//! A ring that cannot become a closed WKB ring of at least four points.
+bool IsDegenerateRing(const json &ring) {
+	return ring.is_array() && ring.size() < 3;
+}
+
+void EraseAt(json *array, size_t index) {
+	if (array != nullptr && array->is_array() && index < array->size()) {
+		array->erase(index);
+	}
+}
+
+//! The array one level below `parent` at `index`, or nullptr when the source does not
+//! nest that far (CityJSON's null shorthand, or a short array).
+json *ChildArray(json *parent, size_t index) {
+	if (parent == nullptr || !parent->is_array() || index >= parent->size() || !(*parent)[index].is_array()) {
+		return nullptr;
+	}
+	return &(*parent)[index];
+}
+
+//! Normalise one list of surfaces -- a MultiSurface's boundaries or one shell of a
+//! solid -- together with the arrays aligned to it: one entry per surface in
+//! `per_surface` (semantic and material values) and in `per_ring` (texture values,
+//! whose surface entry is one entry per ring).
+void NormaliseSurfaceList(json &surfaces, const std::vector<json *> &per_surface, const std::vector<json *> &per_ring,
+                          Geometry &geometry) {
+	if (!surfaces.is_array()) {
+		return;
+	}
+	// Backwards, so an erase never shifts a surface still to be visited.
+	for (size_t i = surfaces.size(); i-- > 0;) {
+		auto &surface = surfaces[i];
+		if (!surface.is_array()) {
+			continue;
+		}
+		size_t short_rings = 0;
+		for (const auto &ring : surface) {
+			short_rings += IsDegenerateRing(ring) ? 1 : 0;
+		}
+		if (short_rings == 0) {
+			continue;
+		}
+		geometry.dropped_rings += short_rings;
+		if (IsDegenerateRing(surface[0])) {
+			geometry.dropped_surfaces++;
+			surfaces.erase(i);
+			for (auto *values : per_surface) {
+				EraseAt(values, i);
+			}
+			for (auto *values : per_ring) {
+				EraseAt(values, i);
+			}
+			continue;
+		}
+		for (size_t r = surface.size(); r-- > 1;) {
+			if (!IsDegenerateRing(surface[r])) {
+				continue;
+			}
+			surface.erase(r);
+			for (auto *values : per_ring) {
+				EraseAt(ChildArray(values, i), r);
+			}
+		}
+	}
+}
+
+//! The `values` arrays of every theme of a material or texture map, and of semantics.
+std::vector<json *> ValuesArrays(std::optional<json> &member, bool themed) {
+	std::vector<json *> out;
+	if (!member.has_value() || !member->is_object()) {
+		return out;
+	}
+	auto collect = [&](json &holder) {
+		auto it = holder.find("values");
+		if (it != holder.end() && it->is_array()) {
+			out.push_back(&*it);
+		}
+	};
+	if (!themed) {
+		collect(*member);
+		return out;
+	}
+	for (auto &theme : member->items()) {
+		if (theme.value().is_object()) {
+			collect(theme.value());
+		}
+	}
+	return out;
+}
+
+std::vector<json *> ChildArrays(const std::vector<json *> &parents, size_t index) {
+	std::vector<json *> out;
+	for (auto *parent : parents) {
+		out.push_back(ChildArray(parent, index));
+	}
+	return out;
+}
+
+void NormaliseRings(Geometry &geometry) {
+	const bool surface_list = geometry.type == "MultiSurface" || geometry.type == "CompositeSurface";
+	const bool solid = geometry.type == "Solid";
+	const bool solids = geometry.type == "MultiSolid" || geometry.type == "CompositeSolid";
+	if (!(surface_list || solid || solids) || !geometry.boundaries.is_array()) {
+		return;
+	}
+	auto per_surface = ValuesArrays(geometry.semantics, false);
+	for (auto *values : ValuesArrays(geometry.material, true)) {
+		per_surface.push_back(values);
+	}
+	auto per_ring = ValuesArrays(geometry.texture, true);
+
+	if (surface_list) {
+		NormaliseSurfaceList(geometry.boundaries, per_surface, per_ring, geometry);
+		return;
+	}
+	auto normalise_solid = [&](json &shells, const std::vector<json *> &solid_surface,
+	                           const std::vector<json *> &solid_ring) {
+		if (!shells.is_array()) {
+			return;
+		}
+		for (size_t s = 0; s < shells.size(); s++) {
+			NormaliseSurfaceList(shells[s], ChildArrays(solid_surface, s), ChildArrays(solid_ring, s), geometry);
+		}
+	};
+	if (solid) {
+		normalise_solid(geometry.boundaries, per_surface, per_ring);
+		return;
+	}
+	for (size_t s = 0; s < geometry.boundaries.size(); s++) {
+		normalise_solid(geometry.boundaries[s], ChildArrays(per_surface, s), ChildArrays(per_ring, s));
+	}
+}
+
+} // namespace
+
 Geometry Geometry::FromJson(const json &obj) {
 	if (!obj.is_object()) {
 		throw CityJSONError::InvalidGeometry("Geometry must be a JSON object");
@@ -241,6 +378,7 @@ Geometry Geometry::FromJson(const json &obj) {
 	result.semantics = GetOptionalObject(obj, "semantics");
 	result.material = GetOptionalObject(obj, "material");
 	result.texture = GetOptionalObject(obj, "texture");
+	NormaliseRings(result);
 
 	return result;
 }

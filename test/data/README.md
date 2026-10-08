@@ -16,6 +16,17 @@ attribute; regenerating it from the current cityparquet-rs restores the reserved
 columns are the specification's typed MAPs, flat per WKB face, which is what
 `cityparquet_rs_appearance.test` pins.
 
+## degenerate_rings.city.jsonl + degenerate_rings_appearance.city.jsonl
+
+Real objects with rings cut short by hand, for the readers' drop of rings that cannot
+form a closed WKB ring (`cityjson_degenerate_rings.test`); no published dataset at hand
+carries one. `degenerate_rings.city.jsonl` is `delft_subset.city.jsonl`'s header and
+first feature, with face 1 of the BuildingPart's LoD 2.2 `Solid` (a `WallSurface`) cut
+to its first two vertices. `degenerate_rings_appearance.city.jsonl` is
+`railway_appearance.city.jsonl` with the textured Bridge's surface 0 exterior ring, the
+materialled CityFurniture's surface 1 exterior ring and its surface 46 interior ring
+(16 vertices) each cut to their first two vertices. Everything else is unchanged.
+
 ## delft_append.city.jsonl
 
 One 3DBAG feature -- a Building and its BuildingPart, ids suffixed `-appended` --

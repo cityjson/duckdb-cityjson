@@ -154,12 +154,21 @@ struct Geometry {
 	std::optional<json> semantics; // Surface semantics (optional)
 	std::optional<json> material;  // Material information (optional)
 	std::optional<json> texture;   // Texture information (optional)
+	//! Rings with fewer than three vertices `FromJson` removed (spec
+	//! 03-geometry-semantics.mdx, "Ring closure"), and surfaces removed with them
+	//! because the dropped ring was their exterior. Carried for the reader to report.
+	size_t dropped_rings = 0;
+	size_t dropped_surfaces = 0;
 
 	Geometry() = default;
 	Geometry(std::string type, std::string lod, json boundaries);
 
 	/**
-	 * Parse geometry from JSON object
+	 * Parse geometry from JSON object. A ring of fewer than three vertices cannot form
+	 * a closed WKB ring of four points, so it is removed here, where every reader
+	 * converges: an exterior ring takes its surface with it, and the surface's
+	 * semantic, material and texture entries go too, so every array aligned to the
+	 * surfaces stays aligned. A dropped interior ring takes its texture ring entry.
 	 */
 	static Geometry FromJson(const json &obj);
 

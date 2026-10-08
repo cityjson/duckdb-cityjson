@@ -8,7 +8,18 @@
 #include <string>
 
 namespace duckdb {
+class ClientContext;
+
 namespace cityjson {
+
+/**
+ * Report, as a DuckDB warning, every geometry of `features` that `Geometry::FromJson`
+ * normalised: rings of fewer than three vertices it dropped, and the surfaces whose
+ * exterior ring that was (spec 03-geometry-semantics.mdx: a writer that normalises a
+ * ring away SHOULD report what it removed). One warning per affected geometry.
+ */
+void ReportDroppedRings(ClientContext &context, const std::vector<CityJSONFeature> &features);
+void ReportDroppedRings(ClientContext &context, const CityJSONFeature &feature);
 
 /**
  * Utility class for CityObject attribute extraction and schema inference

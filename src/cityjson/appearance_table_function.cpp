@@ -10,6 +10,7 @@
 #include "cityjson/lod_table.hpp"
 #include "cityjson/reader.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/logging/logger.hpp"
 
 #include <set>
 
@@ -112,6 +113,18 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 			result->index = AppearanceIndex::Build(metadata, {});
 			if (metadata.geometry_templates.has_value()) {
 				result->templates = metadata.geometry_templates.value();
+			}
+			for (idx_t i = 0; i < result->templates.templates.size(); i++) {
+				const auto &geometry = result->templates.templates[i];
+				if (geometry.dropped_rings > 0) {
+					DUCKDB_LOG_WARNING(context,
+					                   "%s: template %llu (%s, lod %s): dropped %llu ring(s) with fewer than three "
+					                   "vertices, which cannot form a closed WKB ring, and %llu surface(s) whose "
+					                   "exterior ring was one of them",
+					                   function_name, static_cast<unsigned long long>(i), geometry.type, geometry.lod,
+					                   static_cast<unsigned long long>(geometry.dropped_rings),
+					                   static_cast<unsigned long long>(geometry.dropped_surfaces));
+				}
 			}
 			if (metadata.appearance.has_value()) {
 				result->template_uv_pool = metadata.appearance->vertices_texture;

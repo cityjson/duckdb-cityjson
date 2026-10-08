@@ -8,6 +8,7 @@
 #include "cityjson/metadata_table.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/city_object_utils.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -318,6 +319,7 @@ static unique_ptr<GlobalTableFunctionState> FlatCityBufInitGlobal(ClientContext 
 	}
 	state.scan_plan = state.chunks.BuildScanPlan();
 	state.use_global_chunks = true;
+	ReportDroppedRings(context, state.chunks.records);
 	return result_holder;
 }
 

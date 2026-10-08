@@ -1,0 +1,76 @@
+# name: test/sql/cityjson_degenerate_rings.test
+# description: a ring with fewer than three vertices is dropped and reported, never written
+# group: [sql]
+
+require cityjson
+
+# Spec 03-geometry-semantics.mdx, "Ring closure and geometric validity": every WKB ring
+# MUST be closed and carry at least four points. A source ring of fewer than three
+# vertices cannot form one -- closing a two-vertex ring gives three points -- so the
+# writer drops it (MAY) and reports what it removed (SHOULD). A surface whose EXTERIOR
+# ring goes goes with it, and so does everything aligned to that surface: its semantic
+# value, its material and texture entries. A dropped INTERIOR ring leaves its surface.
+#
+# The two fixtures are real objects with rings cut short by hand (test/data/README.md):
+# degenerate_rings.city.jsonl is delft_subset's first feature with face 1 of the
+# BuildingPart's LoD 2.2 Solid cut to two vertices; degenerate_rings_appearance.city.jsonl
+# is railway_appearance with the textured Bridge's surface 0 and the materialled
+# CityFurniture's surface 1 cut to two vertices, and the CityFurniture's surface 46
+# interior ring (16 vertices) cut to two.
+#
+# Byte counts are derived from the uncut source: a one-ring polygon of a four-vertex
+# ring is 1 + 4 + 4 + 4 + 5 * 24 = 133 bytes, a 16-vertex interior ring 4 + 17 * 24 =
+# 412 bytes. The polygon count is the little-endian UINT32 at WKB bytes 6-9.
+
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET logging_level = 'WARNING';
+
+# Solid: face 1 (a WallSurface, semantic index 2) goes, and face_semantics and shells
+# follow it. 807 bytes uncut, minus one 133-byte face.
+query IIII
+SELECT geometry_properties_lod2_2.face_semantics, geometry_properties_lod2_2.shells,
+       substr(hex(geometry_lod2_2), 11, 8), octet_length(geometry_lod2_2)
+FROM read_cityjsonseq('test/data/degenerate_rings.city.jsonl')
+WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+[0, 2, 2, 2, 1]	[[5]]	05000000	674
+
+# Textured MultiSurface: surface 0 and its texture entry go (30 -> 29 faces, 3999 -> 3866
+# bytes). Materialled MultiSurface: surface 1 and its material entry go and surface 46
+# loses its interior ring (101 -> 100 faces, 15726 - 133 - 412 = 15181 bytes).
+query IIIII
+SELECT id, substr(hex(geometry_lod3_0), 11, 8), octet_length(geometry_lod3_0),
+       len(texture_lod3_0['visual']), len(material_lod3_0['visual'])
+FROM read_cityjsonseq('test/data/degenerate_rings_appearance.city.jsonl')
+ORDER BY id;
+----
+GMLID_855011_330784_753	64000000	15181	NULL	100
+GMLID_BUI100628_817_8083	1D000000	3866	29	NULL
+
+# The texture that stays aligned: the uncut Bridge's surface 1 is the cut one's surface 0.
+query I
+SELECT (SELECT texture_lod3_0['visual'][2] FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+        WHERE id = 'GMLID_BUI100628_817_8083')
+     = (SELECT texture_lod3_0['visual'][1] FROM read_cityjsonseq('test/data/degenerate_rings_appearance.city.jsonl')
+        WHERE id = 'GMLID_BUI100628_817_8083');
+----
+true
+
+# Reported, naming the object and what went.
+query I
+SELECT COUNT(*) > 0 FROM duckdb_logs
+WHERE message LIKE '%GMLID_855011_330784_753%' AND message LIKE '%2 ring%' AND message LIKE '%1 surface%';
+----
+true
+
+query I
+SELECT COUNT(*) > 0 FROM duckdb_logs
+WHERE message LIKE '%NL.IMBAG.Pand.0503100000012869-0%' AND message LIKE '%1 ring%';
+----
+true
+
+statement ok
+SET enable_logging = false;

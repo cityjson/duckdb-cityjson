@@ -10,9 +10,33 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include "duckdb/logging/logger.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 namespace cityjson {
+
+void ReportDroppedRings(ClientContext &context, const CityJSONFeature &feature) {
+	for (const auto &[id, object] : feature.city_objects) {
+		for (const auto &geometry : object.geometry) {
+			if (geometry.dropped_rings == 0) {
+				continue;
+			}
+			DUCKDB_LOG_WARNING(context,
+			                   "cityjson: object '%s' (%s, lod %s): dropped %llu ring(s) with fewer than three "
+			                   "vertices, which cannot form a closed WKB ring, and %llu surface(s) whose exterior "
+			                   "ring was one of them",
+			                   id, geometry.type, geometry.lod, static_cast<unsigned long long>(geometry.dropped_rings),
+			                   static_cast<unsigned long long>(geometry.dropped_surfaces));
+		}
+	}
+}
+
+void ReportDroppedRings(ClientContext &context, const std::vector<CityJSONFeature> &features) {
+	for (const auto &feature : features) {
+		ReportDroppedRings(context, feature);
+	}
+}
 
 // ============================================================
 // CityObjectUtils - Attribute Extraction

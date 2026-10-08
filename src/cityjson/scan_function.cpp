@@ -385,7 +385,7 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 	output.Verify();
 }
 
-static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState &global_state,
+static void StreamingScan(ClientContext &context, const CityJSONBindData &bind_data, CityJSONGlobalState &global_state,
                           CityJSONLocalState &local_state, DataChunk &output) {
 	if (!global_state.streaming_reader) {
 		output.SetCardinality(0);
@@ -425,6 +425,7 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 			if (!next.has_value()) {
 				break;
 			}
+			ReportDroppedRings(context, next.value());
 			global_state.streaming_feature = std::move(next.value());
 			global_state.streaming_obj_it = global_state.streaming_feature->city_objects.begin();
 		}
@@ -453,7 +454,7 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 	auto &global_state = data.global_state->Cast<CityJSONGlobalState>();
 
 	if (bind_data.streaming) {
-		StreamingScan(bind_data, global_state, local_state, output);
+		StreamingScan(context, bind_data, global_state, local_state, output);
 	} else {
 		MaterializedScan(bind_data, global_state, local_state, output);
 	}

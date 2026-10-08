@@ -1801,6 +1801,15 @@ becomes `geometry_lod2_0`, never `geometry_lod2`:
 On the Delft data that yields `geometry_lod0_0`, `geometry_lod1_2`,
 `geometry_lod1_3` and `geometry_lod2_2`, each with its three companions.
 
+**Every WKB ring is closed and has at least four points.** A source ring of
+fewer than three vertices cannot be one, so the readers drop it and log a
+warning naming the object, the geometry and what went. A surface whose exterior
+ring is dropped goes with it, together with its semantic value and its material
+and texture entries, so `face_semantics`, `shells` and the appearance cells stay
+aligned with the WKB faces; a dropped interior ring takes only its texture ring.
+A ring of three or more vertices is written as the source gives it, zero-area or
+not — the format represents geometry, it does not validate it.
+
 ### `geometry_properties` — the part WKB cannot hold
 
 WKB carries no semantics and no shell structure, so those live in a flattened,
