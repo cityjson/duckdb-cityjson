@@ -174,6 +174,9 @@ LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, co
 	return LogicalType(LogicalTypeId::INVALID);
 }
 
+std::string ColumnExpression(const ColumnDefinition &column, const std::set<std::string> &legal_geometry,
+                             const std::string &crs);
+
 //! A COPY source list that converts any DuckDB-native GEOMETRY column back to WKB
 //! BLOB via ST_AsWKB. enable_geoparquet_conversion (on by default whenever the
 //! `parquet` extension reads a footer's `geo` key -- not gated on `spatial` being
@@ -203,15 +206,75 @@ LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, co
 //! writer annotates with the JSON logical type (spec 02-object-table-schema.mdx). The
 //! tables hold them as text, or as JSON when loaded from a file that declared it, so
 //! both are cast to text first.
+//!
+//! An object table goes out in the specification's column order (02-object-table-schema
+//! .mdx: reserved columns first, in their order, per-LoD groups by LoD, attributes
+//! last), whatever order the table's columns were added in, and with only the LoD
+//! groups some row populates (`populated_lods`, as `lod2_2` suffixes) -- "a table carries
+//! exactly the LoD columns its data needs", and a geometry column every row leaves NULL
+//! would have no geometry type to declare in `city.columns`. Sidecars pass nullptr and
+//! keep their columns as they are.
 std::string CopySourceList(ClientContext &context, const std::string &schema, const std::string &table,
-                           const std::set<std::string> &legal_geometry, const std::string &crs) {
+                           const std::set<std::string> &legal_geometry, const std::string &crs,
+                           const std::set<std::string> *populated_lods) {
 	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
-	vector<string> parts;
+	static const std::vector<std::string> head = {"id",       "feature_id",     "object_type", "parents",
+	                                              "children", "children_roles", "address",     "bbox"};
+	static const std::vector<std::string> group = {"geometry_lod", "geometry_properties_lod", "material_lod",
+	                                               "texture_lod"};
+	// (rank, LoD major, LoD minor, kind, table position): stable whatever the input.
+	std::vector<std::pair<std::array<int64_t, 5>, std::string>> ranked;
+	int64_t position = 0;
 	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
+		const auto lowered = StringUtil::Lower(column.Name());
+		std::array<int64_t, 5> rank {3, 0, 0, 0, position++};
+		const auto in_head = std::find(head.begin(), head.end(), lowered);
+		if (populated_lods != nullptr && in_head != head.end()) {
+			rank[0] = 0;
+			rank[1] = in_head - head.begin();
+		} else if (populated_lods != nullptr && (lowered == "implicit_geometry" || lowered == "other")) {
+			rank[0] = 2;
+			rank[1] = lowered == "other" ? 1 : 0;
+		} else if (populated_lods != nullptr) {
+			for (size_t kind = 0; kind < group.size(); kind++) {
+				if (!MatchesLodSuffix(lowered, group[kind])) {
+					continue;
+				}
+				const auto suffix = lowered.substr(group[kind].size() - 3); // "lod2_2"
+				if (populated_lods->count(suffix) == 0) {
+					rank[0] = -1; // an LoD no row populates: not written
+					break;
+				}
+				const auto lod = LODTableUtils::ParseLODFromSuffix(suffix);
+				const auto dot = lod.find('.');
+				rank[0] = 1;
+				rank[1] = std::stoll(lod.substr(0, dot));
+				rank[2] = dot == std::string::npos ? 0 : std::stoll(lod.substr(dot + 1));
+				rank[3] = static_cast<int64_t>(kind);
+				break;
+			}
+		}
+		if (rank[0] < 0) {
+			continue;
+		}
+		ranked.emplace_back(rank, ColumnExpression(column, legal_geometry, crs));
+	}
+	std::stable_sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+	vector<string> parts;
+	for (auto &entry_part : ranked) {
+		parts.push_back(std::move(entry_part.second));
+	}
+	return StringUtil::Join(parts, ", ");
+}
+
+//! One column of CopySourceList: the JSON columns typed JSON, a declared geometry
+//! column GEOMETRY, every other geometry WKB.
+std::string ColumnExpression(const ColumnDefinition &column, const std::set<std::string> &legal_geometry,
+                             const std::string &crs) {
+	{
 		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.Name());
 		if (StringUtil::Lower(column.Name()) == "other") {
-			parts.push_back("cityparquet_json(CAST(" + quoted + " AS VARCHAR)) AS " + quoted);
-			continue;
+			return "cityparquet_json(CAST(" + quoted + " AS VARCHAR)) AS " + quoted;
 		}
 		if (HasSurfacesField(column.Type())) {
 			// Rebuilt field by field so only `surfaces` changes type; the CASE keeps a
@@ -223,9 +286,8 @@ std::string CopySourceList(ClientContext &context, const std::string &schema, co
 				fields.push_back(field + " := " +
 				                 (child.first == "surfaces" ? "cityparquet_json(CAST(" + ref + " AS VARCHAR))" : ref));
 			}
-			parts.push_back("CASE WHEN " + quoted + " IS NULL THEN NULL ELSE struct_pack(" +
-			                StringUtil::Join(fields, ", ") + ") END AS " + quoted);
-			continue;
+			return "CASE WHEN " + quoted + " IS NULL THEN NULL ELSE struct_pack(" + StringUtil::Join(fields, ", ") +
+			       ") END AS " + quoted;
 		}
 		const auto is_geometry = column.Type().id() == LogicalTypeId::GEOMETRY;
 		if (legal_geometry.count(column.Name()) > 0) {
@@ -240,13 +302,11 @@ std::string CopySourceList(ClientContext &context, const std::string &schema, co
 			if (!crs.empty()) {
 				expr = "ST_SetCRS(" + expr + ", " + Literal(crs) + ")";
 			}
-			parts.push_back(expr + " AS " + quoted);
-			continue;
+			return expr + " AS " + quoted;
 		}
 		const auto ref = GeometryColumnRef(quoted, column.Type());
-		parts.push_back(is_geometry ? (ref + " AS " + quoted) : ref);
+		return is_geometry ? (ref + " AS " + quoted) : ref;
 	}
-	return StringUtil::Join(parts, ", ");
 }
 
 //! Run a query on the internal connection, throwing its error rather than swallowing it.
@@ -884,9 +944,11 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// Filled from the same facts the `geo` object is built from, so the
 		// annotation and the declaration cannot disagree about a column.
 		std::set<std::string> legal_geometry;
+		std::set<std::string> populated_lods;
 		if (is_object) {
 			auto facts = CollectFacts(connection, context, bind_data.catalog, bind_data.schema, table);
 			for (const auto &fact : facts) {
+				populated_lods.insert(fact.name.substr(std::string("geometry_").size()));
 				if (fact.Legal()) {
 					legal_geometry.insert(fact.name);
 				}
@@ -936,11 +998,13 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			order = " ORDER BY coalesce((SELECT k.hilbert_key FROM " + std::string(HILBERT_KEYS) +
 			        " AS k WHERE k.feature_id = __cityparquet_rows.feature_id), 0), __cityparquet_rows.rowid";
 		}
-		Run(connection,
-		    "COPY (SELECT " + CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation) +
-		        " FROM " + QualifiedName(bind_data.catalog, bind_data.schema, table) + " AS __cityparquet_rows" +
-		        order + ") TO " + Literal(path) + " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv +
-		        "}" + BloomCopyOptions(is_object, bind_data.bloom) + ");");
+		Run(connection, "COPY (SELECT " +
+		                    CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation,
+		                                   is_object ? &populated_lods : nullptr) +
+		                    " FROM " + QualifiedName(bind_data.catalog, bind_data.schema, table) +
+		                    " AS __cityparquet_rows" + order + ") TO " + Literal(path) +
+		                    " (FORMAT PARQUET, GEOPARQUET_VERSION 'none', KV_METADATA {" + kv + "}" +
+		                    BloomCopyOptions(is_object, bind_data.bloom) + ");");
 
 		WrittenFile written;
 		written.file = file;

@@ -1023,6 +1023,12 @@ footer into `__cityparquet` — the one thing a hand-rolled `read_parquet` load
 throws away. `cityparquet_write` regenerates each file's `city` and `geo` footers
 from the data and writes a `metadata.json` STAC Item.
 
+**Each object table is written in the specification's column order** —
+reserved columns first, in their order, then the per-LoD groups by LoD, then the
+attributes — whatever order its columns were added in (an insert appends a new
+LoD's columns at the end), and **with only the LoD groups some row populates**:
+an LoD column every row leaves NULL, and its three companions, are not written.
+
 **JSON columns carry the JSON logical type.** `cityparquet_write` writes every
 `other` column (object tables and the `materials` / `textures` sidecars) and the
 `surfaces` field of every `geometry_properties_lod*` struct as Parquet JSON, and
