@@ -10,7 +10,7 @@
 build_targets := "cityjson_extension cityjson_loadable_extension duckdb unittest"
 
 # Wasm toolchain pins, mirroring the CI distribution pipeline.
-# emsdk: extension-ci-tools v1.5.4 `_extension_distribution.yml` pins
+# emsdk: extension-ci-tools v1.5.5 `_extension_distribution.yml` pins
 # emscripten-core/setup-emsdk@v13 with version 3.1.71.
 # vcpkg baseline: the `builtin-baseline` commit in vcpkg.json — a plain shallow clone
 # does NOT contain it, so `wasm-setup` fetches it explicitly (manifest resolution fails
