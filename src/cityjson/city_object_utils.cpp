@@ -455,6 +455,13 @@ CityObjectUtils::GetImplicitGeometry(const CityObject &object, const std::vector
 			for (const auto &value : matrix) {
 				values.push_back(value.get<double>());
 			}
+			// Spec 04-appearance-templates.mdx, "Placement": the matrix is affine, and a
+			// projective one has no meaning for an implicit geometry.
+			if (!IsAffineMatrix(values)) {
+				throw CityJSONError::InvalidGeometry("a GeometryInstance's transformationMatrix must be affine -- its "
+				                                     "last row must be 0, 0, 0, 1 -- got " +
+				                                     matrix.dump());
+			}
 			cell.transformation_matrix = std::move(values);
 		}
 		return cell;

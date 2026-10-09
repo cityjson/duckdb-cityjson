@@ -1702,10 +1702,16 @@ static json GeometryInstanceFromCell(const Value &cell, const CityJSONCopyBindDa
 			                            "row-major 4x4",
 			                            object_id);
 		}
-		transformation = json::array();
+		std::vector<double> values;
 		for (const auto &entry : entries) {
-			transformation.push_back(entry.GetValue<double>());
+			values.push_back(entry.GetValue<double>());
 		}
+		if (!IsAffineMatrix(values)) {
+			throw InvalidInputException("object %s: implicit_geometry.transformationMatrix must be affine -- its last "
+			                            "row must be 0, 0, 0, 1 (spec 04-appearance-templates.mdx, \"Placement\")",
+			                            object_id);
+		}
+		transformation = json(values);
 	}
 	return json {{"type", "GeometryInstance"},
 	             {"template", template_index},

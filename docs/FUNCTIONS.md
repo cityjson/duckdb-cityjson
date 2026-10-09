@@ -347,8 +347,9 @@ reserved columns are never declared as an attribute column:
   `geometry` (CityJSON and CityJSONSeq), its one boundary the reference point
   indexed into the written vertices and a NULL matrix written as the identity.
   It needs the document's `geometry-templates` (below); a cell missing `id` or
-  `point`, naming a template there is none of, or holding a `point` that is not
-  WKB `PointZ` is an error.
+  `point`, naming a template there is none of, holding a `point` that is not
+  WKB `PointZ`, or holding a matrix whose last row is not `0, 0, 0, 1` is an
+  error.
 
 **Geometry templates.** The `geometry-templates` an instance's `template`
 indexes come from one of two places. With `implicit_geometries_query` — SQL
@@ -1946,7 +1947,7 @@ Reserved columns appear in the order below, before every attribute column
 | `address` | STRUCT(`street, house_number, po_box, zip_code, city, state, country, free_text VARCHAR, location BLOB`)[] | The CityObject's `address` member, one struct per address (below); NULL when it has none |
 | `bbox` | STRUCT (`xmin … zmax DOUBLE`) | 3D extent in world coordinates (below) |
 | *(the per-LoD geometry group, below)* | | |
-| `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | The object's first CityJSON `GeometryInstance`: its `template` as `id` (an `implicit_geometries` row), its reference point as WKB `PointZ` in the file CRS, its row-major 4×4 `transformationMatrix`. NULL when it has none, or when the instance names no template or no resolvable point |
+| `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | The object's first CityJSON `GeometryInstance`: its `template` as `id` (an `implicit_geometries` row), its reference point as WKB `PointZ` in the file CRS, its row-major 4×4 `transformationMatrix`. NULL when it has none, or when the instance names no template or no resolvable point. A matrix whose last row is not `0, 0, 0, 1` is an error: an implicit geometry's matrix is affine |
 | `other` | VARCHAR (JSON text) | Source members not mapped to a reserved or attribute column |
 
 Then **every attribute column** inferred from the data, last. A JSON boolean,

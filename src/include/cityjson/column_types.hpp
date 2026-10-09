@@ -174,6 +174,13 @@ std::string EscapeAttributeName(const std::string &source_name);
 std::string SourceAttributeName(const std::string &column_name);
 
 /**
+ * True when a flat row-major 4x4 matrix (16 values) is affine: its last row is exactly
+ * 0, 0, 0, 1, as an implicit geometry's transformationMatrix must be (spec
+ * 04-appearance-templates.mdx, "Placement").
+ */
+bool IsAffineMatrix(const std::vector<double> &row_major);
+
+/**
  * Check if a column name is a per-LoD appearance column (§11): exactly
  * `material` / `texture`, or `material_lod{X}` / `texture_lod{X}` /
  * `..._lod{X}_{Y}`. Matches the reserved suffix grammar precisely so an

@@ -492,6 +492,11 @@ bool IsReservedColumnName(const std::string &name) {
 	return std::regex_match(lowered, geometry_pattern) || IsAppearanceColumnName(lowered);
 }
 
+bool IsAffineMatrix(const std::vector<double> &row_major) {
+	return row_major.size() == 16 && row_major[12] == 0.0 && row_major[13] == 0.0 && row_major[14] == 0.0 &&
+	       row_major[15] == 1.0;
+}
+
 static std::string BaseName(const std::string &name) {
 	const auto first = name.find_first_not_of('_');
 	return first == std::string::npos ? std::string() : name.substr(first);
