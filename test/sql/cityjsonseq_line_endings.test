@@ -1,0 +1,62 @@
+# name: test/sql/cityjsonseq_line_endings.test
+# description: read_cityjsonseq line splitting -- CRLF, blank lines, missing final newline
+# group: [sql]
+
+require cityjson
+
+# The reader splits the stream into lines itself, from fixed-size chunks, and ends
+# at the first read that returns no bytes. These three variants of delft_subset
+# (10 features, 20 CityObjects, lines up to ~7 KB) cross the chunk boundary several
+# times, so a line split across two reads is exercised as well as the line endings.
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+----
+20
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/seq_crlf.city.jsonl');
+----
+20
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/seq_blank_lines.city.jsonl');
+----
+20
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('test/data/seq_no_final_newline.city.jsonl');
+----
+20
+
+# Same rows, not just the same count: a \r left on a line, or a line cut at a chunk
+# boundary, would change a parsed value or fail the parse.
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, object_type, geometry_lod2_2 FROM read_cityjsonseq('test/data/seq_crlf.city.jsonl')
+  EXCEPT ALL
+  SELECT id, object_type, geometry_lod2_2 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'));
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, object_type, geometry_lod2_2 FROM read_cityjsonseq('test/data/seq_blank_lines.city.jsonl')
+  EXCEPT ALL
+  SELECT id, object_type, geometry_lod2_2 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'));
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, object_type, geometry_lod2_2 FROM read_cityjsonseq('test/data/seq_no_final_newline.city.jsonl')
+  EXCEPT ALL
+  SELECT id, object_type, geometry_lod2_2 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'));
+----
+0
+
+# The metadata scalar reads the header line through the same splitter.
+query I
+SELECT city_objects_count FROM cityjsonseq_metadata('test/data/seq_crlf.city.jsonl');
+----
+20

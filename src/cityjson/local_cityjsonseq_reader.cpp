@@ -5,6 +5,8 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 namespace cityjson {
 
@@ -42,6 +44,43 @@ void LocalCityJSONSeqReader::OpenHandle() const {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path_);
 	}
 	metadata_read_ = false;
+	line_buffer_.clear();
+	line_pos_ = 0;
+	stream_exhausted_ = false;
+}
+
+std::optional<std::string> LocalCityJSONSeqReader::NextLine() const {
+	// Small enough that a test fixture crosses chunk boundaries, large enough that a
+	// many-megabyte file is a few hundred reads rather than one per byte.
+	static constexpr idx_t READ_CHUNK = 16 * 1024;
+
+	while (true) {
+		const auto newline = line_buffer_.find('\n', line_pos_);
+		std::string line;
+		if (newline != std::string::npos) {
+			line = line_buffer_.substr(line_pos_, newline - line_pos_);
+			line_pos_ = newline + 1;
+		} else if (stream_exhausted_) {
+			if (line_pos_ >= line_buffer_.size()) {
+				return std::nullopt;
+			}
+			line = line_buffer_.substr(line_pos_);
+			line_pos_ = line_buffer_.size();
+		} else {
+			line_buffer_.erase(0, line_pos_);
+			line_pos_ = 0;
+			const auto kept = line_buffer_.size();
+			line_buffer_.resize(kept + READ_CHUNK);
+			const auto got = handle_->Read(&line_buffer_[kept], READ_CHUNK);
+			line_buffer_.resize(kept + static_cast<idx_t>(std::max<int64_t>(got, 0)));
+			if (got <= 0) {
+				stream_exhausted_ = true;
+			}
+			continue;
+		}
+		line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
+		return line;
+	}
 }
 
 void LocalCityJSONSeqReader::Rewind() const {
@@ -49,7 +88,7 @@ void LocalCityJSONSeqReader::Rewind() const {
 	// The header line has to be consumed again, not merely re-parsed. ReadMetadata()
 	// short-circuits on the cache and leaves the handle where it is, so without this the
 	// next ReadLine() would hand the header to CityJSONFeature::FromJson.
-	handle_->ReadLine();
+	NextLine();
 	metadata_read_ = true;
 }
 
@@ -67,7 +106,7 @@ CityJSON LocalCityJSONSeqReader::ReadMetadata() const {
 	}
 
 	// Read first line (metadata record)
-	std::string line = handle_->ReadLine();
+	std::string line = NextLine().value_or("");
 	if (line.empty()) {
 		throw CityJSONError::Sequence("CityJSONSeq file is empty");
 	}
@@ -116,19 +155,14 @@ std::optional<CityJSONFeature> LocalCityJSONSeqReader::ReadNextFeature() const {
 
 	std::string line;
 	while (true) {
-		try {
-			line = handle_->ReadLine();
-		} catch (const duckdb::IOException &) {
-			// End of file
+		auto next = NextLine();
+		if (!next.has_value()) {
 			return std::nullopt;
 		}
-		if (line.empty()) {
-			// Skip empty lines, but also detect EOF when ReadLine returns empty
-			if (handle_->GetFileSize() == handle_->SeekPosition()) {
-				return std::nullopt;
-			}
-			continue;
+		if (next->empty()) {
+			continue; // blank lines between features carry nothing
 		}
+		line = std::move(next.value());
 		break;
 	}
 
@@ -208,18 +242,14 @@ size_t LocalCityJSONSeqReader::CountCityObjects() const {
 
 	size_t count = 0;
 	while (true) {
-		std::string line;
-		try {
-			line = handle_->ReadLine();
-		} catch (const duckdb::IOException &) {
+		auto next = NextLine();
+		if (!next.has_value()) {
 			break;
 		}
-		if (line.empty()) {
-			if (handle_->GetFileSize() == handle_->SeekPosition()) {
-				break;
-			}
+		if (next->empty()) {
 			continue;
 		}
+		const auto &line = next.value();
 
 		try {
 			json feature_obj = ParseJson(line);

@@ -1,9 +1,9 @@
 #include "cityjson/cityjson_writer.hpp"
+#include "cityjson/file_output.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include <fcb/writer/attribute.hpp>
 #include <fcb/writer/fcb_writer.hpp>
 #endif
-#include <fstream>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -346,7 +346,7 @@ json CityJSONWriter::BuildMetadataJson(const CityJSONWriteMetadata &metadata) {
 // ============================================================
 
 void CityJSONWriter::WriteCityJSON(
-    const std::string &file_path, const CityJSONWriteMetadata &metadata,
+    FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order, const std::optional<json> &appearance) {
 	// Build the root CityJSON object
@@ -428,12 +428,9 @@ void CityJSONWriter::WriteCityJSON(
 		root["vertices"].push_back(json::array({v[0], v[1], v[2]}));
 	}
 
-	// Write to file
-	std::ofstream out(file_path);
-	if (!out.is_open()) {
-		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
-	}
-	out << root.dump();
+	FileOutput out(fs, file_path);
+	out.Stream() << root.dump();
+	out.Close();
 }
 
 // ============================================================
@@ -441,14 +438,12 @@ void CityJSONWriter::WriteCityJSON(
 // ============================================================
 
 void CityJSONWriter::WriteCityJSONSeq(
-    const std::string &file_path, const CityJSONWriteMetadata &metadata,
+    FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order, const std::optional<json> &appearance_header,
     const std::map<std::string, json> &appearance_by_feature) {
-	std::ofstream out(file_path);
-	if (!out.is_open()) {
-		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
-	}
+	FileOutput output(fs, file_path);
+	auto &out = output.Stream();
 
 	// Line 1: metadata header
 	json header;
@@ -545,6 +540,7 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 		out << feature.dump() << "\n";
 	}
+	output.Close();
 }
 
 // ============================================================
@@ -569,7 +565,8 @@ nlohmann::ordered_json SemanticSurfaceOtherMembers(const nlohmann::ordered_json 
 
 } // namespace
 
-void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+void CityJSONWriter::WriteFlatCityBuf(FileSystem &fs, const std::string &file_path,
+                                      const CityJSONWriteMetadata &metadata,
                                       std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
                                       const std::vector<std::string> &feature_order,
                                       const std::vector<std::string> &attr_index_columns,
@@ -734,15 +731,9 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 		writer.add_feature(feature);
 	}
 
-	std::ofstream out(file_path, std::ios::binary);
-	if (!out.is_open()) {
-		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
-	}
-	writer.write(out); // streaming overload -- bounded memory, unlike write()'s vector return
-	out.close();
-	if (!out) {
-		throw CityJSONError::FileWrite("Failed writing output file: " + file_path);
-	}
+	FileOutput out(fs, file_path);
+	writer.write(out.Stream()); // streaming overload -- bounded memory, unlike write()'s vector return
+	out.Close();
 }
 
 #endif // CITYJSON_HAS_FCB

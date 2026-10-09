@@ -2291,10 +2291,11 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 
 	// Write to the temp file path — DuckDB will rename it to the final path after Finalize
 	auto &output_path = gstate.temp_file_path;
+	auto &fs = FileSystem::GetFileSystem(context);
 
 	switch (bind_data.format) {
 	case CopyFormat::CityJSONSeq:
-		CityJSONWriter::WriteCityJSONSeq(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
+		CityJSONWriter::WriteCityJSONSeq(fs, output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
 		break;
 #ifdef CITYJSON_HAS_FCB
@@ -2309,7 +2310,7 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 				declared_attr_columns.push_back(bind_data.output_names[col]);
 			}
 		}
-		CityJSONWriter::WriteFlatCityBuf(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
+		CityJSONWriter::WriteFlatCityBuf(fs, output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.fcb_attr_index_columns, bind_data.fcb_branching_factor,
 		                                 bind_data.fcb_index_node_size, declared_attr_columns,
 		                                 bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
@@ -2327,7 +2328,7 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 		FinalizeGltf(context, bind_data, gstate);
 		break;
 	case CopyFormat::CityJSON:
-		CityJSONWriter::WriteCityJSON(output_path, write_meta, gstate.feature_objects, gstate.feature_order,
+		CityJSONWriter::WriteCityJSON(fs, output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                              bind_data.source_appearance_header);
 		break;
 	}

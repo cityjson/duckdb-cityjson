@@ -31,9 +31,21 @@ std::string ReadFileContent(duckdb::ClientContext &context, const std::string &f
 	if (!handle) {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path);
 	}
-	auto file_size = handle->GetFileSize();
+	// Read until the whole file is in. The positionless Read returns the bytes it
+	// actually delivered, which may be fewer than asked for -- DuckDB-Wasm's browser
+	// HTTP file system returned the first 16 KiB of a 7 MB document, so a single call
+	// left the rest as NULs.
+	const auto file_size = handle->GetFileSize();
 	std::string content(file_size, '\0');
-	handle->Read(const_cast<char *>(content.data()), file_size);
+	idx_t total = 0;
+	while (total < file_size) {
+		const auto got = handle->Read(&content[total], file_size - total);
+		if (got <= 0) {
+			throw CityJSONError::FileRead("Unexpected end of file after " + std::to_string(total) + " of " +
+			                              std::to_string(file_size) + " bytes: " + file_path);
+		}
+		total += static_cast<idx_t>(got);
+	}
 
 	// A whole-document CityJSON may be served gzip-compressed (3DBAG's published
 	// tiles are). Detect by magic bytes rather than by extension, so a `.gz` path

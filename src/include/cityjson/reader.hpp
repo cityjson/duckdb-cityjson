@@ -188,8 +188,21 @@ private:
 	mutable std::unique_ptr<duckdb::FileHandle> handle_; // FileHandle for incremental reads
 	mutable bool metadata_read_ = false;                 // Whether the metadata line has been consumed
 
+	// Line splitting over the handle: bytes read but not yet returned as a line, the
+	// offset of the first unreturned byte, and whether a read has come back empty.
+	mutable std::string line_buffer_;
+	mutable size_t line_pos_ = 0;
+	mutable bool stream_exhausted_ = false;
+
 	// Internal helper: open or reopen the file handle positioned at the start
 	void OpenHandle() const;
+
+	// The next line without its line terminator (every '\r' removed, as FileHandle::ReadLine
+	// does), or nullopt once the stream is exhausted. Reads the handle in fixed-size
+	// chunks, and the stream ends at the first read that returns no bytes -- never at a
+	// comparison of position against size, which a handle need not keep consistent
+	// (a browser file handle under DuckDB-Wasm does not, and the scan never ended).
+	std::optional<std::string> NextLine() const;
 
 	// Reposition at the first feature line, so a whole-file or sampling read can run
 	// again on a reader that has already been consumed.
