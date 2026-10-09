@@ -471,15 +471,20 @@ std::string ObjectTableProjection(Connection &connection, const std::string &pat
 
 } // namespace
 
-std::string BuildReadSQL(ClientContext &context, const std::string &directory, const std::string &schema) {
+std::string BuildReadSQL(ClientContext &context, const std::string &directory_arg, const std::string &schema) {
 	auto &fs = FileSystem::GetFileSystem(context);
-	if (!fs.DirectoryExists(directory)) {
-		throw BinderException("cityparquet_read: no such directory '%s'", directory);
+	// `pkg/` and `pkg` name the same package; without this, the file paths below
+	// would carry a doubled separator.
+	auto directory = directory_arg;
+	while (directory.size() > 1 && (directory.back() == '/' || directory.back() == '\\')) {
+		directory.pop_back();
 	}
 
-	// The file list comes from a directory listing at plan time -- no SQL, no data read.
-	// Only files this specification names are adopted; anything else in the directory is
-	// left alone rather than guessed at.
+	// The file list comes from a glob at plan time -- no SQL, no data read. A glob,
+	// not a directory listing: under DuckDB-Wasm a package is a set of files
+	// registered by name, with no directory entry to list or test for, and the glob
+	// is what finds them. Only files this specification names are adopted; anything
+	// else is left alone rather than guessed at.
 	std::set<std::string> known;
 	for (const auto &name : ModuleTableNames()) {
 		known.insert(name);
@@ -489,18 +494,22 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory, c
 	}
 
 	std::vector<std::string> found;
-	fs.ListFiles(directory, [&](const std::string &name, bool) {
+	for (const auto &info : fs.Glob(fs.JoinPath(directory, "*.parquet"))) {
+		const auto name = fs.ExtractName(info.path);
 		const auto suffix = std::string(".parquet");
 		if (name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
-			return;
+			continue;
 		}
 		const auto table = StringUtil::Lower(name.substr(0, name.size() - suffix.size()));
-		if (known.count(table) > 0) {
+		if (known.count(table) > 0 && std::find(found.begin(), found.end(), table) == found.end()) {
 			found.push_back(table);
 		}
-	});
+	}
 	if (found.empty()) {
-		throw BinderException("cityparquet_read: '%s' contains no CityParquet object table or sidecar", directory);
+		if (!fs.DirectoryExists(directory)) {
+			throw BinderException("cityparquet_read: no such directory '%s'", directory_arg);
+		}
+		throw BinderException("cityparquet_read: '%s' contains no CityParquet object table or sidecar", directory_arg);
 	}
 	std::sort(found.begin(), found.end());
 
