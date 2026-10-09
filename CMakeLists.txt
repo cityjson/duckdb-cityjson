@@ -78,6 +78,7 @@ set(EXTENSION_SOURCES
     src/cityjson/copy_function.cpp
     src/cityjson/copy_source_ref.cpp
     src/cityjson/cityjson_writer.cpp
+    src/cityjson/file_output.cpp
     # CityParquet package layer
     src/cityjson/cityparquet_sql_common.cpp
     src/cityjson/cityparquet_extensions.cpp

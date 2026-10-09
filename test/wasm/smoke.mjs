@@ -34,6 +34,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -252,6 +253,34 @@ async function main() {
   } catch (e) {
     fail('read_flatcitybuf(fcb_bbox_attr.fcb) count + min(height)', e);
   }
+
+  // COPY TO writes through DuckDB's FileSystem. A writer that opens its output with
+  // std::ofstream lands in Emscripten's MEMFS instead, which the host never sees: the
+  // COPY reports success and the file on disk is empty. Checked on disk (the bytes
+  // the host gets) and by reading it back (the bytes DuckDB gets).
+  //
+  // Oracle: ./build/release/duckdb -c \
+  //   "SELECT count(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')"  ->  20
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cityjson-wasm-smoke-'));
+  const outputs = [
+    ['cityjsonseq', 'city.jsonl', 'read_cityjsonseq'],
+    ['cityjson', 'city.json', 'read_cityjson'],
+    ['flatcitybuf', 'fcb', 'read_flatcitybuf'],
+  ];
+  for (const [format, ext, reader] of outputs) {
+    const out = path.join(outDir, `out.${ext}`);
+    try {
+      query(
+        `COPY (SELECT * FROM read_cityjsonseq('${REPO}/test/data/delft_subset.city.jsonl')) TO '${out}' (FORMAT ${format})`
+      );
+      const bytes = fs.existsSync(out) ? fs.statSync(out).size : 0;
+      check(`COPY TO ${format} writes a non-empty file`, bytes > 1000, true);
+      check(`COPY TO ${format} reads back`, query(`SELECT count(*)::INT AS n FROM ${reader}('${out}')`), [{ n: 20 }]);
+    } catch (e) {
+      fail(`COPY TO ${format}`, e);
+    }
+  }
+  fs.rmSync(outDir, { recursive: true, force: true });
 
   // Network-gated, same opt-in as test/sql/cityjson_fcb_remote.test. The bbox is the
   // 500 m square that test uses, valid only for the default hosted 3DBAG subset

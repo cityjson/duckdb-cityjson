@@ -2,6 +2,7 @@
 
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/json_utils.hpp"
+#include "duckdb/common/file_system.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -39,12 +40,13 @@ public:
 	/**
 	 * Write a complete CityJSON file (.city.json)
 	 *
+	 * @param fs FileSystem the output is written through
 	 * @param file_path Output path
 	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
-	static void WriteCityJSON(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	static void WriteCityJSON(FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                          const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
 	                          const std::vector<std::string> &feature_order,
 	                          const std::optional<json> &appearance = std::nullopt);
@@ -54,13 +56,14 @@ public:
 	 * Line 1: metadata header
 	 * Line 2+: one CityJSONFeature per line with per-feature vertex pool
 	 *
+	 * @param fs FileSystem the output is written through
 	 * @param file_path Output path
 	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
 	static void
-	WriteCityJSONSeq(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	WriteCityJSONSeq(FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                 const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
 	                 const std::vector<std::string> &feature_order,
 	                 const std::optional<json> &appearance_header = std::nullopt,
@@ -73,6 +76,7 @@ public:
 	 * Internally builds CityJSONSeq-style JSON (metadata header + per-feature JSON)
 	 * and feeds it to the FCB writer.
 	 *
+	 * @param fs FileSystem the output is written through
 	 * @param file_path Output path
 	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
@@ -98,7 +102,7 @@ public:
 	 *        feature id, re-attached with a freshly rebuilt `vertices-texture` pool
 	 *        exactly as WriteCityJSONSeq does (BuildAppearanceBlock).
 	 */
-	static void WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	static void WriteFlatCityBuf(FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                             std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
 	                             const std::vector<std::string> &feature_order,
 	                             const std::vector<std::string> &attr_index_columns = {},
