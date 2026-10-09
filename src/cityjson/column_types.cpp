@@ -477,17 +477,37 @@ static std::string ToLowerAscii(const std::string &name) {
 }
 
 bool IsReservedColumnName(const std::string &name) {
+	// Spec 02-object-table-schema.mdx, "Column naming and reservation rules": the
+	// reserved columns, compared with ASCII case folding, plus every per-LoD form of
+	// the geometry and appearance groups (and their un-suffixed forms, which name the
+	// zero-LoD case). Anchored, so `geometry_lodging` is an ordinary attribute.
 	static const std::vector<std::string> reserved = {
-	    "id",    "feature_id", "object_type", "children", "children_roles",   "parents",
-	    "other", "bbox",       "geometry",    "address",  "implicit_geometry"};
+	    "id",      "feature_id", "object_type",       "parents", "children", "children_roles",
+	    "address", "bbox",       "implicit_geometry", "other",   "geometry", "geometry_properties"};
+	static const std::regex geometry_pattern(R"((geometry|geometry_properties)_lod\d+(_\d+)?)");
 	const std::string lowered = ToLowerAscii(name);
 	if (std::find(reserved.begin(), reserved.end(), lowered) != reserved.end()) {
 		return true;
 	}
-	// Wide-layout per-LOD structural columns: geometry_lod*, geometry_properties*,
-	// and the paired appearance columns material_lod* / texture_lod* (§11).
-	return lowered.rfind("geometry_lod", 0) == 0 || lowered.rfind("geometry_properties", 0) == 0 ||
-	       IsAppearanceColumnName(lowered);
+	return std::regex_match(lowered, geometry_pattern) || IsAppearanceColumnName(lowered);
+}
+
+static std::string BaseName(const std::string &name) {
+	const auto first = name.find_first_not_of('_');
+	return first == std::string::npos ? std::string() : name.substr(first);
+}
+
+std::string EscapeAttributeName(const std::string &source_name) {
+	return IsReservedColumnName(BaseName(source_name)) ? "_" + source_name : source_name;
+}
+
+std::string SourceAttributeName(const std::string &column_name) {
+	// Only an escaped name starts with `_`; everything else is its own source name, and
+	// skipping the reserved-name test for it keeps this cheap enough to run per value.
+	if (column_name.empty() || column_name[0] != '_') {
+		return column_name;
+	}
+	return IsReservedColumnName(BaseName(column_name)) ? column_name.substr(1) : column_name;
 }
 
 bool IsAppearanceColumnName(const std::string &name) {

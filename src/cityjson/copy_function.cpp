@@ -588,7 +588,9 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 				size_t first = piece.find_first_not_of(" \t");
 				size_t last = piece.find_last_not_of(" \t");
 				if (first != std::string::npos) {
-					columns.push_back(piece.substr(first, last - first + 1));
+					// The file's attributes carry source names, so an escaped column
+					// (`_ID`) indexes the attribute it stands for (`ID`).
+					columns.push_back(SourceAttributeName(piece.substr(first, last - first + 1)));
 				}
 				if (comma == std::string::npos) {
 					break;
@@ -2093,7 +2095,9 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 			city_obj["geometry"] = json::array();
 		}
 
-		// Attributes (all non-reserved columns)
+		// Attributes (all non-reserved columns), each under its source name: a column
+		// whose name is a reserved one escaped (`_ID`, `__ID`) loses one leading `_`
+		// (spec 02-object-table-schema.mdx, "Column naming and reservation rules").
 		json attributes = json::object();
 		for (idx_t col = 0; col < bind_data.column_roles.size(); col++) {
 			if (bind_data.column_roles[col] == CopyColumnRole::Attribute) {
@@ -2102,7 +2106,7 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 					continue;
 				}
 				try {
-					attributes[bind_data.output_names[col]] = AttributeValueToJson(val);
+					attributes[SourceAttributeName(bind_data.output_names[col])] = AttributeValueToJson(val);
 				} catch (const CityJSONError &e) {
 					throw InvalidInputException("COPY TO cityjson: attribute '%s' of object '%s' cannot be written "
 					                            "as JSON: %s",
@@ -2111,9 +2115,7 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 			}
 		}
 		// `other` carries source data with no column of its own; the format's
-		// reader rule is that every entry is restored as an attribute. Without
-		// this, an attribute whose name collides with a reserved column is read
-		// into `other` and then written nowhere.
+		// reader rule is that every entry is restored as an attribute.
 		//
 		// An `other` cell that is not parseable JSON, or that parses to something
 		// other than a JSON object, is invalid input (spec 02-object-table-schema.mdx,
@@ -2307,7 +2309,7 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 		std::vector<std::string> declared_attr_columns;
 		for (idx_t col = 0; col < bind_data.column_roles.size(); col++) {
 			if (bind_data.column_roles[col] == CopyColumnRole::Attribute) {
-				declared_attr_columns.push_back(bind_data.output_names[col]);
+				declared_attr_columns.push_back(SourceAttributeName(bind_data.output_names[col]));
 			}
 		}
 		CityJSONWriter::WriteFlatCityBuf(fs, output_path, write_meta, gstate.feature_objects, gstate.feature_order,

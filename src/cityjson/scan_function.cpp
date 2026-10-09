@@ -253,18 +253,15 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 	// column" test. Built once per scan rather than per row.
 	//
 	// Filtered to non-reserved names, not the raw bind_data.columns list: a
-	// reserved/structural column (bbox, geometry_vertices_lod2_2, ...) is never
-	// populated from obj.attributes, so its presence in the schema says nothing
-	// about whether a same-named attribute has "a column of its own" -- an
-	// attribute literally called geometry_vertices_lod2_2 must still land in
-	// `other` even though a column of that exact name exists (it holds the
-	// vertex pool, not the attribute). IsReservedColumnName is the same
-	// predicate InferAttributeColumns used to decide the attribute got no
-	// column in the first place, so the two stay in lockstep.
+	// reserved column (bbox, geometry_lod2_2, ...) is never populated from
+	// obj.attributes, so its presence in the schema says nothing about whether a
+	// same-named attribute has a column of its own -- an attribute literally
+	// called bbox has one, the escaped `_bbox`. Held as source names
+	// (SourceAttributeName), since those are the keys `other` is built from.
 	std::set<std::string> emitted_columns;
 	for (const auto &c : bind_data.columns) {
 		if (!IsReservedColumnName(c.name)) {
-			emitted_columns.insert(c.name);
+			emitted_columns.insert(SourceAttributeName(c.name));
 		}
 	}
 
@@ -404,18 +401,15 @@ static void StreamingScan(ClientContext &context, const CityJSONBindData &bind_d
 	// column" test. Built once per scan rather than per row.
 	//
 	// Filtered to non-reserved names, not the raw bind_data.columns list: a
-	// reserved/structural column (bbox, geometry_vertices_lod2_2, ...) is never
-	// populated from obj.attributes, so its presence in the schema says nothing
-	// about whether a same-named attribute has "a column of its own" -- an
-	// attribute literally called geometry_vertices_lod2_2 must still land in
-	// `other` even though a column of that exact name exists (it holds the
-	// vertex pool, not the attribute). IsReservedColumnName is the same
-	// predicate InferAttributeColumns used to decide the attribute got no
-	// column in the first place, so the two stay in lockstep.
+	// reserved column (bbox, geometry_lod2_2, ...) is never populated from
+	// obj.attributes, so its presence in the schema says nothing about whether a
+	// same-named attribute has a column of its own -- an attribute literally
+	// called bbox has one, the escaped `_bbox`. Held as source names
+	// (SourceAttributeName), since those are the keys `other` is built from.
 	std::set<std::string> emitted_columns;
 	for (const auto &c : bind_data.columns) {
 		if (!IsReservedColumnName(c.name)) {
-			emitted_columns.insert(c.name);
+			emitted_columns.insert(SourceAttributeName(c.name));
 		}
 	}
 

@@ -1,0 +1,277 @@
+# name: test/sql/cityjson_reserved_escape.test
+# description: an attribute whose name collides with a reserved column is the column _<name>, restored on export
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 02-object-table-schema.mdx, "Column naming and reservation rules": names compare
+# case-insensitively against every reserved column name; an attribute whose base (its
+# name with every leading `_` removed) collides is stored as the column `_` + its source
+# name, and a reader of CityParquet removes one `_` from such a column on export.
+#
+# address_location.city.jsonl is a real Helsinki building whose attribute `ID`
+# (767157.0) collides with the reserved `id`. The other cases are DERIVED from it by
+# renaming that one attribute in the file's text (`ID` -> `_ID`, `children`, `other`,
+# `Geometry_LoD2_2`, `geometry_lodging`); nothing else in the building changes.
+
+# --- the readers ---------------------------------------------------------------------
+
+query TRT
+SELECT id, "_ID", CAST(other AS VARCHAR) FROM read_cityjsonseq('test/data/address_location.city.jsonl');
+----
+BID_f40f0a11-71b2-4de3-9f38-e23558b2f95b	767157.0	NULL
+
+# The attribute is a column of its own, under the escaped name only.
+query T
+SELECT string_agg(column_name, ',' ORDER BY column_name)
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+WHERE lower(ltrim(column_name, '_')) = 'id';
+----
+_ID,id
+
+# FlatCityBuf carries attribute names, so COPY writes the source name `ID` into the file
+# and read_flatcitybuf escapes it again, on the full and the selective path alike.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/escape.fcb' (FORMAT flatcitybuf);
+
+query R
+SELECT "_ID" FROM read_flatcitybuf('__TEST_DIR__/escape.fcb');
+----
+767157.0
+
+query TRT
+SELECT id, "_ID", CAST(other AS VARCHAR) FROM read_flatcitybuf('__TEST_DIR__/escape.fcb');
+----
+BID_f40f0a11-71b2-4de3-9f38-e23558b2f95b	767157.0	NULL
+
+statement ok
+COPY (SELECT * FROM read_flatcitybuf('__TEST_DIR__/escape.fcb')) TO '__TEST_DIR__/escape_fcb.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0') AND NOT regexp_matches(content, '"_ID"')
+FROM read_text('__TEST_DIR__/escape_fcb.city.jsonl');
+----
+true
+
+# An attribute index named by the escaped column indexes the attribute it stands for,
+# and a filter on that column is answered through it.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/escape_indexed.fcb' (FORMAT flatcitybuf, attr_index '_ID');
+
+query TR
+SELECT id, "_ID" FROM read_flatcitybuf('__TEST_DIR__/escape_indexed.fcb') WHERE "_ID" = 767157.0;
+----
+BID_f40f0a11-71b2-4de3-9f38-e23558b2f95b	767157.0
+
+query I
+SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/escape_indexed.fcb') WHERE "_ID" = 1.0;
+----
+0
+
+# --- COPY back to CityJSON restores the source name ---------------------------------
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/escape.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0') AND NOT regexp_matches(content, '"_ID"')
+FROM read_text('__TEST_DIR__/escape.city.jsonl');
+----
+true
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/escape.city.json' (FORMAT cityjson);
+
+query I
+SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0') AND NOT regexp_matches(content, '"_ID"')
+FROM read_text('__TEST_DIR__/escape.city.json');
+----
+true
+
+# --- the package: insert, write, read, export ----------------------------------------
+
+statement ok
+CREATE SCHEMA hel;
+
+statement ok
+PRAGMA cityparquet_init('hel');
+
+statement ok
+PRAGMA insert_cityjsonseq('hel', 'test/data/address_location.city.jsonl');
+
+query RT
+SELECT "_ID", CAST(other AS VARCHAR) FROM hel.building;
+----
+767157.0	NULL
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('hel', '__TEST_DIR__/hel_pkg');
+
+# The file holds the escaped column, and its footer lists it as an attribute.
+query T
+SELECT string_agg(column_name, ',' ORDER BY column_name)
+FROM (DESCRIBE SELECT * FROM read_parquet('__TEST_DIR__/hel_pkg/building.parquet'))
+WHERE lower(ltrim(column_name, '_')) = 'id';
+----
+_ID,id
+
+query I
+SELECT CAST(cityparquet_city_field(decode(value), 'attributes') AS VARCHAR) LIKE '%"_ID"%'
+FROM parquet_kv_metadata('__TEST_DIR__/hel_pkg/building.parquet') WHERE decode(key) = 'city';
+----
+true
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/hel_pkg', 'back');
+
+query RT
+SELECT "_ID", CAST(other AS VARCHAR) FROM back.building;
+----
+767157.0	NULL
+
+statement ok
+COPY (SELECT * FROM back.building) TO '__TEST_DIR__/back.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0') AND NOT regexp_matches(content, '"_ID"')
+FROM read_text('__TEST_DIR__/back.city.jsonl');
+----
+true
+
+# Widening keys on the escaped name too. A second copy of the building, under another
+# id and with its `ID` a string, widens `_ID` from DOUBLE to VARCHAR.
+statement ok
+COPY (SELECT replace(replace(rtrim(content, chr(10)), 'BID_f40f0a11', 'BID_00000000'), '"ID": 767157.0', '"ID": "767157-b"')
+      FROM read_text('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/id_text.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+PRAGMA insert_cityjsonseq('hel', '__TEST_DIR__/id_text.city.jsonl');
+
+query TT
+SELECT typeof("_ID"), string_agg("_ID", ',' ORDER BY "_ID") FROM hel.building GROUP BY ALL;
+----
+VARCHAR	767157-b,767157.0
+
+# --- derived: a source name that already starts with `_` gains one more --------------
+
+statement ok
+COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"_ID":') FROM read_text('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/underscore_id.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query RT
+SELECT "__ID", CAST(other AS VARCHAR) FROM read_cityjsonseq('__TEST_DIR__/underscore_id.city.jsonl');
+----
+767157.0	NULL
+
+statement error
+SELECT "_ID" FROM read_cityjsonseq('__TEST_DIR__/underscore_id.city.jsonl');
+----
+Referenced column "_ID" not found
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/underscore_id.city.jsonl'))
+TO '__TEST_DIR__/underscore_id_out.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT regexp_matches(content, '"_ID":767157\.0') AND NOT regexp_matches(content, '"__ID"')
+FROM read_text('__TEST_DIR__/underscore_id_out.city.jsonl');
+----
+true
+
+# --- derived: exact-case collisions, `children` and `other` --------------------------
+
+statement ok
+COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"children":') FROM read_text('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/children_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+# The reserved `children` keeps its meaning: the building has no children.
+query RTT
+SELECT "_children", children, CAST(other AS VARCHAR) FROM read_cityjsonseq('__TEST_DIR__/children_attr.city.jsonl');
+----
+767157.0	NULL	NULL
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/children_attr.city.jsonl'))
+TO '__TEST_DIR__/children_attr_out.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT regexp_matches(content, '"children":767157\.0') AND NOT regexp_matches(content, '"_children"')
+FROM read_text('__TEST_DIR__/children_attr_out.city.jsonl');
+----
+true
+
+statement ok
+COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"other":') FROM read_text('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/other_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query RT
+SELECT "_other", CAST(other AS VARCHAR) FROM read_cityjsonseq('__TEST_DIR__/other_attr.city.jsonl');
+----
+767157.0	NULL
+
+statement ok
+CREATE SCHEMA oth;
+
+statement ok
+PRAGMA cityparquet_init('oth');
+
+statement ok
+PRAGMA insert_cityjsonseq('oth', '__TEST_DIR__/other_attr.city.jsonl');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('oth', '__TEST_DIR__/oth_pkg');
+
+query RT
+SELECT "_other", CAST(other AS VARCHAR) FROM read_parquet('__TEST_DIR__/oth_pkg/building.parquet');
+----
+767157.0	NULL
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/oth_pkg', 'oth_back');
+
+statement ok
+COPY (SELECT * FROM oth_back.building) TO '__TEST_DIR__/oth_back.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT regexp_matches(content, '"other":767157\.0') AND NOT regexp_matches(content, '"_other"')
+FROM read_text('__TEST_DIR__/oth_back.city.jsonl');
+----
+true
+
+# --- derived: a per-LoD reserved form, in any case, collides; a look-alike does not ---
+
+statement ok
+COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"Geometry_LoD2_2":') FROM read_text('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/lod_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query R
+SELECT "_Geometry_LoD2_2" FROM read_cityjsonseq('__TEST_DIR__/lod_attr.city.jsonl');
+----
+767157.0
+
+statement ok
+COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"geometry_lodging":') FROM read_text('test/data/address_location.city.jsonl'))
+TO '__TEST_DIR__/lodging_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query RT
+SELECT geometry_lodging, CAST(other AS VARCHAR) FROM read_cityjsonseq('__TEST_DIR__/lodging_attr.city.jsonl');
+----
+767157.0	NULL
+
+# --- a package column that collides in its own name is invalid input ----------------
+
+# cityparquet_rs_helsinki is address_location.city.jsonl as an earlier cityparquet-rs
+# wrote it: the attribute `ID` a column of its own beside the reserved `id`, unescaped.
+# No conforming writer produces that, and DuckDB cannot hold the two as distinct
+# columns, so the read refuses the file rather than rename the attribute.
+statement error
+PRAGMA cityparquet_read('test/data/cityparquet_rs_helsinki', 'h');
+----
+the column 'ID' collides with the reserved column 'id'

@@ -384,7 +384,8 @@ FcbFieldMask ComputeFcbFieldMask(const std::vector<Column> &columns, const std::
 			continue;
 		}
 		if (mask.attributes.has_value() && StructuralColumnNames().count(column.name) == 0) {
-			mask.attributes->insert(column.name);
+			// The blob names an attribute by its source name, not its escaped column.
+			mask.attributes->insert(SourceAttributeName(column.name));
 		}
 	}
 

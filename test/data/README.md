@@ -190,6 +190,7 @@ one UV short. `cityjson_texture_closed_ring.test` reads it, and
 
 `address_location.city.jsonl` as cityparquet-rs (monorepo commit 9e5de83) writes it:
 `cityparquet convert address_location.city.jsonl -o OUT`, unedited. Its Helsinki
-attribute `ID` is a column of its own beside the reserved `id` -- legal Parquet, since the
-specification's reserved names are exact -- which a case-insensitive DuckDB cannot hold
-as two columns. `cityparquet_read_case_collision.test` reads it.
+attribute `ID` is a column of its own beside the reserved `id`, unescaped, which the
+specification makes invalid input (a colliding attribute is the column `_ID`) and a
+case-insensitive DuckDB cannot hold as two columns. `cityjson_reserved_escape.test` checks
+that `cityparquet_read` refuses it.

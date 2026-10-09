@@ -148,17 +148,30 @@ std::vector<Column> GetDefinedColumns();
 /**
  * Check if a name collides (case-insensitively) with any reserved output column.
  *
- * Reserved columns are the predefined structural columns plus the wide-layout
- * geometry columns (`geometry`, `geometry_lod*`, `geometry_properties_lod*`) and
- * `bbox`. Reserved columns take precedence over dynamic attributes: a source
- * attribute whose name collides with a reserved column must not be emitted as its
- * own column (it is preserved in the `other` JSON instead), otherwise DuckDB would
- * see duplicate column names (it is case-insensitive) and refuse to bind.
+ * Reserved columns are the predefined structural columns, `bbox`,
+ * `implicit_geometry`, `other`, and every per-LoD geometry and appearance column
+ * (`geometry_lod*`, `geometry_properties_lod*`, `material_lod*`, `texture_lod*`,
+ * and their un-suffixed forms), compared with ASCII case folding (spec
+ * 02-object-table-schema.mdx, "Column naming and reservation rules").
  *
  * @param name Column/attribute name to check
  * @return true if the name case-insensitively matches a reserved column
  */
 bool IsReservedColumnName(const std::string &name);
+
+/**
+ * The column name a source attribute is stored under: `_` + its source name when its
+ * base (the name with every leading `_` removed) collides with a reserved column
+ * (`ID` -> `_ID`, `_ID` -> `__ID`, `other` -> `_other`), otherwise the source name.
+ */
+std::string EscapeAttributeName(const std::string &source_name);
+
+/**
+ * The source attribute name an attribute column stands for: the column name with one
+ * leading `_` removed when its base collides with a reserved column (`_ID` -> `ID`,
+ * `__ID` -> `_ID`), otherwise the column name. The inverse of EscapeAttributeName.
+ */
+std::string SourceAttributeName(const std::string &column_name);
 
 /**
  * Check if a column name is a per-LoD appearance column (§11): exactly

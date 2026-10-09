@@ -5,6 +5,8 @@
 #include "cityjson/lod_table.hpp"
 #include "cityjson/duckdb_fs_range_reader.hpp"
 #include "cityjson/json_utils.hpp"
+#include "cityjson/column_types.hpp"
+#include "duckdb/common/string_util.hpp"
 #include <fcb/cityjson.hpp>
 #include <fcb/generated/header_generated.h>
 
@@ -352,23 +354,21 @@ std::vector<Column> FlatCityBufReader::Columns() const {
 	{
 		auto fcb_reader = OpenFcbReader();
 		for (const auto &col : fcb_reader.header().info().columns) {
+			// Under the same escaped name the sample gives it: a header attribute
+			// literally named `bbox` or `ID` is the column `_bbox` / `_ID`, never a
+			// second column beside the reserved one.
+			const auto name = EscapeAttributeName(col.name);
 			bool already_present = false;
 			for (const auto &existing : attr_columns) {
-				if (existing.name == col.name) {
+				if (StringUtil::CIEquals(existing.name, name)) {
 					already_present = true;
 					break;
 				}
 			}
-			// IsReservedColumnName, the full check: this reader's own `other`
-			// accumulation (GetAttributeValue) diverts any attribute whose name
-			// collides with an *emitted* column, not a fixed handful, so this
-			// header-merge check must reject every reserved name too. A header
-			// that declares an attribute literally named `bbox` or `address`
-			// must not duplicate this reader's own reserved column of that name.
-			if (already_present || IsReservedColumnName(col.name)) {
+			if (already_present) {
 				continue;
 			}
-			attr_columns.emplace_back(col.name, ColumnKindForFcbType(col.type));
+			attr_columns.emplace_back(name, ColumnKindForFcbType(col.type));
 		}
 	}
 

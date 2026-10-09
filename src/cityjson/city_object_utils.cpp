@@ -85,15 +85,16 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 
 	// `address` and `implicit_geometry` are written by the scan from the object's own
 	// address member and GeometryInstance (they need its vertex pool), never from a
-	// same-named source attribute: that is reserved-name-colliding input, preserved in
-	// `other`.
+	// same-named source attribute: that one is the escaped column `_address`.
 	if (col.name == "address" || col.name == "implicit_geometry") {
 		return json(nullptr);
 	}
 
 	if (col.name == "other") {
 		// `other` carries only what no column of its own carries: an attribute
-		// whose name collides with a reserved column, and so never got one.
+		// whose name differs from another's only by case, and so never got one.
+		// `emitted_columns` holds source names, so an attribute stored under an
+		// escaped column (`ID` as `_ID`) counts as having one.
 		// Attributes that DID get a column are not repeated here -- a duplicate
 		// costs a JSON blob per row and is written nowhere on COPY TO.
 		// geographicalExtent is not included: it is carried by `bbox`, which
@@ -110,8 +111,9 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		return other_attrs;
 	}
 
-	// Dynamic attribute column - look up in attributes map
-	auto it = obj.attributes.find(col.name);
+	// Dynamic attribute column - look up in attributes map, under the source name an
+	// escaped column (`_ID`) stands for.
+	auto it = obj.attributes.find(SourceAttributeName(col.name));
 	if (it != obj.attributes.end()) {
 		return it->second;
 	}
@@ -144,17 +146,14 @@ std::vector<Column> CityObjectUtils::InferAttributeColumns(const std::vector<Cit
 		for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
 			// Collect all attributes
 			for (const auto &[attr_key, attr_value] : city_obj.attributes) {
-				// Reserved columns take precedence over dynamic attributes: an attribute
-				// whose name collides (case-insensitively) with a reserved column does not
-				// get its own column. Its value is still preserved in the `other` JSON.
-				if (IsReservedColumnName(attr_key)) {
-					continue;
-				}
-
+				// An attribute whose name collides (case-insensitively) with a reserved
+				// column is the column `_` + its name (spec 02-object-table-schema.mdx,
+				// "Column naming and reservation rules"); GetAttributeValue reverses it.
+				//
 				// A null is the absence of a value and carries no type: it registers the
 				// attribute but casts no vote. An attribute null everywhere resolves from
 				// no samples, to VARCHAR.
-				auto &types = attribute_types[attr_key];
+				auto &types = attribute_types[EscapeAttributeName(attr_key)];
 				if (!attr_value.is_null()) {
 					types.push_back(ColumnTypeUtils::InferFromJson(attr_value));
 				}
@@ -162,9 +161,10 @@ std::vector<Column> CityObjectUtils::InferAttributeColumns(const std::vector<Cit
 		}
 	}
 
-	// Resolve final type for each attribute. Attribute names that differ only by case
-	// would also produce duplicate DuckDB columns, so keep only the first (the map is
-	// ordered, so this is deterministic).
+	// Resolve final type for each attribute. Column names that differ only by case
+	// would produce duplicate DuckDB columns, so keep only the first (the map is
+	// ordered, so this is deterministic); the others have no column, so `other`
+	// carries them.
 	std::vector<Column> result;
 	std::set<std::string> seen_lower;
 	for (const auto &[attr_name, types] : attribute_types) {

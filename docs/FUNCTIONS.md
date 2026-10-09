@@ -328,8 +328,12 @@ simply nothing to index.
 | `geometry` / `geometry_lod*` | No | WKB `BLOB` **or** DuckDB `GEOMETRY` |
 | `geometry_properties*` | No | CityParquet STRUCT **or** JSON text |
 
-Everything else is written as a CityJSON attribute, except four reserved
-columns, none of which is ever declared as an attribute column:
+Everything else is written as a CityJSON attribute, under its source name: a
+column whose name, with every leading `_` removed, is a reserved one (`_ID`,
+`__ID`, `_children`) loses one leading `_` (`ID`, `_ID`, `children`), which
+reverses the readers' escape (below). FlatCityBuf declares and indexes the
+attribute under that source name too, so `attr_index '_ID'` indexes `ID`. Four
+reserved columns are never declared as an attribute column:
 
 - `bbox` becomes the CityObject's `geographicalExtent` (below);
 - `other`'s members are restored into the CityObject's `attributes`; a cell that
@@ -738,12 +742,12 @@ SELECT table_name, role, city IS NOT NULL AS has_footer FROM delft.__cityparquet
 -- building | object | true
 ```
 
-An object table column whose name differs from another's only by case — an
-attribute `ID` beside the reserved `id`, which the specification allows because
-its reserved names are exact — cannot be a DuckDB column of its own, since DuckDB
-names are case-insensitive. `cityparquet_read` moves its values into `other`
-under the attribute's name, so `COPY` restores the attribute as it was, and a
-package written back holds it there.
+An attribute whose name collides with a reserved column is stored escaped, as
+`_ID` for `ID` (below), and is loaded under that name; `COPY` restores the source
+name. An object table holding a column whose own name collides with a reserved
+one without being it — an attribute `ID` beside the reserved `id` — is refused:
+no conforming writer produces one, and DuckDB, whose column names are
+case-insensitive, could hold it only renamed.
 
 **A hand-rolled `read_parquet` load is not equivalent.** It gives you the same
 rows, but `read_parquet` returns only the data — the Parquet footer is discarded
@@ -1956,6 +1960,17 @@ just the text: `cityparquet_write` writes the column as Parquet JSON and `COPY`
 restores each value as the object or array it spells. Unlike `other`, which is
 `JSON` by name and so stays `VARCHAR`, a `JSON` attribute column needs the `json`
 extension for text functions — cast it to `VARCHAR` first.
+
+An attribute keeps its source name, unless that name collides with a reserved
+column: names compare case-insensitively, against every column above including
+each per-LoD `geometry_lod*` / `geometry_properties_lod*` / `material_lod*` /
+`texture_lod*` form and `other`, and a name whose *base* — the name with every
+leading `_` removed — collides is the column `_` + its source name. `ID` is `_ID`,
+`bbox` `_bbox`, `other` `_other`, and a source attribute already named `_ID` is
+`__ID`, so no two meet; `geometry_lodging` names no reserved column and keeps its
+name. `COPY` reverses the escape. Two attribute names differing only by case
+cannot both be DuckDB columns: the first in name order is, and `other` carries the
+rest.
 
 An implicit geometry contributes nothing to `bbox`: its reference point is where
 the relative geometry is placed, not the extent of what it places, so an object

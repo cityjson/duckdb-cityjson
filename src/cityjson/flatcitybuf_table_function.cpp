@@ -171,7 +171,13 @@ void FlatCityBufPushdownComplexFilter(ClientContext &context, LogicalGet &get, F
 		if (schema_idx >= bind_data.columns.size()) {
 			continue;
 		}
-		const auto &column_name = bind_data.columns[schema_idx].name;
+		// The index and the decoded attributes know an attribute by its source name;
+		// the column may be its escaped form (`_ID` for `ID`). A reserved column is
+		// never an attribute, whatever the header indexes under the same name.
+		if (IsReservedColumnName(bind_data.columns[schema_idx].name)) {
+			continue;
+		}
+		const auto column_name = SourceAttributeName(bind_data.columns[schema_idx].name);
 		bool is_indexed =
 		    std::find(indexed_columns.begin(), indexed_columns.end(), column_name) != indexed_columns.end();
 		if (!is_indexed) {

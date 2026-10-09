@@ -312,6 +312,17 @@ columns, never the definitions.
   because it is the streaming scan's cursor.
 - **Per-feature vertices are local.** In CityJSONSeq each line carries its own `vertices`,
   and geometry boundary indices reference those, not the header's.
+- **An attribute column's name is not always its source name.** An attribute whose
+  name, leading `_`s removed, collides case-insensitively with a reserved column is
+  the column `_` + its name (`ID` → `_ID`, `_ID` → `__ID`). Everything that names a
+  column goes through `EscapeAttributeName`; everything that reaches the source's
+  own attributes — `GetAttributeValue`'s lookup, the source names `other` is tested
+  against, FlatCityBuf's field mask, attribute-index pushdown and post-filter, and
+  `COPY`'s attribute keys and FCB header declarations — goes back through
+  `SourceAttributeName`. A site that skips it reads NULL for an escaped column, or
+  puts the attribute into `other` as well as its column. `IsReservedColumnName` is
+  the predicate for both, so it stays anchored to the reserved grammar: a prefix
+  match would rename an innocent `geometry_lodging`, which the other writers keep.
 - **`lod=` keeps the suffixed column grammar** (`geometry_lod2_2`, not a bare `geometry`),
   which is what keeps the LoD recoverable on export.
 - **The OBJ and MTL parser is this extension's own** (`obj_parser.cpp`, a pure
