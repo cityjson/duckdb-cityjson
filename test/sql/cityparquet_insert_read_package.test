@@ -13,6 +13,8 @@
 
 require cityjson
 
+require parquet
+
 statement ok
 CREATE SCHEMA src;
 
