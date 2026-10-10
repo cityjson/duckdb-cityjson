@@ -31,7 +31,7 @@ SELECT COUNT(*) FROM cityparquet_write('j', '__TEST_DIR__/json_pkg', crs => 'EPS
 
 # Every `other` and every `surfaces`, in every file, object table or sidecar.
 query TTI
-SELECT regexp_extract(file_name, '[^/]+$'), name, COUNT(*)
+SELECT parse_filename(file_name), name, COUNT(*)
 FROM parquet_schema('__TEST_DIR__/json_pkg/*.parquet')
 WHERE name IN ('other', 'surfaces') AND logical_type = 'JsonType()' AND converted_type = 'JSON'
 GROUP BY ALL ORDER BY ALL;
