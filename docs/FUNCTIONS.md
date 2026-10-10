@@ -1426,16 +1426,11 @@ Three things the table cannot say in a cell:
 - **One theme is written.** A material or texture cell may carry several themes
   (`{visual=…, winter=…}`); the mesh writers take the alphabetically first.
 
-Remote output paths are not supported for mesh formats: the `.obj`, `.mtl` and any
-copied images are written with local file streams, never through DuckDB's own
-filesystem abstraction, so `COPY … TO 's3://…/x.obj'` fails opening the output
-rather than reaching object storage:
-
-```sql
-COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO 's3://nonexistent-bucket-cityjson-test/x.obj' (FORMAT obj);
--- Invalid Error: Failed to open output file: s3://nonexistent-bucket-cityjson-test/x.obj
-```
+The `.obj`, the `.mtl` and any copied images are written through DuckDB's
+FileSystem, like the CityJSON writers' output: `enable_external_access` and
+`allowed_directories` apply to all three, and under DuckDB-Wasm they land in the
+virtual file system the host reads back. The `.mtl` and images are written beside
+the `.obj`, in the directory of the `TO` path.
 
 A `.mtl` named after the OBJ is written beside it: `Kd`/`Ks`/`Ke`/`d`/`Ns` from the
 CityJSON material, `map_Kd` when the face carries a texture whose bytes could be
@@ -1890,8 +1885,8 @@ SELECT message FROM duckdb_logs() WHERE message LIKE 'cityjson:%';
 -- cityjson: object GMLID_855011_330784_753: face 67 has no plane normal and could not be triangulated, skipped
 ```
 
-Remote output paths are not supported for mesh formats, `gltf`/`glb` included:
-tinygltf writes through local file streams, never through DuckDB's own
+Remote output paths are not supported for `gltf`/`glb`: tinygltf writes through
+local file streams, never through DuckDB's own
 filesystem abstraction, so `COPY … TO 's3://…/x.glb'` fails opening the output
 rather than reaching object storage:
 

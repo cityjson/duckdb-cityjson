@@ -1,14 +1,16 @@
 #include "cityjson/mesh_copy.hpp"
 
+#include "cityjson/error.hpp"
+#include "cityjson/file_output.hpp"
 #include "cityjson/gltf_writer.hpp"
 #include "cityjson/mesh_model.hpp"
 #include "cityjson/obj_writer.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
-#include <fstream>
 #include <map>
 
 namespace duckdb {
@@ -69,14 +71,17 @@ bool CopyTextureImage(ClientContext &context, AppearanceSource &appearance, int6
 	auto &tex = appearance.Textures().at(texture_id);
 	basename = TextureBasename(tex, texture_id, tex.image_type.empty() ? "" : "." + StringUtil::Lower(tex.image_type),
 	                           basename_owner);
-	std::ofstream img(JoinDir(targets.final_dir, basename), std::ios::binary);
-	if (!img.is_open()) {
-		DUCKDB_LOG_WARNING(context, "cityjson: could not write texture image '" + basename + "'");
+	// Through DuckDB's FileSystem, like the .obj and .mtl it sits beside.
+	try {
+		FileOutput img(FileSystem::GetFileSystem(context), JoinDir(targets.final_dir, basename));
+		img.Stream().write(reinterpret_cast<const char *>(tex.image_data.data()),
+		                   static_cast<std::streamsize>(tex.image_data.size()));
+		img.Close();
+	} catch (const CityJSONError &e) {
+		DUCKDB_LOG_WARNING(context, "cityjson: could not write texture image '" + basename + "': " + e.what());
 		return false;
 	}
-	img.write(reinterpret_cast<const char *>(tex.image_data.data()),
-	          static_cast<std::streamsize>(tex.image_data.size()));
-	return static_cast<bool>(img);
+	return true;
 }
 
 //! What both mesh finalizes need before they can write: where the output goes, a private
@@ -121,7 +126,8 @@ void FinalizeObj(ClientContext &context, CityJSONCopyBindData &bind_data, CityJS
 	std::vector<std::string> write_warnings;
 	std::map<std::string, int64_t> basename_owner; // copied image name -> the texture that claimed it
 	WriteOBJ(
-	    in.model, appearance, gstate.temp_file_path, JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
+	    FileSystem::GetFileSystem(context), in.model, appearance, gstate.temp_file_path,
+	    JoinDir(targets.final_dir, mtl_basename), mtl_basename, options,
 	    [&](int64_t texture_id, std::string &basename) {
 		    return CopyTextureImage(context, appearance, texture_id, targets, basename_owner, basename);
 	    },

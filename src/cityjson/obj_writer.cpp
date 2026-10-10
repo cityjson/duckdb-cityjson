@@ -2,11 +2,11 @@
 
 #include "cityjson/error.hpp"
 #include "cityjson/face_triangulation.hpp"
+#include "cityjson/file_output.hpp"
 
 #include <array>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <map>
 #include <optional>
 #include <vector>
@@ -53,14 +53,12 @@ std::string Sanitise(const std::string &name) {
 
 } // namespace
 
-void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::string &obj_path,
+void WriteOBJ(FileSystem &fs, const MeshModel &model, AppearanceSource &appearance, const std::string &obj_path,
               const std::string &mtl_path, const std::string &mtl_basename, const OBJWriteOptions &options,
               const std::function<bool(int64_t texture_id, std::string &basename)> &image_writer,
               std::vector<std::string> &warnings) {
-	std::ofstream out(obj_path);
-	if (!out.is_open()) {
-		throw CityJSONError::FileWrite("Failed to open output file: " + obj_path);
-	}
+	FileOutput obj_file(fs, obj_path);
+	auto &out = obj_file.Stream();
 
 	std::map<std::string, MtlEntry> mtl;                 // rendered usemtl name -> .mtl contents
 	std::vector<std::string> mtl_order;                  // deterministic .mtl order
@@ -238,15 +236,10 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 		v_base += object.vertices.size();
 		vt_base += uv_list.size();
 	}
-	out.close();
-	if (!out) {
-		throw CityJSONError::FileWrite("Failed writing output file: " + obj_path);
-	}
+	obj_file.Close();
 
-	std::ofstream mtl_out(mtl_path);
-	if (!mtl_out.is_open()) {
-		throw CityJSONError::FileWrite("Failed to open output file: " + mtl_path);
-	}
+	FileOutput mtl_file(fs, mtl_path);
+	auto &mtl_out = mtl_file.Stream();
 	mtl_out << "# Written by duckdb-cityjson\n";
 	for (const auto &name : mtl_order) {
 		const auto &e = mtl[name];
@@ -270,10 +263,7 @@ void WriteOBJ(const MeshModel &model, AppearanceSource &appearance, const std::s
 		}
 		mtl_out << "\n";
 	}
-	mtl_out.close();
-	if (!mtl_out) {
-		throw CityJSONError::FileWrite("Failed writing output file: " + mtl_path);
-	}
+	mtl_file.Close();
 }
 
 } // namespace cityjson

@@ -497,8 +497,17 @@ loading incantation is load-bearing:
   cannot be where we prove it. The harness classifies rather than skips: only that precise
   signature is XFAIL, anything else is a hard failure, so the day Node learns HTTP the
   assertion turns green on its own. `src/` carries no wasm-specific guard.
-- **Mesh output**: prefer GLB; `.gltf` and OBJ write sidecar files, which MEMFS holds but
-  the browser cannot hand to the user as a set.
+- **Mesh output**: OBJ writes its `.obj`, `.mtl` and copied images through DuckDB's
+  FileSystem, so the host can read every file back (a set: zip them to hand to a user).
+  `gltf`/`glb` write through tinygltf's local file streams, which land in Emscripten's
+  MEMFS where the host never sees them; `just test-wasm` covers OBJ only.
+- **Under Node, a read creates the file it misses.** DuckDB-Wasm's Node runtime opens
+  every `NODE_FS` path with `O_CREAT`, so reading a file that does not exist leaves an
+  empty one behind. An OBJ whose `.mtl` names a missing texture gets that texture
+  created, 0 bytes, beside it the first time the writer looks for the image, and the
+  image then counts as found. The harness therefore reads OBJ fixtures from copies in
+  its temp directory, never from `test/data/obj`, and asserts that directory is
+  unchanged afterwards.
 
 The `_setThrew` shim and the `Atomics.wait` hang are upstream duckdb-wasm defects,
 neither reported.
