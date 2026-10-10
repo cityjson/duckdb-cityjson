@@ -319,6 +319,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 	// ---- Phase 5: derived state --------------------------------------------
 	// Incremental bbox: the destination's own rows keep their stored boxes.
 	std::vector<std::string> added;
+	added.reserve(source_tables.size());
 	for (const auto &table : source_tables) {
 		added.push_back("SELECT id FROM " + QualifiedName(source, table));
 	}

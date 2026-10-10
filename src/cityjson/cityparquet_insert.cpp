@@ -162,6 +162,7 @@ SourceExtension PlanSourceExtension(const CityJSONSourceFacts &facts, const std:
 	}
 	if (facts.extensions.size() > 1) {
 		std::vector<std::string> names;
+		names.reserve(facts.extensions.size());
 		for (const auto &entry : facts.extensions) {
 			names.push_back(entry.first);
 		}
@@ -666,6 +667,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// they might not have; such a package keeps stating nothing.
 	if (source_crs != "NULL::VARCHAR") {
 		std::vector<std::string> counts;
+		counts.reserve(destination_tables.size());
 		for (const auto &table : destination_tables) {
 			counts.push_back("(SELECT COUNT(*) FROM " + QualifiedName(schema, table) + ")");
 		}
