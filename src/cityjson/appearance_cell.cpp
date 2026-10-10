@@ -52,7 +52,10 @@ LogicalType MaterialCellType() {
 
 LogicalType TextureCellType() {
 	child_list_t<LogicalType> ring;
-	ring.emplace_back("id", LogicalType::BIGINT);
+	// By value, not `LogicalType::BIGINT`: emplace_back takes its arguments by forwarding
+	// reference, which odr-uses that static constexpr member, and MinGW's linker then finds
+	// this TU's inline copy beside libduckdb_static's out-of-line one (multiple definition).
+	ring.emplace_back("id", LogicalType(LogicalTypeId::BIGINT));
 	ring.emplace_back("uv", LogicalType::LIST(LogicalType::LIST(LogicalType::DOUBLE)));
 	return LogicalType::MAP(LogicalType::VARCHAR, LogicalType::LIST(LogicalType::LIST(LogicalType::STRUCT(ring))));
 }
