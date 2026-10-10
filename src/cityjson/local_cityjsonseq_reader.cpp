@@ -52,7 +52,7 @@ void LocalCityJSONSeqReader::OpenHandle() const {
 std::optional<std::string> LocalCityJSONSeqReader::NextLine() const {
 	// Small enough that a test fixture crosses chunk boundaries, large enough that a
 	// many-megabyte file is a few hundred reads rather than one per byte.
-	static constexpr idx_t READ_CHUNK = 16 * 1024;
+	static constexpr idx_t READ_CHUNK = idx_t(16) * 1024;
 
 	while (true) {
 		const auto newline = line_buffer_.find('\n', line_pos_);
