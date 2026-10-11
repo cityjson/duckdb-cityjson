@@ -478,18 +478,44 @@ static std::string ToLowerAscii(const std::string &name) {
 
 bool IsReservedColumnName(const std::string &name) {
 	// Spec 02-object-table-schema.mdx, "Column naming and reservation rules": the
-	// reserved columns, compared with ASCII case folding, plus every per-LoD form of
-	// the geometry and appearance groups (and their un-suffixed forms, which name the
-	// zero-LoD case). Anchored, so `geometry_lodging` is an ordinary attribute.
+	// reserved columns, compared with ASCII case folding, plus every per-LoD form the
+	// LoD suffix grammar generates (03-geometry-semantics.mdx: `lod<major>_<minor>`,
+	// always with a minor, in canonical decimal). Matched on the grammar, not on the
+	// LoDs a dataset holds, and anchored: `geometry_lodging`, `geometry_lod3` and a
+	// bare `geometry` name no reserved column.
 	static const std::vector<std::string> reserved = {
 	    "id",      "feature_id", "object_type",       "parents", "children", "children_roles",
-	    "address", "bbox",       "implicit_geometry", "other",   "geometry", "geometry_properties"};
-	static const std::regex geometry_pattern(R"((geometry|geometry_properties)_lod\d+(_\d+)?)");
+	    "address", "bbox",       "implicit_geometry", "other"};
 	const std::string lowered = ToLowerAscii(name);
 	if (std::find(reserved.begin(), reserved.end(), lowered) != reserved.end()) {
 		return true;
 	}
-	return std::regex_match(lowered, geometry_pattern) || IsAppearanceColumnName(lowered);
+	return IsPerLodColumnName(lowered, "geometry") || IsPerLodColumnName(lowered, "geometry_properties") ||
+	       IsAppearanceColumnName(lowered);
+}
+
+bool IsPerLodColumnName(const std::string &name, const std::string &prefix) {
+	// `<prefix>_lod<major>_<minor>`, both in canonical decimal (03-geometry-semantics.mdx,
+	// "Suffix grammar"). Hand-rolled rather than a regex: it runs per column, and on
+	// the COPY bind path once per column per prefix.
+	const auto lowered = ToLowerAscii(name);
+	const auto head = prefix + "_lod";
+	if (lowered.size() <= head.size() || lowered.compare(0, head.size(), head) != 0) {
+		return false;
+	}
+	size_t i = head.size();
+	const auto number = [&]() {
+		const auto start = i;
+		while (i < lowered.size() && std::isdigit(static_cast<unsigned char>(lowered[i]))) {
+			i++;
+		}
+		return i > start && (i - start == 1 || lowered[start] != '0');
+	};
+	if (!number() || i >= lowered.size() || lowered[i] != '_') {
+		return false;
+	}
+	i++;
+	return number() && i == lowered.size();
 }
 
 bool IsAffineMatrix(const std::vector<double> &row_major) {
@@ -516,10 +542,7 @@ std::string SourceAttributeName(const std::string &column_name) {
 }
 
 bool IsAppearanceColumnName(const std::string &name) {
-	// Exactly `material`/`texture`, or those with the reserved LoD suffix grammar
-	// `_lod{X}` / `_lod{X}_{Y}`. Anchored so `material_lodging` does NOT match.
-	static const std::regex appearance_pattern(R"((material|texture)(_lod\d+(_\d+)?)?)");
-	return std::regex_match(ToLowerAscii(name), appearance_pattern);
+	return IsPerLodColumnName(name, "material") || IsPerLodColumnName(name, "texture");
 }
 
 bool IsGeometryColumn(const std::string &name) {

@@ -42,7 +42,7 @@ enum class CopyColumnRole {
 	Attribute           // everything else -> attributes map
 };
 
-CopyColumnRole DetectColumnRole(const std::string &name);
+CopyColumnRole DetectColumnRole(const std::string &name, const LogicalType &type);
 
 // ============================================================
 // Bind data for COPY TO

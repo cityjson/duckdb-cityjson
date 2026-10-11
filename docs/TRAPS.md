@@ -321,8 +321,11 @@ columns, never the definitions.
   `COPY`'s attribute keys and FCB header declarations — goes back through
   `SourceAttributeName`. A site that skips it reads NULL for an escaped column, or
   puts the attribute into `other` as well as its column. `IsReservedColumnName` is
-  the predicate for both, so it stays anchored to the reserved grammar: a prefix
-  match would rename an innocent `geometry_lodging`, which the other writers keep.
+  the predicate for both, so it stays anchored to the LoD suffix grammar
+  (`IsPerLodColumnName`: a minor always, canonical decimal, no bare forms): a prefix
+  match would rename an innocent `geometry_lodging`, which cityparquet-rs keeps. COPY's
+  `DetectColumnRole` uses the same grammar, or an attribute that kept its name is
+  written back as geometry.
 - **`lod=` keeps the suffixed column grammar** (`geometry_lod2_2`, not a bare `geometry`),
   which is what keeps the LoD recoverable on export.
 - **The OBJ and MTL parser is this extension's own** (`obj_parser.cpp`, a pure

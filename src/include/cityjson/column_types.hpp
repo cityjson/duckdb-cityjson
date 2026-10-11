@@ -150,8 +150,8 @@ std::vector<Column> GetDefinedColumns();
  *
  * Reserved columns are the predefined structural columns, `bbox`,
  * `implicit_geometry`, `other`, and every per-LoD geometry and appearance column
- * (`geometry_lod*`, `geometry_properties_lod*`, `material_lod*`, `texture_lod*`,
- * and their un-suffixed forms), compared with ASCII case folding (spec
+ * the LoD suffix grammar generates (`geometry_lod2_2`, `geometry_properties_lod0_0`,
+ * `material_lod3_0`, `texture_lod1_3`), compared with ASCII case folding (spec
  * 02-object-table-schema.mdx, "Column naming and reservation rules").
  *
  * @param name Column/attribute name to check
@@ -181,10 +181,17 @@ std::string SourceAttributeName(const std::string &column_name);
 bool IsAffineMatrix(const std::vector<double> &row_major);
 
 /**
- * Check if a column name is a per-LoD appearance column (§11): exactly
- * `material` / `texture`, or `material_lod{X}` / `texture_lod{X}` /
- * `..._lod{X}_{Y}`. Matches the reserved suffix grammar precisely so an
- * attribute like `material_lodging` is NOT misclassified.
+ * Check if a name is `<prefix>_lod<major>_<minor>`, compared case-insensitively, with
+ * both parts in canonical decimal -- the LoD suffix grammar (spec
+ * 03-geometry-semantics.mdx), so `geometry_lodging`, `geometry_lod3` and
+ * `geometry_lod02_2` do not match.
+ */
+bool IsPerLodColumnName(const std::string &name, const std::string &prefix);
+
+/**
+ * Check if a column name is a per-LoD appearance column (§11):
+ * `material_lod{X}_{Y}` / `texture_lod{X}_{Y}`, per IsPerLodColumnName, so an
+ * attribute like `material_lodging` or a bare `material` is NOT misclassified.
  *
  * @param name Column name to check
  * @return true if name is an appearance column

@@ -93,8 +93,9 @@ std::vector<std::string> GeometryLodColumns(ClientContext &context, const std::s
 std::vector<std::string> AppearanceLodColumns(ClientContext &context, const std::string &schema,
                                               const std::string &table, const std::string &prefix);
 
-//! True when `name` is exactly `prefix` followed by the LoD suffix grammar: digits,
-//! optionally `_` and more digits, and nothing else.
+//! True when `name` is exactly `prefix` (ending in `_lod`) followed by the LoD suffix
+//! grammar: `<major>_<minor>` in canonical decimal, and nothing else
+//! (IsPerLodColumnName).
 //!
 //! A bare prefix test is not enough. `material_lodging` is a perfectly ordinary source
 //! attribute, and the reader already takes care not to swallow it as an appearance

@@ -326,7 +326,13 @@ simply nothing to index.
 | `object_type` | Yes | CityJSON type |
 | `children` / `parents` | No | Hierarchy |
 | `geometry` / `geometry_lod*` | No | WKB `BLOB` **or** DuckDB `GEOMETRY` |
-| `geometry_properties*` | No | CityParquet STRUCT **or** JSON text |
+| `geometry_properties` / `geometry_properties_lod*` | No | CityParquet STRUCT **or** JSON text |
+
+A per-LoD column is one whose name follows the LoD suffix grammar,
+`geometry_lod2_2` or `material_lod0_0`: `<prefix>_lod<major>_<minor>`, a minor
+always present. `geometry_lodging` or `geometry_lod3` is an attribute, and so is a
+bare `geometry` or `geometry_properties` that does not hold a geometry (a
+`BLOB`/`GEOMETRY`, or a STRUCT/JSON text).
 
 Everything else is written as a CityJSON attribute, under its source name: a
 column whose name, with every leading `_` removed, is a reserved one (`_ID`,
@@ -1968,8 +1974,9 @@ each per-LoD `geometry_lod*` / `geometry_properties_lod*` / `material_lod*` /
 `texture_lod*` form and `other`, and a name whose *base* — the name with every
 leading `_` removed — collides is the column `_` + its source name. `ID` is `_ID`,
 `bbox` `_bbox`, `other` `_other`, and a source attribute already named `_ID` is
-`__ID`, so no two meet; `geometry_lodging` names no reserved column and keeps its
-name. `COPY` reverses the escape. Two attribute names differing only by case
+`__ID`, so no two meet. A per-LoD form collides only as the LoD suffix grammar
+writes it, `<prefix>_lod<major>_<minor>`: `geometry_lodging`, `geometry_lod3` and a
+bare `geometry` or `material` name no reserved column and keep their names. `COPY` reverses the escape. Two attribute names differing only by case
 cannot both be DuckDB columns: the first in name order is, and `other` carries the
 rest.
 

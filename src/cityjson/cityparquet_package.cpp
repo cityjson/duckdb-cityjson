@@ -151,31 +151,11 @@ std::vector<std::string> Intersect(const std::set<std::string> &present, const s
 } // namespace
 
 bool MatchesLodSuffix(const std::string &name, const std::string &prefix) {
-	if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) {
+	static const std::string lod = "_lod";
+	if (prefix.size() <= lod.size() || prefix.compare(prefix.size() - lod.size(), lod.size(), lod) != 0) {
 		return false;
 	}
-	const auto rest = name.substr(prefix.size());
-	size_t i = 0;
-	auto digits = [&]() {
-		const auto start = i;
-		while (i < rest.size() && rest[i] >= '0' && rest[i] <= '9') {
-			i++;
-		}
-		return i > start;
-	};
-	if (!digits()) {
-		return false;
-	}
-	if (i < rest.size()) {
-		if (rest[i] != '_') {
-			return false;
-		}
-		i++;
-		if (!digits()) {
-			return false;
-		}
-	}
-	return i == rest.size();
+	return IsPerLodColumnName(name, prefix.substr(0, prefix.size() - lod.size()));
 }
 
 namespace {

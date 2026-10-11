@@ -41,7 +41,7 @@ namespace cityjson {
 // Column role detection
 // ============================================================
 
-CopyColumnRole DetectColumnRole(const std::string &name) {
+CopyColumnRole DetectColumnRole(const std::string &name, const LogicalType &type) {
 	if (name == "id") {
 		return CopyColumnRole::Id;
 	}
@@ -60,19 +60,27 @@ CopyColumnRole DetectColumnRole(const std::string &name) {
 	if (name == "children_roles") {
 		return CopyColumnRole::ChildrenRoles;
 	}
-	// Check properties before geometry so the shared "geometry_" prefix on the wide
-	// CityParquet columns does not misclassify "geometry_properties_lod*" as geometry.
-	if (name == "geometry_properties" || name.rfind("geometry_properties", 0) == 0) {
+	// The per-LoD columns by the LoD suffix grammar, never a bare prefix: an attribute
+	// `geometry_lodging` or `material_lod3` names no reserved column, keeps its name on
+	// read (spec 02-object-table-schema.mdx, "Column naming and reservation rules"),
+	// and is written back as the attribute it is.
+	if (IsPerLodColumnName(name, "geometry_properties")) {
 		return CopyColumnRole::GeometryProperties;
 	}
-	// "geometry" (non-LOD), wide "geometry_lod*" and legacy "geom_lod*" are all WKB geometry.
-	if (name == "geometry" || name.rfind("geometry_lod", 0) == 0 || name.rfind("geom_lod", 0) == 0) {
+	if (IsPerLodColumnName(name, "geometry") || IsGeometryColumn(name)) { // and legacy geom_lod*
 		return CopyColumnRole::GeometryWKB;
 	}
-	// Per-LoD appearance columns (and their un-suffixed single-LoD-mode forms),
-	// matched by the exact suffix grammar so `material_lodging` stays an attribute.
 	if (IsAppearanceColumnName(name)) {
 		return CopyColumnRole::Appearance;
+	}
+	// A bare `geometry` / `geometry_properties` is a COPY input of its own -- a query's
+	// one geometry -- when it holds one; an attribute of that name holds something else.
+	const auto id = type.id();
+	if (name == "geometry_properties" && (id == LogicalTypeId::STRUCT || id == LogicalTypeId::VARCHAR)) {
+		return CopyColumnRole::GeometryProperties;
+	}
+	if (name == "geometry" && (id == LogicalTypeId::BLOB || id == LogicalTypeId::GEOMETRY)) {
+		return CopyColumnRole::GeometryWKB;
 	}
 	// bbox is derived from the geometry and recomputed on read; never round-tripped as data.
 	if (name == "bbox") {
@@ -807,7 +815,7 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 	bind_data->column_types.assign(sql_types.begin(), sql_types.end());
 
 	for (idx_t i = 0; i < names.size(); i++) {
-		auto role = DetectColumnRole(names[i]);
+		auto role = DetectColumnRole(names[i], sql_types[i]);
 		bind_data->column_roles.push_back(role);
 
 		switch (role) {
