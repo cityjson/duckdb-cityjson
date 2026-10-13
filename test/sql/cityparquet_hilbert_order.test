@@ -107,13 +107,14 @@ ordering must be 'hilbert' or 'source'
 
 # --- feature families -------------------------------------------------------------
 
-# Spec 02-tables.mdx: a feature's rows are contiguous within each object table, its
-# root first. zurich_interleaved.city.json holds two Zurich buildings whose parts the
-# reader returns interleaved with them -- part of B, A, B, part of A -- the arrangement
-# that split 17 features in the full dataset's Hilbert order, where keys tie, and
-# every one in its source order. The expected orders are cityparquet-rs's for the
-# same file (`cityparquet convert test/data/zurich_interleaved.city.json -o OUT`,
-# with `--ordering hilbert` and `--ordering source`, monorepo commit 3315a6a).
+# Spec 02-object-table-schema.mdx: a feature's rows are contiguous within each
+# object table, its root first. zurich_interleaved.city.json holds two Zurich
+# buildings whose parts the reader returns interleaved with them -- part of B, A, B,
+# part of A -- the arrangement that split 17 features in the full dataset's Hilbert
+# order, where keys tie, and every such feature in its source order. The expected
+# orders are cityparquet-rs's for the same file (`cityparquet convert
+# test/data/zurich_interleaved.city.json -o OUT`, with `--ordering hilbert` and
+# `--ordering source`, monorepo commit 3315a6a).
 
 statement ok
 CREATE SCHEMA z;
