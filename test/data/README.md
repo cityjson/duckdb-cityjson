@@ -194,3 +194,15 @@ attribute `ID` is a column of its own beside the reserved `id`, unescaped, which
 specification makes invalid input (a colliding attribute is the column `_ID`) and a
 case-insensitive DuckDB cannot hold as two columns. `cityjson_reserved_escape.test` checks
 that `cityparquet_read` refuses it.
+
+## zurich_interleaved.city.json
+
+Four City Objects of
+<https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json>:
+two Buildings, `UUID_654bb986-…` and `UUID_ea730f61-…`, and their one BuildingPart
+each, in the document's own order. `type`, `version`, `transform`
+and `metadata` are unchanged; the `extensions` and `+metadata-extended` members are
+left out, and `vertices` keeps only the 36 the four objects use, re-indexed in
+first-use order. The reader returns them part of one Building, both Buildings, part of
+the other, so each feature's rows are split in table order; in the full dataset the two
+Buildings' centres share a Hilbert cell. `cityparquet_hilbert_order.test` writes it.

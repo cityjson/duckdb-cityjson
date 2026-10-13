@@ -1044,13 +1044,24 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// suppressing the logical type, which follows the column's type rather
 		// than this setting. CityParquet's `geo` goes in through KV_METADATA, so
 		// the file carries exactly one, and it is this writer's.
-		// Whole features move, never single rows, and the rowid tie-break keeps rows of
-		// equal key -- a feature's own rows, and every feature without geometry, all of
-		// key 0 -- in the table's order: a stable sort, as the reference writer's is.
+		// A feature's rows are contiguous, its root first (spec 02-tables.mdx), in either
+		// ordering. Whole features move, never single rows. Features of equal key --
+		// every one in `ordering => 'source'`, every feature without geometry (key 0),
+		// and features whose centres share a cell -- keep the table's order of their
+		// roots, or of their first row where the root is in another table; a feature's
+		// other rows keep the table's order. That is the reference writer's order: its
+		// sort is stable over features in the order its scan meets their roots.
 		std::string order;
-		if (is_object && hilbert && HasColumn(context, bind_data.schema, table, "feature_id")) {
-			order = " ORDER BY coalesce((SELECT k.hilbert_key FROM " + std::string(HILBERT_KEYS) +
-			        " AS k WHERE k.feature_id = __cityparquet_rows.feature_id), 0), __cityparquet_rows.rowid";
+		if (is_object && HasColumn(context, bind_data.schema, table, "feature_id")) {
+			const std::string rows = "__cityparquet_rows.";
+			if (hilbert) {
+				order = "coalesce((SELECT k.hilbert_key FROM " + std::string(HILBERT_KEYS) +
+				        " AS k WHERE k.feature_id = " + rows + "feature_id), 0), ";
+			}
+			const auto feature = " OVER (PARTITION BY " + rows + "feature_id)";
+			order = " ORDER BY " + order + "coalesce(max(CASE WHEN " + rows + "id = " + rows + "feature_id THEN " +
+			        rows + "rowid END)" + feature + ", min(" + rows + "rowid)" + feature + "), " + rows +
+			        "id IS DISTINCT FROM " + rows + "feature_id, " + rows + "rowid";
 		}
 		Run(connection, "COPY (SELECT " +
 		                    CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation,

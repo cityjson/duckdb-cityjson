@@ -1087,16 +1087,20 @@ every geometry in the package, and for each **feature** (every row sharing a
 `feature_id`, across every object table) the curve position of the centre of
 the x/y extent of every coordinate it carries — its geometry, and its implicit
 geometries' reference points and its addresses' locations — taken from the WKB,
-not from `bbox`, which also carries a source's declared extents. Whole features move, never single rows,
-and rows of equal key — a feature's own rows, and every feature without
-geometry, which takes key 0 — keep the table's order. Sidecars keep their
-order. The key equals cityparquet-rs's whenever every vertex in a source
+not from `bbox`, which also carries a source's declared extents. Whole features move, never single rows:
+in either ordering a feature's rows are contiguous in each table, its root
+first, as the specification requires. Features of equal key — every feature
+without geometry, which takes key 0, and features whose centres share a cell —
+keep the table's order of their roots (of their first row, where the root is in
+another table), and a feature's other rows keep the table's order. Sidecars
+keep their order. The key equals cityparquet-rs's whenever every vertex in a source
 feature's vertex pool is one the package keeps — a geometry vertex, an implicit
 geometry's reference point or an address location. cityparquet-rs centres a
 feature on its raw `vertices` pool, which can also hold vertices nothing
 references; those do not survive into a package, so a feature that has them may
 key differently, and its rows may then sit elsewhere than in cityparquet-rs's
-file. Hilbert order is a MAY in the specification and either order conforms. `ordering => 'source'` writes every table in its own order instead.
+file. Hilbert order is a MAY in the specification and either order conforms. `ordering => 'source'` keeps the table's order of features instead, each
+feature's rows gathered behind its root.
 `cityparquet_hilbert` is the key on its own:
 
 ```sql
