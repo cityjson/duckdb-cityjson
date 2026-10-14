@@ -11,7 +11,7 @@ require parquet
 # (cityparquet-rs, crates/core/src/order.rs): a 2D curve of 2^16 cells per axis over
 # the x/y extent of every geometry in the package; each FEATURE's key is the curve
 # index of the centre of its own geometry's extent; whole features are sorted by it,
-# stably, so a feature's rows stay together and in their table order.
+# stably, so a feature's rows stay together, its root first.
 
 # --- the key ------------------------------------------------------------------
 
@@ -87,7 +87,8 @@ SELECT COUNT(*) FROM (
 ----
 0
 
-# `ordering => 'source'` writes the table's own order, as `--ordering source` does.
+# `ordering => 'source'` writes the table's own order, as `--ordering source` does:
+# delft_subset's features are already contiguous, each root first.
 statement ok
 SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/source_order', crs => 'EPSG:7415', ordering => 'source');
 
@@ -103,3 +104,43 @@ statement error
 SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/bad_order', ordering => 'zorder');
 ----
 ordering must be 'hilbert' or 'source'
+
+# --- feature families -------------------------------------------------------------
+
+# Spec 02-object-table-schema.mdx: a feature's rows are contiguous within each
+# object table, its root first. zurich_interleaved.city.json holds two Zurich
+# buildings whose parts the reader returns interleaved with them -- part of B, A, B,
+# part of A -- the arrangement that split 17 features in the full dataset's Hilbert
+# order, where keys tie, and every such feature in its source order. The expected
+# orders are cityparquet-rs's for the same file (`cityparquet convert
+# test/data/zurich_interleaved.city.json -o OUT`, with `--ordering hilbert` and
+# `--ordering source`, monorepo commit 3315a6a).
+
+statement ok
+CREATE SCHEMA z;
+
+statement ok
+CREATE TABLE z.building AS SELECT * FROM read_cityjson('test/data/zurich_interleaved.city.json');
+
+statement ok
+PRAGMA cityparquet_init('z');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('z', '__TEST_DIR__/families_hilbert');
+
+query T
+SELECT string_agg(id, ' ' ORDER BY file_row_number)
+FROM read_parquet('__TEST_DIR__/families_hilbert/building.parquet', file_row_number := true);
+----
+UUID_ea730f61-0a11-406a-a515-4f5f86f7aa26 UUID_59214446-74d2-4827-bc4a-04cb3c4bd380 UUID_654bb986-9459-4657-aef8-493ac8c7ef3e UUID_f2a5b8ad-9d43-4af3-8c08-396c70202140
+
+# `ordering => 'source'` keeps the table's order of features, each placed where its
+# root is, and gathers each feature's rows behind its root.
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('z', '__TEST_DIR__/families_source', ordering => 'source');
+
+query T
+SELECT string_agg(id, ' ' ORDER BY file_row_number)
+FROM read_parquet('__TEST_DIR__/families_source/building.parquet', file_row_number := true);
+----
+UUID_654bb986-9459-4657-aef8-493ac8c7ef3e UUID_f2a5b8ad-9d43-4af3-8c08-396c70202140 UUID_ea730f61-0a11-406a-a515-4f5f86f7aa26 UUID_59214446-74d2-4827-bc4a-04cb3c4bd380

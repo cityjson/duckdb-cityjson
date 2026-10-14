@@ -658,6 +658,12 @@ std::string BloomCopyOptions(bool is_object, bool bloom) {
 //! The internal connection's temp table of per-feature Hilbert keys.
 constexpr const char *HILBERT_KEYS = "temp.__cityparquet_hilbert_keys";
 
+//! The internal connection's temp table of each feature's place in the object table
+//! being written: its root's rowid, or its first row's where the root is in another
+//! table. Two narrow columns, so ordering by it never materialises a table's rows
+//! twice.
+constexpr const char *FEATURE_POSITIONS = "temp.__cityparquet_feature_positions";
+
 //! Fill HILBERT_KEYS with one key per feature that has geometry, the reference writer's
 //! (cityparquet-rs, `order.rs`): the curve is laid over the x/y extent of every geometry
 //! in every object table; a feature's point on it is the centre of the x/y extent of
@@ -1044,13 +1050,29 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 		// suppressing the logical type, which follows the column's type rather
 		// than this setting. CityParquet's `geo` goes in through KV_METADATA, so
 		// the file carries exactly one, and it is this writer's.
-		// Whole features move, never single rows, and the rowid tie-break keeps rows of
-		// equal key -- a feature's own rows, and every feature without geometry, all of
-		// key 0 -- in the table's order: a stable sort, as the reference writer's is.
+		// A feature's rows are contiguous, its root first (spec 02-object-table-schema.mdx),
+		// in either ordering. Whole features move, never single rows. Features of equal
+		// key -- every one in `ordering => 'source'`, every feature without geometry (key
+		// 0), and features whose centres share a cell -- keep the table's order of their
+		// FEATURE_POSITIONS; a feature's other rows keep the table's order, and a row
+		// without a feature_id keeps its own place. That is the reference writer's order:
+		// its sort is stable over features in the order its scan meets their roots.
 		std::string order;
-		if (is_object && hilbert && HasColumn(context, bind_data.schema, table, "feature_id")) {
-			order = " ORDER BY coalesce((SELECT k.hilbert_key FROM " + std::string(HILBERT_KEYS) +
-			        " AS k WHERE k.feature_id = __cityparquet_rows.feature_id), 0), __cityparquet_rows.rowid";
+		if (is_object && HasColumn(context, bind_data.schema, table, "feature_id")) {
+			const bool has_id = HasColumn(context, bind_data.schema, table, "id");
+			const std::string root = has_id ? "max(CASE WHEN id = feature_id THEN rowid END), " : "";
+			Run(connection, "CREATE OR REPLACE TEMP TABLE " + std::string(FEATURE_POSITIONS) +
+			                    " AS SELECT feature_id, coalesce(" + root + "min(rowid)) AS position FROM " +
+			                    QualifiedName(bind_data.catalog, bind_data.schema, table) +
+			                    " WHERE feature_id IS NOT NULL GROUP BY feature_id;");
+			const std::string rows = "__cityparquet_rows.";
+			if (hilbert) {
+				order = "coalesce((SELECT k.hilbert_key FROM " + std::string(HILBERT_KEYS) +
+				        " AS k WHERE k.feature_id = " + rows + "feature_id), 0), ";
+			}
+			order = " ORDER BY " + order + "coalesce((SELECT p.position FROM " + std::string(FEATURE_POSITIONS) +
+			        " AS p WHERE p.feature_id = " + rows + "feature_id), " + rows + "rowid), " +
+			        (has_id ? rows + "id IS DISTINCT FROM " + rows + "feature_id, " : std::string()) + rows + "rowid";
 		}
 		Run(connection, "COPY (SELECT " +
 		                    CopySourceList(context, bind_data.schema, table, legal_geometry, crs_annotation,
