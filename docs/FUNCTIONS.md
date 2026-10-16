@@ -261,6 +261,7 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 | `transform_scale` | VARCHAR | Vertex quantisation scale `'x,y,z'` (default `'0.001,0.001,0.001'`) |
 | `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`) |
 | `metadata_from` | VARCHAR | Path to read metadata and appearance definitions from, when the source is not discoverable from the query itself |
+| `materials_query`, `textures_query` | VARCHAR | SQL returning `materials.parquet` / `textures.parquet`-shaped rows. **Their presence declares the `material_lod*` / `texture_lod*` cells to be sidecar ids**, and the rows become the written definitions ([below](#sidecar-appearance)) |
 | `implicit_geometries_query` | VARCHAR | SQL returning `implicit_geometries` sidecar rows, written as the document's `geometry-templates` ([below](#required-columns)); their appearance takes its definitions from `materials_query` / `textures_query` |
 | `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct or a plain string), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
 | `attr_index` | VARCHAR | *(flatcitybuf)* comma-separated columns to give a B+tree index |
@@ -313,6 +314,33 @@ COPY (SELECT * FROM my_table) TO 'out.city.jsonl'
 
 Precedence is `crs` / `metadata_query` > `metadata_from` > discovered source, so
 an explicit option always wins.
+
+<a id="sidecar-appearance"></a>**Sidecar appearance.** A package's `material_lod*` /
+`texture_lod*` cells hold sidecar ids into `materials.parquet` / `textures.parquet`,
+which no source file's `appearance` block resolves. `materials_query` and
+`textures_query` supply those definitions, each row a CityJSON material or texture
+(in `id` order, each sidecar column under its CityJSON member name, `other`'s
+members restored), and every cell is re-pointed at its definition's position:
+
+- **CityJSON** writes every row of each query into the document's one `appearance`
+  block, so a position there is the row's rank by `id`;
+- **CityJSONSeq** and **FlatCityBuf** give each feature its own `appearance` block,
+  holding the definitions that feature's cells name, in `id` order, as CityJSONSeq
+  requires. The header carries an `appearance` block only for the geometry
+  templates.
+
+The queries' definitions replace whatever appearance a discovered source carries,
+so a source read with `appearance := 'sidecar'` is resolved through them too. A
+cell naming an id its query has no row for is an error, as is a discovered
+source's own geometry templates carrying appearance without
+`implicit_geometries_query`.
+
+```sql
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'p');
+COPY (SELECT * FROM p.building) TO 'building.city.jsonl' (
+    FORMAT cityjsonseq,
+    materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures');
+```
 
 Requesting `attr_index` on a column no feature carries is not an error — there is
 simply nothing to index.
@@ -367,8 +395,8 @@ is written as its row's position, and an id the query has no row for is an
 error. A relative geometry's `material_lod*` / `texture_lod*` cells hold sidecar
 ids, so they need the definitions: `materials_query` and `textures_query` —
 `'SELECT * FROM pkg.materials'`, `'SELECT * FROM pkg.textures'` — become the
-document's `appearance` `materials` and `textures` (in `id` order, each sidecar
-column under its CityJSON member name, `other`'s members restored), the cells
+document's (for CityJSONSeq, the header's) `appearance` `materials` and
+`textures`, as for an object's cells ([above](#sidecar-appearance)), the cells
 are re-pointed at their positions, and the texture UVs are interned into the
 written `vertices-texture`. Templates carrying appearance without the matching
 query are refused rather than written without it. Without the option, a discovered source's own `geometry-templates`
