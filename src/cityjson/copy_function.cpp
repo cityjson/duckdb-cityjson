@@ -171,6 +171,52 @@ bool CityJSONCopyBindData::Equals(const FunctionData &other) const {
 // Helper: parse metadata_query result
 // ============================================================
 
+// A crs as CityJSON's `metadata.referenceSystem`, an OGC CRS URL. A package states its
+// CRS as PROJJSON (05-metadata), so a JSON object is read as PROJJSON and written as
+// the URL of the CRS its `id` names: EPSG codes as
+// https://www.opengis.net/def/crs/EPSG/0/<code>, OGC CRS84 as .../OGC/1.3/CRS84.
+// PROJJSON with no `id`, or an authority with no OGC URL, is refused rather than
+// written as a string that is not a referenceSystem. Anything else is the
+// referenceSystem as given.
+static std::string ReferenceSystemFromCrs(const std::string &text, const std::string &where) {
+	const auto first = text.find_first_not_of(" \t\r\n");
+	if (first == std::string::npos || text[first] != '{') {
+		return text;
+	}
+	json projjson;
+	try {
+		projjson = json_utils::ParseJson(text);
+	} catch (const std::exception &e) {
+		throw BinderException("%s: crs starts like PROJJSON but is not JSON: %s", where, e.what());
+	}
+	const auto id = projjson.find("id");
+	if (id == projjson.end() || !id->is_object() || !id->contains("authority") || !id->contains("code") ||
+	    !(*id)["authority"].is_string()) {
+		throw BinderException("%s: crs is PROJJSON with no `id` {authority, code}, so it names no CRS an OGC CRS URL "
+		                      "-- CityJSON's referenceSystem -- can state; pass the URL instead",
+		                      where);
+	}
+	const auto authority = (*id)["authority"].get<std::string>();
+	const auto &code_json = (*id)["code"];
+	std::string code;
+	if (code_json.is_number_integer()) {
+		code = std::to_string(code_json.get<int64_t>());
+	} else if (code_json.is_string()) {
+		code = code_json.get<std::string>();
+	} else {
+		throw BinderException("%s: crs is PROJJSON whose `id.code` is neither a number nor a string", where);
+	}
+	if (StringUtil::Upper(authority) == "EPSG") {
+		return "https://www.opengis.net/def/crs/EPSG/0/" + code;
+	}
+	if (StringUtil::Upper(authority) == "OGC" && StringUtil::Upper(code) == "CRS84") {
+		return "https://www.opengis.net/def/crs/OGC/1.3/CRS84";
+	}
+	throw BinderException("%s: crs is PROJJSON naming %s:%s, which has no OGC CRS URL this writer knows; pass the URL "
+	                      "instead",
+	                      where, authority, code);
+}
+
 static void ParseMetadataFromQuery(ClientContext &context, const std::string &query, CityJSONCopyBindData &bind_data) {
 	// Use a separate connection to avoid deadlock — the COPY bind already holds a lock
 	// on the current connection, so running a nested query on it would deadlock.
@@ -236,7 +282,7 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 					bind_data.crs = "https://www.opengis.net/def/crs/" + authority + "/" + version_str + "/" + code;
 				}
 			} else {
-				bind_data.crs = val.ToString();
+				bind_data.crs = ReferenceSystemFromCrs(val.ToString(), "metadata_query");
 			}
 		} else if (name == "transform_scale") {
 			if (val.type().id() == LogicalTypeId::STRUCT) {
@@ -567,7 +613,7 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 		if (loption == "version") {
 			bind_data->version = val.ToString();
 		} else if (loption == "crs") {
-			bind_data->crs = val.ToString();
+			bind_data->crs = ReferenceSystemFromCrs(val.ToString(), "COPY TO " + input.info.format);
 			has_explicit_crs = true;
 		} else if (loption == "metadata_from") {
 			explicit_metadata_from = val.ToString();

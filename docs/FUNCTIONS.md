@@ -257,13 +257,13 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 | Option | Type | Description |
 | ------ | ---- | ----------- |
 | `version` | VARCHAR | CityJSON version to write (default `"2.0"`) |
-| `crs` | VARCHAR | CRS identifier, e.g. `'https://www.opengis.net/def/crs/EPSG/0/7415'` |
+| `crs` | VARCHAR | CRS identifier, e.g. `'https://www.opengis.net/def/crs/EPSG/0/7415'`, or PROJJSON ([below](#crs-as-projjson)) |
 | `transform_scale` | VARCHAR | Vertex quantisation scale `'x,y,z'` (default `'0.001,0.001,0.001'`) |
 | `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`) |
 | `metadata_from` | VARCHAR | Path to read metadata and appearance definitions from, when the source is not discoverable from the query itself |
 | `materials_query`, `textures_query` | VARCHAR | SQL returning `materials.parquet` / `textures.parquet`-shaped rows. **Their presence declares the `material_lod*` / `texture_lod*` cells to be sidecar ids**, and the rows become the written definitions ([below](#sidecar-appearance)) |
 | `implicit_geometries_query` | VARCHAR | SQL returning `implicit_geometries` sidecar rows, written as the document's `geometry-templates` ([below](#required-columns)); their appearance takes its definitions from `materials_query` / `textures_query` |
-| `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct or a plain string), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
+| `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct, a plain string or PROJJSON), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
 | `attr_index` | VARCHAR | *(flatcitybuf)* comma-separated columns to give a B+tree index |
 | `branching_factor` | BIGINT | *(flatcitybuf)* B+tree branching factor |
 | `index_node_size` | BIGINT | *(flatcitybuf)* R-tree node size |
@@ -314,6 +314,24 @@ COPY (SELECT * FROM my_table) TO 'out.city.jsonl'
 
 Precedence is `crs` / `metadata_query` > `metadata_from` > discovered source, so
 an explicit option always wins.
+
+<a id="crs-as-projjson"></a>**A PROJJSON CRS is written as its OGC URL.** CityJSON's
+`metadata.referenceSystem` is an OGC CRS URL, and a package states its CRS as
+PROJJSON — `cityparquet_city_field(city, 'crs')` returns it. A `crs` (the option,
+or `metadata_query`'s column) that is a JSON object is read as PROJJSON and written
+as the URL of the CRS its `id` names: an EPSG code as
+`https://www.opengis.net/def/crs/EPSG/0/<code>`, `OGC:CRS84` as
+`https://www.opengis.net/def/crs/OGC/1.3/CRS84`. PROJJSON with no `id`, or with an
+`id` of another authority, is an error rather than a `referenceSystem` no CityJSON
+reader can resolve. Any other text is written as given.
+
+```sql
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'p');
+COPY (SELECT * FROM p.building) TO 'delft.city.json' (FORMAT cityjson,
+    metadata_query 'SELECT max(cityparquet_city_field(city, ''crs'')) AS crs FROM p.__cityparquet WHERE role = ''object''');
+SELECT reference_system.code FROM cityjson_metadata('delft.city.json');
+-- 7415
+```
 
 <a id="sidecar-appearance"></a>**Sidecar appearance.** A package's `material_lod*` /
 `texture_lod*` cells hold sidecar ids into `materials.parquet` / `textures.parquet`,
