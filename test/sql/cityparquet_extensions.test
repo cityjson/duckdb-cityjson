@@ -28,6 +28,26 @@ WHERE column_name = '+heatCapacity';
 ----
 1
 
+# --- insert into a package that holds nothing yet ---------------------------
+
+# A freshly initialised package has no object table, so there is no existing
+# object type for the source's namespace to collide with: the insert goes ahead.
+
+statement ok
+CREATE SCHEMA fresh;
+
+statement ok
+PRAGMA cityparquet_init('fresh');
+
+statement ok
+PRAGMA insert_cityjson('fresh', 'test/data/extension_energy.city.json');
+
+query TT
+SELECT id, object_type FROM fresh.building ORDER BY id;
+----
+house-1	Building
+house-2	energy_Building
+
 # --- insert: every extension name gets the namespace prefix -----------------
 
 statement ok

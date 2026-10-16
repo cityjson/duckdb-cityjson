@@ -522,8 +522,10 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			}
 			types.push_back("SELECT object_type AS t FROM " + QualifiedName(schema, table));
 		}
-		sql += "SELECT error(" + message("object type", "t") + ") FROM (" + Join(types, " UNION ALL ") +
-		       ") WHERE starts_with(t, " + Literal(prefix) + ") AND " + undeclared + ";\n";
+		if (!types.empty()) { // a package being started holds no object type to collide with
+			sql += "SELECT error(" + message("object type", "t") + ") FROM (" + Join(types, " UNION ALL ") +
+			       ") WHERE starts_with(t, " + Literal(prefix) + ") AND " + undeclared + ";\n";
+		}
 		if (!surfaces.empty()) {
 			// `surfaces` is JSON text; its writers differ in whitespace, never in keys.
 			sql += "SELECT error(" +
