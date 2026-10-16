@@ -138,11 +138,22 @@ PRAGMA insert_cityjson('ext', 'test/data/extension_bad_namespace.city.json');
 ----
 ^[a-z][a-z0-9]*$
 
-# An extension class whose name is not a core class has no module to route to.
-statement error
-PRAGMA insert_cityjson('ext', 'test/data/extension_unroutable.city.json');
+# An extension class whose name is not a core class, and which specialises no class
+# the source states, goes to its extension's own file, named by the namespace
+# (cityparquet_extension_file.test).
+statement ok
+CREATE SCHEMA own;
+
+statement ok
+PRAGMA cityparquet_init('own');
+
+statement ok
+PRAGMA insert_cityjson('own', 'test/data/extension_own_file.city.json');
+
+query TT
+SELECT id, object_type FROM own.energy;
 ----
-belongs to no CityGML module
+x-1	energy_ThermalZone
 
 # The package already declares `energy`, so a core attribute `energy_label` from a
 # source that declares nothing is refused too.

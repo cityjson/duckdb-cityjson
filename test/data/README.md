@@ -214,3 +214,19 @@ railway_appearance.city.jsonl railway_appearance.fcb` with the `fcb` CLI 0.7.8 (
 unedited. Each feature keeps its own `materials` and `textures` under feature-local
 indices, so a feature's texture `0` is not the dataset's texture `0`;
 `cityparquet_insert_flatcitybuf_appearance.test` reads it.
+
+## noise_data.city.json + cityparquet_rs_noise/
+
+`noise_data.city.json` is the Noise Extension example of the cityjson.org Extension
+tutorial, unedited: a CityFurniture bench whose two children are
+`+NoiseCityFurnitureSegment`s, a class the Extension declares specialising no CityGML
+class. `cityparquet_rs_noise/` is the package cityparquet-rs (monorepo `b7107d5`) writes
+from it, `cityparquet convert noise_data.city.json -o OUT`, unedited: the segments are in
+`noise.parquet`, the extension's own file. `cityparquet_extension_file.test` reads both.
+
+## extension_own_file.city.json + extension_specialised.city.json
+
+Hand-made. `extension_own_file.city.json` holds one `+ThermalZone` of the Energy
+extension, a class whose name is no core class. `extension_specialised.city.json` is the
+same file with the extension's declaration carrying an `extraCityObjects` schema for
+`+ThermalZone` whose `allOf` refers to `cityobjects.schema.json#/_AbstractBuilding`.

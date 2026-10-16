@@ -776,9 +776,12 @@ These functions generate that SQL for you.
 A package becomes a DuckDB **schema** whose tables are named by the spec's file
 basenames, plus a `__cityparquet` bookkeeping table. Object tables are
 `building`, `bridge`, `tunnel`, `construction`, `transportation`, `vegetation`,
-`relief`, `water_body`, `land_use`, `city_furniture`, `generics`; sidecars are
-`materials`, `textures`, `implicit_geometries`. **Naming is the whole binding** —
-there is no registration state to keep in sync.
+`relief`, `water_body`, `land_use`, `city_furniture`, `generics`, and an
+extension's own file — `noise` for the Noise Extension's classes
+([CityJSON Extensions](#cityjson-extensions)); sidecars are `materials`,
+`textures`, `implicit_geometries`. **Naming is the binding** for the module
+tables and sidecars; an extension's table, whose name no fixed list holds, is an
+object table because `__cityparquet` registers it as one.
 
 `__cityparquet` holds one row per package file (`table_name`, `file_name`,
 `role`, `city`), where `city` is the file's recovered Parquet footer.
@@ -796,6 +799,12 @@ PRAGMA cityparquet_read('./data/delft', 'delft');
 SELECT table_name, role, city IS NOT NULL AS has_footer FROM delft.__cityparquet;
 -- building | object | true
 ```
+
+Besides the files the specification names for modules and sidecars, it loads an
+extension's object table: a file whose `city` footer declares an extension whose
+namespace is the file's name (`noise.parquet`, the extension's own file) or
+prefixes it (`energy_building_physics.parquet`, an extension module). Any other
+Parquet file in the directory is left alone.
 
 An attribute whose name collides with a reserved column is stored escaped, as
 `_ID` for `ID` (below), and is loaded under that name; `COPY` restores the source
@@ -897,11 +906,10 @@ PRAGMA insert_cityjson('delft', 'tile.city.json', create_tables = true);
 
 Worth knowing:
 
-- **Routing is total.** An object type belonging to no CityGML module is an
-  error, not a silently skipped row. An extension type routes only when its name
-  without the `+` is a core class (`+Building` goes to `building`); any other
-  cannot be placed without its module declaration — read those with
-  `read_cityjson` and insert yourself.
+- **Routing is total.** An object type belonging to no CityGML module, and not
+  an Extension class (marked `+`), is an error, not a silently skipped row. An
+  Extension class routes by its ModuleKey
+  ([CityJSON Extensions](#cityjson-extensions)).
 - **Extension names take their namespace.** A `+` attribute, surface type or
   object type is stored with the declaring extension's namespace as a prefix; see
   [CityJSON Extensions](#cityjson-extensions).
@@ -950,6 +958,7 @@ letter. `insert_cityjson` (and its siblings) apply it:
 | attribute `+heatCapacity` | column `energy_heatCapacity` |
 | surface type `+PartyWallSurface` | `geometry_properties_lod*.surfaces[].type` `energy_PartyWallSurface` |
 | object type `+Building` | `object_type` `energy_Building`, routed to `building` |
+| object type `+ThermalZone` | `object_type` `energy_ThermalZone`, routed to `energy` |
 
 ```sql
 PRAGMA insert_cityjson('pkg', 'test/data/extension_energy.city.json');
@@ -960,6 +969,35 @@ SELECT id, object_type, energy_heatCapacity FROM pkg.building WHERE energy_heatC
 -- house-1 | Building        | 250.5
 -- house-2 | energy_Building | 125.0
 ```
+
+**Where an Extension class goes** (spec 06-extensions, "The ModuleKey"). A class
+whose name without the `+` is a core class goes to that class's module table
+(`+Building` → `building`). A class the source's declaration says specialises
+another — an `allOf` member of its `extraCityObjects` schema whose `$ref` names a
+definition of `cityobjects.schema.json` — goes where that class goes, recursively:
+a City Object type to its module, `_AbstractBuilding` to `building`,
+`_AbstractTransportationComplex` to `transportation`. Every other class — one that
+specialises `_AbstractCityObject`, a definition that names no class, or nothing the
+source states — goes to its extension's own table, named by the namespace alone:
+the Noise Extension's `+NoiseCityFurnitureSegment` is stored in `noise` as
+`noise_NoiseCityFurnitureSegment`. Only the declaration in the source's
+`extensions` member is read; the schema document at its `url` is not fetched, so a
+class whose specialisation only that document states goes to the extension's own
+table. A namespace that is itself a module or sidecar name (`building`) cannot
+have a table of its own, and such a class is refused.
+
+```sql
+CREATE SCHEMA noise;
+PRAGMA cityparquet_init('noise');
+PRAGMA insert_cityjson('noise', 'test/data/noise_data.city.json');
+SELECT id, object_type, feature_id FROM noise.noise;
+-- thesegment_1 | noise_NoiseCityFurnitureSegment | a_noisy_bench
+-- thesegment_2 | noise_NoiseCityFurnitureSegment | a_noisy_bench
+```
+
+The table is an object table like any other: registered in `__cityparquet`,
+written as `noise.parquet` with the same footer, validated and exported with the
+rest, and loaded back by `cityparquet_read`.
 
 The package declares each namespace once, in every object table's
 `city.extensions` footer — recorded in `__cityparquet` by the insert and written

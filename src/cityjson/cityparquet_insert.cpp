@@ -197,6 +197,92 @@ std::string PrefixedSurfacesExpr(const std::string &column, const std::string &n
 	       "), 'face_semantics': " + q + ".face_semantics, 'shells': " + q + ".shells} END AS " + q;
 }
 
+//! The CityJSON definitions a class may specialise besides the City Object types, and
+//! their module tables (06-extensions.mdx, "The ModuleKey").
+const std::map<std::string, std::string> &AbstractDefinitionTables() {
+	static const std::map<std::string, std::string> tables = {{"_AbstractBuilding", "building"},
+	                                                          {"_AbstractTransportationComplex", "transportation"}};
+	return tables;
+}
+
+//! The class an Extension class specialises, as its `extraCityObjects` schema states it
+//! by an `allOf` member whose `$ref` names a definition of `cityobjects.schema.json`;
+//! empty when the source's declaration carries no such schema. Only the declaration's
+//! own members are read: the schema document at its `url` is not fetched.
+std::string SpecialisedDefinition(const std::string &plus_type, const CityJSONSourceFacts &facts) {
+	static const std::string marker = "cityobjects.schema.json#/";
+	for (const auto &entry : facts.extensions) {
+		const auto &extra = entry.second.extra_properties;
+		if (!extra.has_value() || !extra->is_object()) {
+			continue;
+		}
+		const auto classes = extra->find("extraCityObjects");
+		if (classes == extra->end() || !classes->is_object()) {
+			continue;
+		}
+		const auto schema = classes->find(plus_type);
+		if (schema == classes->end() || !schema->is_object()) {
+			continue;
+		}
+		const auto parts = schema->find("allOf");
+		if (parts == schema->end() || !parts->is_array()) {
+			continue;
+		}
+		for (const auto &part : *parts) {
+			const auto ref = part.is_object() ? part.find("$ref") : part.end();
+			if (ref == part.end() || !ref->is_string()) {
+				continue;
+			}
+			const auto text = ref->get<std::string>();
+			const auto at = text.find(marker);
+			if (at != std::string::npos) {
+				const auto definition = text.substr(at + marker.size());
+				return definition.substr(0, definition.find('/'));
+			}
+		}
+	}
+	return std::string();
+}
+
+//! The table an Extension class (`+Name`) routes to (06-extensions.mdx, "The
+//! ModuleKey"): a core class's module when its name without the `+` is one; the module
+//! of the class its declaration says it specialises, recursively; and otherwise -- it
+//! specialises `_AbstractCityObject`, a definition that names no class, or nothing the
+//! source states -- its extension's own file, named by the namespace alone.
+std::string ExtensionClassTable(const std::string &plus_type, const CityJSONSourceFacts &facts,
+                                const SourceExtension &extension, const std::string &path) {
+	std::set<std::string> visiting;
+	auto type = plus_type;
+	while (true) {
+		const auto bare = IsPlusName(type) ? type.substr(1) : type;
+		const auto core = ModuleForObjectType(bare);
+		if (!core.empty()) {
+			return core;
+		}
+		const auto abstract = AbstractDefinitionTables().find(bare);
+		if (abstract != AbstractDefinitionTables().end()) {
+			return abstract->second;
+		}
+		if (!IsPlusName(type) || !visiting.insert(type).second) {
+			break;
+		}
+		const auto parent = SpecialisedDefinition(type, facts);
+		if (parent.empty()) {
+			break;
+		}
+		type = parent;
+	}
+	const auto &modules = ModuleTableNames();
+	const auto &sidecars = SidecarTableNames();
+	if (std::find(modules.begin(), modules.end(), extension.ns) != modules.end() ||
+	    std::find(sidecars.begin(), sidecars.end(), extension.ns) != sidecars.end()) {
+		throw BinderException("insert_cityjson: the Extension class '%s' in '%s' goes to its extension's own file, "
+		                      "but the namespace '%s' names a file the package already has a use for",
+		                      plus_type, path, extension.ns);
+	}
+	return extension.ns;
+}
+
 } // namespace
 
 std::string BuildInsertSQL(ClientContext &context, const std::string &schema, const std::string &path,
@@ -246,16 +332,15 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	// unplaceable type is an error -- dropping its rows would be a silent partial insert.
 	std::map<std::string, std::vector<std::string>> types_by_module;
 	for (const auto &object_type : facts.object_types) {
-		// An extension class routes by its name without the `+` when that is a core
-		// class (spec 06-extensions.mdx, "The ModuleKey"); it stays an extension class,
-		// stored under its prefixed name. Any other extension class would need the
-		// module its extension declares for it, which this extension does not read.
+		// An extension class stays an extension class, stored under its prefixed name,
+		// and routes by its ModuleKey (ExtensionClassTable).
 		const bool is_extension = IsPlusName(object_type);
-		const auto module = ModuleForObjectType(is_extension ? object_type.substr(1) : object_type);
+		const auto module =
+		    is_extension ? ExtensionClassTable(object_type, facts, extension, path) : ModuleForObjectType(object_type);
 		if (module.empty()) {
-			throw BinderException("insert_cityjson: object type '%s' in '%s' belongs to no CityGML module. "
-			                      "Extension types cannot be routed without their module declaration; "
-			                      "load the file with read_cityjson and insert the rows explicitly",
+			throw BinderException("insert_cityjson: object type '%s' in '%s' belongs to no CityGML module, and is "
+			                      "no Extension class (which CityJSON marks with `+`); routing is total, so the "
+			                      "file is refused",
 			                      object_type, path);
 		}
 		types_by_module[module].push_back(is_extension ? PrefixPlusName(object_type, extension.ns)

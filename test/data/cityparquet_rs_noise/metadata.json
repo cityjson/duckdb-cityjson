@@ -1,0 +1,84 @@
+{
+  "type": "Feature",
+  "stac_version": "1.1.0",
+  "stac_extensions": [
+    "https://cityjson.github.io/stac-city3d/v0.2.0/schema.json",
+    "https://stac-extensions.github.io/file/v2.1.0/schema.json"
+  ],
+  "id": "pkg_rs",
+  "geometry": null,
+  "properties": {
+    "datetime": "2026-10-16T15:41:50Z",
+    "city3d:version": "2.0",
+    "city3d:city_objects": 5,
+    "city3d:lods": [
+      "0.0",
+      "1.0",
+      "2.0"
+    ],
+    "city3d:co_types": [
+      "Building",
+      "CityFurniture",
+      "noise_NoiseCityFurnitureSegment"
+    ],
+    "city3d:attributes": [
+      {
+        "name": "class",
+        "type": "String"
+      },
+      {
+        "name": "noise_noise-buildingLNightMax",
+        "type": "Object"
+      },
+      {
+        "name": "noise_noise-buildingReflectionCorrection",
+        "type": "Object"
+      },
+      {
+        "name": "reflectionCorrection",
+        "type": "Object"
+      },
+      {
+        "name": "roofType",
+        "type": "String"
+      }
+    ],
+    "city3d:semantic_surfaces": false,
+    "city3d:textures": false,
+    "city3d:materials": false,
+    "cityparquet:version": "0.1.0-draft"
+  },
+  "links": [],
+  "assets": {
+    "building.parquet": {
+      "href": "./building.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-objects"
+      ],
+      "file:size": 22162,
+      "file:checksum": "122075b2ec6892ecc76a356b9bbc6694488aeb6e62bed28efcd9afc8570a417d2176"
+    },
+    "city_furniture.parquet": {
+      "href": "./city_furniture.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-objects"
+      ],
+      "file:size": 16935,
+      "file:checksum": "1220dc750c20483398984ff208041afdfbe9dcc8627e9dac8921a3b0250c95d423e9"
+    },
+    "noise.parquet": {
+      "href": "./noise.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-objects"
+      ],
+      "file:size": 17150,
+      "file:checksum": "122039d69a0b4bca45fe15ba7f029f888b402c5b6f022c168108b0afea134f8e09ad"
+    }
+  }
+}
