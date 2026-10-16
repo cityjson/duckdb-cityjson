@@ -1,0 +1,159 @@
+# name: test/sql/cityjson_copy_sidecar_appearance.test
+# description: COPY to the CityJSON family writes the definitions materials_query and textures_query supply
+# group: [sql]
+
+# A package's material_lod* / texture_lod* cells hold sidecar ids into
+# materials.parquet / textures.parquet. COPY to CityJSON, CityJSONSeq or
+# FlatCityBuf with materials_query / textures_query must write those definitions
+# into the output's `appearance` and re-point every cell at them, so each face
+# still names the material and the texture image it named in the package.
+#
+# The package is cityparquet_rs_minimal, written by cityparquet-rs: its cells and
+# sidecars are not this extension's own encoding read back. The oracle is the
+# package itself: each face's texture image (and UVs) and material name, resolved
+# through the package's own sidecars, against the same resolved through the
+# written file's definitions.
+
+require cityjson
+
+require parquet
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'p')
+
+# Each textured ring of a relation: object, LoD column, theme, face, ring, and the
+# image and UVs its texture id resolves to through `textures`.
+statement ok
+CREATE MACRO texture_rings(objects, textures) AS TABLE
+WITH cells AS (
+  SELECT id, unnest(map_entries(texture_lod3_0)) AS e FROM query_table(objects) WHERE texture_lod3_0 IS NOT NULL
+), faces AS (
+  SELECT id, e.key AS theme, unnest(e.value) AS face, generate_subscripts(e.value, 1) AS f FROM cells
+), rings AS (
+  SELECT id, theme, f, unnest(face) AS ring, generate_subscripts(face, 1) AS r FROM faces
+)
+SELECT rings.id, theme, f, r, t.image_uri, ring.uv
+FROM rings LEFT JOIN query_table(textures) t ON t.id = ring.id
+WHERE ring.id IS NOT NULL
+
+statement ok
+CREATE MACRO material_faces(objects, materials) AS TABLE
+WITH cells AS (
+  SELECT id, unnest(map_entries(material_lod3_0)) AS e FROM query_table(objects) WHERE material_lod3_0 IS NOT NULL
+), faces AS (
+  SELECT id, e.key AS theme, unnest(e.value) AS m, generate_subscripts(e.value, 1) AS f FROM cells
+)
+SELECT faces.id, theme, f, mat.name, mat.diffuseColor
+FROM faces LEFT JOIN query_table(materials) mat ON mat.id = faces.m
+WHERE faces.m IS NOT NULL
+
+statement ok
+CREATE TABLE expected_rings AS FROM texture_rings('p.building', 'p.textures')
+
+statement ok
+CREATE TABLE expected_materials AS FROM material_faces('p.building', 'p.materials')
+
+# The fixture has something to lose: textured rings, and materialled faces.
+query II
+SELECT (SELECT count(*) > 100 FROM expected_rings), (SELECT count(*) > 0 FROM expected_materials)
+----
+true	true
+
+# --- CityJSON: one document, one appearance block ----------------------------
+
+statement ok
+COPY (SELECT * FROM p.building) TO '__TEST_DIR__/sidecar_app.city.json'
+(FORMAT cityjson, materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures')
+
+statement ok
+CREATE TABLE doc AS FROM read_cityjson('__TEST_DIR__/sidecar_app.city.json', appearance := 'sidecar')
+
+statement ok
+CREATE TABLE doc_textures AS FROM cityjson_textures('__TEST_DIR__/sidecar_app.city.json')
+
+statement ok
+CREATE TABLE doc_materials AS FROM cityjson_materials('__TEST_DIR__/sidecar_app.city.json')
+
+query I
+SELECT count(*) FROM (FROM expected_rings EXCEPT ALL FROM texture_rings('doc', 'doc_textures'))
+----
+0
+
+query I
+SELECT count(*) FROM (FROM texture_rings('doc', 'doc_textures') EXCEPT ALL FROM expected_rings)
+----
+0
+
+query I
+SELECT count(*) FROM (FROM expected_materials EXCEPT ALL FROM material_faces('doc', 'doc_materials'))
+----
+0
+
+query I
+SELECT count(*) FROM (FROM material_faces('doc', 'doc_materials') EXCEPT ALL FROM expected_materials)
+----
+0
+
+# The file itself holds the definitions, not only the UV pool.
+query II
+SELECT content LIKE '%"textures":[{%', content LIKE '%"materials":[{%'
+FROM read_text('__TEST_DIR__/sidecar_app.city.json')
+----
+true	true
+
+# --- CityJSONSeq: each feature carries the definitions it uses ---------------
+
+statement ok
+COPY (SELECT * FROM p.building) TO '__TEST_DIR__/sidecar_app.city.jsonl'
+(FORMAT cityjsonseq, materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures')
+
+statement ok
+CREATE TABLE seq AS FROM read_cityjsonseq('__TEST_DIR__/sidecar_app.city.jsonl', appearance := 'sidecar')
+
+statement ok
+CREATE TABLE seq_textures AS FROM cityjson_textures('__TEST_DIR__/sidecar_app.city.jsonl')
+
+statement ok
+CREATE TABLE seq_materials AS FROM cityjson_materials('__TEST_DIR__/sidecar_app.city.jsonl')
+
+query I
+SELECT count(*) FROM (FROM expected_rings EXCEPT ALL FROM texture_rings('seq', 'seq_textures'))
+----
+0
+
+query I
+SELECT count(*) FROM (FROM texture_rings('seq', 'seq_textures') EXCEPT ALL FROM expected_rings)
+----
+0
+
+query I
+SELECT count(*) FROM (FROM expected_materials EXCEPT ALL FROM material_faces('seq', 'seq_materials'))
+----
+0
+
+query I
+SELECT count(*) FROM (FROM material_faces('seq', 'seq_materials') EXCEPT ALL FROM expected_materials)
+----
+0
+
+# Every textured feature line carries its own `textures`; the header carries none
+# (there are no templates to serve).
+query II
+SELECT count(*) FILTER (line LIKE '%"vertices-texture"%') > 0,
+       count(*) FILTER (line LIKE '%"vertices-texture"%' AND line NOT LIKE '%"textures":[{%')
+FROM (SELECT unnest(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/sidecar_app.city.jsonl'))
+WHERE line LIKE '%"CityJSONFeature"%'
+----
+true	0
+
+query I
+SELECT content[1:position(chr(10) IN content)] LIKE '%"appearance"%' FROM read_text('__TEST_DIR__/sidecar_app.city.jsonl')
+----
+false
+
+# A cell naming an id the query does not have is refused, not written dangling.
+statement error
+COPY (SELECT * FROM p.building) TO '__TEST_DIR__/sidecar_app_missing.city.json'
+(FORMAT cityjson, materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures WHERE id <> 10')
+----
+refers to texture id 10, which textures_query does not have

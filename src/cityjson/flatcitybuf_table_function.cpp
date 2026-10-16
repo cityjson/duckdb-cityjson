@@ -288,6 +288,7 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 	result->use_wkb_encoding = generic.use_wkb_encoding;
 	result->streaming = false;
 	result->sample_lines = generic.sample_lines;
+	result->appearance_index = generic.appearance_index;
 	result->bbox = bbox;
 	result->reader = reader;
 	return result;
@@ -352,6 +353,7 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 
 	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
 	func.named_parameters["lod"] = LogicalType::VARCHAR;
+	func.named_parameters["appearance"] = LogicalType::VARCHAR; // 'local' (default) or 'sidecar'
 	func.named_parameters["xmin"] = LogicalType::DOUBLE;
 	func.named_parameters["ymin"] = LogicalType::DOUBLE;
 	func.named_parameters["xmax"] = LogicalType::DOUBLE;

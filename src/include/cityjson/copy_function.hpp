@@ -126,6 +126,17 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::optional<json> source_appearance_header;
 	std::map<std::string, json> source_appearance_by_feature;
 
+	// The CityJSON family's sidecar-form definitions, from materials_query /
+	// textures_query: every row in id order, as CityJSON `appearance` entries, and
+	// each sidecar id's position there. The cells keep their sidecar ids through the
+	// sink; finalize re-points them per output scope -- the document for CityJSON,
+	// each feature for CityJSONSeq and FlatCityBuf.
+	bool sidecar_definitions = false;
+	json sidecar_materials = json::array();
+	json sidecar_textures = json::array();
+	std::map<int64_t, int64_t> sidecar_material_position;
+	std::map<int64_t, int64_t> sidecar_texture_position;
+
 	// The document's `geometry-templates` member, its texture rings' UV indices
 	// resolved to inline [u, v] pairs so the writer can re-intern them into the pool it
 	// writes. From `implicit_geometries_query` (the sidecar rows, one template each in

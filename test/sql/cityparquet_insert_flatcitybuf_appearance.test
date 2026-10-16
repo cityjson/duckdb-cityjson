@@ -1,0 +1,107 @@
+# name: test/sql/cityparquet_insert_flatcitybuf_appearance.test
+# description: insert_flatcitybuf re-points each feature's local material and texture indices at the package's sidecar ids
+# group: [sql]
+
+# A FlatCityBuf feature carries its own materials and textures under feature-local
+# indices, as a CityJSONSeq feature does. insert_flatcitybuf stages the sidecars as
+# the dataset-wide union, so every cell has to name that union's id for its
+# definition, not the feature's local index.
+#
+# railway_appearance.fcb was written by FlatCityBuf's reference writer from
+# railway_appearance.city.jsonl (test/data/README.md). The oracle is that CityJSONSeq
+# source: each face's material and texture image, resolved through its own
+# definitions, against the same resolved through the package's sidecars.
+
+require cityjson
+
+require parquet
+
+statement ok
+CREATE MACRO texture_rings(objects, textures) AS TABLE
+WITH cells AS (
+  SELECT id, unnest(map_entries(texture_lod3_0)) AS e FROM query_table(objects) WHERE texture_lod3_0 IS NOT NULL
+), faces AS (
+  SELECT id, e.key AS theme, unnest(e.value) AS face, generate_subscripts(e.value, 1) AS f FROM cells
+), rings AS (
+  SELECT id, theme, f, unnest(face) AS ring, generate_subscripts(face, 1) AS r FROM faces
+)
+SELECT rings.id, theme, f, r, t.image_uri, ring.uv
+FROM rings LEFT JOIN query_table(textures) t ON t.id = ring.id
+WHERE ring.id IS NOT NULL
+
+statement ok
+CREATE MACRO material_faces(objects, materials) AS TABLE
+WITH cells AS (
+  SELECT id, unnest(map_entries(material_lod3_0)) AS e FROM query_table(objects) WHERE material_lod3_0 IS NOT NULL
+), faces AS (
+  SELECT id, e.key AS theme, unnest(e.value) AS m, generate_subscripts(e.value, 1) AS f FROM cells
+)
+SELECT faces.id, theme, f, mat.name, mat.diffuseColor
+FROM faces LEFT JOIN query_table(materials) mat ON mat.id = faces.m
+WHERE faces.m IS NOT NULL
+
+statement ok
+CREATE TABLE src AS FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+
+statement ok
+CREATE TABLE src_textures AS FROM cityjson_textures('test/data/railway_appearance.city.jsonl')
+
+statement ok
+CREATE TABLE src_materials AS FROM cityjson_materials('test/data/railway_appearance.city.jsonl')
+
+statement ok
+CREATE SCHEMA p
+
+statement ok
+PRAGMA cityparquet_init('p')
+
+statement ok
+PRAGMA insert_flatcitybuf('p', 'test/data/railway_appearance.fcb')
+
+statement ok
+CREATE TABLE pkg AS SELECT * FROM p.bridge UNION ALL BY NAME SELECT * FROM p.city_furniture
+
+# The fixture has something to lose: textured rings and materialled faces.
+query II
+SELECT (SELECT count(*) > 0 FROM texture_rings('src', 'src_textures')),
+       (SELECT count(*) > 0 FROM material_faces('src', 'src_materials'))
+----
+true	true
+
+query I
+SELECT count(*) FROM (FROM texture_rings('src', 'src_textures') EXCEPT ALL FROM texture_rings('pkg', 'p.textures'))
+----
+0
+
+query I
+SELECT count(*) FROM (FROM texture_rings('pkg', 'p.textures') EXCEPT ALL FROM texture_rings('src', 'src_textures'))
+----
+0
+
+query I
+SELECT count(*) FROM (FROM material_faces('src', 'src_materials') EXCEPT ALL FROM material_faces('pkg', 'p.materials'))
+----
+0
+
+query I
+SELECT count(*) FROM (FROM material_faces('pkg', 'p.materials') EXCEPT ALL FROM material_faces('src', 'src_materials'))
+----
+0
+
+# read_flatcitybuf takes the appearance option too: in sidecar mode its ids are the
+# ones cityjson_textures gives the same file.
+statement ok
+CREATE TABLE fcb AS FROM read_flatcitybuf('test/data/railway_appearance.fcb', appearance := 'sidecar')
+
+statement ok
+CREATE TABLE fcb_textures AS FROM cityjson_textures('test/data/railway_appearance.fcb')
+
+query I
+SELECT count(*) FROM (FROM texture_rings('src', 'src_textures') EXCEPT ALL FROM texture_rings('fcb', 'fcb_textures'))
+----
+0
+
+query I
+SELECT count(*) FROM (FROM texture_rings('fcb', 'fcb_textures') EXCEPT ALL FROM texture_rings('src', 'src_textures'))
+----
+0

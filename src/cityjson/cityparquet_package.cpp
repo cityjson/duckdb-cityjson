@@ -181,8 +181,38 @@ std::vector<std::string> ColumnsWithPrefix(ClientContext &context, const std::st
 
 } // namespace
 
+//! The tables `schema.__cityparquet` registers as object tables: the module tables, and
+//! an extension's own files (06-extensions.mdx, "The ModuleKey"), whose names no fixed
+//! list holds. Empty when the schema has no bookkeeping table.
+static std::vector<std::string> RegisteredObjectTables(ClientContext &context, const std::string &schema,
+                                                       const std::set<std::string> &present) {
+	std::vector<std::string> registered;
+	if (present.count("__cityparquet") == 0) {
+		return registered;
+	}
+	Connection connection(DatabaseInstance::GetDatabase(context));
+	auto result = connection.Query("SELECT DISTINCT lower(table_name) FROM " + QualifiedName(schema, "__cityparquet") +
+	                               " WHERE role = 'object' AND table_name IS NOT NULL");
+	if (result->HasError()) {
+		return registered;
+	}
+	for (idx_t row = 0; row < result->RowCount(); row++) {
+		registered.push_back(result->GetValue(0, row).ToString());
+	}
+	return registered;
+}
+
 std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema, bool allow_none) {
-	auto found = Intersect(TablesInSchema(context, schema), ModuleTableNames());
+	const auto present = TablesInSchema(context, schema);
+	auto candidates = ModuleTableNames();
+	for (const auto &table : RegisteredObjectTables(context, schema, present)) {
+		const auto &sidecars = SidecarTableNames();
+		if (std::find(candidates.begin(), candidates.end(), table) == candidates.end() &&
+		    std::find(sidecars.begin(), sidecars.end(), table) == sidecars.end()) {
+			candidates.push_back(table);
+		}
+	}
+	auto found = Intersect(present, candidates);
 	if (found.empty() && !allow_none) {
 		throw BinderException("cityparquet: schema '%s' has no CityParquet object table "
 		                      "(expected one of building, bridge, tunnel, construction, transportation, "
@@ -427,6 +457,36 @@ void RefuseCollidingColumns(Connection &connection, const std::string &path) {
 	}
 }
 
+//! True when the file `table`.parquet at `path` is an extension's object table
+//! (06-extensions.mdx, "The ModuleKey"): its `city` footer declares an extension whose
+//! namespace is the file's name (the extension's own file, `noise.parquet`) or prefixes
+//! it (an extension module's file, `energy_building_physics.parquet`). A file this
+//! specification does not name is left alone.
+bool IsExtensionObjectFile(Connection &connection, const std::string &path, const std::string &table) {
+	auto result = connection.Query("SELECT decode(value) FROM parquet_kv_metadata(" + Literal(path) +
+	                               ") WHERE decode(key) = 'city'");
+	if (result->HasError() || result->RowCount() == 0 || result->GetValue(0, 0).IsNull()) {
+		return false;
+	}
+	json city;
+	try {
+		city = json_utils::ParseJson(result->GetValue(0, 0).ToString());
+	} catch (const std::exception &) {
+		return false;
+	}
+	const auto extensions = city.find("extensions");
+	if (!city.is_object() || extensions == city.end() || !extensions->is_object()) {
+		return false;
+	}
+	for (const auto &entry : extensions->items()) {
+		const auto &ns = entry.key();
+		if (table == ns || (table.size() > ns.size() + 1 && table.compare(0, ns.size() + 1, ns + "_") == 0)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 } // namespace
 
 std::string BuildReadSQL(ClientContext &context, const std::string &directory_arg, const std::string &schema) {
@@ -451,7 +511,9 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory_ar
 		known.insert(name);
 	}
 
+	Connection connection(DatabaseInstance::GetDatabase(context));
 	std::vector<std::string> found;
+	std::set<std::string> extension_tables;
 	for (const auto &info : fs.Glob(fs.JoinPath(directory, "*.parquet"))) {
 		const auto name = fs.ExtractName(info.path);
 		const auto suffix = std::string(".parquet");
@@ -459,8 +521,14 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory_ar
 			continue;
 		}
 		const auto table = StringUtil::Lower(name.substr(0, name.size() - suffix.size()));
-		if (known.count(table) > 0 && std::find(found.begin(), found.end(), table) == found.end()) {
+		if (std::find(found.begin(), found.end(), table) != found.end()) {
+			continue;
+		}
+		if (known.count(table) > 0) {
 			found.push_back(table);
+		} else if (IsExtensionObjectFile(connection, info.path, table)) {
+			found.push_back(table);
+			extension_tables.insert(table);
 		}
 	}
 	if (found.empty()) {
@@ -476,12 +544,12 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory_ar
 	sql += "CREATE OR REPLACE TABLE " + bookkeeping +
 	       " (table_name VARCHAR, file_name VARCHAR, role VARCHAR, city VARCHAR);\n";
 
-	Connection connection(DatabaseInstance::GetDatabase(context));
 	for (const auto &table : found) {
 		const auto file = table + ".parquet";
 		const auto path = fs.JoinPath(directory, file);
 		const bool is_object =
-		    std::find(ModuleTableNames().begin(), ModuleTableNames().end(), table) != ModuleTableNames().end();
+		    std::find(ModuleTableNames().begin(), ModuleTableNames().end(), table) != ModuleTableNames().end() ||
+		    extension_tables.count(table) > 0;
 		if (is_object) {
 			RefuseCollidingColumns(connection, path);
 		}

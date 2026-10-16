@@ -160,9 +160,9 @@ SELECT COUNT(*) FROM (
 # --- A source read with appearance := 'sidecar' carries dataset-global ids in its
 #     material/texture cells. The CityJSON family re-attaches each feature's own LOCAL
 #     appearance block (its `materials`/`textures` arrays), which the sidecar ids do
-#     not index into -- there is no materials_query/textures_query escape hatch here,
-#     unlike the mesh formats, so this must refuse unconditionally rather than write a
-#     file whose refs and definitions silently disagree.
+#     not index into -- so without materials_query/textures_query to resolve them
+#     against, this must refuse rather than write a file whose refs and definitions
+#     silently disagree (cityjson_copy_sidecar_appearance.test passes the queries).
 statement error
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
 TO '__TEST_DIR__/sidecar_refused.city.jsonl' (FORMAT cityjsonseq);
