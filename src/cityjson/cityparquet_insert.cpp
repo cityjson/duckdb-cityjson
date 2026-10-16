@@ -255,7 +255,7 @@ std::string ExtensionClassTable(const std::string &plus_type, const CityJSONSour
 	auto type = plus_type;
 	while (true) {
 		const auto bare = IsPlusName(type) ? type.substr(1) : type;
-		const auto core = ModuleForObjectType(bare);
+		auto core = ModuleForObjectType(bare);
 		if (!core.empty()) {
 			return core;
 		}
