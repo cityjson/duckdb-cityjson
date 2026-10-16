@@ -206,3 +206,11 @@ left out, and `vertices` keeps only the 36 the four objects use, re-indexed in
 first-use order. The reader returns them part of one Building, both Buildings, part of
 the other, so each feature's rows are split in table order; in the full dataset the two
 Buildings' centres share a Hilbert cell. `cityparquet_hilbert_order.test` writes it.
+
+## railway_appearance.fcb
+
+`railway_appearance.city.jsonl` as FlatCityBuf's reference writer serialises it: `fcb ser
+railway_appearance.city.jsonl railway_appearance.fcb` with the `fcb` CLI 0.7.8 (fcb_core),
+unedited. Each feature keeps its own `materials` and `textures` under feature-local
+indices, so a feature's texture `0` is not the dataset's texture `0`;
+`cityparquet_insert_flatcitybuf_appearance.test` reads it.

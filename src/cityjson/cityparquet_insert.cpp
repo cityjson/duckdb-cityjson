@@ -201,16 +201,14 @@ std::string PrefixedSurfacesExpr(const std::string &column, const std::string &n
 
 std::string BuildInsertSQL(ClientContext &context, const std::string &schema, const std::string &path,
                            const std::string &reader_function, const InsertOptions &options) {
-	// read_flatcitybuf produces no appearance columns at all and does not accept the
-	// `appearance` parameter, so asking for sidecar mode there is a bind error rather
-	// than a no-op.
-	const bool sidecar_appearance = reader_function != "read_flatcitybuf";
-	// The staged read asks for sidecar ids only when the source has appearance to
-	// renumber: building the sidecar index reads the whole file once more, and without
-	// materials or textures the two modes yield the same rows.
+	// The staged read asks every reader for sidecar ids -- a feature's local material and
+	// texture indices resolved to the dataset-wide ids the staged sidecars are numbered
+	// by -- but only when the source has appearance to renumber: building the sidecar
+	// index reads the whole file once more, and without materials or textures the two
+	// modes yield the same rows.
 
 	CityJSONReadOptions read_options;
-	read_options.sidecar_appearance = sidecar_appearance;
+	read_options.sidecar_appearance = true;
 	read_options.target_lod = options.target_lod;
 	read_options.use_wkb_encoding = options.target_lod.has_value();
 	read_options.sample_lines = options.sample_lines;
@@ -349,8 +347,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 	}
 	sql += "CREATE OR REPLACE TEMP TABLE " + std::string(kStage) + " AS SELECT * REPLACE (" +
 	       Join(stage_replacements, ", ") + ") FROM " +
-	       ReadCall(reader_function, path, options, sidecar_appearance && (facts.has_materials || facts.has_textures)) +
-	       ";\n";
+	       ReadCall(reader_function, path, options, facts.has_materials || facts.has_textures) + ";\n";
 	for (const auto &renamed : renamed_columns) {
 		sql += "ALTER TABLE " + std::string(kStage) + " RENAME COLUMN " + Quoted(renamed.first) + " TO " +
 		       Quoted(renamed.second) + ";\n";

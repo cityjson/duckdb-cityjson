@@ -96,8 +96,8 @@ ORDER BY b3_h_dak_max DESC LIMIT 3;
 | `sample_lines` | BIGINT | Features sampled for schema inference (default 100) |
 | `appearance` | VARCHAR | `'local'` (default) or `'sidecar'` — see [Appearance sidecars](#appearance-sidecars) |
 
-`read_flatcitybuf` shares only `lod` and `sample_lines`; it takes no
-`appearance`, and adds the four bbox bounds instead.
+`read_flatcitybuf` shares `lod`, `sample_lines` and `appearance`, and adds the
+four bbox bounds.
 
 #### `lod =>` — one LoD, same column grammar
 
@@ -533,12 +533,14 @@ WHERE material_lod3_0 IS NOT NULL LIMIT 1;
 -- GMLID_855011_330784_753 | {visual=[2, 2, 2, 2, 2, 2, 3, 3, 3, …]}
 ```
 
-`appearance` accepts `'local'` (default) or `'sidecar'`, on `read_cityjson` and
-`read_cityjsonseq`. Both modes emit the same typed `material_lod*` /
-`texture_lod*` `MAP` cells (below); the mode decides only the **id space** —
-feature-local in `'local'`, dataset-global sidecar ids in `'sidecar'` — and
-texture UVs are inlined in both. **`read_flatcitybuf` does not take it** —
-sidecar normalisation is not available on the `.fcb` read path.
+`appearance` accepts `'local'` (default) or `'sidecar'`, on `read_cityjson`,
+`read_cityjsonseq` and `read_flatcitybuf`. Both modes emit the same typed
+`material_lod*` / `texture_lod*` `MAP` cells (below); the mode decides only the
+**id space** — feature-local in `'local'`, dataset-global sidecar ids in
+`'sidecar'`, the ids `cityjson_materials` / `cityjson_textures` give the same
+file — and texture UVs are inlined in both. A FlatCityBuf feature keeps its own
+definitions under local indices, as a CityJSONSeq feature does, so
+`insert_flatcitybuf` reads in sidecar mode just as `insert_cityjsonseq` does.
 
 `cityjson_implicit_geometries` turns the CityJSON `"geometry-templates"` member
 into the `implicit_geometries` sidecar: one row per template, each the shared
