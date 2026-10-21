@@ -63,7 +63,9 @@ DuckDB's; the extension only generates text.
   served as one result"). A precondition guard that is a bare `SELECT error(...)` is
   such a statement, so guards run as `CREATE OR REPLACE TEMP TABLE __cp_check AS
   SELECT ...` (`CHECK_STATEMENT` in `cityparquet_sql_common.hpp`), which raises the same
-  error and returns nothing.
+  error and returns nothing. A script that runs guards ends with `CHECK_CLEANUP`, so the
+  table does not outlive it. Its one column is NULL-typed, because `error()` returns
+  `NULL`; nothing reads it.
 - **Generated SQL cannot contain a transaction statement.** The expansion runs as one
   query inside the caller's transaction, and DuckDB rejects a `BEGIN` or `COMMIT` in it.
 - **A PRAGMA cannot be a subquery.** `FROM (PRAGMA x)` is a parser error, so
@@ -94,8 +96,10 @@ DuckDB's; the extension only generates text.
 - **`parquet_kv_metadata` returns BLOB.** Use `decode(value)`, not `value::VARCHAR` —
   the cast escapes bytes and the JSON no longer parses.
 - **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
-- **`SQLString` is a formatting wrapper, not a quoting function.** Use
-  `KeywordHelper::WriteQuoted(text, '\'')`, and `WriteOptionallyQuoted` for identifiers.
+- **Quote with `SQLString::ToString` (literals) and `SQLIdentifier::ToString`
+  (identifiers)**, wrapped as `Literal` / `Quoted` in `cityparquet_sql_common.hpp`.
+  Constructing an `SQLString` only wraps the text; the static `ToString` is what quotes
+  and escapes it.
 - **Never re-derive what the reader emits.** A generator needing the incoming column list
   calls `InferCityJSONColumns` / `InspectCityJSONSource` (`bind_function.cpp`) — the same
   inference the bind runs. Reconstructing it from `GetDefinedColumns` +

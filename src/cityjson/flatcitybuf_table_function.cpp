@@ -144,6 +144,9 @@ void FlatCityBufPushdownComplexFilter(ClientContext &context, LogicalGet &get, F
 	// skip); DuckDB still evaluates every surviving filter against every row exactly
 	// as it would without this pushdown.
 	for (auto &expr : filters) {
+		if (!BoundComparisonExpression::IsComparison(*expr)) {
+			continue;
+		}
 		auto expression_type = expr->GetExpressionType();
 		if (expression_type < ExpressionType::COMPARE_EQUAL ||
 		    expression_type > ExpressionType::COMPARE_GREATERTHANOREQUALTO) {

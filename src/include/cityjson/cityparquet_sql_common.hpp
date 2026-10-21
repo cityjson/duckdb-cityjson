@@ -12,8 +12,10 @@ namespace cityjson {
 //! Prefix of a precondition check in generated SQL: a query that raises, through
 //! error(), on the rows that break the precondition. It runs as a CREATE TABLE AS
 //! because a statement a pragma expands into may return rows only when it is the
-//! last one.
+//! last one. error() returns NULL-typed, so the table has one NULL column; a
+//! script that runs checks ends with CHECK_CLEANUP, which leaves no table behind.
 constexpr const char *CHECK_STATEMENT = "CREATE OR REPLACE TEMP TABLE __cp_check AS ";
+constexpr const char *CHECK_CLEANUP = "DROP TABLE IF EXISTS __cp_check;\n";
 
 //! StringUtil::Join takes duckdb::vector, which std::vector does not convert to.
 std::string Join(const std::vector<std::string> &parts, const std::string &separator);

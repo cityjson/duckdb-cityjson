@@ -96,6 +96,13 @@ PRAGMA cityparquet_init('utr');
 statement ok
 PRAGMA cityparquet_merge('ams', 'utr');
 
+# Precondition guards run as CREATE TABLE ... AS SELECT error(...); the script
+# drops that table again, so nothing is left behind in the session.
+query I
+SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = '__cp_check';
+----
+0
+
 # Both packages' objects are present.
 query I
 SELECT COUNT(*) FROM ams.building;

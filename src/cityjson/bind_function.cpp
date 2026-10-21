@@ -314,7 +314,8 @@ void CityJSONPushdownComplexFilter(ClientContext &context, LogicalGet &get, Func
 		auto &expr = *it;
 		bool consumed = false;
 
-		if (expr->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
+		if (BoundComparisonExpression::IsComparison(*expr) &&
+		    expr->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
 			auto &comp = expr->Cast<BoundFunctionExpression>();
 			auto &left = BoundComparisonExpression::Left(comp);
 			auto &right = BoundComparisonExpression::Right(comp);

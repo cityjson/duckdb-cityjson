@@ -64,6 +64,13 @@ TO '{TEST_DIR}/refused.obj' (FORMAT obj, lod '3');
 ----
 read with appearance := 'sidecar'
 
+# The source is found when its path is passed by name, too.
+statement error
+COPY (SELECT * FROM read_cityjsonseq(appearance := 'sidecar', path := 'test/data/railway_appearance.city.jsonl'))
+TO '{TEST_DIR}/refused_named.obj' (FORMAT obj, lod '3');
+----
+read with appearance := 'sidecar'
+
 # …and the same query with the option is accepted.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))

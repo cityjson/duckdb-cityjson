@@ -56,10 +56,18 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 			auto &literal = expression.Cast<ConstantExpression>().GetLiteral();
 			return literal.kind == LiteralKind::STRING ? &literal : nullptr;
 		};
-		if (arguments.empty() || arguments[0].HasName()) {
+		// The path is the first argument, or the one named `path`.
+		optional_ptr<const FunctionArgument> path_argument;
+		for (auto &argument : arguments) {
+			if (argument.HasName() ? argument.GetName() == "path" : &argument == &arguments[0]) {
+				path_argument = &argument;
+				break;
+			}
+		}
+		if (!path_argument) {
 			return;
 		}
-		auto path = string_literal(arguments[0]);
+		auto path = string_literal(*path_argument);
 		if (!path) {
 			return;
 		}

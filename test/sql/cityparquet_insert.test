@@ -26,6 +26,13 @@ SELECT COUNT(*) FROM ams.building;
 statement ok
 PRAGMA insert_cityjson('ams', 'test/data/minimal.city.json');
 
+# Precondition guards run as CREATE TABLE ... AS SELECT error(...); the script
+# drops that table again, so nothing is left behind in the session.
+query I
+SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = '__cp_check';
+----
+0
+
 query I
 SELECT COUNT(*) FROM ams.building;
 ----

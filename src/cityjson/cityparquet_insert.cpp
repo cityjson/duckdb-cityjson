@@ -897,6 +897,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		sql += "DROP TABLE IF EXISTS " + StageTable(sidecar) + ";\n";
 		sql += "DROP TABLE IF EXISTS " + OffsetTable(sidecar) + ";\n";
 	}
+	sql += CHECK_CLEANUP;
 	return sql;
 }
 

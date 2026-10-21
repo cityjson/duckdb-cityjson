@@ -324,6 +324,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 		added.push_back("SELECT id FROM " + QualifiedName(source, table));
 	}
 	sql += BuildReconcileSQL(context, destination, {}, pending, Join(added, " UNION ALL "));
+	sql += CHECK_CLEANUP;
 	return sql;
 }
 
