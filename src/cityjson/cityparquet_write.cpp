@@ -349,7 +349,7 @@ void RefusePlusNames(Connection &connection, ClientContext &context, const std::
 			                                 Literal(R"re("type"\s*:\s*"(\+[^"]*)")re") + ", 1) FROM " +
 			                                 QualifiedName(catalog, schema, table) + " WHERE regexp_matches(" +
 			                                 surfaces + ", " + Literal(R"re("type"\s*:\s*"\+)re") + ") LIMIT 1");
-			if (found.size() > 0) {
+			if (!found.empty()) {
 				refuse("the semantic surface type '" + found.GetValue(0, 0).ToString() + "' in '" + column.name + "'");
 			}
 		}
@@ -357,7 +357,7 @@ void RefusePlusNames(Connection &connection, ClientContext &context, const std::
 	if (is_object) {
 		auto found = Run(connection, "SELECT object_type FROM " + QualifiedName(catalog, schema, table) +
 		                                 " WHERE starts_with(object_type, '+') LIMIT 1");
-		if (found.size() > 0) {
+		if (!found.empty()) {
 			refuse("the object type '" + found.GetValue(0, 0).ToString() + "'");
 		}
 	}
@@ -404,7 +404,7 @@ void RefuseNonObjectOther(Connection &connection, ClientContext &context, const 
 	    Run(connection, "SELECT id FROM " + QualifiedName(catalog, schema, table) +
 	                        " WHERE other IS NOT NULL AND NOT starts_with(ltrim(CAST(other AS VARCHAR), ' \t\n\r'), "
 	                        "'{') LIMIT 1");
-	if (found.size() > 0) {
+	if (!found.empty()) {
 		throw InvalidInputException("cityparquet_write: object '%s' of '%s.%s' has an `other` that is not a JSON "
 		                            "object; its members are restored as attributes, so it must be one (spec "
 		                            "02-object-table-schema.mdx)",
