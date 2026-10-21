@@ -22,18 +22,23 @@ any new family outside them).
   `PragmaFunction` or `PragmaFunctionSet`, so the helper builds the
   `CreatePragmaFunctionInfo` and calls the system catalog's `CreatePragmaFunction`
   itself, as `extension_loader.cpp` does, keeping its `ERROR_ON_CONFLICT`.
-- **A description's `parameter_names` replace the whole parameter list.** For a table
-  or pragma function that list is the positional arguments followed by the named
-  parameters, and any index left unnamed shows as `col<N>` — so naming only the
-  positional ones turns `sample_lines` into `col3`. `duckdb_functions()` reads the named
-  ones from a by-value copy of the registered function (`GetFunctionByOffset`), in that
-  copy's `named_parameters` iteration order, and **copying an `unordered_map` does not
-  keep its order everywhere**: libstdc++ keeps it, libc++ (macOS, Wasm) reverses it,
-  MSVC reverses it within a bucket. How many copies registration makes differs between
-  `TableFunction` and `PragmaFunction`, so iterating the map *before* registering pairs
-  names with the wrong types off Linux. The helper appends the names after registering,
-  from the catalog entry through the same by-value copy the extractor makes. The test
-  checks each name against its type, never the order, which is hash-dependent.
+- **`duckdb_functions()` reads parameter names from the signature**, not from the
+  description: the positional parameters first, then the named parameters a table or
+  pragma function declares as its `options` kwargs (`WithTypedKwargs`). A
+  description's `parameter_names` are used only when their count differs from that
+  list, so they are a fallback, never the source.
+- **A type-only constructor declares positional-only parameters named `col<N>`.**
+  `SetName` keeps that kind, so the name shows in `duckdb_functions()` while a call by
+  name (`f(wkb := x)`) still fails to bind. The helper replaces each positional
+  parameter with a `STANDARD` `FunctionParameter` carrying the documented name, which
+  accepts its argument by position or by name.
+- **Named parameters of a table or pragma function are kwargs.** Declare them inside
+  `GetSignature().WithTypedKwargs("options", …)`; a call that leaves one out does not
+  pass it, so the bind's `named_parameters` holds only what the caller wrote.
+- **A scalar that throws must be registered fallible.** DuckDB turns an error thrown
+  from a function not marked `SetFallible()` into an internal error, which invalidates
+  the connection. The helper marks every scalar fallible, since every one here parses
+  or validates its input.
 - **`parameter_types` stays empty.** A single description with no types matches every
   overload, the `ANY`-typed appearance-cell functions included.
 - **`COPY` functions have no description slot.** The `cityjson`, `cityjsonseq`,
@@ -44,18 +49,28 @@ any new family outside them).
 The package-mutation functions are `PragmaFunction`s registered with a
 `pragma_query_t`: the function *returns SQL text*, which DuckDB parses and runs in place
 of the pragma, inside the caller's transaction
-(`duckdb/src/planner/statement_preprocessor.cpp:107-122`). Atomicity is DuckDB's; the
-extension only generates text.
+(`duckdb/src/planner/statement_preprocessor.cpp`, `TryReparsePragma`). Atomicity is
+DuckDB's; the extension only generates text.
 
-- **Pragma expansion happens before execution**, for the *whole* submitted script. A
-  generator's view of the catalog and data is pre-batch, so anything
-  destination-dependent must be idempotent (`ADD COLUMN IF NOT EXISTS`) or deferred into
-  the generated SQL. A schema and its first object table must therefore exist from an
-  earlier statement, not the same one.
+- **A pragma expands when it runs, before its own generated SQL does.** Each pragma in a
+  submitted script sees what the statements before it did, but a generator never sees
+  the effects of the SQL it is generating: a table its script creates or alters is
+  still absent, or still in its old shape, when the generator reads the catalog. Hand
+  such a table's columns forward (`PendingTable`) rather than looking them up, and defer
+  anything that depends on row data into the generated SQL.
+- **Generated SQL may return rows only from its last statement.** DuckDB refuses a
+  statement that expands into a row-returning statement followed by others ("cannot be
+  served as one result"). A precondition guard that is a bare `SELECT error(...)` is
+  such a statement, so guards run as `CREATE OR REPLACE TEMP TABLE __cp_check AS
+  SELECT ...` (`CHECK_STATEMENT` in `cityparquet_sql_common.hpp`), which raises the same
+  error and returns nothing.
+- **Generated SQL cannot contain a transaction statement.** The expansion runs as one
+  query inside the caller's transaction, and DuckDB rejects a `BEGIN` or `COMMIT` in it.
 - **A PRAGMA cannot be a subquery.** `FROM (PRAGMA x)` is a parser error, so
   result-returning pragmas materialise a temp table and select from it.
-- **PRAGMA named parameters use `=`, not `:=`** (`transform_pragma.cpp:26-33`).
-- **No subqueries inside lambda bodies.** `list_filter(l, x -> x IN (SELECT ...))` is
+- **PRAGMA named parameters use `=`, not `:=`**
+  (`duckdb/src/parser/peg/transformer/transform_pragma.cpp`, `TransformPragmaFunction`).
+- **No subqueries inside lambda bodies.** `list_filter(l, lambda x: x IN (SELECT ...))` is
   rejected; hoist the set into a session variable and use
   `list_contains(getvariable(...), x)`.
 - **The `JSON` type name and `json_extract` are unavailable.** They live in the `json`
@@ -432,7 +447,7 @@ row per CityObject, and every projected column's value byte-identical across bot
 ## DuckDB-Wasm
 
 CI builds `wasm_mvp`, `wasm_eh` and `wasm_threads`
-(`extension-ci-tools/config/distribution_matrix.json`) under emsdk 3.1.71 and the
+(`extension-ci-tools/config/distribution_matrix.json`) under emsdk 6.0.9 and the
 `wasm32-emscripten` triplet, with a plain `make <arch>`.
 
 Locally: `just wasm-setup` once — installs the pinned emsdk and a vcpkg checkout into the
@@ -452,7 +467,7 @@ DuckDB error message rather than a `ReferenceError`. The `eh` artefact loads int
 browser DuckDB-Wasm instance from a local extension repository:
 
 ```sql
-SET custom_extension_repository='http://localhost:8080/ext';  -- <repo>/v1.5.5/wasm_eh/
+SET custom_extension_repository='http://localhost:8080/ext';  -- <repo>/v2.0.0/wasm_eh/
 INSTALL cityjson; LOAD cityjson;
 ```
 
@@ -479,8 +494,9 @@ DuckDB Labs. The build also writes that layout itself, at
   listed explicitly because nothing transitive survives a plain `emcc` invocation.
 
 `just test-wasm` runs `test/wasm/run_wasm_smoke.sh`, a Node harness against
-`@duckdb/duckdb-wasm` (pinned `1.33.1-dev64.0`, carrying DuckDB `v1.5.5`, the submodule's
-version). It needs `just wasm` to have produced the artefact (override with
+`@duckdb/duckdb-wasm` (pinned `1.33.1-dev64.0`, which carries DuckDB `v1.5.5`). No
+`@duckdb/duckdb-wasm` release carries DuckDB `v2.0.0`, the submodule's version, so this
+build's artefact is rejected on its version footer until one does; re-pin then. It needs `just wasm` to have produced the artefact (override with
 `CITYJSON_WASM_EXT`) and asserts the native build's oracle values. Every part of the
 loading incantation is load-bearing:
 

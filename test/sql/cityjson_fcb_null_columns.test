@@ -13,14 +13,14 @@ require cityjson
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/nullcols.fcb' (FORMAT flatcitybuf);
+TO '{TEST_DIR}/nullcols.fcb' (FORMAT flatcitybuf);
 
 # 76 columns in, 76 columns out (74 plus the reserved `address` and `implicit_geometry`
 # columns every object table now carries -- spec 02-object-table-schema.mdx).
 query II
 SELECT
   (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))),
-  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb')));
+  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('{TEST_DIR}/nullcols.fcb')));
 ----
 76	76
 
@@ -32,7 +32,7 @@ SELECT COUNT(*) FROM (
   WHERE column_name IN ('eindregistratie', 'tijdstipinactief', 'tijdstipinactieflv',
                         'eindgeldigheid', 'tijdstipnietbaglv', 'tijdstipeindregistratielv')
   EXCEPT
-  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb'))
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('{TEST_DIR}/nullcols.fcb'))
 );
 ----
 0
@@ -42,7 +42,7 @@ query I
 SELECT COUNT(*) FROM (
   SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
   EXCEPT
-  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb'))
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('{TEST_DIR}/nullcols.fcb'))
 );
 ----
 0
@@ -50,7 +50,7 @@ SELECT COUNT(*) FROM (
 # They must read back as NULL, not as an empty string.
 query I
 SELECT COUNT(*) FILTER (WHERE eindregistratie IS NOT NULL)
-FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb');
+FROM read_flatcitybuf('{TEST_DIR}/nullcols.fcb');
 ----
 0
 
@@ -62,11 +62,11 @@ SELECT
   (SELECT COUNT(*) FILTER (WHERE b3_h_dak_max IS NOT NULL)
      FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')),
   (SELECT COUNT(*) FILTER (WHERE b3_h_dak_max IS NOT NULL)
-     FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb'));
+     FROM read_flatcitybuf('{TEST_DIR}/nullcols.fcb'));
 ----
 10	10
 
 query I
-SELECT typeof(b3_h_dak_max) FROM read_flatcitybuf('__TEST_DIR__/nullcols.fcb') LIMIT 1;
+SELECT typeof(b3_h_dak_max) FROM read_flatcitybuf('{TEST_DIR}/nullcols.fcb') LIMIT 1;
 ----
 DOUBLE

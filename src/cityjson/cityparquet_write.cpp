@@ -20,10 +20,12 @@
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/date.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 
 #include <algorithm>
 #include <array>
@@ -163,13 +165,12 @@ struct WriteGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-//! DuckDB type of one column. Non-templated GetEntry: the templated form
-//! ODR-uses TableCatalogEntry::Name (see cityparquet_package.cpp).
+//! DuckDB type of one column.
 LogicalType ColumnDuckType(ClientContext &context, const std::string &schema, const std::string &table,
                            const std::string &column) {
-	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	auto &entry = LookupTable(context, schema, table);
 	for (auto &existing : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		if (StringUtil::Lower(existing.Name()) == StringUtil::Lower(column)) {
+		if (existing.Name() == column) {
 			return existing.Type();
 		}
 	}
@@ -219,7 +220,7 @@ std::string ColumnExpression(const ColumnDefinition &column, const std::set<std:
 std::string CopySourceList(ClientContext &context, const std::string &schema, const std::string &table,
                            const std::set<std::string> &legal_geometry, const std::string &crs,
                            const std::set<std::string> *populated_lods) {
-	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	auto &entry = LookupTable(context, schema, table);
 	static const std::vector<std::string> head = {"id",       "feature_id",     "object_type", "parents",
 	                                              "children", "children_roles", "address",     "bbox"};
 	static const std::vector<std::string> group = {"geometry_lod", "geometry_properties_lod", "material_lod",
@@ -228,7 +229,7 @@ std::string CopySourceList(ClientContext &context, const std::string &schema, co
 	std::vector<std::pair<std::array<int64_t, 5>, std::string>> ranked;
 	int64_t position = 0;
 	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		const auto lowered = StringUtil::Lower(column.Name());
+		const auto lowered = StringUtil::Lower(column.Name().GetIdentifierName());
 		std::array<int64_t, 5> rank {3, 0, 0, 0, position++};
 		const auto in_head = std::find(head.begin(), head.end(), lowered);
 		if (populated_lods != nullptr && in_head != head.end()) {
@@ -274,10 +275,10 @@ std::string CopySourceList(ClientContext &context, const std::string &schema, co
 std::string ColumnExpression(const ColumnDefinition &column, const std::set<std::string> &legal_geometry,
                              const std::string &crs) {
 	{
-		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.Name());
+		const auto quoted = SQLIdentifier::ToString(column.Name().GetIdentifierName());
 		// `other` by name; a JSON attribute column (an object or heterogeneous array,
 		// spec 02-object-table-schema.mdx) by its type. Both are checked to parse.
-		if (StringUtil::Lower(column.Name()) == "other" || column.Type().IsJSONType()) {
+		if (column.Name() == "other" || column.Type().IsJSONType()) {
 			return "cityparquet_json(CAST(" + quoted + " AS VARCHAR)) AS " + quoted;
 		}
 		if (HasSurfacesField(column.Type())) {
@@ -285,7 +286,7 @@ std::string ColumnExpression(const ColumnDefinition &column, const std::set<std:
 			// NULL struct NULL, which struct_pack alone would turn into a struct of NULLs.
 			vector<string> fields;
 			for (const auto &child : StructType::GetChildTypes(column.Type())) {
-				const auto field = KeywordHelper::WriteOptionallyQuoted(child.first);
+				const auto field = SQLIdentifier::ToString(child.first.GetIdentifierName());
 				const auto ref = quoted + "." + field;
 				fields.push_back(field + " := " +
 				                 (child.first == "surfaces" ? "cityparquet_json(CAST(" + ref + " AS VARCHAR))" : ref));
@@ -294,7 +295,7 @@ std::string ColumnExpression(const ColumnDefinition &column, const std::set<std:
 			       ") END AS " + quoted;
 		}
 		const auto is_geometry = column.Type().id() == LogicalTypeId::GEOMETRY;
-		if (legal_geometry.count(column.Name()) > 0) {
+		if (legal_geometry.count(column.Name().GetIdentifierName()) > 0) {
 			// Annotated: keep it GEOMETRY-typed through the COPY, promoting the
 			// WKB blob when the source table holds one.
 			auto expr = is_geometry ? quoted : "ST_GeomFromWKB(" + quoted + ")";
@@ -313,13 +314,14 @@ std::string ColumnExpression(const ColumnDefinition &column, const std::set<std:
 	}
 }
 
-//! Run a query on the internal connection, throwing its error rather than swallowing it.
-unique_ptr<MaterializedQueryResult> Run(Connection &connection, const std::string &sql) {
+//! Run a query on the internal connection, throwing its error rather than swallowing
+//! it, and return its rows.
+ColumnDataRowCollection Run(Connection &connection, const std::string &sql) {
 	auto result = connection.Query(sql);
 	if (result->HasError()) {
 		throw InvalidInputException("cityparquet_write: %s\n(while running: %s)", result->GetError(), sql);
 	}
-	return result;
+	return result->Collection().GetRows();
 }
 
 //! Refuses a table holding a name with CityJSON's extension marker `+`. A package
@@ -342,21 +344,21 @@ void RefusePlusNames(Connection &connection, ClientContext &context, const std::
 		if (is_properties && HasSurfacesField(column.type)) {
 			// Cast: `surfaces` is JSON in a table loaded from a file that declares it, and
 			// regexp_* take text.
-			const auto surfaces = "CAST(" + KeywordHelper::WriteOptionallyQuoted(column.name) + ".surfaces AS VARCHAR)";
+			const auto surfaces = "CAST(" + SQLIdentifier::ToString(column.name) + ".surfaces AS VARCHAR)";
 			auto found = Run(connection, "SELECT regexp_extract(" + surfaces + ", " +
 			                                 Literal(R"re("type"\s*:\s*"(\+[^"]*)")re") + ", 1) FROM " +
 			                                 QualifiedName(catalog, schema, table) + " WHERE regexp_matches(" +
 			                                 surfaces + ", " + Literal(R"re("type"\s*:\s*"\+)re") + ") LIMIT 1");
-			if (found->RowCount() > 0) {
-				refuse("the semantic surface type '" + found->GetValue(0, 0).ToString() + "' in '" + column.name + "'");
+			if (found.size() > 0) {
+				refuse("the semantic surface type '" + found.GetValue(0, 0).ToString() + "' in '" + column.name + "'");
 			}
 		}
 	}
 	if (is_object) {
 		auto found = Run(connection, "SELECT object_type FROM " + QualifiedName(catalog, schema, table) +
 		                                 " WHERE starts_with(object_type, '+') LIMIT 1");
-		if (found->RowCount() > 0) {
-			refuse("the object type '" + found->GetValue(0, 0).ToString() + "'");
+		if (found.size() > 0) {
+			refuse("the object type '" + found.GetValue(0, 0).ToString() + "'");
 		}
 	}
 }
@@ -402,11 +404,11 @@ void RefuseNonObjectOther(Connection &connection, ClientContext &context, const 
 	    Run(connection, "SELECT id FROM " + QualifiedName(catalog, schema, table) +
 	                        " WHERE other IS NOT NULL AND NOT starts_with(ltrim(CAST(other AS VARCHAR), ' \t\n\r'), "
 	                        "'{') LIMIT 1");
-	if (found->RowCount() > 0) {
+	if (found.size() > 0) {
 		throw InvalidInputException("cityparquet_write: object '%s' of '%s.%s' has an `other` that is not a JSON "
 		                            "object; its members are restored as attributes, so it must be one (spec "
 		                            "02-object-table-schema.mdx)",
-		                            found->GetValue(0, 0).ToString(), schema, table);
+		                            found.GetValue(0, 0).ToString(), schema, table);
 	}
 }
 
@@ -436,8 +438,8 @@ void CollectInventory(Connection &connection, const std::string &catalog, const 
 	// An extension class is listed with CityJSON's `+`, not its namespace prefix.
 	auto types = Run(connection, "SELECT DISTINCT object_type FROM " + QualifiedName(catalog, schema, table) +
 	                                 " WHERE object_type IS NOT NULL");
-	for (idx_t row = 0; row < types->RowCount(); row++) {
-		inventory.co_types.insert(RestorePlusName(types->GetValue(0, row).ToString(), declarations));
+	for (idx_t row = 0; row < types.size(); row++) {
+		inventory.co_types.insert(RestorePlusName(types.GetValue(0, row).ToString(), declarations));
 	}
 
 	if (inventory.semantic_surfaces) {
@@ -446,8 +448,8 @@ void CollectInventory(Connection &connection, const std::string &catalog, const 
 	for (const auto &column : facts) {
 		const auto properties = "geometry_properties_" + column.name.substr(std::string("geometry_").size());
 		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(catalog, schema, table) + " WHERE " +
-		                                   KeywordHelper::WriteOptionallyQuoted(properties) + ".surfaces IS NOT NULL");
-		if (present->GetValue(0, 0).GetValue<int64_t>() > 0) {
+		                                   SQLIdentifier::ToString(properties) + ".surfaces IS NOT NULL");
+		if (present.GetValue(0, 0).GetValue<int64_t>() > 0) {
 			inventory.semantic_surfaces = true;
 			return;
 		}
@@ -469,10 +471,10 @@ void CollectImplicitGeometryInventory(Connection &connection, ClientContext &con
 		if (inventory.semantic_surfaces) {
 			continue;
 		}
-		auto present = Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(catalog, schema, table) + " WHERE " +
-		                                   KeywordHelper::WriteOptionallyQuoted("geometry_properties_" + suffix) +
-		                                   ".surfaces IS NOT NULL");
-		if (present->GetValue(0, 0).GetValue<int64_t>() > 0) {
+		auto present =
+		    Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(catalog, schema, table) + " WHERE " +
+		                        SQLIdentifier::ToString("geometry_properties_" + suffix) + ".surfaces IS NOT NULL");
+		if (present.GetValue(0, 0).GetValue<int64_t>() > 0) {
 			inventory.semantic_surfaces = true;
 		}
 	}
@@ -488,7 +490,7 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 	for (const auto &column : GeometryLodColumns(context, schema, table)) {
 		ColumnFacts entry;
 		entry.name = column;
-		const auto quoted = KeywordHelper::WriteOptionallyQuoted(column);
+		const auto quoted = SQLIdentifier::ToString(column);
 		auto col_type = ColumnDuckType(context, schema, table, column);
 		// GeometryColumnRef: the column arrives here already decoded to DuckDB's
 		// native GEOMETRY type when it was promoted -- declared in the file's
@@ -498,8 +500,8 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		const auto wkb_expr = GeometryColumnRef(quoted, col_type);
 		auto result = Run(connection, "SELECT DISTINCT cityjson_wkb_geometry_type(" + wkb_expr + ") FROM " +
 		                                  QualifiedName(catalog, schema, table) + " WHERE " + quoted + " IS NOT NULL");
-		for (idx_t row = 0; row < result->RowCount(); row++) {
-			auto value = result->GetValue(0, row);
+		for (idx_t row = 0; row < result.size(); row++) {
+			auto value = result.GetValue(0, row);
 			if (!value.IsNull()) {
 				entry.geometry_types.insert(value.ToString());
 			}
@@ -511,14 +513,14 @@ std::vector<ColumnFacts> CollectFacts(Connection &connection, ClientContext &con
 		                              "max(e.zmax) FROM (SELECT cityjson_wkb_extent(" +
 		                                  wkb_expr + ") AS e FROM " + QualifiedName(catalog, schema, table) +
 		                                  " WHERE " + quoted + " IS NOT NULL) t");
-		if (extent->RowCount() == 1 && !extent->GetValue(0, 0).IsNull()) {
+		if (extent.size() == 1 && !extent.GetValue(0, 0).IsNull()) {
 			entry.has_extent = true;
-			entry.min_x = extent->GetValue(0, 0).GetValue<double>();
-			entry.min_y = extent->GetValue(1, 0).GetValue<double>();
-			entry.min_z = extent->GetValue(2, 0).GetValue<double>();
-			entry.max_x = extent->GetValue(3, 0).GetValue<double>();
-			entry.max_y = extent->GetValue(4, 0).GetValue<double>();
-			entry.max_z = extent->GetValue(5, 0).GetValue<double>();
+			entry.min_x = extent.GetValue(0, 0).GetValue<double>();
+			entry.min_y = extent.GetValue(1, 0).GetValue<double>();
+			entry.min_z = extent.GetValue(2, 0).GetValue<double>();
+			entry.max_x = extent.GetValue(3, 0).GetValue<double>();
+			entry.max_y = extent.GetValue(4, 0).GetValue<double>();
+			entry.max_z = extent.GetValue(5, 0).GetValue<double>();
 		}
 		facts.push_back(std::move(entry));
 	}
@@ -683,7 +685,7 @@ bool WriteHilbertKeys(Connection &connection, ClientContext &context, const std:
 		}
 		const auto qualified = QualifiedName(catalog, schema, table);
 		for (const auto &column : GeometryLodColumns(context, schema, table)) {
-			const auto quoted = KeywordHelper::WriteOptionallyQuoted(column);
+			const auto quoted = SQLIdentifier::ToString(column);
 			extents.push_back("SELECT feature_id, cityjson_wkb_extent(" +
 			                  GeometryColumnRef(quoted, ColumnDuckType(context, schema, table, column)) +
 			                  ") AS e FROM " + qualified + " WHERE " + quoted + " IS NOT NULL");
@@ -763,43 +765,38 @@ uint32_t HilbertIndex(double x, double y, double xmin, double ymin, double xmax,
 //! cityparquet_hilbert(x, y, xmin, ymin, xmax, ymax): NULL when any argument is.
 static void HilbertFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	constexpr idx_t ARGUMENTS = 6;
-	std::array<UnifiedVectorFormat, ARGUMENTS> formats;
+	using Iterator = decltype(args.data[0].Values<double>());
+	std::vector<Iterator> inputs;
 	for (idx_t i = 0; i < ARGUMENTS; i++) {
-		args.data[i].ToUnifiedFormat(args.size(), formats[i]);
+		inputs.push_back(args.data[i].Values<double>());
 	}
-	result.SetVectorType(::duckdb::VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<uint32_t>(result);
-	auto &validity = FlatVector::Validity(result);
+	auto writer = FlatVector::Writer<uint32_t>(result, args.size());
 	for (idx_t row = 0; row < args.size(); row++) {
 		std::array<double, ARGUMENTS> values {};
 		bool valid = true;
-		for (idx_t i = 0; i < ARGUMENTS; i++) {
-			const auto index = formats[i].sel->get_index(row);
-			if (!formats[i].validity.RowIsValid(index)) {
-				valid = false;
-				break;
+		for (idx_t i = 0; i < ARGUMENTS && valid; i++) {
+			auto entry = inputs[i][row];
+			valid = entry.IsValid();
+			if (valid) {
+				values[i] = entry.GetValue();
 			}
-			values[i] = UnifiedVectorFormat::GetData<double>(formats[i])[index];
 		}
 		if (!valid) {
-			validity.SetInvalid(row);
+			writer.WriteNull();
 			continue;
 		}
-		out[row] = HilbertIndex(values[0], values[1], values[2], values[3], values[4], values[5]);
-	}
-	if (args.AllConstant()) {
-		result.SetVectorType(::duckdb::VectorType::CONSTANT_VECTOR);
+		writer.WriteValue(HilbertIndex(values[0], values[1], values[2], values[3], values[4], values[5]));
 	}
 }
 
 static unique_ptr<FunctionData> WriteBind(ClientContext &context, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names) {
+                                          vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<WriteBindData>();
 	result->schema = StringValue::Get(input.inputs[0]);
 	// Resolve through the caller's context, exactly as the column helpers do, then keep
 	// the catalog it landed in.
-	auto &schema_entry = Catalog::GetSchema(context, INVALID_CATALOG, result->schema);
-	result->catalog = schema_entry.catalog.GetName();
+	auto &schema_entry = Catalog::GetSchema(context, Identifier::InvalidCatalog(), Identifier(result->schema));
+	result->catalog = schema_entry.catalog.GetName().GetIdentifierName();
 	result->directory = StringValue::Get(input.inputs[1]);
 	for (auto &entry : input.named_parameters) {
 		if (entry.first == "crs") {
@@ -845,10 +842,11 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 	auto bookkeeping = connection.Query("SELECT table_name, city FROM " +
 	                                    QualifiedName(bind_data.catalog, bind_data.schema, "__cityparquet"));
 	if (!bookkeeping->HasError()) {
-		for (idx_t row = 0; row < bookkeeping->RowCount(); row++) {
-			auto city = bookkeeping->GetValue(1, row);
+		const auto rows = bookkeeping->Collection().GetRows();
+		for (idx_t row = 0; row < rows.size(); row++) {
+			auto city = rows.GetValue(1, row);
 			if (!city.IsNull()) {
-				carried[bookkeeping->GetValue(0, row).ToString()] = city.ToString();
+				carried[rows.GetValue(0, row).ToString()] = city.ToString();
 			}
 		}
 	}
@@ -982,7 +980,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 	auto write_table = [&](const std::string &table, bool is_object) {
 		auto count =
 		    Run(connection, "SELECT COUNT(*) FROM " + QualifiedName(bind_data.catalog, bind_data.schema, table));
-		const auto rows = count->GetValue(0, 0).GetValue<int64_t>();
+		const auto rows = count.GetValue(0, 0).GetValue<int64_t>();
 		if (rows == 0 && is_object) {
 			// "No file for a module with no rows."
 			return;
@@ -1016,8 +1014,8 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			std::vector<std::string> attributes;
 			auto columns = Run(connection, "SELECT column_name FROM (DESCRIBE SELECT * FROM " +
 			                                   QualifiedName(bind_data.catalog, bind_data.schema, table) + ")");
-			for (idx_t row = 0; row < columns->RowCount(); row++) {
-				const auto name = columns->GetValue(0, row).ToString();
+			for (idx_t row = 0; row < columns.size(); row++) {
+				const auto name = columns.GetValue(0, row).ToString();
 				if (!IsReservedColumnName(name)) {
 					attributes.push_back(name);
 				}
@@ -1179,7 +1177,7 @@ static unique_ptr<GlobalTableFunctionState> WriteInitGlobal(ClientContext &conte
 			date_t day;
 			dtime_t time;
 			Timestamp::Convert(Timestamp::GetCurrentTimestamp(), day, time);
-			datetime = Date::ToString(day) + "T" + Time::ToString(dtime_t(time.micros - time.micros % 1000000)) + "Z";
+			datetime = Date::ToString(day) + "T" + Time::ToString(dtime_t(time.value - time.value % 1000000)) + "Z";
 		}
 		properties["datetime"] = datetime;
 		// Every one of these is a union or a sum across the package's files. The footer
@@ -1250,14 +1248,14 @@ static void WriteScan(ClientContext &, TableFunctionInput &data, DataChunk &outp
 	idx_t emitted = 0;
 	while (state.offset < state.files.size() && emitted < STANDARD_VECTOR_SIZE) {
 		const auto &written = state.files[state.offset];
-		output.SetValue(0, emitted, Value(written.file));
-		output.SetValue(1, emitted, Value(written.action));
-		output.SetValue(2, emitted, Value::BIGINT(written.rows));
-		output.SetValue(3, emitted, Value::BIGINT(written.bytes));
+		output.data[0].SetValue(emitted, Value(written.file));
+		output.data[1].SetValue(emitted, Value(written.action));
+		output.data[2].SetValue(emitted, Value::BIGINT(written.rows));
+		output.data[3].SetValue(emitted, Value::BIGINT(written.bytes));
 		state.offset++;
 		emitted++;
 	}
-	output.SetCardinality(emitted);
+	output.SetChildCardinality(emitted);
 }
 
 //! Marks text as JSON: the value unchanged, typed as DuckDB's JSON, which the Parquet
@@ -1265,15 +1263,13 @@ static void WriteScan(ClientContext &, TableFunctionInput &data, DataChunk &outp
 //! Parquet reader validates a JSON column and refuses the whole file over one bad cell.
 static void JsonFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	auto &input = args.data[0];
-	UnifiedVectorFormat format;
-	input.ToUnifiedFormat(args.size(), format);
-	const auto *values = UnifiedVectorFormat::GetData<string_t>(format);
+	auto values = input.Values<string_t>();
 	for (idx_t row = 0; row < args.size(); row++) {
-		const auto index = format.sel->get_index(row);
-		if (!format.validity.RowIsValid(index)) {
+		const auto entry = values[row];
+		if (!entry.IsValid()) {
 			continue;
 		}
-		const auto text = values[index];
+		const auto text = entry.GetValue();
 		bool deep = false;
 		try {
 			json_utils::CheckJsonDepth(text.GetData(), text.GetSize());
@@ -1290,23 +1286,18 @@ static void JsonFunction(DataChunk &args, ExpressionState &, Vector &result) {
 }
 
 static void ToJsonFunction(DataChunk &args, ExpressionState &, Vector &result) {
-	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<string_t>(result);
-	auto &validity = FlatVector::Validity(result);
+	auto writer = FlatVector::Writer<string_t>(result, args.size());
 	for (idx_t row = 0; row < args.size(); row++) {
 		const auto value = args.data[0].GetValue(row);
 		if (value.IsNull()) {
-			validity.SetInvalid(row);
+			writer.WriteNull();
 			continue;
 		}
 		try {
-			out[row] = StringVector::AddString(result, AttributeValueToJson(value).dump());
+			writer.WriteValue(string_t(AttributeValueToJson(value).dump()));
 		} catch (const CityJSONError &e) {
 			throw InvalidInputException("cityparquet_to_json: %s", e.what());
 		}
-	}
-	if (args.AllConstant()) {
-		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
 	}
 }
 
@@ -1331,7 +1322,6 @@ void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
 	                    {"cityparquet", "package"}});
 
 	ScalarFunction to_json_function("cityparquet_to_json", {LogicalType::ANY}, LogicalType::JSON(), ToJsonFunction);
-	to_json_function.null_handling = FunctionNullHandling::DEFAULT_NULL_HANDLING;
 	RegisterDocumented(loader, std::move(to_json_function),
 	                   {{"value"},
 	                    "Returns an attribute value as the JSON it stands for -- a string quoted, a number or "
@@ -1344,10 +1334,13 @@ void RegisterCityParquetWriteFunction(ExtensionLoader &loader) {
 	TableFunction func("cityparquet_write", {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	                   WriteScan, WriteBind);
 	func.init_global = WriteInitGlobal;
-	func.named_parameters["crs"] = LogicalType(LogicalTypeId::VARCHAR);
-	func.named_parameters["source_format"] = LogicalType(LogicalTypeId::VARCHAR);
-	func.named_parameters["bloom"] = LogicalType(LogicalTypeId::BOOLEAN);
-	func.named_parameters["ordering"] = LogicalType(LogicalTypeId::VARCHAR);
+	// Named parameters: a call that leaves one out does not pass it.
+	func.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("crs", LogicalType(LogicalTypeId::VARCHAR));
+		options.Add("source_format", LogicalType(LogicalTypeId::VARCHAR));
+		options.Add("bloom", LogicalType(LogicalTypeId::BOOLEAN));
+		options.Add("ordering", LogicalType(LogicalTypeId::VARCHAR));
+	});
 	RegisterDocumented(loader, std::move(func),
 	                   {{"schema", "directory"},
 	                    "Writes a CityParquet package schema out as a package directory: one Parquet file per table "

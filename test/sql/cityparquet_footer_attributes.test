@@ -21,13 +21,13 @@ statement ok
 PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'pkg');
 
 statement ok
-SELECT * FROM cityparquet_write('pkg', '__TEST_DIR__/attrs_out');
+SELECT * FROM cityparquet_write('pkg', '{TEST_DIR}/attrs_out');
 
 query III
 SELECT decode(value) LIKE '%"address"%',
        decode(value) LIKE '%"implicit_geometry"%',
        decode(value) LIKE '%"class"%'
-FROM parquet_kv_metadata('__TEST_DIR__/attrs_out/building.parquet')
+FROM parquet_kv_metadata('{TEST_DIR}/attrs_out/building.parquet')
 WHERE key::VARCHAR = 'city';
 ----
 false	false	true
@@ -50,12 +50,12 @@ SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM own.building) WHERE column_name = '
 1
 
 statement ok
-SELECT * FROM cityparquet_write('own', '__TEST_DIR__/attrs_own', crs => 'EPSG:7415');
+SELECT * FROM cityparquet_write('own', '{TEST_DIR}/attrs_own', crs => 'EPSG:7415');
 
 query II
 SELECT decode(value) LIKE '%"implicit_geometry"%',
        decode(value) LIKE '%"measuredHeight"%'
-FROM parquet_kv_metadata('__TEST_DIR__/attrs_own/building.parquet')
+FROM parquet_kv_metadata('{TEST_DIR}/attrs_own/building.parquet')
 WHERE key::VARCHAR = 'city';
 ----
 false	true

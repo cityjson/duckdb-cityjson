@@ -144,30 +144,35 @@ void FlatCityBufPushdownComplexFilter(ClientContext &context, LogicalGet &get, F
 	// skip); DuckDB still evaluates every surviving filter against every row exactly
 	// as it would without this pushdown.
 	for (auto &expr : filters) {
-		if (expr->type < ExpressionType::COMPARE_EQUAL || expr->type > ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
+		auto expression_type = expr->GetExpressionType();
+		if (expression_type < ExpressionType::COMPARE_EQUAL ||
+		    expression_type > ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
 			continue;
 		}
-		auto &comp = expr->Cast<BoundComparisonExpression>();
+		auto &comp = expr->Cast<BoundFunctionExpression>();
+		auto &left = BoundComparisonExpression::Left(comp);
+		auto &right = BoundComparisonExpression::Right(comp);
 
-		BoundColumnRefExpression *col_ref = nullptr;
-		BoundConstantExpression *constant = nullptr;
+		const BoundColumnRefExpression *col_ref = nullptr;
+		const BoundConstantExpression *constant = nullptr;
 		bool column_on_right = false;
 
-		if (comp.left->type == ExpressionType::BOUND_COLUMN_REF && comp.right->type == ExpressionType::VALUE_CONSTANT) {
-			col_ref = &comp.left->Cast<BoundColumnRefExpression>();
-			constant = &comp.right->Cast<BoundConstantExpression>();
-		} else if (comp.right->type == ExpressionType::BOUND_COLUMN_REF &&
-		           comp.left->type == ExpressionType::VALUE_CONSTANT) {
-			col_ref = &comp.right->Cast<BoundColumnRefExpression>();
-			constant = &comp.left->Cast<BoundConstantExpression>();
+		if (left.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF &&
+		    right.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+			col_ref = &left.Cast<BoundColumnRefExpression>();
+			constant = &right.Cast<BoundConstantExpression>();
+		} else if (right.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF &&
+		           left.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+			col_ref = &right.Cast<BoundColumnRefExpression>();
+			constant = &left.Cast<BoundConstantExpression>();
 			column_on_right = true;
 		}
 
-		if (!col_ref || !constant || col_ref->binding.table_index != get.table_index ||
-		    col_ref->binding.column_index >= get.GetColumnIds().size()) {
+		if (!col_ref || !constant || col_ref->Binding().table_index != get.table_index ||
+		    col_ref->Binding().column_index >= get.GetColumnIds().size()) {
 			continue;
 		}
-		idx_t schema_idx = get.GetColumnIds()[col_ref->binding.column_index].GetPrimaryIndex();
+		idx_t schema_idx = get.GetColumnIds()[col_ref->Binding().column_index].GetPrimaryIndex();
 		if (schema_idx >= bind_data.columns.size()) {
 			continue;
 		}
@@ -183,12 +188,12 @@ void FlatCityBufPushdownComplexFilter(ClientContext &context, LogicalGet &get, F
 		if (!is_indexed) {
 			continue;
 		}
-		auto op = ToFcbOperator(expr->type, column_on_right);
+		auto op = ToFcbOperator(expression_type, column_on_right);
 		auto col_info = bind_data.reader->FindColumn(column_name);
 		if (!op.has_value() || !col_info.has_value()) {
 			continue;
 		}
-		auto key_value = BuildKeyValue(col_info.value(), constant->value);
+		auto key_value = BuildKeyValue(col_info.value(), constant->GetValue());
 		if (key_value.has_value()) {
 			conditions.push_back({column_name, op.value(), key_value.value()});
 		}
@@ -243,7 +248,7 @@ bool FlatCityBufBindData::Equals(const FunctionData &other_p) const {
 // ============================================================
 
 static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
 	if (input.inputs.empty()) {
 		throw BinderException("read_flatcitybuf requires a file path");
 	}
@@ -252,10 +257,10 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 
 	auto reader = std::make_shared<FlatCityBufReader>(context, file_name, file_name, options.sample_lines);
 
-	bool has_xmin = input.named_parameters.count("xmin") > 0;
-	bool has_ymin = input.named_parameters.count("ymin") > 0;
-	bool has_xmax = input.named_parameters.count("xmax") > 0;
-	bool has_ymax = input.named_parameters.count("ymax") > 0;
+	bool has_xmin = input.named_parameters.contains("xmin");
+	bool has_ymin = input.named_parameters.contains("ymin");
+	bool has_xmax = input.named_parameters.contains("xmax");
+	bool has_ymax = input.named_parameters.contains("ymax");
 	std::optional<std::array<double, 4>> bbox;
 	if (has_xmin || has_ymin || has_xmax || has_ymax) {
 		if (!(has_xmin && has_ymin && has_xmax && has_ymax)) {
@@ -351,13 +356,16 @@ static unique_ptr<NodeStatistics> FlatCityBufCardinality(ClientContext &context,
 void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 	TableFunction func("read_flatcitybuf", {LogicalType::VARCHAR}, CityJSONScan, FlatCityBufBind);
 
-	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
-	func.named_parameters["lod"] = LogicalType::VARCHAR;
-	func.named_parameters["appearance"] = LogicalType::VARCHAR; // 'local' (default) or 'sidecar'
-	func.named_parameters["xmin"] = LogicalType::DOUBLE;
-	func.named_parameters["ymin"] = LogicalType::DOUBLE;
-	func.named_parameters["xmax"] = LogicalType::DOUBLE;
-	func.named_parameters["ymax"] = LogicalType::DOUBLE;
+	// Named parameters: a call that leaves one out does not pass it.
+	func.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("sample_lines", LogicalType::BIGINT);
+		options.Add("lod", LogicalType::VARCHAR);
+		options.Add("appearance", LogicalType::VARCHAR); // 'local' (default) or 'sidecar'
+		options.Add("xmin", LogicalType::DOUBLE);
+		options.Add("ymin", LogicalType::DOUBLE);
+		options.Add("xmax", LogicalType::DOUBLE);
+		options.Add("ymax", LogicalType::DOUBLE);
+	});
 
 	func.init_global = FlatCityBufInitGlobal;
 	func.init_local = CityJSONInitLocal;
@@ -408,7 +416,7 @@ struct FcbMetadataGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<FcbMetadataBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 
@@ -432,7 +440,7 @@ static unique_ptr<FunctionData> FcbMetadataBind(ClientContext &context, TableFun
 	result->features_count = reader->Header().info().features_count;
 
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
-	names = MetadataTableUtils::GetMetadataTableNames();
+	names = StringsToIdentifiers(MetadataTableUtils::GetMetadataTableNames());
 
 	return result;
 }
@@ -447,13 +455,13 @@ static void FcbMetadataScan(ClientContext &context, TableFunctionInput &data, Da
 	auto &global_state = data.global_state->Cast<FcbMetadataGlobalState>();
 
 	if (global_state.done) {
-		output.SetCardinality(0);
+		output.SetChildCardinality(0);
 		return;
 	}
 
 	auto metadata_chunk = MetadataTableUtils::CreateMetadataChunk(bind_data.metadata, bind_data.city_objects_count,
 	                                                              bind_data.features_count);
-	output.SetCardinality(1);
+	output.SetChildCardinality(1);
 	for (idx_t col = 0; col < metadata_chunk->ColumnCount(); col++) {
 		output.data[col].Reference(metadata_chunk->data[col]);
 	}

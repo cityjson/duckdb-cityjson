@@ -9,10 +9,16 @@
 namespace duckdb {
 namespace cityjson {
 
+//! Prefix of a precondition check in generated SQL: a query that raises, through
+//! error(), on the rows that break the precondition. It runs as a CREATE TABLE AS
+//! because a statement a pragma expands into may return rows only when it is the
+//! last one.
+constexpr const char *CHECK_STATEMENT = "CREATE OR REPLACE TEMP TABLE __cp_check AS ";
+
 //! StringUtil::Join takes duckdb::vector, which std::vector does not convert to.
 std::string Join(const std::vector<std::string> &parts, const std::string &separator);
 
-//! Optionally-quoted identifier (KeywordHelper::WriteOptionallyQuoted).
+//! Optionally-quoted identifier (SQLIdentifier::ToString).
 std::string Quoted(const std::string &name);
 
 //! One catalog column, as the SQL generators consume it.
@@ -21,8 +27,14 @@ struct ColumnInfo {
 	LogicalType type;
 };
 
-//! Catalog columns of schema.table, in order. Non-templated Catalog::GetEntry --
-//! the templated form ODR-uses TableCatalogEntry::Name (see cityparquet_package.cpp).
+//! The catalog entry of schema.table, resolved through `context` as an unqualified
+//! catalog. Non-templated Catalog::GetEntry, deliberately: the templated form binds
+//! a reference to TableCatalogEntry::Name for its error message, which ODR-uses that
+//! static member and emits a comdat definition colliding at link time with DuckDB's
+//! own strong definition. Same trap as LogicalType::DOUBLE in wkb_extent.cpp.
+CatalogEntry &LookupTable(ClientContext &context, const std::string &schema, const std::string &table);
+
+//! Catalog columns of schema.table, in order.
 std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &schema, const std::string &table);
 
 //! Case-insensitive lookup; nullptr when absent.

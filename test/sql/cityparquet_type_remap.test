@@ -26,9 +26,9 @@ Storey
 # ... and export restores the CityJSON spelling.
 statement ok
 COPY (SELECT * FROM st.building WHERE id IN ('bldg-1', 'storey-1'))
-TO '__TEST_DIR__/storey_rt.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/storey_rt.city.json' (FORMAT cityjson);
 
 query T
-SELECT object_type FROM read_cityjson('__TEST_DIR__/storey_rt.city.json') WHERE id = 'storey-1';
+SELECT object_type FROM read_cityjson('{TEST_DIR}/storey_rt.city.json') WHERE id = 'storey-1';
 ----
 BuildingStorey

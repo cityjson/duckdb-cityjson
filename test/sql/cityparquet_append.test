@@ -42,7 +42,7 @@ SELECT COUNT(*), COUNT(*) FILTER (WHERE id LIKE '%-appended') FROM d.building;
 22	2
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('d', '__TEST_DIR__/delft_appended');
+SELECT COUNT(*) FROM cityparquet_write('d', '{TEST_DIR}/delft_appended');
 
 # Every object of both inputs is in the written file, with its geometry.
 query I
@@ -54,7 +54,7 @@ SELECT COUNT(*) FROM (
   FROM read_cityjsonseq('test/data/delft_append.city.jsonl')
   EXCEPT ALL
   SELECT id, object_type, octet_length(geometry_lod1_2), octet_length(geometry_lod2_2)
-  FROM read_parquet('__TEST_DIR__/delft_appended/building.parquet'));
+  FROM read_parquet('{TEST_DIR}/delft_appended/building.parquet'));
 ----
 0
 
@@ -65,7 +65,7 @@ SELECT COUNT(*) FROM (
 # then change objects the append never touched.
 query I
 SELECT COUNT(*) FROM read_parquet('test/data/cityparquet_rs_delft/building.parquet') s
-JOIN read_parquet('__TEST_DIR__/delft_appended/building.parquet') o USING (id)
+JOIN read_parquet('{TEST_DIR}/delft_appended/building.parquet') o USING (id)
 WHERE s.bbox <> o.bbox;
 ----
 0
@@ -90,13 +90,13 @@ SELECT COUNT(*) FROM d2_before b JOIN d2.building a USING (id) WHERE a.bbox <> b
 # source's declared extent unioned in.
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_append.city.jsonl') s
-JOIN read_parquet('__TEST_DIR__/delft_appended/building.parquet') o USING (id)
+JOIN read_parquet('{TEST_DIR}/delft_appended/building.parquet') o USING (id)
 WHERE s.bbox <> o.bbox;
 ----
 0
 
 query I
-SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/delft_appended/building.parquet');
+SELECT COUNT(*) FROM read_parquet('{TEST_DIR}/delft_appended/building.parquet');
 ----
 22
 
@@ -223,10 +223,10 @@ SELECT COUNT(*) FROM cityparquet_validation WHERE severity = 'error';
 0
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('r', '__TEST_DIR__/railway_appended');
+SELECT COUNT(*) FROM cityparquet_write('r', '{TEST_DIR}/railway_appended');
 
 query I
-SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/railway_appended/vegetation.parquet') WHERE implicit_geometry IS NOT NULL;
+SELECT COUNT(*) FROM read_parquet('{TEST_DIR}/railway_appended/vegetation.parquet') WHERE implicit_geometry IS NOT NULL;
 ----
 30
 

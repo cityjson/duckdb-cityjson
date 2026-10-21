@@ -6,7 +6,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
@@ -99,11 +99,9 @@ std::string HierarchyPhase(ClientContext &context, const std::string &schema,
 }
 
 bool HasBboxColumn(ClientContext &context, const std::string &schema, const std::string &table) {
-	// The non-templated GetEntry: Catalog::GetEntry<TableCatalogEntry> ODR-uses
-	// TableCatalogEntry::Name and collides with DuckDB's own definition at link time.
-	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	auto &entry = LookupTable(context, schema, table);
 	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		if (StringUtil::Lower(column.Name()) == "bbox") {
+		if (column.Name() == "bbox") {
 			return true;
 		}
 	}
@@ -153,7 +151,7 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 			// installed or loaded. cityjson_wkb_extent is BLOB-only, so such a column
 			// needs the same ST_AsWKB conversion cityparquet_write's CopySourceList
 			// applies on the way out.
-			const auto quoted = KeywordHelper::WriteOptionallyQuoted(column.name);
+			const auto quoted = SQLIdentifier::ToString(column.name);
 			extents.push_back("cityjson_wkb_extent(" + GeometryColumnRef(quoted, column.type) + ")");
 		}
 		auto agg = [&](const char *fn, const char *field) {
@@ -201,12 +199,11 @@ std::string BboxPhase(ClientContext &context, const std::string &schema, const s
 		// gets NULL, not a degenerate zero box -- but only for a table whose shape this
 		// generator actually knows.
 		//
-		// For a pending table it does not. Two insert pragmas batched in one submission
-		// each see the pre-batch catalog, so the second one's geometry column list is its
-		// own file's, not the union the ALTERs will really produce. Computing NULL there
-		// means "I could not see this row's geometry", not "this row has none", and
-		// clearing on it would throw away the correct bbox the reader had already put
-		// there. So a pending table keeps what it has when nothing was computed.
+		// For a pending table it does not: the table is created by this same script, so
+		// its column list is handed over rather than read, and computing NULL there
+		// means "I could not see this row's geometry", not "this row has none".
+		// Clearing on it would throw away the correct bbox the reader had already put
+		// there, so a pending table keeps what it has when nothing was computed.
 		const char *absent = pending_entry == pending.end() ? "NULL" : "t.bbox";
 		sql += "UPDATE " + QualifiedName(schema, table) + " t SET bbox = CASE WHEN b.xmin IS NULL THEN " +
 		       std::string(absent) +
@@ -346,7 +343,10 @@ std::string BuildReconcileSQL(ClientContext &context, const std::string &schema,
 void RegisterCityParquetReconcileFunctions(ExtensionLoader &loader) {
 	auto pragma =
 	    PragmaFunction::PragmaCall("cityparquet_reconcile", PragmaReconcile, {LogicalType(LogicalTypeId::VARCHAR)});
-	pragma.named_parameters["checks"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
+	// Named parameters: a call that leaves one out does not pass it.
+	pragma.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("checks", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
+	});
 	RegisterDocumented(loader, std::move(pragma),
 	                   {{"schema"},
 	                    "Re-derives a CityParquet package schema's reciprocal hierarchy, feature_id and bbox after a "

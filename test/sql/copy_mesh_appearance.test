@@ -7,17 +7,17 @@ require cityjson
 # --- Local form: the discovered source's own definitions colour the MTL.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
-TO '__TEST_DIR__/railway.obj' (FORMAT obj, lod '3');
+TO '{TEST_DIR}/railway.obj' (FORMAT obj, lod '3');
 
 # Materials named after the CityJSON material names (UUID_…), with their diffuse colours.
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/railway.mtl'))
 WHERE line LIKE 'newmtl UUID_%';
 ----
 2
 
 query I
-SELECT COUNT(*) > 0 FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+SELECT COUNT(*) > 0 FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/railway.mtl'))
 WHERE line = 'Kd 0.597656 0.597656 0.597656';
 ----
 true
@@ -27,7 +27,7 @@ true
 # its colour, which is exactly what a face that referenced no texture writes, so the
 # two share an entry rather than being written twice under different names.
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/railway.mtl'))
 WHERE line LIKE 'newmtl Bridge%';
 ----
 newmtl Bridge
@@ -35,7 +35,7 @@ newmtl Bridge
 # Textured faces: the images are not on disk beside the fixture, so no map_Kd is written and
 # the faces fall back to colour -- the COPY still succeeds (a warning is logged).
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway.mtl'))
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/railway.mtl'))
 WHERE line LIKE 'map_Kd%';
 ----
 0
@@ -48,11 +48,11 @@ statement ok
 CREATE TABLE railway_materials AS SELECT * FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
 
 statement ok
-COPY (SELECT * FROM railway_rows) TO '__TEST_DIR__/railway_pkg.obj'
+COPY (SELECT * FROM railway_rows) TO '{TEST_DIR}/railway_pkg.obj'
 (FORMAT obj, lod '3', materials_query 'SELECT * FROM railway_materials');
 
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/railway_pkg.mtl'))
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/railway_pkg.mtl'))
 WHERE line LIKE 'newmtl UUID_%';
 ----
 2
@@ -60,14 +60,14 @@ WHERE line LIKE 'newmtl UUID_%';
 # --- The refusal: a discovered source read in sidecar mode with no *_query is an error, not a guess.
 statement error
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
-TO '__TEST_DIR__/refused.obj' (FORMAT obj, lod '3');
+TO '{TEST_DIR}/refused.obj' (FORMAT obj, lod '3');
 ----
 read with appearance := 'sidecar'
 
 # …and the same query with the option is accepted.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
-TO '__TEST_DIR__/accepted.obj'
+TO '{TEST_DIR}/accepted.obj'
 (FORMAT obj, lod '3', materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
 
 # --- Textures with bytes: an image_data blob is copied beside the OBJ and referenced by map_Kd.
@@ -81,27 +81,27 @@ SELECT id, image_uri, '\x89PNG\x0D\x0A\x1A\x0A'::BLOB AS image_data, image_type,
 FROM obj_textures('test/data/obj/cube.obj');
 
 statement ok
-COPY (SELECT * FROM tex_rows) TO '__TEST_DIR__/textured.obj'
+COPY (SELECT * FROM tex_rows) TO '{TEST_DIR}/textured.obj'
 (FORMAT obj, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')', textures_query 'SELECT * FROM tex_defs');
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/textured.mtl')) WHERE line LIKE 'map_Kd%';
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/textured.mtl')) WHERE line LIKE 'map_Kd%';
 ----
 map_Kd brick.png
 
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/textured.obj'))
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/textured.obj'))
 WHERE line LIKE 'f %/%';
 ----
 4
 
 query I
-SELECT octet_length(content) FROM read_blob('__TEST_DIR__/brick.png');
+SELECT octet_length(content) FROM read_blob('{TEST_DIR}/brick.png');
 ----
 8
 
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/textured.mtl'))
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/textured.mtl'))
 WHERE line = 'newmtl brick__tex0';
 ----
 1
@@ -117,18 +117,18 @@ SELECT 3, 'b/x.png', '\x89PNG\x0D\x0A'::BLOB, 'PNG', 'wrap';
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
-TO '__TEST_DIR__/clash.obj' (FORMAT obj, lod '3',
+TO '{TEST_DIR}/clash.obj' (FORMAT obj, lod '3',
     materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')',
     textures_query 'SELECT * FROM clash_defs');
 
 query II
-SELECT parse_filename(filename), size FROM read_blob('__TEST_DIR__/*x.png') ORDER BY 1;
+SELECT parse_filename(filename), size FROM read_blob('{TEST_DIR}/*x.png') ORDER BY 1;
 ----
 texture_3_x.png	6
 x.png	4
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/clash.mtl'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/clash.mtl'))
 WHERE line LIKE 'map_Kd%' ORDER BY line;
 ----
 map_Kd texture_3_x.png

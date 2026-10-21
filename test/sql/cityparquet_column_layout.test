@@ -40,12 +40,12 @@ statement ok
 UPDATE c.building SET geometry_lod1_3 = NULL;
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('c', '__TEST_DIR__/layout', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('c', '{TEST_DIR}/layout', crs => 'EPSG:7415');
 
 statement ok
 CREATE TABLE numbered AS
 SELECT column_name AS name, row_number() OVER () AS rn
-FROM (DESCRIBE SELECT * FROM read_parquet('__TEST_DIR__/layout/building.parquet'));
+FROM (DESCRIBE SELECT * FROM read_parquet('{TEST_DIR}/layout/building.parquet'));
 
 query T
 SELECT string_agg(name, ' ' ORDER BY rn) FROM numbered

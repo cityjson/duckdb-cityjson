@@ -83,7 +83,8 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 		for (const auto &table : source_tables) {
 			incoming_ids.push_back("SELECT id FROM " + QualifiedName(source, table));
 		}
-		sql += "SELECT error('cityparquet_merge: duplicate id ' || id ||\n"
+		sql += std::string(CHECK_STATEMENT) +
+		       "SELECT error('cityparquet_merge: duplicate id ' || id ||\n"
 		       "  ' -- the destination already contains it; ids are identity, so the merge is refused rather '\n"
 		       "  'than renaming silently') FROM (" +
 		       Join(incoming_ids, " UNION ALL ") + ") s WHERE s.id IN (" + Join(destination_ids, " UNION ALL ") +
@@ -117,8 +118,9 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 	// refuses it, and running it here, before anything is written, leaves the
 	// destination untouched.
 	for (const auto &table : source_tables) {
-		sql += "SELECT COUNT(cityparquet_merge_extensions(city, " + SourceExtensionsExpr(source, table) + ")) FROM " +
-		       QualifiedName(destination, "__cityparquet") + " WHERE role = 'object';\n";
+		sql += std::string(CHECK_STATEMENT) + "SELECT COUNT(cityparquet_merge_extensions(city, " +
+		       SourceExtensionsExpr(source, table) + ")) FROM " + QualifiedName(destination, "__cityparquet") +
+		       " WHERE role = 'object';\n";
 	}
 
 	// ---- Phase 2: schema evolution, before any INSERT ----------------------
@@ -149,7 +151,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			       QualifiedName(destination, "__cityparquet") + " WHERE table_name = " + Literal(table) + ");\n";
 			auto created = TableColumns(context, source, table);
 			// It does not exist for the reconcile at the end of this script either -- a
-			// generator sees the pre-batch catalog -- so its columns are handed over
+			// generator reads the catalog before its script runs -- so its columns are handed over
 			// rather than looked up. Without this a destination row that has just become
 			// the parent of an incoming one never gets the reciprocal children entry.
 			PendingTable entry;
@@ -174,8 +176,6 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 		for (const auto &column : incoming) {
 			const auto *match = FindColumn(existing, column.name);
 			if (match == nullptr) {
-				// IF NOT EXISTS so that batching several merges in one submission -- where
-				// each generator sees the pre-batch catalog -- cannot fail on a duplicate.
 				sql += "ALTER TABLE " + QualifiedName(destination, table) + " ADD COLUMN IF NOT EXISTS " +
 				       Quoted(column.name) + " " + SqlTypeName(column.type) + ";\n";
 				existing.push_back(column);
@@ -363,8 +363,11 @@ void MergeSQLScalar(DataChunk &args, ExpressionState &state, Vector &result) {
 void RegisterCityParquetMergeFunctions(ExtensionLoader &loader) {
 	auto pragma = PragmaFunction::PragmaCall(
 	    "cityparquet_merge", PragmaMerge, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
-	pragma.named_parameters["create_tables"] = LogicalType(LogicalTypeId::BOOLEAN);
-	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
+	// Named parameters: a call that leaves one out does not pass it.
+	pragma.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("create_tables", LogicalType(LogicalTypeId::BOOLEAN));
+		options.Add("tables", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
+	});
 	RegisterDocumented(loader, std::move(pragma),
 	                   {{"destination", "source"},
 	                    "Merges one CityParquet package schema into another, renumbering sidecar ids, and refuses the "

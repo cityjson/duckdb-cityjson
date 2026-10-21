@@ -14,11 +14,11 @@ CREATE TABLE orig_json AS SELECT * FROM read_cityjson('test/data/minimal.city.js
 
 # Write to CityJSON
 statement ok
-COPY (SELECT * FROM orig_json) TO '__TEST_DIR__/rt.city.json' (FORMAT cityjson);
+COPY (SELECT * FROM orig_json) TO '{TEST_DIR}/rt.city.json' (FORMAT cityjson);
 
 # Read back the written file
 statement ok
-CREATE TABLE rt_json AS SELECT * FROM read_cityjson('__TEST_DIR__/rt.city.json');
+CREATE TABLE rt_json AS SELECT * FROM read_cityjson('{TEST_DIR}/rt.city.json');
 
 # Row count preserved
 query II
@@ -81,25 +81,25 @@ DROP TABLE rt_json;
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
-TO '__TEST_DIR__/rt_geom.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/rt_geom.city.json' (FORMAT cityjson);
 
 # The wide geometry column survives the round trip
 query I
 SELECT COUNT(*) FILTER (WHERE column_name = 'geometry_lod2_2')
-FROM (DESCRIBE SELECT * FROM read_cityjson('__TEST_DIR__/rt_geom.city.json'));
+FROM (DESCRIBE SELECT * FROM read_cityjson('{TEST_DIR}/rt_geom.city.json'));
 ----
 1
 
 # The geometry itself is present, not an empty placeholder
 query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_geom.city.json')
+SELECT COUNT(*) FROM read_cityjson('{TEST_DIR}/rt_geom.city.json')
 WHERE geometry_lod2_2 IS NOT NULL;
 ----
 1
 
 # The precise CityJSON geometry type is preserved via geometry_properties
 query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_geom.city.json')
+SELECT COUNT(*) FROM read_cityjson('{TEST_DIR}/rt_geom.city.json')
 WHERE geometry_properties_lod2_2."type" = 'Solid';
 ----
 1
@@ -109,10 +109,10 @@ WHERE geometry_properties_lod2_2."type" = 'Solid';
 # (spec §8 / G7), so a re-read yields the same surfaces and face_semantics.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2'))
-TO '__TEST_DIR__/rt_sem.city.jsonl' (FORMAT cityjsonseq, transform_scale '0.001,0.001,0.001');
+TO '{TEST_DIR}/rt_sem.city.jsonl' (FORMAT cityjsonseq, transform_scale '0.001,0.001,0.001');
 
 query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_sem.city.jsonl', lod => '2.2')
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/rt_sem.city.jsonl', lod => '2.2')
 WHERE geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%'
   AND geometry_properties_lod2_2.face_semantics IS NOT NULL;
 ----
@@ -122,14 +122,14 @@ query TTT
 SELECT geometry_properties_lod2_2."type",
        geometry_properties_lod2_2.face_semantics,
        geometry_properties_lod2_2.shells
-FROM read_cityjsonseq('__TEST_DIR__/rt_sem.city.jsonl', lod => '2.2')
+FROM read_cityjsonseq('{TEST_DIR}/rt_sem.city.jsonl', lod => '2.2')
 WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
 ----
 Solid	[0, 2, 2, 2, 2, 1]	[[6]]
 
 query T
 SELECT geometry_properties_lod2_2.surfaces
-FROM read_cityjsonseq('__TEST_DIR__/rt_sem.city.jsonl', lod => '2.2')
+FROM read_cityjsonseq('{TEST_DIR}/rt_sem.city.jsonl', lod => '2.2')
 WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
 ----
 [{"type":"GroundSurface"},{"type":"RoofSurface"},{"on_footprint_edge":true,"type":"WallSurface"},{"on_footprint_edge":false,"type":"WallSurface"}]
@@ -137,7 +137,7 @@ WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
 # bbox is a derived column: recomputed on read, never written back as an attribute
 query I
 SELECT COUNT(*) FILTER (WHERE column_name = 'bbox')
-FROM (DESCRIBE SELECT * FROM read_cityjson('__TEST_DIR__/rt_geom.city.json'));
+FROM (DESCRIBE SELECT * FROM read_cityjson('{TEST_DIR}/rt_geom.city.json'));
 ----
 1
 
@@ -148,10 +148,10 @@ FROM (DESCRIBE SELECT * FROM read_cityjson('__TEST_DIR__/rt_geom.city.json'));
 statement ok
 COPY (SELECT id, feature_id, object_type, geometry_lod2_2
       FROM read_cityjson('test/data/minimal.city.json'))
-TO '__TEST_DIR__/rt_noprops.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/rt_noprops.city.json' (FORMAT cityjson);
 
 query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/rt_noprops.city.json')
+SELECT COUNT(*) FROM read_cityjson('{TEST_DIR}/rt_noprops.city.json')
 WHERE geometry_lod2_2 IS NOT NULL;
 ----
 1
@@ -163,23 +163,23 @@ WHERE geometry_lod2_2 IS NOT NULL;
 # Write with no options — should still produce valid CityJSON with version
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
-TO '__TEST_DIR__/meta_default.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/meta_default.city.json' (FORMAT cityjson);
 
 # Metadata must be readable
 query I
-SELECT COUNT(*) FROM cityjson_metadata('__TEST_DIR__/meta_default.city.json');
+SELECT COUNT(*) FROM cityjson_metadata('{TEST_DIR}/meta_default.city.json');
 ----
 1
 
 # Default version is 2.0
 query T
-SELECT version FROM cityjson_metadata('__TEST_DIR__/meta_default.city.json');
+SELECT version FROM cityjson_metadata('{TEST_DIR}/meta_default.city.json');
 ----
 2.0
 
 # city_objects_count reflects the written objects
 query I
-SELECT city_objects_count FROM cityjson_metadata('__TEST_DIR__/meta_default.city.json');
+SELECT city_objects_count FROM cityjson_metadata('{TEST_DIR}/meta_default.city.json');
 ----
 1
 
@@ -189,7 +189,7 @@ SELECT city_objects_count FROM cityjson_metadata('__TEST_DIR__/meta_default.city
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
-TO '__TEST_DIR__/meta_opts.city.json' (
+TO '{TEST_DIR}/meta_opts.city.json' (
     FORMAT cityjson,
     version '2.0',
     transform_scale '0.001,0.001,0.001',
@@ -198,27 +198,27 @@ TO '__TEST_DIR__/meta_opts.city.json' (
 
 # Version preserved
 query T
-SELECT version FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.json');
+SELECT version FROM cityjson_metadata('{TEST_DIR}/meta_opts.city.json');
 ----
 2.0
 
 # Transform scale preserved
 query RRR
 SELECT transform_scale.x, transform_scale.y, transform_scale.z
-FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.json');
+FROM cityjson_metadata('{TEST_DIR}/meta_opts.city.json');
 ----
 0.001000	0.001000	0.001000
 
 # Transform translate preserved
 query RRR
 SELECT transform_translate.x, transform_translate.y, transform_translate.z
-FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.json');
+FROM cityjson_metadata('{TEST_DIR}/meta_opts.city.json');
 ----
 84982.000000	446857.000000	0.000000
 
 # city_objects_count
 query I
-SELECT city_objects_count FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.json');
+SELECT city_objects_count FROM cityjson_metadata('{TEST_DIR}/meta_opts.city.json');
 ----
 1
 
@@ -228,7 +228,7 @@ SELECT city_objects_count FROM cityjson_metadata('__TEST_DIR__/meta_opts.city.js
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
-TO '__TEST_DIR__/meta_crs.city.json' (
+TO '{TEST_DIR}/meta_crs.city.json' (
     FORMAT cityjson,
     version '2.0',
     crs 'https://www.opengis.net/def/crs/EPSG/0/7415'
@@ -237,7 +237,7 @@ TO '__TEST_DIR__/meta_crs.city.json' (
 # Version and object count
 query TI
 SELECT version, city_objects_count
-FROM cityjson_metadata('__TEST_DIR__/meta_crs.city.json');
+FROM cityjson_metadata('{TEST_DIR}/meta_crs.city.json');
 ----
 2.0	1
 
@@ -259,11 +259,11 @@ CREATE TABLE orig_seq AS SELECT * FROM read_cityjsonseq('test/data/sample.city.j
 
 # Write to CityJSONSeq
 statement ok
-COPY (SELECT * FROM orig_seq) TO '__TEST_DIR__/rt.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM orig_seq) TO '{TEST_DIR}/rt.city.jsonl' (FORMAT cityjsonseq);
 
 # Read back the written file
 statement ok
-CREATE TABLE rt_seq AS SELECT * FROM read_cityjsonseq('__TEST_DIR__/rt.city.jsonl');
+CREATE TABLE rt_seq AS SELECT * FROM read_cityjsonseq('{TEST_DIR}/rt.city.jsonl');
 
 # Row count preserved
 query II
@@ -306,23 +306,23 @@ DROP TABLE rt_seq;
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
-TO '__TEST_DIR__/meta_default.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/meta_default.city.jsonl' (FORMAT cityjsonseq);
 
 # Header metadata must be readable
 query I
-SELECT COUNT(*) FROM cityjsonseq_metadata('__TEST_DIR__/meta_default.city.jsonl');
+SELECT COUNT(*) FROM cityjsonseq_metadata('{TEST_DIR}/meta_default.city.jsonl');
 ----
 1
 
 # Default version
 query T
-SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/meta_default.city.jsonl');
+SELECT version FROM cityjsonseq_metadata('{TEST_DIR}/meta_default.city.jsonl');
 ----
 2.0
 
 # city_objects_count
 query I
-SELECT city_objects_count FROM cityjsonseq_metadata('__TEST_DIR__/meta_default.city.jsonl');
+SELECT city_objects_count FROM cityjsonseq_metadata('{TEST_DIR}/meta_default.city.jsonl');
 ----
 2
 
@@ -332,7 +332,7 @@ SELECT city_objects_count FROM cityjsonseq_metadata('__TEST_DIR__/meta_default.c
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
-TO '__TEST_DIR__/meta_opts.city.jsonl' (
+TO '{TEST_DIR}/meta_opts.city.jsonl' (
     FORMAT cityjsonseq,
     version '2.0',
     crs 'https://www.opengis.net/def/crs/EPSG/0/7415',
@@ -342,27 +342,27 @@ TO '__TEST_DIR__/meta_opts.city.jsonl' (
 
 # Version preserved in header
 query T
-SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city.jsonl');
+SELECT version FROM cityjsonseq_metadata('{TEST_DIR}/meta_opts.city.jsonl');
 ----
 2.0
 
 # Transform scale in header
 query RRR
 SELECT transform_scale.x, transform_scale.y, transform_scale.z
-FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/meta_opts.city.jsonl');
 ----
 0.001000	0.001000	0.001000
 
 # Transform translate in header
 query RRR
 SELECT transform_translate.x, transform_translate.y, transform_translate.z
-FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/meta_opts.city.jsonl');
 ----
 84982.000000	446857.000000	0.000000
 
 # city_objects_count
 query I
-SELECT city_objects_count FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city.jsonl');
+SELECT city_objects_count FROM cityjsonseq_metadata('{TEST_DIR}/meta_opts.city.jsonl');
 ----
 2
 
@@ -373,44 +373,44 @@ SELECT city_objects_count FROM cityjsonseq_metadata('__TEST_DIR__/meta_opts.city
 # Read CityJSON, write as CityJSONSeq
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
-TO '__TEST_DIR__/cross.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/cross.city.jsonl' (FORMAT cityjsonseq);
 
 # Read back CityJSONSeq
 query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cross.city.jsonl');
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/cross.city.jsonl');
 ----
 1
 
 query T
-SELECT object_type FROM read_cityjsonseq('__TEST_DIR__/cross.city.jsonl');
+SELECT object_type FROM read_cityjsonseq('{TEST_DIR}/cross.city.jsonl');
 ----
 Building
 
 # CityJSONSeq metadata is valid
 query TI
-SELECT version, city_objects_count FROM cityjsonseq_metadata('__TEST_DIR__/cross.city.jsonl');
+SELECT version, city_objects_count FROM cityjsonseq_metadata('{TEST_DIR}/cross.city.jsonl');
 ----
 2.0	1
 
 # Write CityJSONSeq back as CityJSON
 statement ok
-COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/cross.city.jsonl'))
-TO '__TEST_DIR__/cross_back.city.json' (FORMAT cityjson);
+COPY (SELECT * FROM read_cityjsonseq('{TEST_DIR}/cross.city.jsonl'))
+TO '{TEST_DIR}/cross_back.city.json' (FORMAT cityjson);
 
 # Verify final result
 query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/cross_back.city.json');
+SELECT COUNT(*) FROM read_cityjson('{TEST_DIR}/cross_back.city.json');
 ----
 1
 
 query T
-SELECT object_type FROM read_cityjson('__TEST_DIR__/cross_back.city.json');
+SELECT object_type FROM read_cityjson('{TEST_DIR}/cross_back.city.json');
 ----
 Building
 
 # CityJSON metadata is valid after cross-format round-trip
 query TI
-SELECT version, city_objects_count FROM cityjson_metadata('__TEST_DIR__/cross_back.city.json');
+SELECT version, city_objects_count FROM cityjson_metadata('{TEST_DIR}/cross_back.city.json');
 ----
 2.0	1
 
@@ -423,6 +423,6 @@ SELECT version, city_objects_count FROM cityjson_metadata('__TEST_DIR__/cross_ba
 # an option it does not know.
 statement error
 COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
-TO '__TEST_DIR__/unknown_opt.city.json' (FORMAT cityjson, trasform_scale '1,1,1');
+TO '{TEST_DIR}/unknown_opt.city.json' (FORMAT cityjson, trasform_scale '1,1,1');
 ----
 unknown option 'trasform_scale'

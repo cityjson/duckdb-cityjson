@@ -97,9 +97,10 @@ AppearanceSource AppearanceSource::FromQueries(ClientContext &context,
 	src.sidecar_ = true;
 	// A separate connection: the COPY bind holds the current one (see ParseMetadataFromQuery).
 	Connection conn(*context.db);
-	auto column = [](const vector<string> &names, const char *name) -> idx_t {
+	auto column = [](const vector<Identifier> &names, const char *name) -> idx_t {
 		for (idx_t i = 0; i < names.size(); i++) {
-			if (StringUtil::Lower(names[i]) == StringUtil::Lower(name)) {
+			// Identifier equality is case-insensitive.
+			if (names[i] == name) {
 				return i;
 			}
 		}
@@ -114,16 +115,16 @@ AppearanceSource AppearanceSource::FromQueries(ClientContext &context,
 		if (result->HasError()) {
 			throw BinderException("materials_query failed: " + result->GetError());
 		}
-		auto c_id = column(result->names, "id");
+		auto c_id = column(result->GetNames(), "id");
 		if (c_id == DConstants::INVALID_INDEX) {
 			throw BinderException("materials_query must return an `id` column (materials.parquet shape)");
 		}
-		auto c_name = column(result->names, "name");
-		auto c_diff = column(result->names, "diffuseColor");
-		auto c_spec = column(result->names, "specularColor");
-		auto c_emis = column(result->names, "emissiveColor");
-		auto c_tran = column(result->names, "transparency");
-		auto c_shin = column(result->names, "shininess");
+		auto c_name = column(result->GetNames(), "name");
+		auto c_diff = column(result->GetNames(), "diffuseColor");
+		auto c_spec = column(result->GetNames(), "specularColor");
+		auto c_emis = column(result->GetNames(), "emissiveColor");
+		auto c_tran = column(result->GetNames(), "transparency");
+		auto c_shin = column(result->GetNames(), "shininess");
 		while (auto chunk = result->Fetch()) {
 			for (idx_t row = 0; row < chunk->size(); row++) {
 				auto id_val = get(*chunk, c_id, row);
@@ -154,14 +155,14 @@ AppearanceSource AppearanceSource::FromQueries(ClientContext &context,
 		if (result->HasError()) {
 			throw BinderException("textures_query failed: " + result->GetError());
 		}
-		auto c_id = column(result->names, "id");
+		auto c_id = column(result->GetNames(), "id");
 		if (c_id == DConstants::INVALID_INDEX) {
 			throw BinderException("textures_query must return an `id` column (textures.parquet shape)");
 		}
-		auto c_uri = column(result->names, "image_uri");
-		auto c_data = column(result->names, "image_data");
-		auto c_type = column(result->names, "image_type");
-		auto c_wrap = column(result->names, "wrapMode");
+		auto c_uri = column(result->GetNames(), "image_uri");
+		auto c_data = column(result->GetNames(), "image_data");
+		auto c_type = column(result->GetNames(), "image_type");
+		auto c_wrap = column(result->GetNames(), "wrapMode");
 		while (auto chunk = result->Fetch()) {
 			for (idx_t row = 0; row < chunk->size(); row++) {
 				auto id_val = get(*chunk, c_id, row);

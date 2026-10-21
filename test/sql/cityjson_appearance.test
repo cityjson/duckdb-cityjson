@@ -109,16 +109,16 @@ true	true
 # back onto their matching geometry (§11), not dropped or misfiled as attributes.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', lod => '3'))
-TO '__TEST_DIR__/rt_appearance.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/rt_appearance.city.jsonl' (FORMAT cityjsonseq);
 
 query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', lod => '3')
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/rt_appearance.city.jsonl', lod => '3')
 WHERE id = 'GMLID_855011_330784_753' AND map_contains(material_lod3_0, 'visual');
 ----
 1
 
 query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', lod => '3')
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/rt_appearance.city.jsonl', lod => '3')
 WHERE id = 'GMLID_BUI100628_817_8083' AND map_contains(texture_lod3_0, 'visual');
 ----
 1
@@ -128,11 +128,11 @@ WHERE id = 'GMLID_BUI100628_817_8083' AND map_contains(texture_lod3_0, 'visual')
 # to be green over output whose every material ref dangled. A surviving reference
 # only means something if what it points at exists.
 query I
-SELECT COUNT(*) > 0 FROM cityjson_materials('__TEST_DIR__/rt_appearance.city.jsonl');
+SELECT COUNT(*) > 0 FROM cityjson_materials('{TEST_DIR}/rt_appearance.city.jsonl');
 ----
 true
 
 query I
-SELECT COUNT(*) > 0 FROM cityjson_textures('__TEST_DIR__/rt_appearance.city.jsonl');
+SELECT COUNT(*) > 0 FROM cityjson_textures('{TEST_DIR}/rt_appearance.city.jsonl');
 ----
 true

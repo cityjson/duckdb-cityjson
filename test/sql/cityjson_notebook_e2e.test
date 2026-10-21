@@ -123,7 +123,7 @@ SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('https://cityjson.op
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl'))
-  TO '__TEST_DIR__/delft_duckdb.parquet'
+  TO '{TEST_DIR}/delft_duckdb.parquet'
   (FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
 
 # Attaching `geo` has a consequence worth stating before comparing anything: on
@@ -134,7 +134,7 @@ COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/d
 # LIKE rather than =: typeof() on a promoted column carries the whole PROJJSON
 # CRS with it, and that is the dataset's business, not this assertion's.
 query I
-SELECT typeof(geometry_lod0_0) LIKE 'GEOMETRY%' FROM read_parquet('__TEST_DIR__/delft_duckdb.parquet') LIMIT 1;
+SELECT typeof(geometry_lod0_0) LIKE 'GEOMETRY%' FROM read_parquet('{TEST_DIR}/delft_duckdb.parquet') LIMIT 1;
 ----
 true
 
@@ -145,14 +145,14 @@ query I
 SELECT count(*) FROM (
   SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
   EXCEPT ALL
-  SELECT * FROM read_parquet('__TEST_DIR__/delft_duckdb.parquet')
+  SELECT * FROM read_parquet('{TEST_DIR}/delft_duckdb.parquet')
 );
 ----
 0
 
 query I
 SELECT count(*) FROM (
-  SELECT * FROM read_parquet('__TEST_DIR__/delft_duckdb.parquet')
+  SELECT * FROM read_parquet('{TEST_DIR}/delft_duckdb.parquet')
   EXCEPT ALL
   SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
 );
@@ -165,7 +165,7 @@ SET enable_geoparquet_conversion = true;
 # The `geo` key survives the write. A row-level EXCEPT cannot see this: the rows
 # re-read identically while the file on disk has lost its metadata.
 query I
-SELECT count(*) FROM parquet_kv_metadata('__TEST_DIR__/delft_duckdb.parquet') WHERE key::VARCHAR = 'geo';
+SELECT count(*) FROM parquet_kv_metadata('{TEST_DIR}/delft_duckdb.parquet') WHERE key::VARCHAR = 'geo';
 ----
 1
 
@@ -281,14 +281,14 @@ SELECT (SELECT count(*) FROM pkg.building) AS rows,
        (SELECT count(*) FROM duckdb_columns() WHERE schema_name = 'pkg' AND table_name = 'building') AS cols;
 
 statement ok
-SELECT * FROM cityparquet_write('pkg', '__TEST_DIR__/pkg_out', crs => 'EPSG:7415');
+SELECT * FROM cityparquet_write('pkg', '{TEST_DIR}/pkg_out', crs => 'EPSG:7415');
 
 # Cell 17 -- the `geo` footer the writer attached is readable and declares the
 # keys a GeoParquet reader binds to.
 query III
 WITH meta AS (
   SELECT decode(value)::JSON AS geo
-  FROM parquet_kv_metadata('__TEST_DIR__/pkg_out/building.parquet')
+  FROM parquet_kv_metadata('{TEST_DIR}/pkg_out/building.parquet')
   WHERE key::VARCHAR = 'geo'
 )
 SELECT count(*) = 1,
@@ -303,7 +303,7 @@ true	true	true
 query IIII
 WITH meta AS (
   SELECT decode(value)::JSON AS city
-  FROM parquet_kv_metadata('__TEST_DIR__/pkg_out/building.parquet')
+  FROM parquet_kv_metadata('{TEST_DIR}/pkg_out/building.parquet')
   WHERE key::VARCHAR = 'city'
 )
 SELECT count(*) = 1, bool_and(city ->> '$.version' IS NOT NULL),
@@ -319,7 +319,7 @@ statement ok
 CREATE SCHEMA delft;
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/pkg_out', 'delft');
+PRAGMA cityparquet_read('{TEST_DIR}/pkg_out', 'delft');
 
 query II
 SELECT (SELECT count(*) FROM delft.building) = (SELECT rows FROM nb_written),
@@ -388,27 +388,27 @@ statement ok
 PRAGMA insert_cityjsonseq('fresh', 'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
 
 statement ok
-SELECT * FROM cityparquet_write('fresh', '__TEST_DIR__/fresh');
+SELECT * FROM cityparquet_write('fresh', '{TEST_DIR}/fresh');
 
 query II
-SELECT (SELECT count(*) FROM read_parquet('__TEST_DIR__/fresh/building.parquet'))
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/fresh/building.parquet'))
          = (SELECT count(*) FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')),
-       (SELECT decode(value)::JSON ->> '$.crs.id.code' FROM parquet_kv_metadata('__TEST_DIR__/fresh/building.parquet')
+       (SELECT decode(value)::JSON ->> '$.crs.id.code' FROM parquet_kv_metadata('{TEST_DIR}/fresh/building.parquet')
         WHERE decode(key) = 'city');
 ----
 true	7415
 
 # Cell 24 -- Hilbert order puts consecutive rows nearer each other than source order.
 statement ok
-SELECT count(*) FROM cityparquet_write('fresh', '__TEST_DIR__/fresh_source', ordering => 'source');
+SELECT count(*) FROM cityparquet_write('fresh', '{TEST_DIR}/fresh_source', ordering => 'source');
 
 query I
 WITH r AS (
   SELECT 'hilbert' AS ordering, file_row_number AS n, (bbox.xmin + bbox.xmax) / 2 AS x, (bbox.ymin + bbox.ymax) / 2 AS y
-  FROM read_parquet('__TEST_DIR__/fresh/building.parquet', file_row_number := true) WHERE object_type = 'Building'
+  FROM read_parquet('{TEST_DIR}/fresh/building.parquet', file_row_number := true) WHERE object_type = 'Building'
   UNION ALL
   SELECT 'source', file_row_number, (bbox.xmin + bbox.xmax) / 2, (bbox.ymin + bbox.ymax) / 2
-  FROM read_parquet('__TEST_DIR__/fresh_source/building.parquet', file_row_number := true) WHERE object_type = 'Building'),
+  FROM read_parquet('{TEST_DIR}/fresh_source/building.parquet', file_row_number := true) WHERE object_type = 'Building'),
 steps AS (
   SELECT ordering, median(sqrt((x - px) ^ 2 + (y - py) ^ 2)) AS step
   FROM (SELECT *, lag(x) OVER w AS px, lag(y) OVER w AS py FROM r WINDOW w AS (PARTITION BY ordering ORDER BY n))
@@ -421,28 +421,28 @@ true
 statement ok
 COPY (SELECT * FROM read_cityjson('https://storage.googleapis.com/cityjson/lod3_railway.city.json')
       WHERE object_type IN ('SolitaryVegetationObject', 'CityObjectGroup'))
-TO '__TEST_DIR__/vegetation.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/vegetation.city.json' (FORMAT cityjson);
 
 query II
-SELECT (SELECT count(*) FROM read_cityjson('__TEST_DIR__/vegetation.city.json') WHERE implicit_geometry IS NOT NULL)
+SELECT (SELECT count(*) FROM read_cityjson('{TEST_DIR}/vegetation.city.json') WHERE implicit_geometry IS NOT NULL)
          = (SELECT count(*) FROM read_cityjson('https://storage.googleapis.com/cityjson/lod3_railway.city.json')
             WHERE implicit_geometry IS NOT NULL),
        (SELECT count(*) FROM (SELECT * FROM cityjson_implicit_geometries('https://storage.googleapis.com/cityjson/lod3_railway.city.json')
                               EXCEPT ALL
-                              SELECT * FROM cityjson_implicit_geometries('__TEST_DIR__/vegetation.city.json')));
+                              SELECT * FROM cityjson_implicit_geometries('{TEST_DIR}/vegetation.city.json')));
 ----
 true	0
 
 # Cell 26 -- an address round trip.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/address.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/address.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT count(*) FROM (
   SELECT id, address FROM read_cityjsonseq('test/data/address_location.city.jsonl')
   EXCEPT ALL
-  SELECT id, address FROM read_cityjsonseq('__TEST_DIR__/address.city.jsonl'));
+  SELECT id, address FROM read_cityjsonseq('{TEST_DIR}/address.city.jsonl'));
 ----
 0
 
@@ -454,12 +454,12 @@ statement ok
 PRAGMA insert_cityjsonseq('rsd', 'test/data/delft_append.city.jsonl');
 
 statement ok
-SELECT * FROM cityparquet_write('rsd', '__TEST_DIR__/rs_appended');
+SELECT * FROM cityparquet_write('rsd', '{TEST_DIR}/rs_appended');
 
 query II
 SELECT count(*) FILTER (WHERE id LIKE '%-appended'),
        count(*) FILTER (WHERE s.bbox IS DISTINCT FROM o.bbox AND s.id IS NOT NULL)
-FROM read_parquet('__TEST_DIR__/rs_appended/building.parquet') o
+FROM read_parquet('{TEST_DIR}/rs_appended/building.parquet') o
 LEFT JOIN read_parquet('test/data/cityparquet_rs_delft/building.parquet') s USING (id);
 ----
 2	0

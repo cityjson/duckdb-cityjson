@@ -18,7 +18,7 @@ COPY (SELECT replace(rtrim(content, chr(10)),
                      '[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]',
                      '[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.1,0.0,0.0,1.0]')
       FROM read_text('test/data/railway_vegetation.city.json'))
-TO '__TEST_DIR__/projective.city.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+TO '{TEST_DIR}/projective.city.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 
 # The unmodified source reads.
 query I
@@ -27,7 +27,7 @@ SELECT COUNT(implicit_geometry) FROM read_cityjson('test/data/railway_vegetation
 15
 
 statement error
-SELECT implicit_geometry FROM read_cityjson('__TEST_DIR__/projective.city.json');
+SELECT implicit_geometry FROM read_cityjson('{TEST_DIR}/projective.city.json');
 ----
 its last row must be 0, 0, 0, 1
 
@@ -38,7 +38,7 @@ statement ok
 PRAGMA cityparquet_init('v');
 
 statement error
-PRAGMA insert_cityjson('v', '__TEST_DIR__/projective.city.json');
+PRAGMA insert_cityjson('v', '{TEST_DIR}/projective.city.json');
 ----
 its last row must be 0, 0, 0, 1
 
@@ -54,7 +54,7 @@ COPY (SELECT * REPLACE (
                     "transformationMatrix" := [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                                                0.0, 0.0, 1.0, 0.0, 0.1, 0.0, 0.0, 1.0]) END AS implicit_geometry)
       FROM v.vegetation)
-TO '__TEST_DIR__/projective_out.city.jsonl'
+TO '{TEST_DIR}/projective_out.city.jsonl'
 (FORMAT cityjsonseq, implicit_geometries_query 'SELECT * FROM v.implicit_geometries',
  materials_query 'SELECT * FROM v.materials', textures_query 'SELECT * FROM v.textures');
 ----

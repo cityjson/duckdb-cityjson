@@ -138,7 +138,7 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
  * @return Populated CityJSONBindData
  */
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names,
+                                          vector<LogicalType> &return_types, vector<Identifier> &names,
                                           const std::string &function_name, std::unique_ptr<CityJSONReader> reader,
                                           bool streaming = false, ReaderKind reader_kind = ReaderKind::Auto);
 
@@ -154,7 +154,7 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
  * set `use_global_chunks`, or the scan will find nothing to read.
  */
 CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
-                                     vector<LogicalType> &return_types, vector<string> &names,
+                                     vector<LogicalType> &return_types, vector<Identifier> &names,
                                      const std::string &function_name, CityJSONReader &reader, bool streaming = false,
                                      bool materialise = true);
 
@@ -211,14 +211,14 @@ struct CityJSONLocalState : public LocalTableFunctionState {
  * Uses format auto-detection
  */
 unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindInput &input,
-                                      vector<LogicalType> &return_types, vector<string> &names);
+                                      vector<LogicalType> &return_types, vector<Identifier> &names);
 
 /**
  * Bind callback for read_cityjsonseq - schema inference and data loading
  * Always uses LocalCityJSONSeqReader (no auto-detection)
  */
 unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBindInput &input,
-                                         vector<LogicalType> &return_types, vector<string> &names);
+                                         vector<LogicalType> &return_types, vector<Identifier> &names);
 
 /**
  * Init global state callback

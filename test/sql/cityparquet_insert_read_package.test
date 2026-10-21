@@ -26,10 +26,10 @@ statement ok
 PRAGMA cityparquet_init('src');
 
 statement ok
-SELECT * FROM cityparquet_write('src', '__TEST_DIR__/read_pkg', crs => 'EPSG:7415');
+SELECT * FROM cityparquet_write('src', '{TEST_DIR}/read_pkg', crs => 'EPSG:7415');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/read_pkg', 'pkg');
+PRAGMA cityparquet_read('{TEST_DIR}/read_pkg', 'pkg');
 
 # The precondition: the loaded package really does hold a GEOMETRY column (carrying
 # the package CRS as its type parameter). Its exact type is kept for the comparison

@@ -3,6 +3,9 @@
 #include "cityjson/function_docs.hpp"
 #include "cityjson/wkb_decoder.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
 #include <algorithm>
@@ -91,18 +94,15 @@ void Accumulate(const json &node, Extent3D &extent) {
 
 void WKBGeometryTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto count = args.size();
-	UnifiedVectorFormat format;
-	args.data[0].ToUnifiedFormat(count, format);
-	const auto blobs = UnifiedVectorFormat::GetData<string_t>(format);
-
-	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
+	auto blobs = args.data[0].Values<string_t>();
+	auto writer = FlatVector::Writer<string_t>(result, count);
 	for (idx_t i = 0; i < count; i++) {
-		const auto idx = format.sel->get_index(i);
-		if (!format.validity.RowIsValid(idx)) {
-			result.SetValue(i, Value(LogicalType(LogicalTypeId::VARCHAR)));
+		const auto entry = blobs[i];
+		if (!entry.IsValid()) {
+			writer.WriteNull();
 			continue;
 		}
-		const auto &blob = blobs[idx];
+		const auto blob = entry.GetValue();
 		// Only the 5-byte header is needed: byte order, then the type code. No decode.
 		if (blob.GetSize() < 5) {
 			throw InvalidInputException("cityjson_wkb_geometry_type: WKB shorter than its 5-byte header");
@@ -121,32 +121,22 @@ void WKBGeometryTypeFunction(DataChunk &args, ExpressionState &state, Vector &re
 		if (name == nullptr) {
 			throw InvalidInputException("cityjson_wkb_geometry_type: unsupported WKB type code %u", code);
 		}
-		result.SetValue(i, Value(name));
-	}
-	if (count == 1) {
-		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
+		writer.WriteValue(string_t(name));
 	}
 }
 
 void WKBExtentFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto count = args.size();
-	auto &input = args.data[0];
-
-	UnifiedVectorFormat format;
-	input.ToUnifiedFormat(count, format);
-	const auto blobs = UnifiedVectorFormat::GetData<string_t>(format);
-
-	const auto extent_type = ExtentType();
-	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
-
+	auto blobs = args.data[0].Values<string_t>();
+	auto writer = FlatVector::Writer<VectorStructType<double, double, double, double, double, double>>(result, count);
 	for (idx_t i = 0; i < count; i++) {
-		const auto idx = format.sel->get_index(i);
-		if (!format.validity.RowIsValid(idx)) {
-			result.SetValue(i, Value(extent_type));
+		const auto entry = blobs[i];
+		if (!entry.IsValid()) {
+			writer.WriteNull();
 			continue;
 		}
 
-		const auto &blob = blobs[idx];
+		const auto blob = entry.GetValue();
 		Extent3D extent;
 		try {
 			auto decoded = WKBDecoder::Decode(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
@@ -161,22 +151,19 @@ void WKBExtentFunction(DataChunk &args, ExpressionState &state, Vector &result) 
 			// Structurally valid WKB carrying no coordinates (an empty collection,
 			// say) has no extent. NULL is the honest answer; zeros would be a lie
 			// that silently corrupts any bbox union it takes part in.
-			result.SetValue(i, Value(extent_type));
+			writer.WriteNull();
 			continue;
 		}
 
-		child_list_t<Value> fields;
-		fields.emplace_back("xmin", Value::DOUBLE(extent.min_x));
-		fields.emplace_back("ymin", Value::DOUBLE(extent.min_y));
-		fields.emplace_back("zmin", Value::DOUBLE(extent.min_z));
-		fields.emplace_back("xmax", Value::DOUBLE(extent.max_x));
-		fields.emplace_back("ymax", Value::DOUBLE(extent.max_y));
-		fields.emplace_back("zmax", Value::DOUBLE(extent.max_z));
-		result.SetValue(i, Value::STRUCT(std::move(fields)));
-	}
-
-	if (count == 1) {
-		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
+		// Children in ExtentType() order: xmin, ymin, zmin, xmax, ymax, zmax.
+		writer.WriteValue([&](auto &xmin, auto &ymin, auto &zmin, auto &xmax, auto &ymax, auto &zmax) {
+			xmin.WriteValue(extent.min_x);
+			ymin.WriteValue(extent.min_y);
+			zmin.WriteValue(extent.min_z);
+			xmax.WriteValue(extent.max_x);
+			ymax.WriteValue(extent.max_y);
+			zmax.WriteValue(extent.max_z);
+		});
 	}
 }
 

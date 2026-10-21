@@ -324,32 +324,32 @@ true	true	true
 # suite cannot test honestly, because its sources are our own output.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
-TO '__TEST_DIR__/corpus_rt.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/corpus_rt.city.jsonl' (FORMAT cityjsonseq);
 
 query II
 SELECT
   (SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')),
-  (SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/corpus_rt.city.jsonl'));
+  (SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/corpus_rt.city.jsonl'));
 ----
 6	6
 
 # The CRS is inherited from a REMOTE source: a URL is a source like any other.
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjsonseq_metadata('__TEST_DIR__/corpus_rt.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/corpus_rt.city.jsonl');
 ----
 EPSG	7415
 
 query II
 SELECT city_objects_count, features_count
-FROM cityjsonseq_metadata('__TEST_DIR__/corpus_rt.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/corpus_rt.city.jsonl');
 ----
 6	3
 
 # Geometry survives our own quantisation to within half the 1 mm scale.
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl') s
-JOIN read_cityjsonseq('__TEST_DIR__/corpus_rt.city.jsonl') r USING (id)
+JOIN read_cityjsonseq('{TEST_DIR}/corpus_rt.city.jsonl') r USING (id)
 WHERE abs(s.bbox.xmin - r.bbox.xmin) > 1e-3
    OR abs(s.bbox.ymin - r.bbox.ymin) > 1e-3
    OR abs(s.bbox.zmax - r.bbox.zmax) > 1e-3;
@@ -361,7 +361,7 @@ query I
 SELECT COUNT(*) FROM (
   SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl')) WHERE column_name LIKE 'geometry_lod%'
   EXCEPT
-  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('__TEST_DIR__/corpus_rt.city.jsonl')) WHERE column_name LIKE 'geometry_lod%'
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('{TEST_DIR}/corpus_rt.city.jsonl')) WHERE column_name LIKE 'geometry_lod%'
 );
 ----
 0
@@ -369,11 +369,11 @@ SELECT COUNT(*) FROM (
 # Cross-format out of an upstream source: CityJSONSeq -> FlatCityBuf.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
-TO '__TEST_DIR__/corpus_rt.fcb' (FORMAT flatcitybuf);
+TO '{TEST_DIR}/corpus_rt.fcb' (FORMAT flatcitybuf);
 
 query II
 SELECT
-  (SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/corpus_rt.fcb')),
-  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/corpus_rt.fcb')));
+  (SELECT COUNT(*) FROM read_flatcitybuf('{TEST_DIR}/corpus_rt.fcb')),
+  (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('{TEST_DIR}/corpus_rt.fcb')));
 ----
 6	70

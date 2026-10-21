@@ -10,9 +10,11 @@ TableFunction CreateReadCityJSONTableFunction() {
 	TableFunction func("read_cityjson", {LogicalType::VARCHAR}, CityJSONScan, CityJSONBind);
 
 	// Named parameters
-	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
-	func.named_parameters["lod"] = LogicalType::VARCHAR;        // Filter to specific LOD (e.g., "2.2")
-	func.named_parameters["appearance"] = LogicalType::VARCHAR; // 'local' (default) or 'sidecar'
+	func.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("sample_lines", LogicalType::BIGINT);
+		options.Add("lod", LogicalType::VARCHAR);        // Filter to specific LOD (e.g., "2.2")
+		options.Add("appearance", LogicalType::VARCHAR); // 'local' (default) or 'sidecar'
+	});
 
 	// Set callbacks
 	func.init_global = CityJSONInitGlobal;
@@ -51,9 +53,11 @@ TableFunction CreateReadCityJSONSeqTableFunction() {
 	TableFunction func("read_cityjsonseq", {LogicalType::VARCHAR}, CityJSONScan, CityJSONSeqBind);
 
 	// Named parameters (same as read_cityjson)
-	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
-	func.named_parameters["lod"] = LogicalType::VARCHAR;        // Filter to specific LOD (e.g., "2.2")
-	func.named_parameters["appearance"] = LogicalType::VARCHAR; // 'local' (default) or 'sidecar'
+	func.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("sample_lines", LogicalType::BIGINT);
+		options.Add("lod", LogicalType::VARCHAR);        // Filter to specific LOD (e.g., "2.2")
+		options.Add("appearance", LogicalType::VARCHAR); // 'local' (default) or 'sidecar'
+	});
 
 	// Set callbacks (reuse same stateless callbacks)
 	func.init_global = CityJSONInitGlobal;
