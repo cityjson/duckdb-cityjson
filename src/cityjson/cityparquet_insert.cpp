@@ -610,8 +610,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		if (!types.empty()) { // a package being started holds no object type to collide with
 			sql += std::string(CHECK_STATEMENT) + "SELECT error(" + message("object type", "t") + ") FROM (" +
 			       Join(types, " UNION ALL ") + ") WHERE starts_with(t, " + Literal(prefix) + ") AND " + undeclared +
-			       ";
-";
+			       ";\n";
 		}
 		if (!surfaces.empty()) {
 			// `surfaces` is JSON text; its writers differ in whitespace, never in keys.

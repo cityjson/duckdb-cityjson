@@ -62,17 +62,17 @@ true	true
 # --- CityJSON: one document, one appearance block ----------------------------
 
 statement ok
-COPY (SELECT * FROM p.building) TO '__TEST_DIR__/sidecar_app.city.json'
+COPY (SELECT * FROM p.building) TO '{TEST_DIR}/sidecar_app.city.json'
 (FORMAT cityjson, materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures')
 
 statement ok
-CREATE TABLE doc AS FROM read_cityjson('__TEST_DIR__/sidecar_app.city.json', appearance := 'sidecar')
+CREATE TABLE doc AS FROM read_cityjson('{TEST_DIR}/sidecar_app.city.json', appearance := 'sidecar')
 
 statement ok
-CREATE TABLE doc_textures AS FROM cityjson_textures('__TEST_DIR__/sidecar_app.city.json')
+CREATE TABLE doc_textures AS FROM cityjson_textures('{TEST_DIR}/sidecar_app.city.json')
 
 statement ok
-CREATE TABLE doc_materials AS FROM cityjson_materials('__TEST_DIR__/sidecar_app.city.json')
+CREATE TABLE doc_materials AS FROM cityjson_materials('{TEST_DIR}/sidecar_app.city.json')
 
 query I
 SELECT count(*) FROM (FROM expected_rings EXCEPT ALL FROM texture_rings('doc', 'doc_textures'))
@@ -97,24 +97,24 @@ SELECT count(*) FROM (FROM material_faces('doc', 'doc_materials') EXCEPT ALL FRO
 # The file itself holds the definitions, not only the UV pool.
 query II
 SELECT content LIKE '%"textures":[{%', content LIKE '%"materials":[{%'
-FROM read_text('__TEST_DIR__/sidecar_app.city.json')
+FROM read_text('{TEST_DIR}/sidecar_app.city.json')
 ----
 true	true
 
 # --- CityJSONSeq: each feature carries the definitions it uses ---------------
 
 statement ok
-COPY (SELECT * FROM p.building) TO '__TEST_DIR__/sidecar_app.city.jsonl'
+COPY (SELECT * FROM p.building) TO '{TEST_DIR}/sidecar_app.city.jsonl'
 (FORMAT cityjsonseq, materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures')
 
 statement ok
-CREATE TABLE seq AS FROM read_cityjsonseq('__TEST_DIR__/sidecar_app.city.jsonl', appearance := 'sidecar')
+CREATE TABLE seq AS FROM read_cityjsonseq('{TEST_DIR}/sidecar_app.city.jsonl', appearance := 'sidecar')
 
 statement ok
-CREATE TABLE seq_textures AS FROM cityjson_textures('__TEST_DIR__/sidecar_app.city.jsonl')
+CREATE TABLE seq_textures AS FROM cityjson_textures('{TEST_DIR}/sidecar_app.city.jsonl')
 
 statement ok
-CREATE TABLE seq_materials AS FROM cityjson_materials('__TEST_DIR__/sidecar_app.city.jsonl')
+CREATE TABLE seq_materials AS FROM cityjson_materials('{TEST_DIR}/sidecar_app.city.jsonl')
 
 query I
 SELECT count(*) FROM (FROM expected_rings EXCEPT ALL FROM texture_rings('seq', 'seq_textures'))
@@ -141,19 +141,19 @@ SELECT count(*) FROM (FROM material_faces('seq', 'seq_materials') EXCEPT ALL FRO
 query II
 SELECT count(*) FILTER (line LIKE '%"vertices-texture"%') > 0,
        count(*) FILTER (line LIKE '%"vertices-texture"%' AND line NOT LIKE '%"textures":[{%')
-FROM (SELECT unnest(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/sidecar_app.city.jsonl'))
+FROM (SELECT unnest(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/sidecar_app.city.jsonl'))
 WHERE line LIKE '%"CityJSONFeature"%'
 ----
 true	0
 
 query I
-SELECT content[1:position(chr(10) IN content)] LIKE '%"appearance"%' FROM read_text('__TEST_DIR__/sidecar_app.city.jsonl')
+SELECT content[1:position(chr(10) IN content)] LIKE '%"appearance"%' FROM read_text('{TEST_DIR}/sidecar_app.city.jsonl')
 ----
 false
 
 # A cell naming an id the query does not have is refused, not written dangling.
 statement error
-COPY (SELECT * FROM p.building) TO '__TEST_DIR__/sidecar_app_missing.city.json'
+COPY (SELECT * FROM p.building) TO '{TEST_DIR}/sidecar_app_missing.city.json'
 (FORMAT cityjson, materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures WHERE id <> 10')
 ----
 refers to texture id 10, which textures_query does not have

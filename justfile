@@ -7,7 +7,9 @@
 # The recipes below mirror those so you can reproduce CI before pushing.
 
 # Build a fast release binary. Optional: pass CORE_EXTENSIONS="httpfs" etc. via env.
-build_targets := "cityjson_extension cityjson_loadable_extension duckdb unittest"
+# The test runner links no extension: `require cityjson` loads the copy in
+# build/release/repository, which only duckdb_local_extension_repo refreshes.
+build_targets := "cityjson_extension cityjson_loadable_extension duckdb unittest duckdb_local_extension_repo"
 
 # Wasm toolchain pins, mirroring the CI distribution pipeline.
 # emsdk: extension-ci-tools v2.0-cyanoptera `_extension_distribution.yml` pins
@@ -55,7 +57,7 @@ build:
 debug:
     VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" GEN=ninja make debug
 
-# Fast incremental rebuild of the extension, duckdb CLI, and test binary.
+# Fast incremental rebuild of the extension, duckdb CLI, test binary and local extension repository.
 # Use this in the edit-build-test loop after `just build` has configured the tree.
 rebuild:
     cmake --build build/release --target {{build_targets}}

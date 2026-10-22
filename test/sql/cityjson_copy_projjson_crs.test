@@ -19,46 +19,46 @@ statement ok
 PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'p')
 
 statement ok
-COPY (SELECT * FROM p.building) TO '__TEST_DIR__/projjson_crs.city.json' (
+COPY (SELECT * FROM p.building) TO '{TEST_DIR}/projjson_crs.city.json' (
     FORMAT cityjson,
     metadata_query 'SELECT max(cityparquet_city_field(city, ''crs'')) AS crs FROM p.__cityparquet WHERE role = ''object''')
 
 query I
 SELECT content LIKE '%"referenceSystem":"https://www.opengis.net/def/crs/EPSG/0/7415"%'
-FROM read_text('__TEST_DIR__/projjson_crs.city.json')
+FROM read_text('{TEST_DIR}/projjson_crs.city.json')
 ----
 true
 
 query I
-SELECT reference_system.code FROM cityjson_metadata('__TEST_DIR__/projjson_crs.city.json')
+SELECT reference_system.code FROM cityjson_metadata('{TEST_DIR}/projjson_crs.city.json')
 ----
 7415
 
 # The crs option takes the same spelling.
 statement ok
-COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json')) TO '__TEST_DIR__/projjson_crs_option.city.json' (
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json')) TO '{TEST_DIR}/projjson_crs_option.city.json' (
     FORMAT cityjson, crs '{"type": "ProjectedCRS", "name": "Amersfoort / RD New", "id": {"authority": "EPSG", "code": 28992}}')
 
 query I
 SELECT content LIKE '%"referenceSystem":"https://www.opengis.net/def/crs/EPSG/0/28992"%'
-FROM read_text('__TEST_DIR__/projjson_crs_option.city.json')
+FROM read_text('{TEST_DIR}/projjson_crs_option.city.json')
 ----
 true
 
 # A URL is written as given.
 statement ok
-COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json')) TO '__TEST_DIR__/url_crs.city.json' (
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json')) TO '{TEST_DIR}/url_crs.city.json' (
     FORMAT cityjson, metadata_query 'SELECT ''https://www.opengis.net/def/crs/EPSG/0/7415'' AS crs')
 
 query I
 SELECT content LIKE '%"referenceSystem":"https://www.opengis.net/def/crs/EPSG/0/7415"%'
-FROM read_text('__TEST_DIR__/url_crs.city.json')
+FROM read_text('{TEST_DIR}/url_crs.city.json')
 ----
 true
 
 # PROJJSON with no id names no CRS a URL can state.
 statement error
-COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json')) TO '__TEST_DIR__/no_id_crs.city.json' (
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json')) TO '{TEST_DIR}/no_id_crs.city.json' (
     FORMAT cityjson, metadata_query 'SELECT ''{"type": "ProjectedCRS", "name": "Local grid"}'' AS crs')
 ----
 PROJJSON with no `id`

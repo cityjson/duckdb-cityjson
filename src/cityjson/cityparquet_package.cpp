@@ -194,8 +194,8 @@ static std::vector<std::string> RegisteredObjectTables(ClientContext &context, c
 	if (result->HasError()) {
 		return registered;
 	}
-	for (idx_t row = 0; row < result->RowCount(); row++) {
-		registered.push_back(result->GetValue(0, row).ToString());
+	for (auto &row : result->Collection().GetRows()) {
+		registered.push_back(row.GetValue(0).ToString());
 	}
 	return registered;
 }
@@ -452,12 +452,16 @@ void RefuseCollidingColumns(Connection &connection, const std::string &path) {
 bool IsExtensionObjectFile(Connection &connection, const std::string &path, const std::string &table) {
 	auto result = connection.Query("SELECT decode(value) FROM parquet_kv_metadata(" + Literal(path) +
 	                               ") WHERE decode(key) = 'city'");
-	if (result->HasError() || result->RowCount() == 0 || result->GetValue(0, 0).IsNull()) {
+	if (result->HasError() || result->RowCount() == 0) {
+		return false;
+	}
+	const auto value = result->Collection().GetValue(0, 0);
+	if (value.IsNull()) {
 		return false;
 	}
 	json city;
 	try {
-		city = json_utils::ParseJson(result->GetValue(0, 0).ToString());
+		city = json_utils::ParseJson(value.ToString());
 	} catch (const std::exception &) {
 		return false;
 	}
