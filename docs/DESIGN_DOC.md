@@ -220,8 +220,12 @@ legitimately declares no CRS.
 
 A CityParquet package is a **directory of Parquet files**; loaded into DuckDB it
 becomes a **schema** whose table names are the spec's file basenames, plus one
-bookkeeping table recovered from the Parquet footers. Naming is the entire
-binding — there is no registration state to keep in sync.
+bookkeeping table recovered from the Parquet footers. For the module tables and
+sidecars naming is the entire binding. An extension's own table (`noise`, for a
+class that specialises no CityGML class) has a name no fixed list holds, so it is
+an object table because the bookkeeping table registers it as one — which
+`cityparquet_read` does for a file whose footer declares the namespace that names
+it, and the insert pragmas do when they create it.
 
 **The central design decision: these functions generate SQL rather than execute
 it.** They are DuckDB pragmas whose return value is SQL text, which DuckDB then

@@ -26,6 +26,7 @@
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include <fstream>
+#include <functional>
 #include <tuple>
 #include <map>
 #include <cstring>
@@ -153,6 +154,11 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->source_ref = source_ref;
 	result->source_appearance_header = source_appearance_header;
 	result->source_appearance_by_feature = source_appearance_by_feature;
+	result->sidecar_definitions = sidecar_definitions;
+	result->sidecar_materials = sidecar_materials;
+	result->sidecar_textures = sidecar_textures;
+	result->sidecar_material_position = sidecar_material_position;
+	result->sidecar_texture_position = sidecar_texture_position;
 	return result;
 }
 
@@ -164,6 +170,52 @@ bool CityJSONCopyBindData::Equals(const FunctionData &other) const {
 // ============================================================
 // Helper: parse metadata_query result
 // ============================================================
+
+// A crs as CityJSON's `metadata.referenceSystem`, an OGC CRS URL. A package states its
+// CRS as PROJJSON (05-metadata), so a JSON object is read as PROJJSON and written as
+// the URL of the CRS its `id` names: EPSG codes as
+// https://www.opengis.net/def/crs/EPSG/0/<code>, OGC CRS84 as .../OGC/1.3/CRS84.
+// PROJJSON with no `id`, or an authority with no OGC URL, is refused rather than
+// written as a string that is not a referenceSystem. Anything else is the
+// referenceSystem as given.
+static std::string ReferenceSystemFromCrs(const std::string &text, const std::string &where) {
+	const auto first = text.find_first_not_of(" \t\r\n");
+	if (first == std::string::npos || text[first] != '{') {
+		return text;
+	}
+	json projjson;
+	try {
+		projjson = json_utils::ParseJson(text);
+	} catch (const std::exception &e) {
+		throw BinderException("%s: crs starts like PROJJSON but is not JSON: %s", where, e.what());
+	}
+	const auto id = projjson.find("id");
+	if (id == projjson.end() || !id->is_object() || !id->contains("authority") || !id->contains("code") ||
+	    !(*id)["authority"].is_string()) {
+		throw BinderException("%s: crs is PROJJSON with no `id` {authority, code}, so it names no CRS an OGC CRS URL "
+		                      "-- CityJSON's referenceSystem -- can state; pass the URL instead",
+		                      where);
+	}
+	const auto authority = (*id)["authority"].get<std::string>();
+	const auto &code_json = (*id)["code"];
+	std::string code;
+	if (code_json.is_number_integer()) {
+		code = std::to_string(code_json.get<int64_t>());
+	} else if (code_json.is_string()) {
+		code = code_json.get<std::string>();
+	} else {
+		throw BinderException("%s: crs is PROJJSON whose `id.code` is neither a number nor a string", where);
+	}
+	if (StringUtil::Upper(authority) == "EPSG") {
+		return "https://www.opengis.net/def/crs/EPSG/0/" + code;
+	}
+	if (StringUtil::Upper(authority) == "OGC" && StringUtil::Upper(code) == "CRS84") {
+		return "https://www.opengis.net/def/crs/OGC/1.3/CRS84";
+	}
+	throw BinderException("%s: crs is PROJJSON naming %s:%s, which has no OGC CRS URL this writer knows; pass the URL "
+	                      "instead",
+	                      where, authority, code);
+}
 
 static void ParseMetadataFromQuery(ClientContext &context, const std::string &query, CityJSONCopyBindData &bind_data) {
 	// Use a separate connection to avoid deadlock — the COPY bind already holds a lock
@@ -230,7 +282,7 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 					bind_data.crs = "https://www.opengis.net/def/crs/" + authority + "/" + version_str + "/" + code;
 				}
 			} else {
-				bind_data.crs = val.ToString();
+				bind_data.crs = ReferenceSystemFromCrs(val.ToString(), "metadata_query");
 			}
 		} else if (name == "transform_scale") {
 			if (val.type().id() == LogicalTypeId::STRUCT) {
@@ -429,6 +481,8 @@ static void TakeSourceTemplates(const json &doc, CityJSONCopyBindData &bind_data
 }
 
 static void LoadTemplatesFromQuery(ClientContext &context, const std::string &query, CityJSONCopyBindData &bind_data);
+static json SidecarDefinitions(ClientContext &context, const std::string &query, const char *what,
+                               std::map<int64_t, int64_t> &position);
 
 static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &source_ref, CityJSONReader &reader,
                                  const CityJSON &source_meta, CityJSONCopyBindData &bind_data) {
@@ -559,7 +613,7 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 		if (loption == "version") {
 			bind_data->version = val.ToString();
 		} else if (loption == "crs") {
-			bind_data->crs = val.ToString();
+			bind_data->crs = ReferenceSystemFromCrs(val.ToString(), "COPY TO " + input.info.format);
 			has_explicit_crs = true;
 		} else if (loption == "metadata_from") {
 			explicit_metadata_from = val.ToString();
@@ -763,14 +817,43 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 	}
 	if (IsMeshFormat(bind_data->format)) {
 		bind_data->appearance_source = BuildAppearanceSource(context, *bind_data);
+	} else if (bind_data->materials_query.has_value() || bind_data->textures_query.has_value()) {
+		// Sidecar form: the queries' rows are the definitions, and the cells hold their
+		// ids. They replace whatever appearance a discovered source carried, whose
+		// LOCAL indices the cells do not use.
+		if (bind_data->materials_query.has_value()) {
+			// NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- checked just above
+			bind_data->sidecar_materials = SidecarDefinitions(context, *bind_data->materials_query, "materials",
+			                                                  bind_data->sidecar_material_position);
+		}
+		if (bind_data->textures_query.has_value()) {
+			// NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- checked just above
+			bind_data->sidecar_textures = SidecarDefinitions(context, *bind_data->textures_query, "textures",
+			                                                 bind_data->sidecar_texture_position);
+		}
+		bind_data->sidecar_definitions = true;
+		bind_data->source_appearance_header.reset();
+		bind_data->source_appearance_by_feature.clear();
+		if (!bind_data->templates_from_query && bind_data->geometry_templates.has_value()) {
+			// NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- checked just above
+			for (const auto &geometry : bind_data->geometry_templates->value("templates", json::array())) {
+				if (geometry.contains("material") || geometry.contains("texture")) {
+					throw InvalidInputException(
+					    "COPY TO " + input.info.format +
+					    ": the discovered source's geometry templates carry appearance under the source's own "
+					    "indices, which materials_query / textures_query replace; pass implicit_geometries_query "
+					    "as well, so the templates' appearance is in sidecar ids too");
+				}
+			}
+		}
 	} else if (bind_data->source_ref.has_value()) {
 		// The CityJSON family re-attaches each feature's own appearance block
 		// verbatim (LoadSourceAppearance/CityJSONWriter) -- LOCAL indices into that
 		// block's `materials`/`textures` arrays. A sidecar-read source's cells hold
-		// dataset-global ids instead, which those LOCAL arrays do not index into, and
-		// unlike the mesh formats there is no materials_query/textures_query escape
-		// hatch here to resolve them against -- so this refuses unconditionally
-		// rather than write a file whose refs and definitions silently disagree.
+		// dataset-global ids instead, which those LOCAL arrays do not index into;
+		// without materials_query / textures_query to resolve them against, this
+		// refuses rather than write a file whose refs and definitions silently
+		// disagree.
 		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
 		const auto &source_ref = *bind_data->source_ref;
 		if (source_ref.sidecar_appearance) {
@@ -778,7 +861,8 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 			    "COPY TO " + input.info.format +
 			    ": the source was read with appearance := 'sidecar', so its material/texture cells hold "
 			    "dataset-global ids that the feature-local appearance blocks this format re-attaches cannot "
-			    "resolve; read the source with appearance := 'local' (the default) for a CityJSON-family COPY");
+			    "resolve; pass materials_query / textures_query, or read the source with appearance := 'local' "
+			    "(the default)");
 		}
 		// A whole-document CityJSON has one top-level `appearance` block
 		// (WriteCityJSON re-attaches only `source_appearance_header`), but a
@@ -1556,30 +1640,27 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 		wants_materials = wants_materials || entry.second.contains("__material");
 		wants_textures = wants_textures || entry.second.contains("__texture");
 	}
+	// The definitions were loaded at bind (sidecar_definitions); the templates' refs
+	// are positions in the document's (or the CityJSONSeq header's) one block.
 	json appearance = json::object();
-	std::map<int64_t, int64_t> material_position;
-	std::map<int64_t, int64_t> texture_position;
+	const auto &material_position = bind_data.sidecar_material_position;
+	const auto &texture_position = bind_data.sidecar_texture_position;
 	auto load_definitions = [&](const std::optional<std::string> &definitions_query, const char *what,
-	                            const char *option, std::map<int64_t, int64_t> &position) {
+	                            const char *option, const json &definitions) {
 		if (!definitions_query.has_value()) {
 			throw BinderException("implicit_geometries_query: the relative geometries carry %s, which are sidecar ids; "
 			                      "pass %s (e.g. 'SELECT * FROM pkg.%s') so they can be written",
 			                      what, option, what);
 		}
-		// NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- checked just above
-		appearance[what] = SidecarDefinitions(context, *definitions_query, what, position);
+		appearance[what] = definitions;
 	};
 	if (wants_materials) {
-		load_definitions(bind_data.materials_query, "materials", "materials_query", material_position);
+		load_definitions(bind_data.materials_query, "materials", "materials_query", bind_data.sidecar_materials);
 	}
 	if (wants_textures) {
-		load_definitions(bind_data.textures_query, "textures", "textures_query", texture_position);
+		load_definitions(bind_data.textures_query, "textures", "textures_query", bind_data.sidecar_textures);
 	}
 	if (!appearance.empty()) {
-		if (bind_data.source_appearance_header.has_value() && !bind_data.source_appearance_header->empty()) {
-			throw BinderException("implicit_geometries_query: the relative geometries' appearance would replace the "
-			                      "discovered source's own appearance block; COPY from the package's tables instead");
-		}
 		bind_data.source_appearance_header = appearance;
 	}
 	auto position_of = [](const std::map<int64_t, int64_t> &position, const json &id, const char *what) -> json {
@@ -2284,9 +2365,158 @@ void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data_p,
 // COPY TO Finalize
 // ============================================================
 
+// Every material id in a geometry's nested `values` (ids and nulls), mapped by `to`.
+static void RepointMaterialIds(json &values, const std::function<json(int64_t)> &to) {
+	if (values.is_array()) {
+		for (auto &child : values) {
+			RepointMaterialIds(child, to);
+		}
+	} else if (values.is_number_integer()) {
+		values = to(values.get<int64_t>());
+	}
+}
+
+// Every texture id in a geometry's nested `values`, mapped by `to`. A ring is
+// `[id, [u, v], …]` here -- the UVs are still inline -- so a ring is the array whose
+// first element is an integer; `[null]` is an untextured ring.
+static void RepointTextureIds(json &values, const std::function<json(int64_t)> &to) {
+	if (!values.is_array() || values.empty()) {
+		return;
+	}
+	if (values[0].is_number_integer()) {
+		values[0] = to(values[0].get<int64_t>());
+		return;
+	}
+	for (auto &child : values) {
+		RepointTextureIds(child, to);
+	}
+}
+
+// Re-point every material and texture cell of `objects` from a sidecar id to what
+// `material` / `texture` return for it.
+static void RepointObjectAppearance(std::vector<std::pair<std::string, json>> &objects,
+                                    const std::function<json(const std::string &, int64_t)> &material,
+                                    const std::function<json(const std::string &, int64_t)> &texture) {
+	for (auto &entry : objects) {
+		const auto &object_id = entry.first;
+		auto geometries = entry.second.find("geometry");
+		if (geometries == entry.second.end() || !geometries->is_array()) {
+			continue;
+		}
+		for (auto &geometry : *geometries) {
+			for (const auto &member : {"material", "texture"}) {
+				auto themes = geometry.find(member);
+				if (themes == geometry.end() || !themes->is_object()) {
+					continue;
+				}
+				const bool is_material = std::string(member) == "material";
+				for (auto &theme : themes->items()) {
+					for (const auto &key : {"values", "value"}) {
+						auto values = theme.value().find(key);
+						if (values == theme.value().end()) {
+							continue;
+						}
+						if (is_material) {
+							RepointMaterialIds(*values, [&](int64_t id) { return material(object_id, id); });
+						} else {
+							RepointTextureIds(*values, [&](int64_t id) { return texture(object_id, id); });
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// Resolve the sidecar-form cells against the definitions materials_query /
+// textures_query supplied. A whole CityJSON document gets every definition in one
+// block, the cells re-pointed at their positions there (the positions the templates'
+// refs already use). CityJSONSeq and FlatCityBuf give each feature its own block, as
+// CityJSONSeq requires: the definitions the feature's cells name, in id order, and the
+// cells re-pointed at their positions in it. An id the query does not have is an error.
+static void ResolveSidecarAppearance(const CityJSONCopyBindData &bind_data, CityJSONCopyGlobalState &gstate,
+                                     std::optional<json> &header, std::map<std::string, json> &by_feature) {
+	auto missing = [](const char *what, const std::string &object_id, int64_t id) {
+		return InvalidInputException("COPY: object %s refers to %s id %d, which %ss_query does not have", object_id,
+		                             what, id, what);
+	};
+	if (bind_data.format == CopyFormat::CityJSON) {
+		auto global = [&](const std::map<int64_t, int64_t> &position, const char *what) {
+			return [&position, what, &missing](const std::string &object_id, int64_t id) -> json {
+				auto found = position.find(id);
+				if (found == position.end()) {
+					throw missing(what, object_id, id);
+				}
+				return json(found->second);
+			};
+		};
+		for (auto &feature : gstate.feature_objects) {
+			RepointObjectAppearance(feature.second, global(bind_data.sidecar_material_position, "material"),
+			                        global(bind_data.sidecar_texture_position, "texture"));
+		}
+		json block = header.has_value() ? *header : json::object();
+		if (bind_data.materials_query.has_value()) {
+			block["materials"] = bind_data.sidecar_materials;
+		}
+		if (bind_data.textures_query.has_value()) {
+			block["textures"] = bind_data.sidecar_textures;
+		}
+		header = std::move(block);
+		return;
+	}
+	for (auto &feature : gstate.feature_objects) {
+		// First pass: which sidecar ids this feature names, so its block is in id order.
+		std::map<int64_t, int64_t> materials;
+		std::map<int64_t, int64_t> textures;
+		auto collect = [&](std::map<int64_t, int64_t> &used, const std::map<int64_t, int64_t> &position,
+		                   const char *what) {
+			return [&used, &position, what, &missing](const std::string &object_id, int64_t id) -> json {
+				if (position.find(id) == position.end()) {
+					throw missing(what, object_id, id);
+				}
+				used.emplace(id, 0);
+				return json(id);
+			};
+		};
+		RepointObjectAppearance(feature.second, collect(materials, bind_data.sidecar_material_position, "material"),
+		                        collect(textures, bind_data.sidecar_texture_position, "texture"));
+		if (materials.empty() && textures.empty()) {
+			continue;
+		}
+		json block = json::object();
+		auto local_block = [&](std::map<int64_t, int64_t> &used, const std::map<int64_t, int64_t> &position,
+		                       const json &definitions, const char *key) {
+			if (used.empty()) {
+				return;
+			}
+			json local = json::array();
+			for (auto &entry : used) {
+				entry.second = static_cast<int64_t>(local.size());
+				local.push_back(definitions[static_cast<size_t>(position.at(entry.first))]);
+			}
+			block[key] = std::move(local);
+		};
+		local_block(materials, bind_data.sidecar_material_position, bind_data.sidecar_materials, "materials");
+		local_block(textures, bind_data.sidecar_texture_position, bind_data.sidecar_textures, "textures");
+		auto local = [](const std::map<int64_t, int64_t> &used) {
+			return [&used](const std::string &, int64_t id) -> json {
+				return json(used.at(id));
+			};
+		};
+		RepointObjectAppearance(feature.second, local(materials), local(textures));
+		by_feature[feature.first] = std::move(block);
+	}
+}
+
 void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, GlobalFunctionData &gstate_p) {
 	auto &bind_data = bind_data_p.Cast<CityJSONCopyBindData>();
 	auto &gstate = gstate_p.Cast<CityJSONCopyGlobalState>();
+
+	std::optional<json> appearance_header = bind_data.source_appearance_header;
+	std::map<std::string, json> appearance_by_feature = bind_data.source_appearance_by_feature;
+	if (bind_data.sidecar_definitions && !IsMeshFormat(bind_data.format)) {
+		ResolveSidecarAppearance(bind_data, gstate, appearance_header, appearance_by_feature);
+	}
 
 	// Build write metadata from bind data
 	CityJSONWriteMetadata write_meta;
@@ -2312,7 +2542,7 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 	switch (bind_data.format) {
 	case CopyFormat::CityJSONSeq:
 		CityJSONWriter::WriteCityJSONSeq(fs, output_path, write_meta, gstate.feature_objects, gstate.feature_order,
-		                                 bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
+		                                 appearance_header, appearance_by_feature);
 		break;
 #ifdef CITYJSON_HAS_FCB
 	case CopyFormat::FlatCityBuf: {
@@ -2328,8 +2558,8 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 		}
 		CityJSONWriter::WriteFlatCityBuf(fs, output_path, write_meta, gstate.feature_objects, gstate.feature_order,
 		                                 bind_data.fcb_attr_index_columns, bind_data.fcb_branching_factor,
-		                                 bind_data.fcb_index_node_size, declared_attr_columns,
-		                                 bind_data.source_appearance_header, bind_data.source_appearance_by_feature);
+		                                 bind_data.fcb_index_node_size, declared_attr_columns, appearance_header,
+		                                 appearance_by_feature);
 		break;
 	}
 #else
@@ -2345,7 +2575,7 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 		break;
 	case CopyFormat::CityJSON:
 		CityJSONWriter::WriteCityJSON(fs, output_path, write_meta, gstate.feature_objects, gstate.feature_order,
-		                              bind_data.source_appearance_header);
+		                              appearance_header);
 		break;
 	}
 }

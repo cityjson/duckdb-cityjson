@@ -96,8 +96,8 @@ ORDER BY b3_h_dak_max DESC LIMIT 3;
 | `sample_lines` | BIGINT | Features sampled for schema inference (default 100) |
 | `appearance` | VARCHAR | `'local'` (default) or `'sidecar'` — see [Appearance sidecars](#appearance-sidecars) |
 
-`read_flatcitybuf` shares only `lod` and `sample_lines`; it takes no
-`appearance`, and adds the four bbox bounds instead.
+`read_flatcitybuf` shares `lod`, `sample_lines` and `appearance`, and adds the
+four bbox bounds.
 
 #### `lod =>` — one LoD, same column grammar
 
@@ -257,12 +257,13 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 | Option | Type | Description |
 | ------ | ---- | ----------- |
 | `version` | VARCHAR | CityJSON version to write (default `"2.0"`) |
-| `crs` | VARCHAR | CRS identifier, e.g. `'https://www.opengis.net/def/crs/EPSG/0/7415'` |
+| `crs` | VARCHAR | CRS identifier, e.g. `'https://www.opengis.net/def/crs/EPSG/0/7415'`, or PROJJSON ([below](#crs-as-projjson)) |
 | `transform_scale` | VARCHAR | Vertex quantisation scale `'x,y,z'` (default `'0.001,0.001,0.001'`) |
 | `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`) |
 | `metadata_from` | VARCHAR | Path to read metadata and appearance definitions from, when the source is not discoverable from the query itself |
+| `materials_query`, `textures_query` | VARCHAR | SQL returning `materials.parquet` / `textures.parquet`-shaped rows. **Their presence declares the `material_lod*` / `texture_lod*` cells to be sidecar ids**, and the rows become the written definitions ([below](#sidecar-appearance)) |
 | `implicit_geometries_query` | VARCHAR | SQL returning `implicit_geometries` sidecar rows, written as the document's `geometry-templates` ([below](#required-columns)); their appearance takes its definitions from `materials_query` / `textures_query` |
-| `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct or a plain string), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
+| `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct, a plain string or PROJJSON), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
 | `attr_index` | VARCHAR | *(flatcitybuf)* comma-separated columns to give a B+tree index |
 | `branching_factor` | BIGINT | *(flatcitybuf)* B+tree branching factor |
 | `index_node_size` | BIGINT | *(flatcitybuf)* R-tree node size |
@@ -313,6 +314,51 @@ COPY (SELECT * FROM my_table) TO 'out.city.jsonl'
 
 Precedence is `crs` / `metadata_query` > `metadata_from` > discovered source, so
 an explicit option always wins.
+
+<a id="crs-as-projjson"></a>**A PROJJSON CRS is written as its OGC URL.** CityJSON's
+`metadata.referenceSystem` is an OGC CRS URL, and a package states its CRS as
+PROJJSON — `cityparquet_city_field(city, 'crs')` returns it. A `crs` (the option,
+or `metadata_query`'s column) that is a JSON object is read as PROJJSON and written
+as the URL of the CRS its `id` names: an EPSG code as
+`https://www.opengis.net/def/crs/EPSG/0/<code>`, `OGC:CRS84` as
+`https://www.opengis.net/def/crs/OGC/1.3/CRS84`. PROJJSON with no `id`, or with an
+`id` of another authority, is an error rather than a `referenceSystem` no CityJSON
+reader can resolve. Any other text is written as given.
+
+```sql
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'p');
+COPY (SELECT * FROM p.building) TO 'delft.city.json' (FORMAT cityjson,
+    metadata_query 'SELECT max(cityparquet_city_field(city, ''crs'')) AS crs FROM p.__cityparquet WHERE role = ''object''');
+SELECT reference_system.code FROM cityjson_metadata('delft.city.json');
+-- 7415
+```
+
+<a id="sidecar-appearance"></a>**Sidecar appearance.** A package's `material_lod*` /
+`texture_lod*` cells hold sidecar ids into `materials.parquet` / `textures.parquet`,
+which no source file's `appearance` block resolves. `materials_query` and
+`textures_query` supply those definitions, each row a CityJSON material or texture
+(in `id` order, each sidecar column under its CityJSON member name, `other`'s
+members restored), and every cell is re-pointed at its definition's position:
+
+- **CityJSON** writes every row of each query into the document's one `appearance`
+  block, so a position there is the row's rank by `id`;
+- **CityJSONSeq** and **FlatCityBuf** give each feature its own `appearance` block,
+  holding the definitions that feature's cells name, in `id` order, as CityJSONSeq
+  requires. The header carries an `appearance` block only for the geometry
+  templates.
+
+The queries' definitions replace whatever appearance a discovered source carries,
+so a source read with `appearance := 'sidecar'` is resolved through them too. A
+cell naming an id its query has no row for is an error, as is a discovered
+source's own geometry templates carrying appearance without
+`implicit_geometries_query`.
+
+```sql
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'p');
+COPY (SELECT * FROM p.building) TO 'building.city.jsonl' (
+    FORMAT cityjsonseq,
+    materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures');
+```
 
 Requesting `attr_index` on a column no feature carries is not an error — there is
 simply nothing to index.
@@ -367,8 +413,8 @@ is written as its row's position, and an id the query has no row for is an
 error. A relative geometry's `material_lod*` / `texture_lod*` cells hold sidecar
 ids, so they need the definitions: `materials_query` and `textures_query` —
 `'SELECT * FROM pkg.materials'`, `'SELECT * FROM pkg.textures'` — become the
-document's `appearance` `materials` and `textures` (in `id` order, each sidecar
-column under its CityJSON member name, `other`'s members restored), the cells
+document's (for CityJSONSeq, the header's) `appearance` `materials` and
+`textures`, as for an object's cells ([above](#sidecar-appearance)), the cells
 are re-pointed at their positions, and the texture UVs are interned into the
 written `vertices-texture`. Templates carrying appearance without the matching
 query are refused rather than written without it. Without the option, a discovered source's own `geometry-templates`
@@ -505,12 +551,14 @@ WHERE material_lod3_0 IS NOT NULL LIMIT 1;
 -- GMLID_855011_330784_753 | {visual=[2, 2, 2, 2, 2, 2, 3, 3, 3, …]}
 ```
 
-`appearance` accepts `'local'` (default) or `'sidecar'`, on `read_cityjson` and
-`read_cityjsonseq`. Both modes emit the same typed `material_lod*` /
-`texture_lod*` `MAP` cells (below); the mode decides only the **id space** —
-feature-local in `'local'`, dataset-global sidecar ids in `'sidecar'` — and
-texture UVs are inlined in both. **`read_flatcitybuf` does not take it** —
-sidecar normalisation is not available on the `.fcb` read path.
+`appearance` accepts `'local'` (default) or `'sidecar'`, on `read_cityjson`,
+`read_cityjsonseq` and `read_flatcitybuf`. Both modes emit the same typed
+`material_lod*` / `texture_lod*` `MAP` cells (below); the mode decides only the
+**id space** — feature-local in `'local'`, dataset-global sidecar ids in
+`'sidecar'`, the ids `cityjson_materials` / `cityjson_textures` give the same
+file — and texture UVs are inlined in both. A FlatCityBuf feature keeps its own
+definitions under local indices, as a CityJSONSeq feature does, so
+`insert_flatcitybuf` reads in sidecar mode just as `insert_cityjsonseq` does.
 
 `cityjson_implicit_geometries` turns the CityJSON `"geometry-templates"` member
 into the `implicit_geometries` sidecar: one row per template, each the shared
@@ -728,9 +776,12 @@ These functions generate that SQL for you.
 A package becomes a DuckDB **schema** whose tables are named by the spec's file
 basenames, plus a `__cityparquet` bookkeeping table. Object tables are
 `building`, `bridge`, `tunnel`, `construction`, `transportation`, `vegetation`,
-`relief`, `water_body`, `land_use`, `city_furniture`, `generics`; sidecars are
-`materials`, `textures`, `implicit_geometries`. **Naming is the whole binding** —
-there is no registration state to keep in sync.
+`relief`, `water_body`, `land_use`, `city_furniture`, `generics`, and an
+extension's own file — `noise` for the Noise Extension's classes
+([CityJSON Extensions](#cityjson-extensions)); sidecars are `materials`,
+`textures`, `implicit_geometries`. **Naming is the binding** for the module
+tables and sidecars; an extension's table, whose name no fixed list holds, is an
+object table because `__cityparquet` registers it as one.
 
 `__cityparquet` holds one row per package file (`table_name`, `file_name`,
 `role`, `city`), where `city` is the file's recovered Parquet footer.
@@ -748,6 +799,12 @@ PRAGMA cityparquet_read('./data/delft', 'delft');
 SELECT table_name, role, city IS NOT NULL AS has_footer FROM delft.__cityparquet;
 -- building | object | true
 ```
+
+Besides the files the specification names for modules and sidecars, it loads an
+extension's object table: a file whose `city` footer declares an extension whose
+namespace is the file's name (`noise.parquet`, the extension's own file) or
+prefixes it (`energy_building_physics.parquet`, an extension module). Any other
+Parquet file in the directory is left alone.
 
 An attribute whose name collides with a reserved column is stored escaped, as
 `_ID` for `ID` (below), and is loaded under that name; `COPY` restores the source
@@ -849,11 +906,10 @@ PRAGMA insert_cityjson('delft', 'tile.city.json', create_tables = true);
 
 Worth knowing:
 
-- **Routing is total.** An object type belonging to no CityGML module is an
-  error, not a silently skipped row. An extension type routes only when its name
-  without the `+` is a core class (`+Building` goes to `building`); any other
-  cannot be placed without its module declaration — read those with
-  `read_cityjson` and insert yourself.
+- **Routing is total.** An object type belonging to no CityGML module, and not
+  an Extension class (marked `+`), is an error, not a silently skipped row. An
+  Extension class routes by its ModuleKey
+  ([CityJSON Extensions](#cityjson-extensions)).
 - **Extension names take their namespace.** A `+` attribute, surface type or
   object type is stored with the declaring extension's namespace as a prefix; see
   [CityJSON Extensions](#cityjson-extensions).
@@ -902,6 +958,7 @@ letter. `insert_cityjson` (and its siblings) apply it:
 | attribute `+heatCapacity` | column `energy_heatCapacity` |
 | surface type `+PartyWallSurface` | `geometry_properties_lod*.surfaces[].type` `energy_PartyWallSurface` |
 | object type `+Building` | `object_type` `energy_Building`, routed to `building` |
+| object type `+ThermalZone` | `object_type` `energy_ThermalZone`, routed to `energy` |
 
 ```sql
 PRAGMA insert_cityjson('pkg', 'test/data/extension_energy.city.json');
@@ -912,6 +969,35 @@ SELECT id, object_type, energy_heatCapacity FROM pkg.building WHERE energy_heatC
 -- house-1 | Building        | 250.5
 -- house-2 | energy_Building | 125.0
 ```
+
+**Where an Extension class goes** (spec 06-extensions, "The ModuleKey"). A class
+whose name without the `+` is a core class goes to that class's module table
+(`+Building` → `building`). A class the source's declaration says specialises
+another — an `allOf` member of its `extraCityObjects` schema whose `$ref` names a
+definition of `cityobjects.schema.json` — goes where that class goes, recursively:
+a City Object type to its module, `_AbstractBuilding` to `building`,
+`_AbstractTransportationComplex` to `transportation`. Every other class — one that
+specialises `_AbstractCityObject`, a definition that names no class, or nothing the
+source states — goes to its extension's own table, named by the namespace alone:
+the Noise Extension's `+NoiseCityFurnitureSegment` is stored in `noise` as
+`noise_NoiseCityFurnitureSegment`. Only the declaration in the source's
+`extensions` member is read; the schema document at its `url` is not fetched, so a
+class whose specialisation only that document states goes to the extension's own
+table. A namespace that is itself a module or sidecar name (`building`) cannot
+have a table of its own, and such a class is refused.
+
+```sql
+CREATE SCHEMA noise;
+PRAGMA cityparquet_init('noise');
+PRAGMA insert_cityjson('noise', 'test/data/noise_data.city.json');
+SELECT id, object_type, feature_id FROM noise.noise;
+-- thesegment_1 | noise_NoiseCityFurnitureSegment | a_noisy_bench
+-- thesegment_2 | noise_NoiseCityFurnitureSegment | a_noisy_bench
+```
+
+The table is an object table like any other: registered in `__cityparquet`,
+written as `noise.parquet` with the same footer, validated and exported with the
+rest, and loaded back by `cityparquet_read`.
 
 The package declares each namespace once, in every object table's
 `city.extensions` footer — recorded in `__cityparquet` by the insert and written
