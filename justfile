@@ -7,6 +7,13 @@
 # The recipes below mirror those so you can reproduce CI before pushing.
 
 # Build a fast release binary. Optional: pass CORE_EXTENSIONS="httpfs" etc. via env.
+# DuckDB derives its version from release_version.txt and a commit count, and cmake
+# re-runs its configure step inside `cmake --build` whenever a CMakeLists.txt changes.
+# Exported here as the Makefile exports it, so that re-configure keeps the release
+# version rather than falling back to v2.0.0-dev<N>, whose footer a released DuckDB
+# refuses to load.
+export DUCKDB_VERSION := env("DUCKDB_VERSION", `git -C duckdb describe --tags --exact-match 2>/dev/null || true`)
+
 # The test runner links no extension: `require cityjson` loads the copy in
 # build/release/repository, which only duckdb_local_extension_repo refreshes.
 build_targets := "cityjson_extension cityjson_loadable_extension duckdb unittest duckdb_local_extension_repo"
