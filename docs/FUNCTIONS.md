@@ -988,8 +988,17 @@ have a table of its own, and such a class is refused.
 
 ```sql
 CREATE SCHEMA noise;
+```
+
+```sql
 PRAGMA cityparquet_init('noise');
+```
+
+```sql
 PRAGMA insert_cityjson('noise', 'test/data/noise_data.city.json');
+```
+
+```sql
 SELECT id, object_type, feature_id FROM noise.noise;
 -- thesegment_1 | noise_NoiseCityFurnitureSegment | a_noisy_bench
 -- thesegment_2 | noise_NoiseCityFurnitureSegment | a_noisy_bench
