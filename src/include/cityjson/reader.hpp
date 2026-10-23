@@ -193,6 +193,10 @@ private:
 	mutable std::string line_buffer_;
 	mutable size_t line_pos_ = 0;
 	mutable bool stream_exhausted_ = false;
+	// Bytes the next refill asks the handle for. A remote handle gets large, growing
+	// requests: each Read on an HTTP handle is a range request, and httpfs does not
+	// read ahead on DuckDB 2.0, so a small fixed chunk is one round trip per chunk.
+	mutable idx_t read_chunk_ = 0;
 
 	// Internal helper: open or reopen the file handle positioned at the start
 	void OpenHandle() const;
