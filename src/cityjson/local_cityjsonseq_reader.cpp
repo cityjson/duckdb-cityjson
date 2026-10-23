@@ -12,6 +12,17 @@ namespace cityjson {
 
 using namespace json_utils; // NOLINT(google-build-using-namespace)
 
+namespace {
+// A local read is a syscall: small enough that a test fixture crosses chunk
+// boundaries, large enough that a many-megabyte file is a few hundred reads.
+constexpr idx_t LOCAL_READ_CHUNK = idx_t(16) * 1024;
+// A remote read is an HTTP range request. Start at 1 MiB and double per refill up to
+// 32 MiB -- the read-ahead httpfs itself did before DuckDB 2.0 -- so a whole file
+// costs a handful of requests and a small one is not over-fetched much.
+constexpr idx_t REMOTE_INITIAL_READ_CHUNK = idx_t(1) * 1024 * 1024;
+constexpr idx_t REMOTE_MAXIMUM_READ_CHUNK = idx_t(32) * 1024 * 1024;
+} // namespace
+
 // ============================================================
 // Constructors
 // ============================================================
@@ -47,13 +58,10 @@ void LocalCityJSONSeqReader::OpenHandle() const {
 	line_buffer_.clear();
 	line_pos_ = 0;
 	stream_exhausted_ = false;
+	read_chunk_ = IsRemoteFile(file_path_) ? REMOTE_INITIAL_READ_CHUNK : LOCAL_READ_CHUNK;
 }
 
 std::optional<std::string> LocalCityJSONSeqReader::NextLine() const {
-	// Small enough that a test fixture crosses chunk boundaries, large enough that a
-	// many-megabyte file is a few hundred reads rather than one per byte.
-	static constexpr idx_t READ_CHUNK = idx_t(16) * 1024;
-
 	while (true) {
 		const auto newline = line_buffer_.find('\n', line_pos_);
 		std::string line;
@@ -70,11 +78,14 @@ std::optional<std::string> LocalCityJSONSeqReader::NextLine() const {
 			line_buffer_.erase(0, line_pos_);
 			line_pos_ = 0;
 			const auto kept = line_buffer_.size();
-			line_buffer_.resize(kept + READ_CHUNK);
-			const auto got = handle_->Read(&line_buffer_[kept], READ_CHUNK);
+			line_buffer_.resize(kept + read_chunk_);
+			const auto got = handle_->Read(&line_buffer_[kept], read_chunk_);
 			line_buffer_.resize(kept + static_cast<idx_t>(std::max<int64_t>(got, 0)));
 			if (got <= 0) {
 				stream_exhausted_ = true;
+			}
+			if (read_chunk_ >= REMOTE_INITIAL_READ_CHUNK) {
+				read_chunk_ = std::min(read_chunk_ * 2, REMOTE_MAXIMUM_READ_CHUNK);
 			}
 			continue;
 		}
