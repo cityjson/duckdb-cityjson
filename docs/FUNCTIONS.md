@@ -450,8 +450,8 @@ columns, not re-derived from the geometry:
 
 ```sql
 SELECT geometry_properties_lod2_2.type, geometry_properties_lod2_2.shells
-FROM read_cityjsonseq('roundtrip.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;
--- Solid | [[6]]
+FROM read_cityjsonseq('roundtrip.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL ORDER BY id LIMIT 1;
+-- Solid | [[942]]
 ```
 
 ---
@@ -988,8 +988,17 @@ have a table of its own, and such a class is refused.
 
 ```sql
 CREATE SCHEMA noise;
+```
+
+```sql
 PRAGMA cityparquet_init('noise');
+```
+
+```sql
 PRAGMA insert_cityjson('noise', 'test/data/noise_data.city.json');
+```
+
+```sql
 SELECT id, object_type, feature_id FROM noise.noise;
 -- thesegment_1 | noise_NoiseCityFurnitureSegment | a_noisy_bench
 -- thesegment_2 | noise_NoiseCityFurnitureSegment | a_noisy_bench
@@ -1134,8 +1143,8 @@ Write the schema back out as a package directory:
 
 ```sql
 SELECT * FROM cityparquet_write('delft', 'out/', crs => 'EPSG:7415');
--- building.parquet | written | 2231 | 4142901
--- metadata.json    | written |    0 |    6721
+-- building.parquet | written | 2231 | 3755583
+-- metadata.json    | written |    0 |    6764
 ```
 
 It takes four named parameters: `crs` (below); `source_format`, which records
@@ -1241,8 +1250,8 @@ DuckDB's first-class `GEOMETRY` type, so `ST_AsText` reads it directly and
 ```sql
 LOAD spatial;
 SELECT ST_AsText(geometry_lod0_0) FROM read_parquet('out/building.parquet')
-WHERE geometry_lod0_0 IS NOT NULL LIMIT 1;
--- MULTIPOLYGON Z (((84593.249625 446461.355 0.475…)))
+WHERE geometry_lod0_0 IS NOT NULL ORDER BY id LIMIT 1;
+-- MULTIPOLYGON Z (((84842.902625 446016.17 -0.4089973754882834, …)))
 ```
 
 Three things worth knowing:
@@ -1643,7 +1652,7 @@ and no `*_query` is refused rather than guessed:
 ```sql
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
 TO 'refused.obj' (FORMAT obj, lod '3');
--- Binder Error: COPY TO obj: the source was read with appearance := 'sidecar', so its
+-- Invalid Input Error: COPY TO obj: the source was read with appearance := 'sidecar', so its
 -- material/texture cells hold sidecar ids; pass materials_query / textures_query
 -- (e.g. materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')')
 -- so they can be resolved

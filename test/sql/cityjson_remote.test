@@ -37,6 +37,27 @@ INSTALL httpfs;
 statement ok
 LOAD httpfs;
 
+# --- a CityJSONSeq scan is a handful of range requests, not one per 16 KiB ---
+# Each Read on an HTTP handle is a range request, and httpfs on DuckDB 2.0 does no
+# read-ahead, so the reader's own chunk size sets the request count. The 6.6 MB file
+# needs under ten; reading it 16 KiB at a time takes over four hundred. This runs
+# first so no earlier read of the file is in the log.
+statement ok
+CALL enable_logging('HTTP');
+
+query I
+SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+----
+2231
+
+query I
+SELECT COUNT(*) < 20 FROM duckdb_logs_parsed('HTTP') WHERE request.url LIKE '%/delft.city.jsonl';
+----
+true
+
+statement ok
+CALL disable_logging();
+
 # --- all three readers agree on row count, over HTTP ---
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
