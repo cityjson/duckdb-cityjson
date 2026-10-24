@@ -20,8 +20,9 @@ namespace cityjson {
 // What duckdb_functions() reports for one function: the only documentation an
 // agent on a SQL connection can reach.
 struct FunctionDoc {
-	// Positional parameters only. Named parameters are appended from the catalog
-	// entry; see AppendNamedParameters.
+	// The positional parameters' names. duckdb_functions() reads every name from
+	// the signature: these, then the named parameters a function declares as its
+	// "options" kwargs.
 	vector<string> parameters;
 	// One sentence.
 	string description;
@@ -44,29 +45,21 @@ inline FunctionDescription ToDescription(const FunctionDoc &doc) {
 	return description;
 }
 
-// duckdb_functions() lists a table or pragma function's named parameters after its
-// positional ones, and a description's parameter_names replace that whole list. It
-// reads them from a by-value copy of the registered function (GetFunctionByOffset),
-// in that copy's named_parameters iteration order -- and copying an unordered_map
-// preserves the order on libstdc++ but reverses it on libc++, and within a bucket on
-// MSVC. So the names are appended only once the function is in the catalog, read
-// through the same by-value copy, never from the function before registration.
-template <class ENTRY>
-void AppendNamedParameters(ExtensionLoader &loader, CatalogType type, const string &name) {
-	auto &db = loader.GetDatabaseInstance();
-	auto transaction = CatalogTransaction::GetSystemTransaction(db);
-	auto &schema = Catalog::GetSystemCatalog(db).GetSchema(transaction, DEFAULT_SCHEMA);
-	auto entry = schema.GetEntry(transaction, type, name);
-	if (!entry) {
-		throw InternalException("RegisterDocumented: '%s' is not in the catalog after registration", name);
-	}
-	auto &function_entry = entry->Cast<ENTRY>();
-	// Every function here registers exactly one overload, so one copy serves all.
-	auto function = function_entry.functions.GetFunctionByOffset(0);
-	for (auto &description : function_entry.descriptions) {
-		for (auto &param : function.named_parameters) {
-			description.parameter_names.push_back(param.first);
+// Gives the positional parameters their documented names. A STANDARD parameter
+// takes its argument by position or by name; the type-only constructors declare
+// positional-only parameters named col<N>, whose names a caller cannot use.
+inline void NameParameters(FunctionSignature &signature, const vector<string> &names) {
+	for (idx_t i = 0; i < signature.GetParameterCount() && i < names.size(); i++) {
+		auto &parameter = signature.GetParameter(i);
+		if (!parameter.AcceptsPosition()) {
+			break;
 		}
+		optional<Value> default_value;
+		if (parameter.HasDefaultValue()) {
+			default_value = *parameter.GetDefaultValue();
+		}
+		parameter = FunctionParameter(Identifier(names[i]), parameter.GetType(), std::move(default_value),
+		                              FunctionParameterKind::STANDARD);
 	}
 }
 
@@ -74,8 +67,12 @@ void AppendNamedParameters(ExtensionLoader &loader, CatalogType type, const stri
 
 // The bare loader.RegisterFunction(fn) overloads have nowhere to put a
 // description. These register the same function with one, and with the same
-// conflict behaviour the bare overloads have.
+// conflict behaviour the bare overloads have. A scalar is registered fallible:
+// every one here parses or validates its input, and DuckDB turns an error from
+// a function not marked fallible into an internal error.
 inline void RegisterDocumented(ExtensionLoader &loader, ScalarFunction function, const FunctionDoc &doc) {
+	function_docs_detail::NameParameters(function.GetSignature(), doc.parameters);
+	function.SetFallible();
 	CreateScalarFunctionInfo info(std::move(function));
 	info.descriptions.push_back(function_docs_detail::ToDescription(doc));
 	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
@@ -83,28 +80,25 @@ inline void RegisterDocumented(ExtensionLoader &loader, ScalarFunction function,
 }
 
 inline void RegisterDocumented(ExtensionLoader &loader, TableFunction function, const FunctionDoc &doc) {
-	auto name = function.name;
+	function_docs_detail::NameParameters(function.GetSignature(), doc.parameters);
 	CreateTableFunctionInfo info(std::move(function));
 	info.descriptions.push_back(function_docs_detail::ToDescription(doc));
 	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
 	loader.RegisterFunction(std::move(info));
-	function_docs_detail::AppendNamedParameters<TableFunctionCatalogEntry>(loader, CatalogType::TABLE_FUNCTION_ENTRY,
-	                                                                       name);
 }
 
 // ExtensionLoader has no overload taking a CreatePragmaFunctionInfo, so this does
 // what its RegisterFunction(PragmaFunctionSet) does, with the description attached.
 // Like that overload, it keeps the default ERROR_ON_CONFLICT.
 inline void RegisterDocumented(ExtensionLoader &loader, PragmaFunction function, const FunctionDoc &doc) {
-	auto name = function.name;
+	function_docs_detail::NameParameters(function.GetSignature(), doc.parameters);
+	auto name = function.GetName();
 	PragmaFunctionSet set(name);
 	set.AddFunction(std::move(function));
 	CreatePragmaFunctionInfo info(name, std::move(set));
 	info.descriptions.push_back(function_docs_detail::ToDescription(doc));
 	auto &db = loader.GetDatabaseInstance();
 	Catalog::GetSystemCatalog(db).CreatePragmaFunction(CatalogTransaction::GetSystemTransaction(db), info);
-	function_docs_detail::AppendNamedParameters<PragmaFunctionCatalogEntry>(loader, CatalogType::PRAGMA_FUNCTION_ENTRY,
-	                                                                        name);
 }
 
 } // namespace cityjson

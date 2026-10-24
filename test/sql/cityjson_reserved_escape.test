@@ -35,24 +35,24 @@ _ID,id
 # and read_flatcitybuf escapes it again, on the full and the selective path alike.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/escape.fcb' (FORMAT flatcitybuf);
+TO '{TEST_DIR}/escape.fcb' (FORMAT flatcitybuf);
 
 query R
-SELECT "_ID" FROM read_flatcitybuf('__TEST_DIR__/escape.fcb');
+SELECT "_ID" FROM read_flatcitybuf('{TEST_DIR}/escape.fcb');
 ----
 767157.0
 
 query TRT
-SELECT id, "_ID", CAST(other AS VARCHAR) FROM read_flatcitybuf('__TEST_DIR__/escape.fcb');
+SELECT id, "_ID", CAST(other AS VARCHAR) FROM read_flatcitybuf('{TEST_DIR}/escape.fcb');
 ----
 BID_f40f0a11-71b2-4de3-9f38-e23558b2f95b	767157.0	NULL
 
 statement ok
-COPY (SELECT * FROM read_flatcitybuf('__TEST_DIR__/escape.fcb')) TO '__TEST_DIR__/escape_fcb.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM read_flatcitybuf('{TEST_DIR}/escape.fcb')) TO '{TEST_DIR}/escape_fcb.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0') AND NOT regexp_matches(content, '"_ID"')
-FROM read_text('__TEST_DIR__/escape_fcb.city.jsonl');
+FROM read_text('{TEST_DIR}/escape_fcb.city.jsonl');
 ----
 true
 
@@ -60,15 +60,15 @@ true
 # and a filter on that column is answered through it.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/escape_indexed.fcb' (FORMAT flatcitybuf, attr_index '_ID');
+TO '{TEST_DIR}/escape_indexed.fcb' (FORMAT flatcitybuf, attr_index '_ID');
 
 query TR
-SELECT id, "_ID" FROM read_flatcitybuf('__TEST_DIR__/escape_indexed.fcb') WHERE "_ID" = 767157.0;
+SELECT id, "_ID" FROM read_flatcitybuf('{TEST_DIR}/escape_indexed.fcb') WHERE "_ID" = 767157.0;
 ----
 BID_f40f0a11-71b2-4de3-9f38-e23558b2f95b	767157.0
 
 query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/escape_indexed.fcb') WHERE "_ID" = 1.0;
+SELECT COUNT(*) FROM read_flatcitybuf('{TEST_DIR}/escape_indexed.fcb') WHERE "_ID" = 1.0;
 ----
 0
 
@@ -76,21 +76,21 @@ SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/escape_indexed.fcb') WHERE "
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/escape.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/escape.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0') AND NOT regexp_matches(content, '"_ID"')
-FROM read_text('__TEST_DIR__/escape.city.jsonl');
+FROM read_text('{TEST_DIR}/escape.city.jsonl');
 ----
 true
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/escape.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/escape.city.json' (FORMAT cityjson);
 
 query I
 SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0') AND NOT regexp_matches(content, '"_ID"')
-FROM read_text('__TEST_DIR__/escape.city.json');
+FROM read_text('{TEST_DIR}/escape.city.json');
 ----
 true
 
@@ -111,24 +111,24 @@ SELECT "_ID", CAST(other AS VARCHAR) FROM hel.building;
 767157.0	NULL
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('hel', '__TEST_DIR__/hel_pkg');
+SELECT COUNT(*) FROM cityparquet_write('hel', '{TEST_DIR}/hel_pkg');
 
 # The file holds the escaped column, and its footer lists it as an attribute.
 query T
 SELECT string_agg(column_name, ',' ORDER BY column_name)
-FROM (DESCRIBE SELECT * FROM read_parquet('__TEST_DIR__/hel_pkg/building.parquet'))
+FROM (DESCRIBE SELECT * FROM read_parquet('{TEST_DIR}/hel_pkg/building.parquet'))
 WHERE lower(ltrim(column_name, '_')) = 'id';
 ----
 _ID,id
 
 query I
 SELECT CAST(cityparquet_city_field(decode(value), 'attributes') AS VARCHAR) LIKE '%"_ID"%'
-FROM parquet_kv_metadata('__TEST_DIR__/hel_pkg/building.parquet') WHERE decode(key) = 'city';
+FROM parquet_kv_metadata('{TEST_DIR}/hel_pkg/building.parquet') WHERE decode(key) = 'city';
 ----
 true
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/hel_pkg', 'back');
+PRAGMA cityparquet_read('{TEST_DIR}/hel_pkg', 'back');
 
 query RT
 SELECT "_ID", CAST(other AS VARCHAR) FROM back.building;
@@ -136,11 +136,11 @@ SELECT "_ID", CAST(other AS VARCHAR) FROM back.building;
 767157.0	NULL
 
 statement ok
-COPY (SELECT * FROM back.building) TO '__TEST_DIR__/back.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM back.building) TO '{TEST_DIR}/back.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT regexp_matches(content, '"attributes":\{[^}]*"ID":767157\.0') AND NOT regexp_matches(content, '"_ID"')
-FROM read_text('__TEST_DIR__/back.city.jsonl');
+FROM read_text('{TEST_DIR}/back.city.jsonl');
 ----
 true
 
@@ -149,10 +149,10 @@ true
 statement ok
 COPY (SELECT replace(replace(rtrim(content, chr(10)), 'BID_f40f0a11', 'BID_00000000'), '"ID": 767157.0', '"ID": "767157-b"')
       FROM read_text('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/id_text.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+TO '{TEST_DIR}/id_text.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 
 statement ok
-PRAGMA insert_cityjsonseq('hel', '__TEST_DIR__/id_text.city.jsonl');
+PRAGMA insert_cityjsonseq('hel', '{TEST_DIR}/id_text.city.jsonl');
 
 query TT
 SELECT typeof("_ID"), string_agg("_ID", ',' ORDER BY "_ID") FROM hel.building GROUP BY ALL;
@@ -163,25 +163,25 @@ VARCHAR	767157-b,767157.0
 
 statement ok
 COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"_ID":') FROM read_text('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/underscore_id.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+TO '{TEST_DIR}/underscore_id.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 
 query RT
-SELECT "__ID", CAST(other AS VARCHAR) FROM read_cityjsonseq('__TEST_DIR__/underscore_id.city.jsonl');
+SELECT "__ID", CAST(other AS VARCHAR) FROM read_cityjsonseq('{TEST_DIR}/underscore_id.city.jsonl');
 ----
 767157.0	NULL
 
 statement error
-SELECT "_ID" FROM read_cityjsonseq('__TEST_DIR__/underscore_id.city.jsonl');
+SELECT "_ID" FROM read_cityjsonseq('{TEST_DIR}/underscore_id.city.jsonl');
 ----
 Referenced column "_ID" not found
 
 statement ok
-COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/underscore_id.city.jsonl'))
-TO '__TEST_DIR__/underscore_id_out.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM read_cityjsonseq('{TEST_DIR}/underscore_id.city.jsonl'))
+TO '{TEST_DIR}/underscore_id_out.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT regexp_matches(content, '"_ID":767157\.0') AND NOT regexp_matches(content, '"__ID"')
-FROM read_text('__TEST_DIR__/underscore_id_out.city.jsonl');
+FROM read_text('{TEST_DIR}/underscore_id_out.city.jsonl');
 ----
 true
 
@@ -189,30 +189,30 @@ true
 
 statement ok
 COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"children":') FROM read_text('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/children_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+TO '{TEST_DIR}/children_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 
 # The reserved `children` keeps its meaning: the building has no children.
 query RTT
-SELECT "_children", children, CAST(other AS VARCHAR) FROM read_cityjsonseq('__TEST_DIR__/children_attr.city.jsonl');
+SELECT "_children", children, CAST(other AS VARCHAR) FROM read_cityjsonseq('{TEST_DIR}/children_attr.city.jsonl');
 ----
 767157.0	NULL	NULL
 
 statement ok
-COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/children_attr.city.jsonl'))
-TO '__TEST_DIR__/children_attr_out.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM read_cityjsonseq('{TEST_DIR}/children_attr.city.jsonl'))
+TO '{TEST_DIR}/children_attr_out.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT regexp_matches(content, '"children":767157\.0') AND NOT regexp_matches(content, '"_children"')
-FROM read_text('__TEST_DIR__/children_attr_out.city.jsonl');
+FROM read_text('{TEST_DIR}/children_attr_out.city.jsonl');
 ----
 true
 
 statement ok
 COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"other":') FROM read_text('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/other_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+TO '{TEST_DIR}/other_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 
 query RT
-SELECT "_other", CAST(other AS VARCHAR) FROM read_cityjsonseq('__TEST_DIR__/other_attr.city.jsonl');
+SELECT "_other", CAST(other AS VARCHAR) FROM read_cityjsonseq('{TEST_DIR}/other_attr.city.jsonl');
 ----
 767157.0	NULL
 
@@ -223,25 +223,25 @@ statement ok
 PRAGMA cityparquet_init('oth');
 
 statement ok
-PRAGMA insert_cityjsonseq('oth', '__TEST_DIR__/other_attr.city.jsonl');
+PRAGMA insert_cityjsonseq('oth', '{TEST_DIR}/other_attr.city.jsonl');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('oth', '__TEST_DIR__/oth_pkg');
+SELECT COUNT(*) FROM cityparquet_write('oth', '{TEST_DIR}/oth_pkg');
 
 query RT
-SELECT "_other", CAST(other AS VARCHAR) FROM read_parquet('__TEST_DIR__/oth_pkg/building.parquet');
+SELECT "_other", CAST(other AS VARCHAR) FROM read_parquet('{TEST_DIR}/oth_pkg/building.parquet');
 ----
 767157.0	NULL
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/oth_pkg', 'oth_back');
+PRAGMA cityparquet_read('{TEST_DIR}/oth_pkg', 'oth_back');
 
 statement ok
-COPY (SELECT * FROM oth_back.building) TO '__TEST_DIR__/oth_back.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM oth_back.building) TO '{TEST_DIR}/oth_back.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT regexp_matches(content, '"other":767157\.0') AND NOT regexp_matches(content, '"_other"')
-FROM read_text('__TEST_DIR__/oth_back.city.jsonl');
+FROM read_text('{TEST_DIR}/oth_back.city.jsonl');
 ----
 true
 
@@ -249,10 +249,10 @@ true
 
 statement ok
 COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"Geometry_LoD2_2":') FROM read_text('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/lod_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+TO '{TEST_DIR}/lod_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 
 query R
-SELECT "_Geometry_LoD2_2" FROM read_cityjsonseq('__TEST_DIR__/lod_attr.city.jsonl');
+SELECT "_Geometry_LoD2_2" FROM read_cityjsonseq('{TEST_DIR}/lod_attr.city.jsonl');
 ----
 767157.0
 
@@ -263,20 +263,20 @@ foreach name geometry_lodging geometry_lod3 material_lod3 geometry material text
 
 statement ok
 COPY (SELECT replace(rtrim(content, chr(10)), '"ID":', '"${name}":') FROM read_text('test/data/address_location.city.jsonl'))
-TO '__TEST_DIR__/${name}_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+TO '{TEST_DIR}/${name}_attr.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 
 query RT
-SELECT "${name}", CAST(other AS VARCHAR) FROM read_cityjsonseq('__TEST_DIR__/${name}_attr.city.jsonl');
+SELECT "${name}", CAST(other AS VARCHAR) FROM read_cityjsonseq('{TEST_DIR}/${name}_attr.city.jsonl');
 ----
 767157.0	NULL
 
 statement ok
-COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/${name}_attr.city.jsonl'))
-TO '__TEST_DIR__/${name}_attr_out.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM read_cityjsonseq('{TEST_DIR}/${name}_attr.city.jsonl'))
+TO '{TEST_DIR}/${name}_attr_out.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT regexp_matches(content, '"${name}":767157\.0') AND NOT regexp_matches(content, '"_${name}"')
-FROM read_text('__TEST_DIR__/${name}_attr_out.city.jsonl');
+FROM read_text('{TEST_DIR}/${name}_attr_out.city.jsonl');
 ----
 true
 
@@ -288,20 +288,20 @@ statement ok
 PRAGMA cityparquet_init('s_${name}');
 
 statement ok
-PRAGMA insert_cityjsonseq('s_${name}', '__TEST_DIR__/${name}_attr.city.jsonl');
+PRAGMA insert_cityjsonseq('s_${name}', '{TEST_DIR}/${name}_attr.city.jsonl');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('s_${name}', '__TEST_DIR__/${name}_pkg');
+SELECT COUNT(*) FROM cityparquet_write('s_${name}', '{TEST_DIR}/${name}_pkg');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/${name}_pkg', 'b_${name}');
+PRAGMA cityparquet_read('{TEST_DIR}/${name}_pkg', 'b_${name}');
 
 statement ok
-COPY (SELECT * FROM "b_${name}".building) TO '__TEST_DIR__/${name}_pkg_out.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM "b_${name}".building) TO '{TEST_DIR}/${name}_pkg_out.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT regexp_matches(content, '"${name}":767157\.0') AND NOT regexp_matches(content, '"_${name}"')
-FROM read_text('__TEST_DIR__/${name}_pkg_out.city.jsonl');
+FROM read_text('{TEST_DIR}/${name}_pkg_out.city.jsonl');
 ----
 true
 

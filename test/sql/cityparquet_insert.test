@@ -26,6 +26,13 @@ SELECT COUNT(*) FROM ams.building;
 statement ok
 PRAGMA insert_cityjson('ams', 'test/data/minimal.city.json');
 
+# Precondition guards run as CREATE TABLE ... AS SELECT error(...); the script
+# drops that table again, so nothing is left behind in the session.
+query I
+SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = '__cp_check';
+----
+0
+
 query I
 SELECT COUNT(*) FROM ams.building;
 ----
@@ -231,8 +238,8 @@ SELECT COUNT(*) FROM solo.building;
 # --- regressions found by review ---------------------------------------------
 
 # An ALTER that adds a geometry LoD column is invisible to the reconcile that
-# follows in the same script, because a pragma generator sees the pre-batch
-# catalog. The bbox phase would then compute extents from the table's OLD
+# follows in the same script, because a pragma generator reads the catalog
+# before its own script runs. The bbox phase would then compute extents from the table's OLD
 # geometry columns and set the incoming rows' bbox to NULL despite their having
 # geometry. Here `bounds.building` starts with only LoD 2.2 and the incoming
 # file brings LoD 1.
@@ -353,12 +360,10 @@ SELECT COUNT(*) > 0 FROM cityparquet_validation WHERE severity = 'error';
 ----
 true
 
-# Two inserts batched in one submission both create the same previously absent
-# module table, with different LoDs. Each generator sees the pre-batch catalog,
-# so the second one's geometry column list is its own file's, not the union the
-# ALTERs really produce. Computing no extent for the first insert's rows means
-# "I could not see their geometry", not "they have none" -- clearing on that
-# would throw away the bbox the reader had already put there.
+# Two inserts submitted together, with different LoDs, route to the same
+# previously absent module table: the first creates it, the second evolves it.
+# Each pragma expands when it runs, so the second generator sees the table the
+# first created, and the result is the union schema with every row's bbox kept.
 #
 # Both fixtures hold a CityFurniture, at LoD 2.0 and LoD 1.0, so both route to
 # `city_furniture` and neither generator sees the other's geometry column.

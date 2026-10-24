@@ -232,7 +232,7 @@ static void ParseMetadataFromQuery(ClientContext &context, const std::string &qu
 	}
 
 	// Get column names from the result
-	auto &col_names = result->names;
+	auto &col_names = result->GetNames();
 
 	// Helper to extract {x, y, z} struct into array<double, 3>
 	auto extract_xyz_struct = [](const Value &v) -> std::optional<std::array<double, 3>> {
@@ -584,7 +584,11 @@ static void LoadSourceAppearance(ClientContext &context, const CopySourceRef &so
 }
 
 unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
-                                            const vector<string> &names, const vector<LogicalType> &sql_types) {
+                                            const vector<Identifier> &column_names,
+                                            const vector<LogicalType> &sql_types) {
+	// The column names as the source spells them: the document keys they become are
+	// case-sensitive, where an Identifier compares case-insensitively.
+	const auto names = IdentifiersToStrings(column_names);
 	auto bind_data = make_uniq<CityJSONCopyBindData>();
 	bind_data->file_path = input.info.file_path;
 	const auto &fmt = input.info.format;
@@ -603,7 +607,7 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 
 	// Parse options
 	for (auto &option : input.info.options) {
-		auto loption = StringUtil::Lower(option.first);
+		auto loption = StringUtil::Lower(option.first.GetIdentifierName());
 		if (option.second.empty()) {
 			continue;
 		}
@@ -1151,7 +1155,7 @@ static json StructPropsToJson(const Value &sval) {
 			continue; // absent key -> the reconstruction's own gates degrade cleanly
 		}
 		if (name == "type" || name == "lod") {
-			props[name] = child.ToString();
+			props[name.GetIdentifierName()] = child.ToString();
 		} else if (name == "surfaces") {
 			// `surfaces` is a VARCHAR holding a JSON array (extended +attributes and all).
 			auto s = child.ToString();
@@ -1167,7 +1171,7 @@ static json StructPropsToJson(const Value &sval) {
 				// leave `surfaces` unset -> no semantics emitted (better than garbage)
 			}
 		} else if (name == "face_semantics" || name == "shells") {
-			props[name] = ListValueToJson(child);
+			props[name.GetIdentifierName()] = ListValueToJson(child);
 		}
 	}
 	return props;
@@ -1442,10 +1446,11 @@ static json SidecarDefinitions(ClientContext &context, const std::string &query,
 		throw BinderException("%s query failed: %s", what, result->GetError());
 	}
 	static const std::map<std::string, std::string> renamed = {{"image_uri", "image"}, {"image_type", "type"}};
-	const auto &names = result->names;
+	const auto &names = result->GetNames();
+	const auto rows = result->Collection().GetRows();
 	idx_t id_col = DConstants::INVALID_INDEX;
 	for (idx_t col = 0; col < names.size(); col++) {
-		if (StringUtil::Lower(names[col]) == "id" && result->types[col].IsIntegral()) {
+		if (names[col] == "id" && result->GetTypes()[col].IsIntegral()) {
 			id_col = col;
 		}
 	}
@@ -1453,14 +1458,14 @@ static json SidecarDefinitions(ClientContext &context, const std::string &query,
 		throw BinderException("%s query: no integer `id` column", what);
 	}
 	std::map<int64_t, json> by_id;
-	for (idx_t row = 0; row < result->RowCount(); row++) {
-		const auto id_value = result->GetValue(id_col, row);
+	for (idx_t row = 0; row < rows.size(); row++) {
+		const auto id_value = rows.GetValue(id_col, row);
 		if (id_value.IsNull()) {
 			throw BinderException("%s query: a row has a NULL id", what);
 		}
 		json definition = json::object();
 		for (idx_t col = 0; col < names.size(); col++) {
-			const auto value = result->GetValue(col, row);
+			const auto value = rows.GetValue(col, row);
 			if (col == id_col || value.IsNull() || names[col] == "image_data") {
 				continue;
 			}
@@ -1478,8 +1483,8 @@ static json SidecarDefinitions(ClientContext &context, const std::string &query,
 				}
 				continue;
 			}
-			const auto found = renamed.find(names[col]);
-			const auto key = found == renamed.end() ? names[col] : found->second;
+			const auto found = renamed.find(names[col].GetIdentifierName());
+			const auto key = found == renamed.end() ? names[col].GetIdentifierName() : found->second;
 			switch (value.type().id()) {
 			case LogicalTypeId::BOOLEAN:
 				definition[key] = BooleanValue::Get(value);
@@ -1522,15 +1527,16 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 	if (result->HasError()) {
 		throw BinderException("implicit_geometries_query failed: " + result->GetError());
 	}
-	const auto &names = result->names;
-	const auto &types = result->types;
+	const auto &names = result->GetNames();
+	const auto rows = result->Collection().GetRows();
+	const auto &types = result->GetTypes();
 	idx_t id_col = DConstants::INVALID_INDEX;
 	std::vector<std::pair<idx_t, std::string>> geometry_cols; // column, LoD suffix
 	std::map<std::string, idx_t> properties_cols;
 	std::map<std::string, idx_t> material_cols;
 	std::map<std::string, idx_t> texture_cols;
 	for (idx_t col = 0; col < names.size(); col++) {
-		const auto lowered = StringUtil::Lower(names[col]);
+		const auto lowered = StringUtil::Lower(names[col].GetIdentifierName());
 		if (lowered == "id") {
 			if (!types[col].IsIntegral()) {
 				throw BinderException("implicit_geometries_query: `id` must be an integer column, got %s",
@@ -1558,8 +1564,8 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 	}
 
 	std::map<int64_t, json> by_id;
-	for (idx_t row = 0; row < result->RowCount(); row++) {
-		const auto id_value = result->GetValue(id_col, row);
+	for (idx_t row = 0; row < rows.size(); row++) {
+		const auto id_value = rows.GetValue(id_col, row);
 		if (id_value.IsNull()) {
 			throw BinderException("implicit_geometries_query: a row has a NULL id");
 		}
@@ -1569,7 +1575,7 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 		// .mdx): exactly one populated LoD group per row.
 		idx_t populated = 0;
 		for (const auto &entry : geometry_cols) {
-			populated += result->GetValue(entry.first, row).IsNull() ? 0 : 1;
+			populated += rows.GetValue(entry.first, row).IsNull() ? 0 : 1;
 		}
 		if (populated != 1) {
 			throw BinderException("implicit_geometries_query: relative geometry %d populates %d LoD geometry columns; "
@@ -1577,7 +1583,7 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 			                      id, static_cast<int64_t>(populated));
 		}
 		for (const auto &entry : geometry_cols) {
-			const auto value = result->GetValue(entry.first, row);
+			const auto value = rows.GetValue(entry.first, row);
 			if (value.IsNull()) {
 				continue;
 			}
@@ -1594,7 +1600,7 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 			geometry["boundaries"] = decoded.boundaries;
 			auto properties = properties_cols.find(entry.second);
 			if (properties != properties_cols.end()) {
-				const auto props_value = result->GetValue(properties->second, row);
+				const auto props_value = rows.GetValue(properties->second, row);
 				if (!props_value.IsNull()) {
 					const auto props = StructPropsToJson(props_value);
 					if (props.contains("type") && props["type"].is_string()) {
@@ -1614,14 +1620,14 @@ static void LoadTemplatesFromQuery(ClientContext &context, const std::string &qu
 			// Appearance in sidecar ids, flat per face; resolved below, once the
 			// definitions are known.
 			auto material = material_cols.find(entry.second);
-			if (material != material_cols.end() && !result->GetValue(material->second, row).IsNull()) {
+			if (material != material_cols.end() && !rows.GetValue(material->second, row).IsNull()) {
 				geometry["__material"] =
-				    MaterialCellToFlatJson(MaterialCellFromValue(result->GetValue(material->second, row)));
+				    MaterialCellToFlatJson(MaterialCellFromValue(rows.GetValue(material->second, row)));
 			}
 			auto texture = texture_cols.find(entry.second);
-			if (texture != texture_cols.end() && !result->GetValue(texture->second, row).IsNull()) {
+			if (texture != texture_cols.end() && !rows.GetValue(texture->second, row).IsNull()) {
 				geometry["__texture"] =
-				    TextureCellToFlatJson(TextureCellFromValue(result->GetValue(texture->second, row)));
+				    TextureCellToFlatJson(TextureCellFromValue(rows.GetValue(texture->second, row)));
 			}
 		}
 		if (geometry.is_null()) {
@@ -2156,7 +2162,7 @@ void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data_p, Gl
 				if (!wkb_views[col]) {
 					wkb_views[col] = make_uniq<Vector>(LogicalType::BLOB);
 					// Fully qualified: cityjson has its own `Geometry` type.
-					::duckdb::Geometry::ToBinary(input.data[col], *wkb_views[col], input.size());
+					::duckdb::Geometry::ToBinary(input.data[col], *wkb_views[col]);
 				}
 				auto wkb_val = wkb_views[col]->GetValue(row);
 				if (!wkb_val.IsNull()) {

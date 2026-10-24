@@ -137,10 +137,10 @@ true
 # --- a remote source is a source like any other: its CRS is inherited ---
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl'))
-TO '__TEST_DIR__/remote_rt.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/remote_rt.city.jsonl' (FORMAT cityjsonseq);
 
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjsonseq_metadata('__TEST_DIR__/remote_rt.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/remote_rt.city.jsonl');
 ----
 EPSG	7415

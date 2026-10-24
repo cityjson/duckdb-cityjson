@@ -80,8 +80,7 @@ std::string QualifiedName(const std::string &schema, const std::string &table);
 //! resolves to nothing; pass the parts.
 std::string QualifiedName(const std::string &catalog, const std::string &schema, const std::string &table);
 
-//! Single-quoted SQL string literal (KeywordHelper::WriteQuoted). SQLString is a
-//! formatting wrapper, not a quoting function -- never use it for this.
+//! Single-quoted SQL string literal (SQLString::ToString).
 std::string Literal(const std::string &text);
 
 //! geometry_lod* column names of one table, in catalog order. Never hard-code an LoD

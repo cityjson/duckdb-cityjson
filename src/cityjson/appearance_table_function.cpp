@@ -92,7 +92,7 @@ struct AppearanceFunctionInfo : public TableFunctionInfo {
 };
 
 unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto &info = input.info->Cast<AppearanceFunctionInfo>();
 	const SidecarKind kind = info.kind;
 	const char *function_name = info.function_name.c_str();
@@ -156,7 +156,7 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 		                         sidecar_types);
 	}
 	for (idx_t i = 0; i < sidecar_names.size(); i++) {
-		names.push_back(sidecar_names[i]);
+		names.emplace_back(sidecar_names[i]);
 		return_types.push_back(sidecar_types[i]);
 	}
 	return std::move(result);
@@ -187,12 +187,12 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 		const auto index = state.offset;
 		// id is the ordinal position in the source array -- the value a geometry's
 		// appearance map references.
-		output.SetValue(0, emitted, Value::BIGINT(static_cast<int64_t>(index)));
+		output.data[0].SetValue(emitted, Value::BIGINT(static_cast<int64_t>(index)));
 
 		if (bind_data.kind == SidecarKind::IMPLICIT_GEOMETRIES) {
 			const auto &geometry = bind_data.templates.templates[index];
 			const auto lod = LODTableUtils::NormalizeLOD(geometry.lod);
-			output.SetValue(1, emitted, Value(LogicalType(LogicalTypeId::VARCHAR))); // name: none in CityJSON
+			output.data[1].SetValue(emitted, Value(LogicalType(LogicalTypeId::VARCHAR))); // name: none in CityJSON
 
 			for (size_t l = 0; l < bind_data.relative_geometry_lods.size(); l++) {
 				const idx_t base = 2 + l * 4;
@@ -202,7 +202,7 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 					// sparse by construction, which is the cost of keeping one LoD-naming
 					// rule across the whole format.
 					for (idx_t c = 0; c < 4; c++) {
-						output.SetValue(base + c, emitted, Value(output.data[base + c].GetType()));
+						output.data[base + c].SetValue(emitted, Value(output.data[base + c].GetType()));
 					}
 					continue;
 				}
@@ -210,9 +210,9 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 				// no dataset transform is applied -- relative geometries are exempt from
 				// the file CRS.
 				auto wkb = CityObjectUtils::GetGeometryWKB(geometry, bind_data.templates.vertices, std::nullopt);
-				output.SetValue(base, emitted, Value::BLOB(wkb.data(), wkb.size()));
+				output.data[base].SetValue(emitted, Value::BLOB(wkb.data(), wkb.size()));
 				auto props = CityObjectUtils::GetGeometryPropertiesStruct(geometry);
-				output.SetValue(base + 1, emitted, Value(props.is_null() ? std::string() : props.dump()));
+				output.data[base + 1].SetValue(emitted, Value(props.is_null() ? std::string() : props.dump()));
 				// A relative geometry's appearance is flattened and resolved like an
 				// object row's: emitted verbatim, its rings would keep source-local
 				// texture ids and bare UV indices, which no consumer of the package can
@@ -241,38 +241,38 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 						texture_cell = TextureCellValue(cell);
 					}
 				}
-				output.SetValue(base + 2, emitted, material_cell);
-				output.SetValue(base + 3, emitted, texture_cell);
+				output.data[base + 2].SetValue(emitted, material_cell);
+				output.data[base + 3].SetValue(emitted, texture_cell);
 			}
 		} else if (bind_data.kind == SidecarKind::MATERIALS) {
 			const auto &material = bind_data.index.materials[index];
-			output.SetValue(1, emitted, StringOrNull(material.name));
-			output.SetValue(2, emitted, DoubleOrNull(material.ambient_intensity));
-			output.SetValue(3, emitted, DoubleListOrNull(material.diffuse_color));
-			output.SetValue(4, emitted, DoubleListOrNull(material.specular_color));
-			output.SetValue(5, emitted, DoubleListOrNull(material.emissive_color));
-			output.SetValue(6, emitted, DoubleOrNull(material.transparency));
-			output.SetValue(7, emitted, DoubleOrNull(material.shininess));
-			output.SetValue(8, emitted,
-			                material.is_smooth.has_value() ? Value::BOOLEAN(material.is_smooth.value())
-			                                               : Value(LogicalType(LogicalTypeId::BOOLEAN)));
-			output.SetValue(9, emitted, OtherOrNull(material.other));
+			output.data[1].SetValue(emitted, StringOrNull(material.name));
+			output.data[2].SetValue(emitted, DoubleOrNull(material.ambient_intensity));
+			output.data[3].SetValue(emitted, DoubleListOrNull(material.diffuse_color));
+			output.data[4].SetValue(emitted, DoubleListOrNull(material.specular_color));
+			output.data[5].SetValue(emitted, DoubleListOrNull(material.emissive_color));
+			output.data[6].SetValue(emitted, DoubleOrNull(material.transparency));
+			output.data[7].SetValue(emitted, DoubleOrNull(material.shininess));
+			output.data[8].SetValue(emitted, material.is_smooth.has_value()
+			                                     ? Value::BOOLEAN(material.is_smooth.value())
+			                                     : Value(LogicalType(LogicalTypeId::BOOLEAN)));
+			output.data[9].SetValue(emitted, OtherOrNull(material.other));
 		} else {
 			const auto &texture = bind_data.index.textures[index];
-			output.SetValue(1, emitted, StringOrNull(texture.image_uri));
+			output.data[1].SetValue(emitted, StringOrNull(texture.image_uri));
 			// image_data has no CityJSON source: the format references images by URI.
-			output.SetValue(2, emitted, Value(LogicalType(LogicalTypeId::BLOB)));
-			output.SetValue(3, emitted, StringOrNull(texture.image_type));
-			output.SetValue(4, emitted, StringOrNull(texture.wrap_mode));
-			output.SetValue(5, emitted, StringOrNull(texture.texture_type));
-			output.SetValue(6, emitted, DoubleListOrNull(texture.border_color));
-			output.SetValue(7, emitted, OtherOrNull(texture.other));
+			output.data[2].SetValue(emitted, Value(LogicalType(LogicalTypeId::BLOB)));
+			output.data[3].SetValue(emitted, StringOrNull(texture.image_type));
+			output.data[4].SetValue(emitted, StringOrNull(texture.wrap_mode));
+			output.data[5].SetValue(emitted, StringOrNull(texture.texture_type));
+			output.data[6].SetValue(emitted, DoubleListOrNull(texture.border_color));
+			output.data[7].SetValue(emitted, OtherOrNull(texture.other));
 		}
 
 		state.offset++;
 		emitted++;
 	}
-	output.SetCardinality(emitted);
+	output.SetChildCardinality(emitted);
 }
 
 } // namespace
@@ -351,7 +351,7 @@ void ImplicitGeometryColumns(const GeometryTemplates &templates, std::vector<std
 }
 
 TableFunction CreateAppearanceTableFunction(const std::string &name, SidecarKind kind, ReaderOpener opener) {
-	TableFunction func(name, {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, AppearanceBind);
+	TableFunction func(Identifier(name), {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, AppearanceBind);
 	func.init_global = AppearanceInitGlobal;
 	func.function_info = make_shared_ptr<AppearanceFunctionInfo>(name, kind, std::move(opener));
 	return func;

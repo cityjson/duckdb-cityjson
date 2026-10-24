@@ -12,20 +12,20 @@ require cityjson
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
-TO '__TEST_DIR__/appearance.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/appearance.city.jsonl' (FORMAT cityjsonseq);
 
 # 4 materials in, 4 materials out. Before this fix: 0.
 query II
 SELECT
   (SELECT COUNT(*) FROM cityjson_materials('test/data/railway_appearance.city.jsonl')),
-  (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/appearance.city.jsonl'));
+  (SELECT COUNT(*) FROM cityjson_materials('{TEST_DIR}/appearance.city.jsonl'));
 ----
 4	4
 
 query II
 SELECT
   (SELECT COUNT(*) FROM cityjson_textures('test/data/railway_appearance.city.jsonl')),
-  (SELECT COUNT(*) FROM cityjson_textures('__TEST_DIR__/appearance.city.jsonl'));
+  (SELECT COUNT(*) FROM cityjson_textures('{TEST_DIR}/appearance.city.jsonl'));
 ----
 4	4
 
@@ -36,7 +36,7 @@ query I
 SELECT COUNT(*) FROM (
   SELECT id, name, diffuseColor FROM cityjson_materials('test/data/railway_appearance.city.jsonl')
   EXCEPT
-  SELECT id, name, diffuseColor FROM cityjson_materials('__TEST_DIR__/appearance.city.jsonl')
+  SELECT id, name, diffuseColor FROM cityjson_materials('{TEST_DIR}/appearance.city.jsonl')
 );
 ----
 0
@@ -45,24 +45,24 @@ query I
 SELECT COUNT(*) FROM (
   SELECT id, image_uri, wrapMode FROM cityjson_textures('test/data/railway_appearance.city.jsonl')
   EXCEPT
-  SELECT id, image_uri, wrapMode FROM cityjson_textures('__TEST_DIR__/appearance.city.jsonl')
+  SELECT id, image_uri, wrapMode FROM cityjson_textures('{TEST_DIR}/appearance.city.jsonl')
 );
 ----
 0
 
 # The written file must actually contain an appearance object.
 query I
-SELECT content LIKE '%"appearance"%' FROM read_text('__TEST_DIR__/appearance.city.jsonl');
+SELECT content LIKE '%"appearance"%' FROM read_text('{TEST_DIR}/appearance.city.jsonl');
 ----
 true
 
 # No dangling reference: every material index a row carries must be in range of
 # the materials actually written.
 query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/appearance.city.jsonl')
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/appearance.city.jsonl')
 WHERE material_lod3_0 IS NOT NULL
   AND list_max(cityjson_appearance_ids(material_lod3_0))
-      >= (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/appearance.city.jsonl'));
+      >= (SELECT COUNT(*) FROM cityjson_materials('{TEST_DIR}/appearance.city.jsonl'));
 ----
 0
 
@@ -73,7 +73,7 @@ WHERE material_lod3_0 IS NOT NULL
 # happened to land in the header instead.
 statement error
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
-TO '__TEST_DIR__/appearance.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/appearance.city.json' (FORMAT cityjson);
 ----
 carry their own materials or textures
 
@@ -85,17 +85,17 @@ carry their own materials or textures
 # A Solid's material comes back nested per shell.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
-TO '__TEST_DIR__/solid_material_rt.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/solid_material_rt.city.json' (FORMAT cityjson);
 
 query I
 SELECT regexp_matches(content, '"material":\{"visual":\{"values":\[\[[0-9,]+\]\]\}\}')
-FROM read_text('__TEST_DIR__/solid_material_rt.city.json');
+FROM read_text('{TEST_DIR}/solid_material_rt.city.json');
 ----
 true
 
 query I
 SELECT COUNT(*) FROM (
-  SELECT material_lod2_2['visual'] FROM read_cityjson('__TEST_DIR__/solid_material_rt.city.json', lod := '2.2')
+  SELECT material_lod2_2['visual'] FROM read_cityjson('{TEST_DIR}/solid_material_rt.city.json', lod := '2.2')
   EXCEPT ALL
   SELECT material_lod2_2['visual'] FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2')
 );
@@ -106,13 +106,13 @@ SELECT COUNT(*) FROM (
 # (solid_texture.city.json carries a texture only, no material).
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))
-TO '__TEST_DIR__/solid_texture_rt.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/solid_texture_rt.city.json' (FORMAT cityjson);
 
 # A ring is an id followed by four integer UV indices, never [u, v] pairs, and the pool exists.
 query II
 SELECT regexp_matches(content, '\[0,[0-9]+,[0-9]+,[0-9]+,[0-9]+\]'),
        regexp_matches(content, '"vertices-texture":\[\[')
-FROM read_text('__TEST_DIR__/solid_texture_rt.city.json');
+FROM read_text('{TEST_DIR}/solid_texture_rt.city.json');
 ----
 true	true
 
@@ -120,7 +120,7 @@ true	true
 query I
 SELECT COUNT(*) FROM (
   SELECT texture_lod2_2['visual'][1][1].uv
-  FROM read_cityjson('__TEST_DIR__/solid_texture_rt.city.json', lod := '2.2')
+  FROM read_cityjson('{TEST_DIR}/solid_texture_rt.city.json', lod := '2.2')
   EXCEPT ALL
   SELECT texture_lod2_2['visual'][1][1].uv
   FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2')
@@ -133,13 +133,13 @@ SELECT COUNT(*) FROM (
 # railway_appearance.city.jsonl's one textured feature proves that path too.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
-TO '__TEST_DIR__/appearance_seq_rt.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/appearance_seq_rt.city.jsonl' (FORMAT cityjsonseq);
 
 # Two lines carry it: the header's own (LoadSourceAppearance's verbatim carry, unrelated
 # to any geometry -- the header has none) and the one textured feature's rebuilt pool.
 query I
 SELECT COUNT(*) FROM (
-  SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/appearance_seq_rt.city.jsonl')
+  SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/appearance_seq_rt.city.jsonl')
 ) WHERE line LIKE '%"vertices-texture":[[%';
 ----
 2
@@ -147,7 +147,7 @@ SELECT COUNT(*) FROM (
 query I
 SELECT COUNT(*) FROM (
   SELECT texture_lod3_0['visual'] AS t
-  FROM read_cityjsonseq('__TEST_DIR__/appearance_seq_rt.city.jsonl')
+  FROM read_cityjsonseq('{TEST_DIR}/appearance_seq_rt.city.jsonl')
   WHERE id = 'GMLID_BUI100628_817_8083'
   EXCEPT ALL
   SELECT texture_lod3_0['visual']
@@ -165,7 +165,7 @@ SELECT COUNT(*) FROM (
 #     silently disagree (cityjson_copy_sidecar_appearance.test passes the queries).
 statement error
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
-TO '__TEST_DIR__/sidecar_refused.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/sidecar_refused.city.jsonl' (FORMAT cityjsonseq);
 ----
 read with appearance := 'sidecar'
 
@@ -176,7 +176,7 @@ read with appearance := 'sidecar'
 statement error
 COPY (SELECT * REPLACE (MAP {'visual': [[{'id': 5, 'uv': NULL}]]}::MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) AS texture_lod2_2)
       FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))
-TO '__TEST_DIR__/bad_cell.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/bad_cell.city.json' (FORMAT cityjson);
 ----
 object cube: texture_lod2_2: texture cell: a ring's id and uv must be NULL together
 
@@ -187,7 +187,7 @@ object cube: texture_lod2_2: texture cell: a ring's id and uv must be NULL toget
 statement error
 COPY (SELECT * REPLACE (MAP {'visual': [0, 1]}::MAP(VARCHAR, BIGINT[]) AS material_lod2_2)
       FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
-TO '__TEST_DIR__/short_cell.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/short_cell.city.json' (FORMAT cityjson);
 ----
 theme 'visual' has 2 entries for 6 faces
 
@@ -199,12 +199,12 @@ theme 'visual' has 2 entries for 6 faces
 #     verbatim, vertices-texture freshly interned) is all a feature needs.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
-TO '__TEST_DIR__/appearance_rt.fcb' (FORMAT flatcitybuf);
+TO '{TEST_DIR}/appearance_rt.fcb' (FORMAT flatcitybuf);
 
 query I
 SELECT COUNT(*) FROM (
   SELECT material_lod3_0['visual'] AS m
-  FROM read_flatcitybuf('__TEST_DIR__/appearance_rt.fcb')
+  FROM read_flatcitybuf('{TEST_DIR}/appearance_rt.fcb')
   WHERE id = 'GMLID_855011_330784_753'
   EXCEPT ALL
   SELECT material_lod3_0['visual']
@@ -217,7 +217,7 @@ SELECT COUNT(*) FROM (
 query I
 SELECT COUNT(*) FROM (
   SELECT texture_lod3_0['visual'][1][1].uv AS uv
-  FROM read_flatcitybuf('__TEST_DIR__/appearance_rt.fcb')
+  FROM read_flatcitybuf('{TEST_DIR}/appearance_rt.fcb')
   WHERE id = 'GMLID_BUI100628_817_8083'
   EXCEPT ALL
   SELECT texture_lod3_0['visual'][1][1].uv

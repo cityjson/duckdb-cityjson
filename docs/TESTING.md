@@ -126,9 +126,6 @@ FROM read_cityjson('https://storage.googleapis.com/cityjson/lod3_railway.city.js
 
 ## 11 — Build a package schema from a CityJSON read
 
-Submit each statement separately — DuckDB expands every pragma in a script before running
-any of it, so `cityparquet_init` batched with the `CREATE SCHEMA` fails.
-
 ```sql
 CREATE SCHEMA pkg;
 CREATE TABLE pkg.building AS
@@ -324,7 +321,7 @@ FROM parquet_kv_metadata('/tmp/cp_test/fresh/building.parquet') WHERE decode(key
 │       file       │ action  │ rows  │  bytes  │
 │     varchar      │ varchar │ int64 │  int64  │
 ├──────────────────┼─────────┼───────┼─────────┤
-│ building.parquet │ written │  2231 │ 3755583 │
+│ building.parquet │ written │  2231 │ 3741091 │
 │ metadata.json    │ written │     0 │    6764 │
 └──────────────────┴─────────┴───────┴─────────┘
 ┌──────────────────────────────────┐
@@ -463,7 +460,7 @@ LEFT JOIN read_parquet('test/data/cityparquet_rs_delft/building.parquet') s USIN
 │       file       │ action  │ rows  │ bytes │
 │     varchar      │ varchar │ int64 │ int64 │
 ├──────────────────┼─────────┼───────┼───────┤
-│ building.parquet │ written │    22 │ 72203 │
+│ building.parquet │ written │    22 │ 73904 │
 │ metadata.json    │ written │     0 │  7078 │
 └──────────────────┴─────────┴───────┴───────┘
 ┌──────────┬───────────────┐

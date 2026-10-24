@@ -27,12 +27,12 @@ statement ok
 PRAGMA insert_cityjsonseq('j', 'test/data/railway_appearance.city.jsonl');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('j', '__TEST_DIR__/json_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('j', '{TEST_DIR}/json_pkg', crs => 'EPSG:7415');
 
 # Every `other` and every `surfaces`, in every file, object table or sidecar.
 query TTI
 SELECT parse_filename(file_name), name, COUNT(*)
-FROM parquet_schema('__TEST_DIR__/json_pkg/*.parquet')
+FROM parquet_schema('{TEST_DIR}/json_pkg/*.parquet')
 WHERE name IN ('other', 'surfaces') AND logical_type = 'JsonType()' AND converted_type = 'JSON'
 GROUP BY ALL ORDER BY ALL;
 ----
@@ -47,7 +47,7 @@ materials.parquet	other	1
 textures.parquet	other	1
 
 query I
-SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/json_pkg/*.parquet')
+SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/json_pkg/*.parquet')
 WHERE name IN ('other', 'surfaces') AND logical_type IS DISTINCT FROM 'JsonType()';
 ----
 0
@@ -55,7 +55,7 @@ WHERE name IN ('other', 'surfaces') AND logical_type IS DISTINCT FROM 'JsonType(
 # The annotation is the only change: the text is the same text.
 query I
 SELECT COUNT(*) FROM (
-  SELECT id, CAST(geometry_properties_lod2_2.surfaces AS VARCHAR) FROM read_parquet('__TEST_DIR__/json_pkg/building.parquet')
+  SELECT id, CAST(geometry_properties_lod2_2.surfaces AS VARCHAR) FROM read_parquet('{TEST_DIR}/json_pkg/building.parquet')
   EXCEPT ALL
   SELECT id, geometry_properties_lod2_2.surfaces FROM j.building);
 ----
@@ -76,7 +76,7 @@ statement ok
 UPDATE bad.building SET other = '{not json' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 
 statement error
-SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('bad', '{TEST_DIR}/bad_pkg', crs => 'EPSG:7415');
 ----
 not valid JSON
 
@@ -86,7 +86,7 @@ statement ok
 UPDATE bad.building SET other = '[1, 2]' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 
 statement error
-SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('bad', '{TEST_DIR}/bad_pkg', crs => 'EPSG:7415');
 ----
 not a JSON object
 
@@ -94,7 +94,7 @@ statement ok
 UPDATE bad.building SET other = '42' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 
 statement error
-SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('bad', '{TEST_DIR}/bad_pkg', crs => 'EPSG:7415');
 ----
 not a JSON object
 
@@ -102,7 +102,7 @@ statement ok
 UPDATE bad.building SET other = ' "text"' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 
 statement error
-SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('bad', '{TEST_DIR}/bad_pkg', crs => 'EPSG:7415');
 ----
 not a JSON object
 
@@ -110,29 +110,29 @@ statement ok
 UPDATE bad.building SET other = ' {"surveyed": true}' WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('bad', '__TEST_DIR__/bad_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('bad', '{TEST_DIR}/bad_pkg', crs => 'EPSG:7415');
 
 # Reading the JSON-typed package back, through cityparquet_read: an insert of a
 # CityJSON source (whose reader carries JSON as VARCHAR) widens nothing and refuses
 # nothing, and the package writes out again.
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/json_pkg', 'jr');
+PRAGMA cityparquet_read('{TEST_DIR}/json_pkg', 'jr');
 
 statement ok
 PRAGMA insert_cityjsonseq('jr', 'test/data/delft_append.city.jsonl');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('jr', '__TEST_DIR__/json_pkg_again', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('jr', '{TEST_DIR}/json_pkg_again', crs => 'EPSG:7415');
 
 query I
-SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/json_pkg_again/building.parquet')
+SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/json_pkg_again/building.parquet')
 WHERE name IN ('other', 'surfaces') AND logical_type = 'JsonType()';
 ----
 5
 
 # ...and back to CityJSON, semantics intact.
 statement ok
-COPY (SELECT * FROM jr.building) TO '__TEST_DIR__/json_pkg.city.jsonl' (FORMAT cityjsonseq, crs 'EPSG:7415');
+COPY (SELECT * FROM jr.building) TO '{TEST_DIR}/json_pkg.city.jsonl' (FORMAT cityjsonseq, crs 'EPSG:7415');
 
 query I
 SELECT COUNT(*) FROM (
@@ -140,7 +140,7 @@ SELECT COUNT(*) FROM (
   FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
   EXCEPT ALL
   SELECT id, geometry_properties_lod2_2.surfaces, geometry_properties_lod2_2.face_semantics
-  FROM read_cityjsonseq('__TEST_DIR__/json_pkg.city.jsonl'));
+  FROM read_cityjsonseq('{TEST_DIR}/json_pkg.city.jsonl'));
 ----
 0
 
@@ -150,7 +150,7 @@ statement ok
 CREATE SCHEMA h;
 
 statement ok
-CREATE TABLE h.building AS SELECT * FROM read_parquet('__TEST_DIR__/json_pkg/building.parquet');
+CREATE TABLE h.building AS SELECT * FROM read_parquet('{TEST_DIR}/json_pkg/building.parquet');
 
 statement ok
 PRAGMA cityparquet_init('h');
@@ -159,10 +159,10 @@ statement ok
 PRAGMA insert_cityjsonseq('h', 'test/data/delft_append.city.jsonl');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/json_pkg_hand', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('h', '{TEST_DIR}/json_pkg_hand', crs => 'EPSG:7415');
 
 query I
-SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/json_pkg_hand/building.parquet') WHERE id LIKE '%-appended%';
+SELECT COUNT(*) FROM read_parquet('{TEST_DIR}/json_pkg_hand/building.parquet') WHERE id LIKE '%-appended%';
 ----
 2
 
@@ -170,26 +170,26 @@ SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/json_pkg_hand/building.parquet')
 # JSON as VARCHAR -- reads as before and is written back with the JSON type.
 # (The package directory is made by writing it first; its one table is then replaced.)
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/utf8_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('h', '{TEST_DIR}/utf8_pkg', crs => 'EPSG:7415');
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/utf8_pkg/building.parquet' (FORMAT parquet);
+TO '{TEST_DIR}/utf8_pkg/building.parquet' (FORMAT parquet);
 
 query I
-SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/utf8_pkg/building.parquet')
+SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/utf8_pkg/building.parquet')
 WHERE name IN ('other', 'surfaces') AND converted_type = 'UTF8';
 ----
 5
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/utf8_pkg', 'u');
+PRAGMA cityparquet_read('{TEST_DIR}/utf8_pkg', 'u');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('u', '__TEST_DIR__/utf8_rewritten', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('u', '{TEST_DIR}/utf8_rewritten', crs => 'EPSG:7415');
 
 query I
-SELECT COUNT(*) FROM parquet_schema('__TEST_DIR__/utf8_rewritten/building.parquet')
+SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/utf8_rewritten/building.parquet')
 WHERE name IN ('other', 'surfaces') AND logical_type IS DISTINCT FROM 'JsonType()';
 ----
 0

@@ -236,10 +236,10 @@ have a scalar twin returning the same text without running it, which makes the
 layer inspectable and testable as strings. (The coverage is not total: of the
 three insert pragmas only the CityJSON one has a twin.)
 
-The cost is that generation happens *before* execution, for the whole submitted
-script: a generator's view of the catalog and data is pre-batch. Everything
-generated is therefore written to be idempotent, and anything genuinely
-destination-dependent is deferred into the generated SQL rather than decided
+The cost is that generation happens *before* the generated SQL runs: a pragma
+sees what earlier statements did, but not what its own script is about to do. A
+table the script creates is handed forward rather than looked up, and anything
+that depends on row data is deferred into the generated SQL rather than decided
 while generating it.
 
 **One function breaks the rule, for a reason worth remembering.** The package

@@ -71,7 +71,7 @@ is the authority on the encoding; this repo implements it.
 
 ```sh
 just build                     # first configure + full release build
-just rebuild                   # incremental: extension + duckdb CLI + unittest
+just rebuild                   # incremental: extension + duckdb CLI + unittest + local repository
 make test                      # the sqllogictest suite
 ```
 
@@ -85,9 +85,11 @@ manifest install run at all. Export `VCPKG_ROOT` and the justfile derives
 `VCPKG_TOOLCHAIN_PATH` wins over the derivation. Driving `make release` directly,
 outside the justfile, means setting `VCPKG_TOOLCHAIN_PATH` yourself.
 
-**`just rebuild` (or the `unittest` target) is not optional.** `make test` runs
-`build/release/test/unittest` but does **not** rebuild it, so omitting the target
-tests a stale binary and reports green on code that never ran.
+**`just rebuild` is not optional.** `make test` runs `build/release/test/unittest`
+but does **not** rebuild it, and the runner links no extension: `require cityjson`
+loads the copy in `build/release/repository/`, which only the
+`duckdb_local_extension_repo` target refreshes. Building `unittest` alone tests a
+stale extension and reports green on code that never ran.
 
 Interactive check:
 

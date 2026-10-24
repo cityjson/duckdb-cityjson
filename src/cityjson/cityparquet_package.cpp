@@ -1,4 +1,7 @@
+#include "cityjson/cityparquet_sql_common.hpp"
 #include "cityjson/cityparquet_package.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 
 #include "cityjson/column_types.hpp"
 #include "cityjson/function_docs.hpp"
@@ -14,7 +17,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 
 #include <algorithm>
 #include <map>
@@ -111,16 +114,16 @@ std::string CityJSONTypeForCityGMLClass(const std::string &citygml_class) {
 }
 
 std::string QualifiedName(const std::string &schema, const std::string &table) {
-	return KeywordHelper::WriteOptionallyQuoted(schema) + "." + KeywordHelper::WriteOptionallyQuoted(table);
+	return SQLIdentifier::ToString(schema) + "." + SQLIdentifier::ToString(table);
 }
 
 std::string QualifiedName(const std::string &catalog, const std::string &schema, const std::string &table) {
-	return KeywordHelper::WriteOptionallyQuoted(catalog) + "." + KeywordHelper::WriteOptionallyQuoted(schema) + "." +
-	       KeywordHelper::WriteOptionallyQuoted(table);
+	return SQLIdentifier::ToString(catalog) + "." + SQLIdentifier::ToString(schema) + "." +
+	       SQLIdentifier::ToString(table);
 }
 
 std::string Literal(const std::string &text) {
-	return KeywordHelper::WriteQuoted(text, '\'');
+	return SQLString::ToString(text);
 }
 
 namespace {
@@ -128,10 +131,10 @@ namespace {
 //! Lower-cased names of the tables that exist in `schema`.
 std::set<std::string> TablesInSchema(ClientContext &context, const std::string &schema) {
 	std::set<std::string> present;
-	auto &schema_entry = Catalog::GetSchema(context, INVALID_CATALOG, schema);
+	auto &schema_entry = Catalog::GetSchema(context, Identifier::InvalidCatalog(), Identifier(schema));
 	schema_entry.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
 		if (entry.type == CatalogType::TABLE_ENTRY) {
-			present.insert(StringUtil::Lower(entry.name));
+			present.insert(StringUtil::Lower(entry.name.GetIdentifierName()));
 		}
 	});
 	return present;
@@ -163,17 +166,12 @@ namespace {
 //! Column names of `schema.table` matching `prefix` + the LoD suffix grammar.
 std::vector<std::string> ColumnsWithPrefix(ClientContext &context, const std::string &schema, const std::string &table,
                                            const std::string &prefix) {
-	// The non-templated GetEntry, deliberately: Catalog::GetEntry<TableCatalogEntry>
-	// binds a reference to TableCatalogEntry::Name for its error message, which
-	// ODR-uses that static member and emits a comdat definition colliding at link time
-	// with DuckDB's own strong definition. Same trap as LogicalType::DOUBLE in
-	// wkb_extent.cpp.
 	std::vector<std::string> found;
-	auto &catalog_entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	auto &catalog_entry = LookupTable(context, schema, table);
 	auto &entry = catalog_entry.Cast<TableCatalogEntry>();
 	for (auto &column : entry.GetColumns().Logical()) {
-		if (MatchesLodSuffix(StringUtil::Lower(column.Name()), prefix)) {
-			found.push_back(column.Name());
+		if (MatchesLodSuffix(StringUtil::Lower(column.Name().GetIdentifierName()), prefix)) {
+			found.push_back(column.Name().GetIdentifierName());
 		}
 	}
 	return found;
@@ -196,8 +194,8 @@ static std::vector<std::string> RegisteredObjectTables(ClientContext &context, c
 	if (result->HasError()) {
 		return registered;
 	}
-	for (idx_t row = 0; row < result->RowCount(); row++) {
-		registered.push_back(result->GetValue(0, row).ToString());
+	for (auto &row : result->Collection().GetRows()) {
+		registered.push_back(row.GetValue(0).ToString());
 	}
 	return registered;
 }
@@ -239,9 +237,9 @@ std::vector<std::string> AppearanceLodColumns(ClientContext &context, const std:
 }
 
 bool HasColumn(ClientContext &context, const std::string &schema, const std::string &table, const std::string &column) {
-	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	auto &entry = LookupTable(context, schema, table);
 	for (auto &existing : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		if (StringUtil::Lower(existing.Name()) == column) {
+		if (StringUtil::Lower(existing.Name().GetIdentifierName()) == column) {
 			return true;
 		}
 	}
@@ -319,29 +317,22 @@ std::string BuildInitSQL(ClientContext &context, const std::string &schema) {
 //! insert mismatch checks, which skip on NULL) and re-emitted, never used to transform a
 //! coordinate. The day something does reproject, it must read the raw footer, not this.
 void SetCityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnifiedVectorFormat city_format;
-	UnifiedVectorFormat field_format;
-	UnifiedVectorFormat value_format;
-	args.data[0].ToUnifiedFormat(args.size(), city_format);
-	args.data[1].ToUnifiedFormat(args.size(), field_format);
-	args.data[2].ToUnifiedFormat(args.size(), value_format);
-	const auto *cities = UnifiedVectorFormat::GetData<string_t>(city_format);
-	const auto *fields = UnifiedVectorFormat::GetData<string_t>(field_format);
-	const auto *values = UnifiedVectorFormat::GetData<string_t>(value_format);
-	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<string_t>(result);
+	auto cities = args.data[0].Values<string_t>();
+	auto fields = args.data[1].Values<string_t>();
+	auto values = args.data[2].Values<string_t>();
+	auto writer = FlatVector::Writer<string_t>(result, args.size());
 	for (idx_t row = 0; row < args.size(); row++) {
-		const auto city_index = city_format.sel->get_index(row);
-		const auto field_index = field_format.sel->get_index(row);
-		const auto value_index = value_format.sel->get_index(row);
-		if (!field_format.validity.RowIsValid(field_index) || !value_format.validity.RowIsValid(value_index)) {
-			FlatVector::SetNull(result, row, true);
+		const auto city_entry = cities[row];
+		const auto field = fields[row];
+		const auto value_text = values[row];
+		if (!field.IsValid() || !value_text.IsValid()) {
+			writer.WriteNull();
 			continue;
 		}
 		json city = json::object();
-		if (city_format.validity.RowIsValid(city_index)) {
+		if (city_entry.IsValid()) {
 			try {
-				auto parsed = json_utils::ParseJson(cities[city_index].GetString());
+				auto parsed = json_utils::ParseJson(city_entry.GetValue().GetString());
 				if (parsed.is_object()) {
 					city = std::move(parsed);
 				}
@@ -351,34 +342,30 @@ void SetCityFieldFunction(DataChunk &args, ExpressionState &state, Vector &resul
 		}
 		json value;
 		try {
-			value = json_utils::ParseJson(values[value_index].GetString());
+			value = json_utils::ParseJson(value_text.GetValue().GetString());
 		} catch (const std::exception &e) {
 			throw InvalidInputException("cityparquet_set_city_field: the value is not JSON: %s", e.what());
 		}
-		city[fields[field_index].GetString()] = std::move(value);
-		out[row] = StringVector::AddString(result, city.dump());
+		city[field.GetValue().GetString()] = std::move(value);
+		writer.WriteValue(string_t(city.dump()));
 	}
 }
 
 void CityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::ExecuteWithNulls<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(),
-	    [&](string_t city, string_t field, ValidityMask &mask, idx_t idx) {
+	BinaryExecutor::Execute<string_t, string_t, string_t>(
+	    args.data[0], args.data[1], result, [&](string_t city, string_t field) -> optional<string_t> {
 		    json parsed;
 		    try {
 			    parsed = json_utils::ParseJson(city.GetString());
 		    } catch (const std::exception &) {
-			    mask.SetInvalid(idx);
-			    return string_t();
+			    return {};
 		    }
 		    if (!parsed.is_object()) {
-			    mask.SetInvalid(idx);
-			    return string_t();
+			    return {};
 		    }
 		    auto entry = parsed.find(field.GetString());
 		    if (entry == parsed.end() || entry->is_null()) {
-			    mask.SetInvalid(idx);
-			    return string_t();
+			    return {};
 		    }
 		    const auto text = entry->is_string() ? entry->get<std::string>() : entry->dump();
 		    return StringVector::AddString(result, text);
@@ -412,8 +399,8 @@ std::vector<std::string> FileColumnNames(Connection &connection, const std::stri
 		throw IOException("cityparquet_read: cannot read the schema of '%s': %s", path, result->GetError());
 	}
 	std::vector<std::pair<std::string, int64_t>> rows;
-	for (idx_t row = 0; row < result->RowCount(); row++) {
-		rows.emplace_back(result->GetValue(0, row).ToString(), result->GetValue(1, row).GetValue<int64_t>());
+	for (auto &row : result->Collection().GetRows()) {
+		rows.emplace_back(row.GetValue(0).ToString(), row.GetValue(1).GetValue<int64_t>());
 	}
 	// Past the subtree rooted at `at`, iteratively: a footer can declare nesting as deep
 	// as it likes in its flat element list, so a recursion per level would hand the stack
@@ -465,12 +452,16 @@ void RefuseCollidingColumns(Connection &connection, const std::string &path) {
 bool IsExtensionObjectFile(Connection &connection, const std::string &path, const std::string &table) {
 	auto result = connection.Query("SELECT decode(value) FROM parquet_kv_metadata(" + Literal(path) +
 	                               ") WHERE decode(key) = 'city'");
-	if (result->HasError() || result->RowCount() == 0 || result->GetValue(0, 0).IsNull()) {
+	if (result->HasError() || result->RowCount() == 0) {
+		return false;
+	}
+	const auto value = result->Collection().GetValue(0, 0);
+	if (value.IsNull()) {
 		return false;
 	}
 	json city;
 	try {
-		city = json_utils::ParseJson(result->GetValue(0, 0).ToString());
+		city = json_utils::ParseJson(value.ToString());
 	} catch (const std::exception &) {
 		return false;
 	}
@@ -540,7 +531,7 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory_ar
 	std::sort(found.begin(), found.end());
 
 	const auto bookkeeping = QualifiedName(schema, "__cityparquet");
-	std::string sql = "CREATE SCHEMA IF NOT EXISTS " + KeywordHelper::WriteOptionallyQuoted(schema) + ";\n";
+	std::string sql = "CREATE SCHEMA IF NOT EXISTS " + SQLIdentifier::ToString(schema) + ";\n";
 	sql += "CREATE OR REPLACE TABLE " + bookkeeping +
 	       " (table_name VARCHAR, file_name VARCHAR, role VARCHAR, city VARCHAR);\n";
 
@@ -595,7 +586,7 @@ void RegisterCityParquetPackageFunctions(ExtensionLoader &loader) {
 	    "cityparquet_set_city_field",
 	    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	    LogicalType(LogicalTypeId::VARCHAR), SetCityFieldFunction);
-	set_city_field.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	set_city_field.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	RegisterDocumented(loader, std::move(set_city_field),
 	                   {{"city", "field", "value"},
 	                    "Returns a CityParquet city footer JSON string with one top-level field set to the JSON "

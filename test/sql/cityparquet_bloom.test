@@ -16,7 +16,7 @@ statement ok
 PRAGMA cityparquet_init('bl');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('bl', '__TEST_DIR__/bloom_on', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('bl', '{TEST_DIR}/bloom_on', crs => 'EPSG:7415');
 
 # The identifier columns carry a filter in every row group. With DuckDB's
 # default cut-off (a fifth of the row group's rows) they would be PLAIN, and
@@ -25,7 +25,7 @@ query I
 SELECT string_agg(path_in_schema, ',' ORDER BY path_in_schema)
 FROM (
   SELECT path_in_schema
-  FROM parquet_metadata('__TEST_DIR__/bloom_on/building.parquet')
+  FROM parquet_metadata('{TEST_DIR}/bloom_on/building.parquet')
   WHERE path_in_schema IN ('id', 'feature_id', 'identificatie')
   GROUP BY path_in_schema
   HAVING bool_and(bloom_filter_offset IS NOT NULL)
@@ -38,18 +38,18 @@ query II
 SELECT
   bool_and(m.bloom_filter_offset >= e.data_end),
   bool_and(m.bloom_filter_length IS NOT NULL)
-FROM parquet_metadata('__TEST_DIR__/bloom_on/building.parquet') m,
+FROM parquet_metadata('{TEST_DIR}/bloom_on/building.parquet') m,
   (SELECT max(coalesce(nullif(dictionary_page_offset, 0), data_page_offset) + total_compressed_size) AS data_end
-   FROM parquet_metadata('__TEST_DIR__/bloom_on/building.parquet')) e
+   FROM parquet_metadata('{TEST_DIR}/bloom_on/building.parquet')) e
 WHERE m.bloom_filter_offset IS NOT NULL;
 ----
 true	true
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('bl', '__TEST_DIR__/bloom_off', crs => 'EPSG:7415', bloom => false);
+SELECT COUNT(*) FROM cityparquet_write('bl', '{TEST_DIR}/bloom_off', crs => 'EPSG:7415', bloom => false);
 
 query I
-SELECT COUNT(*) FROM parquet_metadata('__TEST_DIR__/bloom_off/building.parquet')
+SELECT COUNT(*) FROM parquet_metadata('{TEST_DIR}/bloom_off/building.parquet')
 WHERE bloom_filter_offset IS NOT NULL;
 ----
 0
@@ -70,16 +70,16 @@ statement ok
 PRAGMA cityparquet_init('bl_tpl');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('bl_tpl', '__TEST_DIR__/bloom_tpl', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('bl_tpl', '{TEST_DIR}/bloom_tpl', crs => 'EPSG:7415');
 
 query I
-SELECT COUNT(*) FROM parquet_metadata('__TEST_DIR__/bloom_tpl/implicit_geometries.parquet')
+SELECT COUNT(*) FROM parquet_metadata('{TEST_DIR}/bloom_tpl/implicit_geometries.parquet')
 WHERE bloom_filter_offset IS NOT NULL;
 ----
 0
 
 query I
-SELECT COUNT(*) > 0 FROM parquet_metadata('__TEST_DIR__/bloom_tpl/vegetation.parquet')
+SELECT COUNT(*) > 0 FROM parquet_metadata('{TEST_DIR}/bloom_tpl/vegetation.parquet')
 WHERE path_in_schema = 'id' AND bloom_filter_offset IS NOT NULL;
 ----
 true

@@ -8,34 +8,34 @@ require cityjson
 # f2 at 100-110, f3 at 200-210.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
-TO '__TEST_DIR__/bbox_query.fcb' (FORMAT flatcitybuf);
+TO '{TEST_DIR}/bbox_query.fcb' (FORMAT flatcitybuf);
 
 # bbox covering only f2 (id is the CityObject id -- b1/b2/b3 here -- feature_id is f1/f2/f3)
 query I
-SELECT feature_id FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', xmin := 50, ymin := 50, xmax := 150, ymax := 150) ORDER BY feature_id;
+SELECT feature_id FROM read_flatcitybuf('{TEST_DIR}/bbox_query.fcb', xmin := 50, ymin := 50, xmax := 150, ymax := 150) ORDER BY feature_id;
 ----
 f2
 
 # bbox covering nothing
 query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', xmin := 500, ymin := 500, xmax := 600, ymax := 600);
+SELECT COUNT(*) FROM read_flatcitybuf('{TEST_DIR}/bbox_query.fcb', xmin := 500, ymin := 500, xmax := 600, ymax := 600);
 ----
 0
 
 # bbox covering everything
 query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', xmin := 0, ymin := 0, xmax := 300, ymax := 300);
+SELECT COUNT(*) FROM read_flatcitybuf('{TEST_DIR}/bbox_query.fcb', xmin := 0, ymin := 0, xmax := 300, ymax := 300);
 ----
 3
 
 # no bbox at all still works (full scan)
 query I
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb');
+SELECT COUNT(*) FROM read_flatcitybuf('{TEST_DIR}/bbox_query.fcb');
 ----
 3
 
 # a partial bbox (missing ymax) is a binder error, not a silent no-op
 statement error
-SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/bbox_query.fcb', xmin := 0, ymin := 0, xmax := 300);
+SELECT COUNT(*) FROM read_flatcitybuf('{TEST_DIR}/bbox_query.fcb', xmin := 0, ymin := 0, xmax := 300);
 ----
 read_flatcitybuf: xmin, ymin, xmax, and ymax must all be given together

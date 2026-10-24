@@ -241,11 +241,11 @@ FROM read_obj('test/data/obj/precise.obj', lod := '1', appearance := 'sidecar');
 #     more. The CityJSON encoding itself is pinned against upstream-produced fixtures
 #     in cityjson_corpus_parity.test.
 statement ok
-COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2')) TO '__TEST_DIR__/cube.city.json' (FORMAT cityjson);
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2')) TO '{TEST_DIR}/cube.city.json' (FORMAT cityjson);
 
 query III
 SELECT id, geometry_properties_lod2_2.type, material_lod2_2
-FROM read_cityjson('__TEST_DIR__/cube.city.json', lod := '2.2') ORDER BY id;
+FROM read_cityjson('{TEST_DIR}/cube.city.json', lod := '2.2') ORDER BY id;
 ----
 cube	Solid	{visual=[0, 1, 1, 1, 1, 2]}
 slab	MultiSurface	{visual=[2]}

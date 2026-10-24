@@ -4,12 +4,22 @@ The extension targets a specific stable DuckDB release. Moving it to a newer one
 follows:
 
 - Bump submodules
-  - `./duckdb` should be set to latest tagged release
-  - `./extension-ci-tools` should be set to updated branch corresponding to latest DuckDB release. So if you're building for DuckDB `v1.1.0` there will be a branch in `extension-ci-tools` named `v1.1.0` to which you should check out. 
-- Bump versions in `./github/workflows`
-  - `duckdb_version` input in `duckdb-stable-build` job in `MainDistributionPipeline.yml` should be set to latest tagged release
-  - `duckdb_version` input in `duckdb-stable-deploy` job in `MainDistributionPipeline.yml` should be set to latest tagged release
-  - the reusable workflow `duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml` for the `duckdb-stable-build` job should be set to latest tagged release
+  - `./duckdb` to the release tag (`v2.0.0`).
+  - `./extension-ci-tools` to the branch matching that release. Branches are named for
+    the release line and its codename, not the full version: DuckDB `v2.0.0` is
+    `v2.0-cyanoptera`.
+- Bump `.github/workflows/MainDistributionPipeline.yml`
+  - the `@ref` of both reusable workflows and their `ci_tools_version` input to that
+    branch, and their `duckdb_version` input to the release tag;
+  - in the `tidy-check` job, the extension-ci-tools checkout `ref` to the same branch and
+    `vcpkgGitCommitId` to the `vcpkg_commit` default in that branch's
+    `_extension_distribution.yml`.
+- Bump `vcpkg.json`'s `builtin-baseline` to that same vcpkg commit, so a local build and
+  CI resolve the same port versions.
+- Bump the `justfile`'s `emsdk_version` to the version `_extension_distribution.yml`
+  passes to `setup-emsdk`, and `vcpkg_baseline` to the vcpkg commit.
+- Re-pin `test/wasm/package.json` to the `@duckdb/duckdb-wasm` release that embeds the
+  new DuckDB, once one exists: the extension's version footer must match.
 
 # API changes
 DuckDB extensions built with this extension template are built against the internal C++ API of DuckDB. This API is not guaranteed to be stable.

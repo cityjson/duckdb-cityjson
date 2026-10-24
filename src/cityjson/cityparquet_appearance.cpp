@@ -96,7 +96,6 @@ void CollectCellIds(DataChunk &args, Vector &result) {
 	const auto count = args.size();
 	const auto id_type = ListType::GetChildType(result.GetType());
 
-	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
 	for (idx_t i = 0; i < count; i++) {
 		const auto cell = args.data[0].GetValue(i);
 		if (cell.IsNull()) {
@@ -116,17 +115,12 @@ void CollectCellIds(DataChunk &args, Vector &result) {
 		}
 		result.SetValue(i, Value::LIST(id_type, std::move(children)));
 	}
-
-	if (count == 1) {
-		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
-	}
 }
 
 template <class Traits>
 void ShiftCellIds(DataChunk &args, Vector &result) {
 	const auto count = args.size();
 
-	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
 	for (idx_t i = 0; i < count; i++) {
 		const auto cell = args.data[0].GetValue(i);
 		const auto offset = args.data[1].GetValue(i);
@@ -137,10 +131,6 @@ void ShiftCellIds(DataChunk &args, Vector &result) {
 		auto parsed = Traits::FromValue(cell);
 		Traits::ShiftIds(parsed, offset.GetValue<int64_t>());
 		result.SetValue(i, Traits::ToValue(parsed));
-	}
-
-	if (count == 1) {
-		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
 	}
 }
 
@@ -172,32 +162,33 @@ void ShiftAppearanceIdsFunction(DataChunk &args, ExpressionState &state, Vector 
  * The two cell types are both MAPs, and DuckDB costs a MAP-to-MAP implicit cast on
  * the type id alone -- so two registered overloads, one per cell type, tie at cost
  * zero and every call is "could not choose a best candidate". The argument is
- * therefore declared ANY and the kind is resolved here, which is the same contract
+ * therefore declared ANY and the kind is resolved here, before casts are added, which is the same contract
  * (the type says which) with an error message that names both accepted types.
  */
-const LogicalType &BindCellType(ScalarFunction &bound_function, const Expression &argument) {
-	const auto &cell_type = argument.return_type;
+const LogicalType &ResolveCellType(ResolveScalarFunctionTypesInput &input) {
+	auto &bound_function = input.GetBoundFunction();
+	const auto &cell_type = input.GetArgumentType(0);
+	if (cell_type.id() == LogicalTypeId::UNKNOWN) {
+		// A prepared-statement parameter: defer to a later re-bind.
+		throw ParameterNotResolvedException();
+	}
 	if (cell_type != ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap) &&
 	    cell_type != ColumnTypeUtils::ToDuckDBType(ColumnType::TextureMap)) {
-		throw BinderException("%s: expected a %s (material) or %s (texture) cell, got %s", bound_function.name,
+		throw BinderException("%s: expected a %s (material) or %s (texture) cell, got %s", bound_function.GetName(),
 		                      ColumnTypeUtils::ToString(ColumnType::MaterialMap),
 		                      ColumnTypeUtils::ToString(ColumnType::TextureMap), cell_type.ToString());
 	}
-	bound_function.arguments[0] = cell_type;
+	bound_function.GetArguments()[0] = cell_type;
 	return cell_type;
 }
 
-unique_ptr<FunctionData> BindAppearanceIds(ClientContext &context, ScalarFunction &bound_function,
-                                           vector<unique_ptr<Expression>> &arguments) {
-	BindCellType(bound_function, *arguments[0]);
-	return nullptr;
+void ResolveAppearanceIds(ResolveScalarFunctionTypesInput &input) {
+	ResolveCellType(input);
 }
 
-unique_ptr<FunctionData> BindShiftAppearanceIds(ClientContext &context, ScalarFunction &bound_function,
-                                                vector<unique_ptr<Expression>> &arguments) {
+void ResolveShiftAppearanceIds(ResolveScalarFunctionTypesInput &input) {
 	// Shifting rewrites ids in place, so the result is the cell it was handed.
-	bound_function.return_type = BindCellType(bound_function, *arguments[0]);
-	return nullptr;
+	input.GetBoundFunction().SetReturnType(ResolveCellType(input));
 }
 
 } // namespace
@@ -205,8 +196,8 @@ unique_ptr<FunctionData> BindShiftAppearanceIds(ClientContext &context, ScalarFu
 void RegisterAppearanceIdsFunction(ExtensionLoader &loader) {
 	const auto id_list = LogicalType::LIST(LogicalType::BIGINT);
 
-	ScalarFunction ids("cityjson_appearance_ids", {LogicalType::ANY}, id_list, AppearanceIdsFunction,
-	                   BindAppearanceIds);
+	ScalarFunction ids("cityjson_appearance_ids", {LogicalType::ANY}, id_list, AppearanceIdsFunction);
+	ids.SetResolveTypesCallback(ResolveAppearanceIds);
 	RegisterDocumented(loader, std::move(ids),
 	                   {{"cell"},
 	                    "Returns the distinct appearance ids a material_lod* or texture_lod* cell references, as an "
@@ -216,11 +207,11 @@ void RegisterAppearanceIdsFunction(ExtensionLoader &loader) {
 	                    "WHERE material_lod3_0 IS NOT NULL LIMIT 1;",
 	                    {"cityjson", "appearance"}});
 
-	// The declared return type is a placeholder: the bind replaces it with the cell
-	// type it was actually handed.
+	// The declared return type is a placeholder: type resolution replaces it with the
+	// cell type it was actually handed.
 	ScalarFunction shift("cityjson_shift_appearance_ids", {LogicalType::ANY, LogicalType::BIGINT},
-	                     ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap), ShiftAppearanceIdsFunction,
-	                     BindShiftAppearanceIds);
+	                     ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap), ShiftAppearanceIdsFunction);
+	shift.SetResolveTypesCallback(ResolveShiftAppearanceIds);
 	RegisterDocumented(loader, std::move(shift),
 	                   {{"cell", "offset"},
 	                    "Adds a constant to every appearance id in a material_lod* or texture_lod* cell; the "

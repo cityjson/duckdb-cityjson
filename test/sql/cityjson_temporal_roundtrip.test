@@ -6,7 +6,7 @@ require cityjson
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/temporal.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/temporal.city.jsonl' (FORMAT cityjsonseq);
 
 # The row-level instant is unchanged -- it always was (the `+00` is TIMESTAMP WITH
 # TIME ZONE's own display form, not a value change). This assertion exists to show
@@ -16,7 +16,7 @@ query II
 SELECT
   (SELECT tijdstipregistratie FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
     WHERE tijdstipregistratie IS NOT NULL ORDER BY id LIMIT 1),
-  (SELECT tijdstipregistratie FROM read_cityjsonseq('__TEST_DIR__/temporal.city.jsonl')
+  (SELECT tijdstipregistratie FROM read_cityjsonseq('{TEST_DIR}/temporal.city.jsonl')
     WHERE tijdstipregistratie IS NOT NULL ORDER BY id LIMIT 1);
 ----
 2010-10-13 12:20:52+00	2010-10-13 12:20:52+00
@@ -26,20 +26,20 @@ SELECT
 # rendered DuckDB's display form instead.
 query I
 SELECT content LIKE '%"tijdstipregistratie":"2010-10-13T12:20:52Z"%'
-FROM read_text('__TEST_DIR__/temporal.city.jsonl');
+FROM read_text('{TEST_DIR}/temporal.city.jsonl');
 ----
 true
 
 # ...and the space-separated form must be gone entirely.
 query I
 SELECT content LIKE '%"tijdstipregistratie":"2010-10-13 12:20:52"%'
-FROM read_text('__TEST_DIR__/temporal.city.jsonl');
+FROM read_text('{TEST_DIR}/temporal.city.jsonl');
 ----
 false
 
 # A DATE-typed attribute keeps its plain YYYY-MM-DD form (no time, no 'Z').
 query I
 SELECT content LIKE '%"begingeldigheid":"1930-02-10"%'
-FROM read_text('__TEST_DIR__/temporal.city.jsonl');
+FROM read_text('{TEST_DIR}/temporal.city.jsonl');
 ----
 true

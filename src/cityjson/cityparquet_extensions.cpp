@@ -1,4 +1,6 @@
 #include "cityjson/cityparquet_extensions.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 
 #include "cityjson/function_docs.hpp"
 #include "duckdb/common/exception.hpp"
@@ -215,42 +217,33 @@ void PrefixSurfaceTypesFunction(DataChunk &args, ExpressionState &, Vector &resu
 //! an empty footer; NULL `extensions` leaves `city` as it is. A namespace the two sides
 //! declare differently is refused: it would denote two extensions in one package.
 void MergeExtensionsFunction(DataChunk &args, ExpressionState &, Vector &result) {
-	auto &city_vector = args.data[0];
-	auto &extensions_vector = args.data[1];
-	UnifiedVectorFormat city_format;
-	UnifiedVectorFormat extensions_format;
-	city_vector.ToUnifiedFormat(args.size(), city_format);
-	extensions_vector.ToUnifiedFormat(args.size(), extensions_format);
-	auto cities = UnifiedVectorFormat::GetData<string_t>(city_format);
-	auto incoming = UnifiedVectorFormat::GetData<string_t>(extensions_format);
-
-	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
-	auto out = FlatVector::GetData<string_t>(result);
-	auto &validity = FlatVector::Validity(result);
+	auto cities = args.data[0].Values<string_t>();
+	auto incoming = args.data[1].Values<string_t>();
+	auto writer = FlatVector::Writer<string_t>(result, args.size());
 
 	static const char *const FUNCTION = "cityparquet_merge_extensions";
 	for (idx_t row = 0; row < args.size(); row++) {
-		const auto city_index = city_format.sel->get_index(row);
-		const auto extensions_index = extensions_format.sel->get_index(row);
-		const bool has_city = city_format.validity.RowIsValid(city_index);
-		const bool has_extensions = extensions_format.validity.RowIsValid(extensions_index);
+		const auto city_entry = cities[row];
+		const auto extensions_entry = incoming[row];
+		const bool has_city = city_entry.IsValid();
+		const bool has_extensions = extensions_entry.IsValid();
 		if (!has_extensions) {
 			if (has_city) {
-				out[row] = StringVector::AddString(result, cities[city_index]);
+				writer.WriteValue(city_entry.GetValue());
 			} else {
-				validity.SetInvalid(row);
+				writer.WriteNull();
 			}
 			continue;
 		}
 		json city = json::object();
 		if (has_city) {
-			city = ParseOrThrow(cities[city_index].GetString(), FUNCTION, "city");
+			city = ParseOrThrow(city_entry.GetValue().GetString(), FUNCTION, "city");
 			if (!city.is_object()) {
 				throw InvalidInputException("%s: city is not a JSON object", FUNCTION);
 			}
 		}
 		const auto additions = DeclarationsFromFooterJson(
-		    ParseOrThrow(incoming[extensions_index].GetString(), FUNCTION, "extensions"), FUNCTION);
+		    ParseOrThrow(extensions_entry.GetValue().GetString(), FUNCTION, "extensions"), FUNCTION);
 		std::vector<ExtensionDeclaration> merged;
 		if (city.contains("extensions") && !city["extensions"].is_null()) {
 			merged = DeclarationsFromFooterJson(city["extensions"], FUNCTION);
@@ -274,10 +267,7 @@ void MergeExtensionsFunction(DataChunk &args, ExpressionState &, Vector &result)
 			}
 		}
 		city["extensions"] = DeclarationsToFooterJson(merged);
-		out[row] = StringVector::AddString(result, city.dump());
-	}
-	if (args.AllConstant()) {
-		result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
+		writer.WriteValue(string_t(city.dump()));
 	}
 }
 

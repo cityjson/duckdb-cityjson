@@ -37,7 +37,7 @@ SELECT function_name FROM ours WHERE categories IS NULL OR len(categories) = 0 O
 ----
 
 query T
-SELECT function_name FROM ours WHERE len(list_filter(parameters, p -> p SIMILAR TO 'col[0-9]+')) > 0 ORDER BY ALL;
+SELECT function_name FROM ours WHERE len(list_filter(parameters, lambda p: p SIMILAR TO 'col[0-9]+')) > 0 ORDER BY ALL;
 ----
 
 # A table or pragma function lists its named parameters after the positional ones,
@@ -80,3 +80,15 @@ WHERE (function_type = 'table' AND NOT examples[1] ILIKE '%FROM ' || function_na
    OR NOT examples[1] ILIKE '%' || function_name || '(%'
 ORDER BY ALL;
 ----
+
+# A documented positional name is also a name the caller can use, in a table and a
+# scalar function alike.
+query I
+SELECT COUNT(*) FROM read_cityjsonseq(lod := '2.2', path := 'test/data/delft_subset.city.jsonl');
+----
+20
+
+query I
+SELECT COUNT(cityjson_wkb_extent(wkb := geometry_lod2_2)) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+----
+10

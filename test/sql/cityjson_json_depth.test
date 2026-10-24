@@ -31,10 +31,10 @@ COPY (SELECT line FROM (
   UNION ALL
   SELECT 1, '{"type":"CityJSONFeature","id":"deep","CityObjects":{"deep":{"type":"Building","attributes":{"nest":'
             || repeat('[', 100000) || repeat(']', 100000) || '}}},"vertices":[]}') ORDER BY o)
-TO '__TEST_DIR__/deep.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+TO '{TEST_DIR}/deep.city.jsonl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 
 statement error
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/deep.city.jsonl');
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/deep.city.jsonl');
 ----
 nests deeper than 256 levels
 
@@ -54,12 +54,12 @@ UPDATE d.building SET other = '{"nest":' || repeat('[', 1000000) || repeat(']', 
 WHERE id = 'NL.IMBAG.Pand.0503100000012869';
 
 statement error
-COPY (SELECT * FROM d.building) TO '__TEST_DIR__/deep_out.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM d.building) TO '{TEST_DIR}/deep_out.city.jsonl' (FORMAT cityjsonseq);
 ----
 nests deeper than 256 levels
 
 statement error
-SELECT COUNT(*) FROM cityparquet_write('d', '__TEST_DIR__/deep_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('d', '{TEST_DIR}/deep_pkg', crs => 'EPSG:7415');
 ----
 nests deeper than 256 levels
 
@@ -77,10 +77,10 @@ SELECT cityparquet_city_field(city, 'other') IS NULL FROM d.__cityparquet;
 true
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('d', '__TEST_DIR__/deep_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('d', '{TEST_DIR}/deep_pkg', crs => 'EPSG:7415');
 
 query I
-SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/deep_pkg/building.parquet');
+SELECT COUNT(*) FROM read_parquet('{TEST_DIR}/deep_pkg/building.parquet');
 ----
 20
 
@@ -104,10 +104,10 @@ SELECT * EXCLUDE (other), [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 1;
 
 statement ok
-COPY (SELECT * EXCLUDE (nest257) FROM deep_list) TO '__TEST_DIR__/deep256.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * EXCLUDE (nest257) FROM deep_list) TO '{TEST_DIR}/deep256.city.jsonl' (FORMAT cityjsonseq);
 
 statement error
-COPY (SELECT * EXCLUDE (nest256) FROM deep_list) TO '__TEST_DIR__/deep257.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * EXCLUDE (nest256) FROM deep_list) TO '{TEST_DIR}/deep257.city.jsonl' (FORMAT cityjsonseq);
 ----
 nests deeper than 256 levels
 
@@ -119,10 +119,10 @@ nests deeper than 256 levels
 statement ok
 COPY (SELECT * EXCLUDE (other), [[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]] AS nest20, other
       FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 1)
-TO '__TEST_DIR__/deep_pkg/building.parquet' (FORMAT parquet);
+TO '{TEST_DIR}/deep_pkg/building.parquet' (FORMAT parquet);
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/deep_pkg', 'deep_read');
+PRAGMA cityparquet_read('{TEST_DIR}/deep_pkg', 'deep_read');
 
 query II
 SELECT COUNT(*) FILTER (WHERE column_name IN ('nest20', 'other')), COUNT(*) FILTER (WHERE column_name LIKE '%\_1' ESCAPE '\')

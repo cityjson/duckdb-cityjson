@@ -26,7 +26,7 @@ std::set<std::string> ReferencedColumns(const std::string &predicate) {
 	std::set<std::string> columns;
 	duckdb::vector<unique_ptr<ParsedExpression>> expressions;
 	try {
-		expressions = Parser::ParseExpressionList(predicate);
+		expressions = Parser::GetBuiltinParser().ParseExpressionList(predicate);
 	} catch (const std::exception &e) {
 		throw BinderException("cityparquet_delete: cannot parse predicate '%s': %s", predicate, e.what());
 	}
@@ -41,11 +41,11 @@ std::set<std::string> ReferencedColumns(const std::string &predicate) {
 			// the whole chain; a table qualifies if any one name in it is a real column,
 			// which covers both `bbox.zmax` and a table-qualified `t.col`.
 			std::string chain;
-			for (const auto &part : column_ref.column_names) {
+			for (const auto &part : column_ref.ColumnNames()) {
 				if (!chain.empty()) {
 					chain += ".";
 				}
-				chain += StringUtil::Lower(part);
+				chain += StringUtil::Lower(part.GetIdentifierName());
 			}
 			columns.insert(chain);
 		}
@@ -59,9 +59,9 @@ std::set<std::string> ReferencedColumns(const std::string &predicate) {
 
 std::set<std::string> ColumnNames(ClientContext &context, const std::string &schema, const std::string &table) {
 	std::set<std::string> names;
-	auto &catalog_entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
+	auto &catalog_entry = LookupTable(context, schema, table);
 	for (auto &column : catalog_entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		names.insert(StringUtil::Lower(column.Name()));
+		names.insert(StringUtil::Lower(column.Name().GetIdentifierName()));
 	}
 	return names;
 }
@@ -206,14 +206,14 @@ std::string BuildDeleteSQL(ClientContext &context, const std::string &schema, co
 	for (const auto &table : object_tables) {
 		const auto qualified = QualifiedName(schema, table);
 		sql += "UPDATE " + qualified +
-		       " t SET children = list_transform(f.kept, x -> x[1]), "
+		       " t SET children = list_transform(f.kept, lambda x: x[1]), "
 		       "children_roles = CASE WHEN t.children_roles IS NULL THEN NULL "
-		       "ELSE list_transform(f.kept, x -> x[2]) END "
+		       "ELSE list_transform(f.kept, lambda x: x[2]) END "
 		       "FROM (SELECT id, list_filter(list_zip(children, children_roles), "
-		       "x -> NOT list_contains(getvariable('__cp_deleted_ids'), x[1])) AS kept FROM " +
+		       "lambda x: NOT list_contains(getvariable('__cp_deleted_ids'), x[1])) AS kept FROM " +
 		       qualified + " WHERE children IS NOT NULL) f WHERE t.id = f.id;\n";
 		sql += "UPDATE " + qualified +
-		       " SET parents = list_filter(parents, x -> NOT list_contains(getvariable('__cp_deleted_ids'), x)) "
+		       " SET parents = list_filter(parents, lambda x: NOT list_contains(getvariable('__cp_deleted_ids'), x)) "
 		       "WHERE parents IS NOT NULL;\n";
 		// Normalise emptied lists to NULL, so "root" stays a single test everywhere.
 		sql += "UPDATE " + qualified +
@@ -233,8 +233,11 @@ std::string BuildDeleteSQL(ClientContext &context, const std::string &schema, co
 void RegisterCityParquetDeleteFunctions(ExtensionLoader &loader) {
 	auto pragma = PragmaFunction::PragmaCall(
 	    "cityparquet_delete", PragmaDelete, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
-	pragma.named_parameters["cascade"] = LogicalType(LogicalTypeId::BOOLEAN);
-	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
+	// Named parameters: a call that leaves one out does not pass it.
+	pragma.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("cascade", LogicalType(LogicalTypeId::BOOLEAN));
+		options.Add("tables", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
+	});
 	RegisterDocumented(loader, std::move(pragma),
 	                   {{"schema", "predicate"},
 	                    "Deletes the objects matching a SQL predicate from a CityParquet package schema, with their "

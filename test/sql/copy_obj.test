@@ -13,10 +13,10 @@ require cityjson
 # --- Structure: o per object, g per semantic surface, faces as n-gons, origin subtracted and recorded.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/holed.obj' (FORMAT obj);
+TO '{TEST_DIR}/holed.obj' (FORMAT obj);
 
 query I
-SELECT UNNEST(string_split(trim(content, chr(10)), chr(10))) FROM read_text('__TEST_DIR__/holed.obj');
+SELECT UNNEST(string_split(trim(content, chr(10)), chr(10))) FROM read_text('{TEST_DIR}/holed.obj');
 ----
 # Written by duckdb-cityjson
 # crs https://www.opengis.net/def/crs/EPSG/0/7415
@@ -51,19 +51,19 @@ f 9 10 2 1
 #  the invariant -- eight 3-vertex faces -- independently. Keep every other line verbatim.)
 
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed.obj')) WHERE line LIKE 'f %';
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/holed.obj')) WHERE line LIKE 'f %';
 ----
 9
 
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed.obj'))
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/holed.obj'))
 WHERE line LIKE 'f %' AND len(string_split(line, ' ')) = 4;
 ----
 8
 
 # --- The .mtl sits beside the final file, named after it, with default colours per surface type.
 query I
-SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/holed.mtl');
+SELECT replace(content, chr(10), '|') FROM read_text('{TEST_DIR}/holed.mtl');
 ----
 # Written by duckdb-cityjson|newmtl RoofSurface|Kd 0.9 0.06 0.09|d 1||newmtl WallSurface|Kd 0.8 0.8 0.8|d 1||
 
@@ -73,48 +73,48 @@ SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/holed.mtl');
 #     final stem and written beside the final file, not left as 'tmp_holed.mtl'.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/holed.obj' (FORMAT obj);
+TO '{TEST_DIR}/holed.obj' (FORMAT obj);
 
 query III
 SELECT (SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line
-                              FROM read_text('__TEST_DIR__/holed.obj')) WHERE line = 'mtllib holed.mtl'),
-       (SELECT COUNT(*) FROM read_text('__TEST_DIR__/holed.mtl')),
-       (SELECT COUNT(*) FROM read_text('__TEST_DIR__/tmp_holed.mtl'));
+                              FROM read_text('{TEST_DIR}/holed.obj')) WHERE line = 'mtllib holed.mtl'),
+       (SELECT COUNT(*) FROM read_text('{TEST_DIR}/holed.mtl')),
+       (SELECT COUNT(*) FROM read_text('{TEST_DIR}/tmp_holed.mtl'));
 ----
 1	1	0
 
 # --- triangulate true: every face a triangle (8 + 2).
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/holed_tri.obj' (FORMAT obj, triangulate true);
+TO '{TEST_DIR}/holed_tri.obj' (FORMAT obj, triangulate true);
 
 query II
 SELECT COUNT(*), COUNT(*) FILTER (len(string_split(line, ' ')) = 4)
-FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_tri.obj')) WHERE line LIKE 'f %';
+FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/holed_tri.obj')) WHERE line LIKE 'f %';
 ----
 10	10
 
 # --- origin 'none' keeps world coordinates at full precision; precision 3 rounds them.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/holed_world.obj' (FORMAT obj, origin 'none');
+TO '{TEST_DIR}/holed_world.obj' (FORMAT obj, origin 'none');
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_world.obj')) WHERE line LIKE 'v %' LIMIT 1;
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/holed_world.obj')) WHERE line LIKE 'v %' LIMIT 1;
 ----
 v 84500 446300 10
 
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_world.obj')) WHERE line LIKE '# origin%';
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/holed_world.obj')) WHERE line LIKE '# origin%';
 ----
 0
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/holed_p3.obj' (FORMAT obj, origin 'none', precision 3);
+TO '{TEST_DIR}/holed_p3.obj' (FORMAT obj, origin 'none', precision 3);
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_p3.obj')) WHERE line LIKE 'v %' LIMIT 1;
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/holed_p3.obj')) WHERE line LIKE 'v %' LIMIT 1;
 ----
 v 8.45e+04 4.46e+05 10
 
@@ -127,10 +127,10 @@ SELECT material_lod2_2 FROM read_cityjson('test/data/solid_material.city.json', 
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
-TO '__TEST_DIR__/solid_nested.obj' (FORMAT obj);
+TO '{TEST_DIR}/solid_nested.obj' (FORMAT obj);
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_nested.obj'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/solid_nested.obj'))
 WHERE line LIKE 'g %' OR line LIKE 'usemtl %' OR line LIKE '# crs%';
 ----
 # crs https://www.opengis.net/def/crs/EPSG/0/7415
@@ -142,7 +142,7 @@ g GroundSurface
 usemtl dark
 
 query I
-SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/solid_nested.mtl');
+SELECT replace(content, chr(10), '|') FROM read_text('{TEST_DIR}/solid_nested.mtl');
 ----
 # Written by duckdb-cityjson|newmtl red|Kd 1 0 0|d 1||newmtl grey|Kd 0.5 0.5 0.5|d 1||newmtl dark|Kd 0.1 0.1 0.1|d 1||
 
@@ -155,10 +155,10 @@ SELECT texture_lod2_2 FROM read_cityjson('test/data/solid_texture.city.json', lo
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2'))
-TO '__TEST_DIR__/solid_tex_nested.obj' (FORMAT obj);
+TO '{TEST_DIR}/solid_tex_nested.obj' (FORMAT obj);
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_tex_nested.obj'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/solid_tex_nested.obj'))
 WHERE line LIKE 'vt %' OR line LIKE 'f %';
 ----
 vt 0 0
@@ -182,10 +182,10 @@ SELECT texture_lod2_2 FROM read_cityjson('test/data/null_lead_texture.city.json'
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/null_lead_texture.city.json', lod := '2.2'))
-TO '__TEST_DIR__/null_lead.obj' (FORMAT obj);
+TO '{TEST_DIR}/null_lead.obj' (FORMAT obj);
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/null_lead.obj'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/null_lead.obj'))
 WHERE line LIKE 'vt %' OR line LIKE 'f %';
 ----
 vt 0 0
@@ -200,10 +200,10 @@ f 5/1 6/2 7/3 8/4
 #     face, so which face happens to carry no texture makes no difference.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/solid_null_first_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/solid_null_first_face.obj' (FORMAT obj);
+TO '{TEST_DIR}/solid_null_first_face.obj' (FORMAT obj);
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/solid_null_first_face.obj'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/solid_null_first_face.obj'))
 WHERE line LIKE 'vt %' OR line LIKE 'f %/%';
 ----
 vt 0 0
@@ -220,10 +220,10 @@ f 5/1 6/2 2/3 1/4
 #     still succeeds, just without any face's texture -- no vt pool, no `f v/vt`.
 statement ok
 COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
-TO '__TEST_DIR__/materials_only.obj' (FORMAT obj, materials_query 'SELECT 0 AS id');
+TO '{TEST_DIR}/materials_only.obj' (FORMAT obj, materials_query 'SELECT 0 AS id');
 
 query I
-SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/materials_only.obj'))
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/materials_only.obj'))
 WHERE line LIKE 'vt %' OR line LIKE 'f%/%';
 ----
 0
@@ -234,21 +234,21 @@ WHERE line LIKE 'vt %' OR line LIKE 'f%/%';
 #     silently recolour every face, so the COPY refuses until it is told the form.
 statement error
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
-TO '__TEST_DIR__/sidecar_refused.obj' (FORMAT obj);
+TO '{TEST_DIR}/sidecar_refused.obj' (FORMAT obj);
 ----
 read with appearance := 'sidecar'
 
 # Naming the sidecar definitions lifts the refusal, and they are what the faces resolve against.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
-TO '__TEST_DIR__/sidecar_ok.obj' (FORMAT obj,
+TO '{TEST_DIR}/sidecar_ok.obj' (FORMAT obj,
     materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
 
 # The sidecar rows' own names reach the .mtl, so the cells resolved as sidecar ids
 # rather than as indices into the file's local blocks. (Only referenced materials get
 # an entry; unreferenced faces fall back to the object class's default colour.)
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/sidecar_ok.mtl'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/sidecar_ok.mtl'))
 WHERE line LIKE 'newmtl %' ORDER BY line;
 ----
 newmtl Bridge
@@ -260,17 +260,17 @@ newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
 # form is still taken from the SELECT, and this refuses exactly as the plain case does.
 statement error
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
-TO '__TEST_DIR__/sidecar_mf.obj' (FORMAT obj, metadata_from 'test/data/railway_appearance.city.jsonl');
+TO '{TEST_DIR}/sidecar_mf.obj' (FORMAT obj, metadata_from 'test/data/railway_appearance.city.jsonl');
 ----
 read with appearance := 'sidecar'
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
-TO '__TEST_DIR__/sidecar_mf_ok.obj' (FORMAT obj, metadata_from 'test/data/railway_appearance.city.jsonl',
+TO '{TEST_DIR}/sidecar_mf_ok.obj' (FORMAT obj, metadata_from 'test/data/railway_appearance.city.jsonl',
     materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/sidecar_mf_ok.mtl'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/sidecar_mf_ok.mtl'))
 WHERE line LIKE 'newmtl %' ORDER BY line;
 ----
 newmtl Bridge
@@ -282,15 +282,15 @@ newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
 #     its id, and the faces name the two apart.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/duplicate_material_name.city.json', lod := '2.2'))
-TO '__TEST_DIR__/twins.obj' (FORMAT obj);
+TO '{TEST_DIR}/twins.obj' (FORMAT obj);
 
 query I
-SELECT replace(content, chr(10), '|') FROM read_text('__TEST_DIR__/twins.mtl');
+SELECT replace(content, chr(10), '|') FROM read_text('{TEST_DIR}/twins.mtl');
 ----
 # Written by duckdb-cityjson|newmtl brick|Kd 0.8 0.3 0.2|d 1||newmtl brick_1|Kd 0.2 0.3 0.8|d 1||
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/twins.obj'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/twins.obj'))
 WHERE line LIKE 'usemtl %';
 ----
 usemtl brick
@@ -302,34 +302,34 @@ usemtl brick_1
 #     against the *source's* directory, not the output's.
 statement ok
 COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
-TO '__TEST_DIR__/cube_rt.obj' (FORMAT obj);
+TO '{TEST_DIR}/cube_rt.obj' (FORMAT obj);
 
 query II
 SELECT COUNT(*) FILTER (line LIKE 'map_Kd%'), COUNT(*) FILTER (line = 'newmtl brick')
-FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/cube_rt.mtl'));
+FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/cube_rt.mtl'));
 ----
 0	1
 
 # --- Option validation happens at bind, before a row is sunk.
 statement error
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/bad_origin.obj' (FORMAT obj, origin 'middle');
+TO '{TEST_DIR}/bad_origin.obj' (FORMAT obj, origin 'middle');
 ----
 origin must be 'auto', 'none' or 'x,y,z'
 
 statement error
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/bad_precision.obj' (FORMAT obj, precision 0);
+TO '{TEST_DIR}/bad_precision.obj' (FORMAT obj, precision 0);
 ----
 precision must be between 1 and 17 significant digits
 
 # --- An explicit origin is subtracted verbatim.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/holed_fixed.obj' (FORMAT obj, origin '84500,446304,0');
+TO '{TEST_DIR}/holed_fixed.obj' (FORMAT obj, origin '84500,446304,0');
 
 query I
-SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/holed_fixed.obj'))
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/holed_fixed.obj'))
 WHERE line LIKE '# origin%' OR line LIKE 'v %' LIMIT 2;
 ----
 # origin 84500 446304 0
@@ -338,10 +338,10 @@ v 0 -4 10
 # --- lod picks the column; an object with nothing at that LoD is skipped; default = highest present.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/delft_lod12.obj' (FORMAT obj, lod '1.2');
+TO '{TEST_DIR}/delft_lod12.obj' (FORMAT obj, lod '1.2');
 
 query I
-SELECT (SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('__TEST_DIR__/delft_lod12.obj')) WHERE line LIKE 'o %')
+SELECT (SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('{TEST_DIR}/delft_lod12.obj')) WHERE line LIKE 'o %')
      = (SELECT COUNT(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod1_2 IS NOT NULL);
 ----
 true
@@ -351,21 +351,21 @@ true
 #      this proves the two sides agree on them.)
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
-TO '__TEST_DIR__/rt.obj' (FORMAT obj);
+TO '{TEST_DIR}/rt.obj' (FORMAT obj);
 
 query III
 SELECT id, geometry_properties_lod2_2.surfaces, len(geometry_properties_lod2_2.face_semantics)
-FROM read_obj('__TEST_DIR__/rt.obj', lod := '2.2');
+FROM read_obj('{TEST_DIR}/rt.obj', lod := '2.2');
 ----
 courtyard	[{"type":"RoofSurface"},{"type":"WallSurface"}]	9
 
 query I
-SELECT bbox FROM read_obj('__TEST_DIR__/rt.obj', lod := '2.2');
+SELECT bbox FROM read_obj('{TEST_DIR}/rt.obj', lod := '2.2');
 ----
 {'xmin': 84500.0, 'ymin': 446300.0, 'zmin': 0.0, 'xmax': 84504.0, 'ymax': 446304.0, 'zmax': 10.0}
 
 # --- Required columns are the CityJSON writer's.
 statement error
-COPY (SELECT 1 AS x) TO '__TEST_DIR__/bad.obj' (FORMAT obj);
+COPY (SELECT 1 AS x) TO '{TEST_DIR}/bad.obj' (FORMAT obj);
 ----
 requires an 'id' column

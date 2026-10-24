@@ -219,7 +219,8 @@ struct CityJSONCopyLocalState : public LocalFunctionData {
 //! The COPY TO callbacks, shared by every format this extension writes -- the mesh
 //! formats register themselves elsewhere (mesh_copy.hpp) over these same five.
 unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
-                                            const vector<string> &names, const vector<LogicalType> &sql_types);
+                                            const vector<Identifier> &column_names,
+                                            const vector<LogicalType> &sql_types);
 unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
                                                         const string &file_path);
 unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context, FunctionData &bind_data);

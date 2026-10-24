@@ -22,10 +22,10 @@ CREATE TABLE src AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/eq.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/eq.city.jsonl' (FORMAT cityjsonseq);
 
 statement ok
-CREATE TABLE rt AS SELECT * FROM read_cityjsonseq('__TEST_DIR__/eq.city.jsonl');
+CREATE TABLE rt AS SELECT * FROM read_cityjsonseq('{TEST_DIR}/eq.city.jsonl');
 
 # --- 1. same number of city objects ---
 query II
@@ -87,7 +87,7 @@ SELECT COUNT(*) FROM (
 # the assertion that catches an ISO-8601 regression.
 query I
 SELECT content LIKE '%"tijdstipregistratie":"2010-10-13T12:20:52Z"%'
-FROM read_text('__TEST_DIR__/eq.city.jsonl');
+FROM read_text('{TEST_DIR}/eq.city.jsonl');
 ----
 true
 
@@ -118,26 +118,26 @@ WHERE octet_length(s.geometry_lod2_2) IS DISTINCT FROM octet_length(r.geometry_l
 # --- 6. equivalent CRS ---
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjsonseq_metadata('__TEST_DIR__/eq.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/eq.city.jsonl');
 ----
 EPSG	7415
 
 # --- 6b. equivalent appearance (separate fixture -- delft_subset carries none) ---
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
-TO '__TEST_DIR__/eq_app.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/eq_app.city.jsonl' (FORMAT cityjsonseq);
 
 query II
 SELECT
   (SELECT COUNT(*) FROM cityjson_materials('test/data/railway_appearance.city.jsonl')),
-  (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/eq_app.city.jsonl'));
+  (SELECT COUNT(*) FROM cityjson_materials('{TEST_DIR}/eq_app.city.jsonl'));
 ----
 4	4
 
 query II
 SELECT
   (SELECT COUNT(*) FROM cityjson_textures('test/data/railway_appearance.city.jsonl')),
-  (SELECT COUNT(*) FROM cityjson_textures('__TEST_DIR__/eq_app.city.jsonl'));
+  (SELECT COUNT(*) FROM cityjson_textures('{TEST_DIR}/eq_app.city.jsonl'));
 ----
 4	4
 
@@ -155,33 +155,33 @@ SELECT
 # CityJSONCopyToCombine appends local states in thread arrival order, so a
 # nondeterministic feature order would surface here too.
 statement ok
-COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/eq.city.jsonl'))
-TO '__TEST_DIR__/eq2.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM read_cityjsonseq('{TEST_DIR}/eq.city.jsonl'))
+TO '{TEST_DIR}/eq2.city.jsonl' (FORMAT cityjsonseq);
 
 statement ok
-COPY (SELECT * FROM read_cityjsonseq('__TEST_DIR__/eq2.city.jsonl'))
-TO '__TEST_DIR__/eq3.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM read_cityjsonseq('{TEST_DIR}/eq2.city.jsonl'))
+TO '{TEST_DIR}/eq3.city.jsonl' (FORMAT cityjsonseq);
 
 query I
-SELECT (SELECT md5(content) FROM read_text('__TEST_DIR__/eq2.city.jsonl'))
-     = (SELECT md5(content) FROM read_text('__TEST_DIR__/eq3.city.jsonl'));
+SELECT (SELECT md5(content) FROM read_text('{TEST_DIR}/eq2.city.jsonl'))
+     = (SELECT md5(content) FROM read_text('{TEST_DIR}/eq3.city.jsonl'));
 ----
 true
 
 # --- 8. the accepted loss, stated at file level too ---
 query I
-SELECT content LIKE '%"eindgeldigheid":null%' FROM read_text('__TEST_DIR__/eq.city.jsonl');
+SELECT content LIKE '%"eindgeldigheid":null%' FROM read_text('{TEST_DIR}/eq.city.jsonl');
 ----
 false
 
 # --- 9. cross-format: CityJSONSeq vs FlatCityBuf from the same source ---
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/eq.fcb' (FORMAT flatcitybuf);
+TO '{TEST_DIR}/eq.fcb' (FORMAT flatcitybuf);
 
 # Same row count through a different physical encoding.
 query II
-SELECT (SELECT COUNT(*) FROM src), (SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/eq.fcb'));
+SELECT (SELECT COUNT(*) FROM src), (SELECT COUNT(*) FROM read_flatcitybuf('{TEST_DIR}/eq.fcb'));
 ----
 20	20
 
@@ -191,7 +191,7 @@ query I
 SELECT COUNT(*) FROM (
   SELECT column_name FROM (DESCRIBE SELECT * FROM src)
   EXCEPT
-  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/eq.fcb'))
+  SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('{TEST_DIR}/eq.fcb'))
 );
 ----
 0

@@ -29,11 +29,11 @@ true
 # same source-ordered bytes.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/wkb_winding.city.json'))
-TO '__TEST_DIR__/winding_rt.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/winding_rt.city.json' (FORMAT cityjson);
 
 query I
 SELECT geometry_lod1_0[23:46] =
        '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'::BLOB
-FROM read_cityjson('__TEST_DIR__/winding_rt.city.json');
+FROM read_cityjson('{TEST_DIR}/winding_rt.city.json');
 ----
 true

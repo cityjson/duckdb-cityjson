@@ -220,7 +220,7 @@ struct GeoGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> GeoBind(ClientContext &context, TableFunctionBindInput &input,
-                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<GeoBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 
@@ -287,10 +287,10 @@ void GeoScan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
 	auto &bind_data = data.bind_data->Cast<GeoBindData>();
 	auto &global_state = data.global_state->Cast<GeoGlobalState>();
 	if (global_state.done) {
-		output.SetCardinality(0);
+		output.SetChildCardinality(0);
 		return;
 	}
-	output.SetCardinality(1);
+	output.SetChildCardinality(1);
 	if (bind_data.geo.has_value()) {
 		output.data[0].SetValue(0, Value(bind_data.geo.value()));
 	} else {

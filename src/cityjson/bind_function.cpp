@@ -195,7 +195,7 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 }
 
 CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindInput &input,
-                                     vector<LogicalType> &return_types, vector<string> &names,
+                                     vector<LogicalType> &return_types, vector<Identifier> &names,
                                      const std::string &function_name, CityJSONReader &reader, bool streaming,
                                      bool materialise) {
 	CityJSONBindData result;
@@ -241,7 +241,7 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 	}
 
 	for (const auto &col : result.columns) {
-		names.push_back(col.name);
+		names.emplace_back(col.name);
 		// `other` stays VARCHAR, like `geometry_properties_lod*.surfaces`: a JSON column
 		// needs the json extension even for LIKE, and both are JSON by name, so
 		// cityparquet_write annotates them without the type's help. An attribute column
@@ -254,7 +254,7 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 }
 
 unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names,
+                                          vector<LogicalType> &return_types, vector<Identifier> &names,
                                           const std::string &function_name, std::unique_ptr<CityJSONReader> reader,
                                           bool streaming, ReaderKind reader_kind) {
 	auto result = make_uniq<CityJSONBindData>(
@@ -266,7 +266,7 @@ unique_ptr<FunctionData> BindCityJSONRead(ClientContext &context, TableFunctionB
 }
 
 unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindInput &input,
-                                      vector<LogicalType> &return_types, vector<string> &names) {
+                                      vector<LogicalType> &return_types, vector<Identifier> &names) {
 	if (input.inputs.empty()) {
 		throw BinderException("read_cityjson requires a file path");
 	}
@@ -284,7 +284,7 @@ unique_ptr<FunctionData> CityJSONBind(ClientContext &context, TableFunctionBindI
 }
 
 unique_ptr<FunctionData> CityJSONSeqBind(ClientContext &context, TableFunctionBindInput &input,
-                                         vector<LogicalType> &return_types, vector<string> &names) {
+                                         vector<LogicalType> &return_types, vector<Identifier> &names) {
 	if (input.inputs.empty()) {
 		throw BinderException("read_cityjsonseq requires a file path");
 	}
@@ -314,33 +314,36 @@ void CityJSONPushdownComplexFilter(ClientContext &context, LogicalGet &get, Func
 		auto &expr = *it;
 		bool consumed = false;
 
-		if (expr->type == ExpressionType::COMPARE_EQUAL) {
-			auto &comp = expr->Cast<BoundComparisonExpression>();
+		if (BoundComparisonExpression::IsComparison(*expr) &&
+		    expr->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
+			auto &comp = expr->Cast<BoundFunctionExpression>();
+			auto &left = BoundComparisonExpression::Left(comp);
+			auto &right = BoundComparisonExpression::Right(comp);
 
-			BoundColumnRefExpression *col_ref = nullptr;
-			BoundConstantExpression *constant = nullptr;
+			const BoundColumnRefExpression *col_ref = nullptr;
+			const BoundConstantExpression *constant = nullptr;
 
-			if (comp.left->type == ExpressionType::BOUND_COLUMN_REF &&
-			    comp.right->type == ExpressionType::VALUE_CONSTANT) {
-				col_ref = &comp.left->Cast<BoundColumnRefExpression>();
-				constant = &comp.right->Cast<BoundConstantExpression>();
-			} else if (comp.right->type == ExpressionType::BOUND_COLUMN_REF &&
-			           comp.left->type == ExpressionType::VALUE_CONSTANT) {
-				col_ref = &comp.right->Cast<BoundColumnRefExpression>();
-				constant = &comp.left->Cast<BoundConstantExpression>();
+			if (left.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF &&
+			    right.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+				col_ref = &left.Cast<BoundColumnRefExpression>();
+				constant = &right.Cast<BoundConstantExpression>();
+			} else if (right.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF &&
+			           left.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+				col_ref = &right.Cast<BoundColumnRefExpression>();
+				constant = &left.Cast<BoundConstantExpression>();
 			}
 
-			if (col_ref && constant && constant->value.type() == LogicalType::VARCHAR) {
+			if (col_ref && constant && constant->GetValue().type() == LogicalType::VARCHAR) {
 				// The column binding refers to an entry in get.GetColumnIds(),
 				// not directly to get.names.
-				if (col_ref->binding.table_index == get.table_index &&
-				    col_ref->binding.column_index < get.GetColumnIds().size()) {
-					idx_t schema_idx = get.GetColumnIds()[col_ref->binding.column_index].GetPrimaryIndex();
+				auto &binding = col_ref->Binding();
+				if (binding.table_index == get.table_index && binding.column_index < get.GetColumnIds().size()) {
+					idx_t schema_idx = get.GetColumnIds()[binding.column_index].GetPrimaryIndex();
 					if (schema_idx < bind_data.columns.size()) {
 						const auto &column_name = bind_data.columns[schema_idx].name;
 						if (pushable_columns.count(column_name) > 0) {
 							bind_data.equality_filters.emplace_back(column_name,
-							                                        constant->value.GetValue<std::string>());
+							                                        constant->GetValue().GetValue<std::string>());
 							consumed = true;
 						}
 					}

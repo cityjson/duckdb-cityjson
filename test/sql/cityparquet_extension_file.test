@@ -51,7 +51,7 @@ SELECT count(*) FROM cityparquet_validation WHERE severity = 'error'
 0
 
 statement ok
-CREATE TABLE written AS SELECT * FROM cityparquet_write('n', '__TEST_DIR__/noise_pkg')
+CREATE TABLE written AS SELECT * FROM cityparquet_write('n', '{TEST_DIR}/noise_pkg')
 
 query T
 SELECT file FROM written WHERE file LIKE '%.parquet' ORDER BY 1
@@ -69,28 +69,28 @@ FROM read_parquet([dir || '/building.parquet', dir || '/city_furniture.parquet',
 
 query I
 SELECT count(*) FROM (
-  FROM package_objects('__TEST_DIR__/noise_pkg') EXCEPT ALL FROM package_objects('test/data/cityparquet_rs_noise')
+  FROM package_objects('{TEST_DIR}/noise_pkg') EXCEPT ALL FROM package_objects('test/data/cityparquet_rs_noise')
 )
 ----
 0
 
 query I
 SELECT count(*) FROM (
-  FROM package_objects('test/data/cityparquet_rs_noise') EXCEPT ALL FROM package_objects('__TEST_DIR__/noise_pkg')
+  FROM package_objects('test/data/cityparquet_rs_noise') EXCEPT ALL FROM package_objects('{TEST_DIR}/noise_pkg')
 )
 ----
 0
 
 # The namespace file's footer declares the extension, as every object table's does.
 query T
-SELECT cityparquet_city_field(decode(value), 'extensions') FROM parquet_kv_metadata('__TEST_DIR__/noise_pkg/noise.parquet')
+SELECT cityparquet_city_field(decode(value), 'extensions') FROM parquet_kv_metadata('{TEST_DIR}/noise_pkg/noise.parquet')
 WHERE decode(key) = 'city'
 ----
 {"noise":{"name":"Noise","url":"https://www.cityjson.org/tutorials/files/noise.ext.json","version":"1.1"}}
 
 # The STAC Item lists it as an object table.
 query I
-SELECT content LIKE '%"noise.parquet"%' FROM read_text('__TEST_DIR__/noise_pkg/metadata.json')
+SELECT content LIKE '%"noise.parquet"%' FROM read_text('{TEST_DIR}/noise_pkg/metadata.json')
 ----
 true
 
@@ -119,12 +119,12 @@ SELECT count(*) FROM cityparquet_validation WHERE severity = 'error'
 statement ok
 COPY (
   SELECT * FROM r.building UNION ALL BY NAME SELECT * FROM r.city_furniture UNION ALL BY NAME SELECT * FROM r.noise
-) TO '__TEST_DIR__/noise_out.city.json' (
+) TO '{TEST_DIR}/noise_out.city.json' (
   FORMAT cityjson,
   metadata_query 'SELECT max(cityparquet_city_field(city, ''extensions'')) AS extensions FROM r.__cityparquet WHERE role = ''object''')
 
 query TTT
-SELECT id, object_type, parents FROM read_cityjson('__TEST_DIR__/noise_out.city.json') ORDER BY id
+SELECT id, object_type, parents FROM read_cityjson('{TEST_DIR}/noise_out.city.json') ORDER BY id
 ----
 1234	Building	NULL
 a_noisy_bench	CityFurniture	NULL
@@ -134,11 +134,11 @@ thesegment_2	+NoiseCityFurnitureSegment	[a_noisy_bench]
 
 # Written again, the package keeps the file.
 statement ok
-CREATE TABLE rewritten AS SELECT * FROM cityparquet_write('r', '__TEST_DIR__/noise_rewritten')
+CREATE TABLE rewritten AS SELECT * FROM cityparquet_write('r', '{TEST_DIR}/noise_rewritten')
 
 query I
 SELECT count(*) FROM (
-  FROM package_objects('__TEST_DIR__/noise_rewritten') EXCEPT ALL FROM package_objects('test/data/cityparquet_rs_noise')
+  FROM package_objects('{TEST_DIR}/noise_rewritten') EXCEPT ALL FROM package_objects('test/data/cityparquet_rs_noise')
 )
 ----
 0
@@ -148,10 +148,10 @@ SELECT count(*) FROM (
 # A Parquet file named like a namespace whose footer declares no such extension is not
 # adopted: only files the specification names belong to the package.
 statement ok
-COPY (SELECT 'x' AS id) TO '__TEST_DIR__/noise_pkg/energy.parquet' (FORMAT parquet)
+COPY (SELECT 'x' AS id) TO '{TEST_DIR}/noise_pkg/energy.parquet' (FORMAT parquet)
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/noise_pkg', 's')
+PRAGMA cityparquet_read('{TEST_DIR}/noise_pkg', 's')
 
 query T
 SELECT table_name FROM s.__cityparquet ORDER BY 1

@@ -6,7 +6,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/connection.hpp"
@@ -27,8 +27,7 @@ namespace {
 //! 02-object-table-schema.mdx), and present but unpopulated is not the same claim as
 //! "nothing is referenced" -- see ReferencedIds below. Runs on a fresh internal
 //! connection, like cityparquet_write.cpp's `Run` helper, so it only sees committed
-//! state -- acceptable here because a pragma's generated SQL is itself expanded
-//! from pre-batch state (TRAPS.md, "Generated SQL and the pragma layer").
+//! state (TRAPS.md, "Generated SQL and the pragma layer").
 bool HasNonNullImplicitGeometryReference(ClientContext &context, const std::string &schema, const std::string &table) {
 	Connection connection(DatabaseInstance::GetDatabase(context));
 	auto result = connection.Query("SELECT COUNT(*) FROM " + QualifiedName(schema, table) +
@@ -38,7 +37,7 @@ bool HasNonNullImplicitGeometryReference(ClientContext &context, const std::stri
 		// outcome as the column not existing at all.
 		return false;
 	}
-	return result->GetValue(0, 0).GetValue<int64_t>() > 0;
+	return result->Collection().GetValue(0, 0).GetValue<int64_t>() > 0;
 }
 
 } // namespace
@@ -90,10 +89,9 @@ std::string ReferencedIds(ClientContext &context, const std::string &schema, con
 			// Which LoDs a table carries is a property of the dataset, so the appearance
 			// columns are discovered from the catalog rather than assumed.
 			for (const auto &column : AppearanceLodColumns(context, schema, table, prefix)) {
-				terms.push_back("SELECT UNNEST(cityjson_appearance_ids(" +
-				                KeywordHelper::WriteOptionallyQuoted(column) + ")) AS ref FROM " +
-				                QualifiedName(schema, table) + " WHERE " +
-				                KeywordHelper::WriteOptionallyQuoted(column) + " IS NOT NULL");
+				terms.push_back("SELECT UNNEST(cityjson_appearance_ids(" + SQLIdentifier::ToString(column) +
+				                ")) AS ref FROM " + QualifiedName(schema, table) + " WHERE " +
+				                SQLIdentifier::ToString(column) + " IS NOT NULL");
 			}
 		}
 	}
@@ -122,7 +120,7 @@ std::string BuildOrphansSQL(ClientContext &context, const std::string &schema) {
 		if (referenced.empty()) {
 			continue; // undeterminable — see ReferencedIds
 		}
-		parts.push_back("SELECT " + KeywordHelper::WriteQuoted(sidecar, '\'') +
+		parts.push_back("SELECT " + SQLString::ToString(sidecar) +
 		                " AS table_name, "
 		                "CAST(s.id AS VARCHAR) AS id, 'unreferenced' AS reason FROM " +
 		                QualifiedName(schema, sidecar) + " s WHERE s.id NOT IN (" + referenced + ")");

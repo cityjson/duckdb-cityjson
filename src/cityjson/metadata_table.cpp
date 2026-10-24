@@ -220,7 +220,7 @@ unique_ptr<DataChunk> MetadataTableUtils::CreateMetadataChunk(const CityJSON &ci
 	chunk->Initialize(Allocator::DefaultAllocator(), types);
 
 	// Create a single row
-	chunk->SetCardinality(1);
+	chunk->SetChildCardinality(1);
 
 	// id = 1
 	chunk->data[0].SetValue(0, Value::INTEGER(1));

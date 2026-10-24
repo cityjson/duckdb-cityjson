@@ -35,23 +35,23 @@ obj_metadata: crs 'Amersfoort' is not an EPSG reference
 # The CRS reaches a writer the way any source's does: through metadata_query.
 statement ok
 COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2'))
-TO '__TEST_DIR__/cube_from_obj.city.jsonl'
+TO '{TEST_DIR}/cube_from_obj.city.jsonl'
 (FORMAT cityjsonseq, metadata_query 'SELECT reference_system AS crs FROM obj_metadata(''test/data/obj/cube.obj'', crs := ''EPSG:7415'')');
 
 query I
-SELECT reference_system.code FROM cityjsonseq_metadata('__TEST_DIR__/cube_from_obj.city.jsonl');
+SELECT reference_system.code FROM cityjsonseq_metadata('{TEST_DIR}/cube_from_obj.city.jsonl');
 ----
 7415
 
 # The definitions travel too: refs in the written file resolve against a real appearance block.
 query II
-SELECT (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/cube_from_obj.city.jsonl')),
-       (SELECT COUNT(*) FROM cityjson_textures('__TEST_DIR__/cube_from_obj.city.jsonl'));
+SELECT (SELECT COUNT(*) FROM cityjson_materials('{TEST_DIR}/cube_from_obj.city.jsonl')),
+       (SELECT COUNT(*) FROM cityjson_textures('{TEST_DIR}/cube_from_obj.city.jsonl'));
 ----
 3	1
 
 query I
-SELECT name FROM cityjson_materials('__TEST_DIR__/cube_from_obj.city.jsonl') ORDER BY id;
+SELECT name FROM cityjson_materials('{TEST_DIR}/cube_from_obj.city.jsonl') ORDER BY id;
 ----
 GroundSurface
 brick
@@ -66,7 +66,7 @@ query II
 SELECT count(*) FILTER (line LIKE '%"texture"%'),
        count(*) FILTER (line LIKE '%"texture"%' AND line LIKE '%"vertices-texture"%')
 FROM (SELECT UNNEST(string_split(content, chr(10))) AS line
-      FROM read_text('__TEST_DIR__/cube_from_obj.city.jsonl'));
+      FROM read_text('{TEST_DIR}/cube_from_obj.city.jsonl'));
 ----
 1	1
 
@@ -74,13 +74,13 @@ query II
 SELECT count(*) FILTER (line LIKE '%"id":"cube"%' AND line LIKE '%"vertices-texture"%'),
        count(*) FILTER (line LIKE '%"id":"slab"%' AND line LIKE '%"vertices-texture"%')
 FROM (SELECT UNNEST(string_split(content, chr(10))) AS line
-      FROM read_text('__TEST_DIR__/cube_from_obj.city.jsonl'));
+      FROM read_text('{TEST_DIR}/cube_from_obj.city.jsonl'));
 ----
 1	0
 
 # The texture's own identity travels too.
 query II
-SELECT image_uri, image_type FROM cityjson_textures('__TEST_DIR__/cube_from_obj.city.jsonl');
+SELECT image_uri, image_type FROM cityjson_textures('{TEST_DIR}/cube_from_obj.city.jsonl');
 ----
 brick.png	PNG
 
@@ -91,11 +91,11 @@ statement ok
 CREATE TABLE cube_rows AS SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
 
 statement ok
-COPY (SELECT * FROM cube_rows) TO '__TEST_DIR__/cube_metadata_from.city.jsonl'
+COPY (SELECT * FROM cube_rows) TO '{TEST_DIR}/cube_metadata_from.city.jsonl'
 (FORMAT cityjsonseq, metadata_from 'test/data/obj/cube.obj');
 
 query II
-SELECT (SELECT COUNT(*) FROM cityjson_materials('__TEST_DIR__/cube_metadata_from.city.jsonl')),
-       (SELECT COUNT(*) FROM cityjson_textures('__TEST_DIR__/cube_metadata_from.city.jsonl'));
+SELECT (SELECT COUNT(*) FROM cityjson_materials('{TEST_DIR}/cube_metadata_from.city.jsonl')),
+       (SELECT COUNT(*) FROM cityjson_textures('{TEST_DIR}/cube_metadata_from.city.jsonl'));
 ----
 3	1
