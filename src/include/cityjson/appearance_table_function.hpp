@@ -1,9 +1,12 @@
 #pragma once
 
 #include "cityjson/cityjson_types.hpp"
+#include "cityjson/reader.hpp"
 #include "duckdb.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,7 +14,9 @@ namespace duckdb {
 namespace cityjson {
 
 /**
- * The columns `cityjson_geometry_templates(path)` emits for a given set of templates.
+ * The columns `cityjson_implicit_geometries(path)` emits for a CityJSON document's
+ * geometry templates: the `implicit_geometries` sidecar, one shared relative geometry
+ * per row.
  *
  * Unlike the materials and textures sidecars, whose columns are fixed, this one carries
  * per-LoD geometry and appearance columns and so its schema is a property of the file.
@@ -21,13 +26,13 @@ namespace cityjson {
  * Throws when a template's `lod` is absent or non-numeric: the LoD names the columns,
  * so `geometry_lod` or `geometry_lodfoo` would be unreadable by any conforming reader.
  */
-void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std::string> &names,
+void ImplicitGeometryColumns(const GeometryTemplates &templates, std::vector<std::string> &names,
                              std::vector<LogicalType> &types, std::vector<std::string> &lods);
 
 /**
  * The columns `cityjson_materials(path)` / `cityjson_textures(path)` emit.
  *
- * Fixed, unlike the templates sidecar — but still worth asking for rather than
+ * Fixed, unlike the implicit_geometries sidecar — but still worth asking for rather than
  * hard-coding a second time, because a destination sidecar may be *sparser* than what a
  * read produces (loaded from a Parquet file written before a column existed, say), and
  * `insert_cityjson` has to widen it before `INSERT ... BY NAME` can match.
@@ -40,8 +45,9 @@ void AppearanceSidecarColumns(const std::string &sidecar, std::vector<std::strin
 /**
  * Registers the CityParquet appearance sidecar readers:
  *
- *   cityjson_materials(path) -> materials.parquet rows
- *   cityjson_textures(path)  -> textures.parquet rows
+ *   cityjson_materials(path)           -> materials.parquet rows
+ *   cityjson_textures(path)            -> textures.parquet rows
+ *   cityjson_implicit_geometries(path) -> implicit_geometries.parquet rows
  *
  * Column names and order follow the specification's sidecar tables exactly, including
  * its mixed casing (`ambientIntensity`, `wrapMode`, `borderColor`) — those are the
@@ -53,6 +59,17 @@ void AppearanceSidecarColumns(const std::string &sidecar, std::vector<std::strin
  * implementations to merge.
  */
 void RegisterAppearanceTableFunctions(ExtensionLoader &loader);
+
+//! Which sidecar a registered appearance table function produces.
+enum class SidecarKind { MATERIALS, TEXTURES, IMPLICIT_GEOMETRIES };
+
+//! Opens the reader whose appearance definitions a sidecar function exposes. The CityJSON
+//! sidecars open with OpenAnyCityJSONFile; the OBJ ones with an OBJReader.
+using ReaderOpener = std::function<std::unique_ptr<CityJSONReader>(ClientContext &, const std::string &path)>;
+
+//! The bind/scan pair behind every appearance sidecar function, parameterised by the
+//! function's TableFunctionInfo so one bind serves every input format.
+TableFunction CreateAppearanceTableFunction(const std::string &name, SidecarKind kind, ReaderOpener opener);
 
 } // namespace cityjson
 } // namespace duckdb

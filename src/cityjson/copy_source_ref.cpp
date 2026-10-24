@@ -1,5 +1,6 @@
 #include "cityjson/copy_source_ref.hpp"
 
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
@@ -26,16 +27,23 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 		}
 		auto &call = fn.function->Cast<FunctionExpression>();
 
-		CopySourceRef found;
-		if (call.function_name == "read_cityjson") {
-			found.is_seq = false;
-		} else if (call.function_name == "read_cityjsonseq") {
-			found.is_seq = true;
-		} else if (call.function_name == "read_flatcitybuf") {
-			found.is_fcb = true;
-		} else {
+		// Only the four read functions name a path we can reopen. Anything else in a
+		// table function position (a read_csv, a range, a join) names no CityJSON file.
+		static const char *const kReadFunctions[] = {"read_cityjson", "read_cityjsonseq", "read_flatcitybuf",
+		                                             "read_obj"};
+		bool is_read_function = false;
+		for (auto *name : kReadFunctions) {
+			if (call.function_name == name) {
+				is_read_function = true;
+				break;
+			}
+		}
+		if (!is_read_function) {
 			return;
 		}
+
+		CopySourceRef found;
+		found.kind = ReaderKindForFunction(call.function_name);
 
 		// Only a literal path is recoverable. A computed or parameterised argument
 		// is not knowable at bind time, and a wrong guess is worse than none.
@@ -47,6 +55,17 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 			return;
 		}
 		found.path = StringValue::Get(constant.value);
+
+		// Named parameters are children with an alias. Only `appearance` matters here.
+		for (auto &child : call.children) {
+			if (child->alias != "appearance" || child->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+				continue;
+			}
+			auto &c = child->Cast<ConstantExpression>();
+			if (!c.value.IsNull() && c.value.type().id() == LogicalTypeId::VARCHAR) {
+				found.sidecar_appearance = StringUtil::Lower(StringValue::Get(c.value)) == "sidecar";
+			}
+		}
 		out.push_back(std::move(found));
 		return;
 	}

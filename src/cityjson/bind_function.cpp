@@ -5,6 +5,7 @@
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/city_object_utils.hpp"
+#include "cityjson/cityparquet_extensions.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -103,7 +104,8 @@ void InferCityJSONColumns(CityJSONBindData &bind_data, CityJSONReader &reader, s
 		switch (column.kind) {
 		case ColumnType::GeometryWKB:
 		case ColumnType::GeometryPropertiesStruct:
-		case ColumnType::AppearanceJson:
+		case ColumnType::MaterialMap:
+		case ColumnType::TextureMap:
 			try {
 				column.lod = ParseLODFromGeometryColumn(column.name);
 			} catch (const CityJSONError &) {
@@ -157,6 +159,29 @@ CityJSONSourceFacts InspectCityJSONSource(CityJSONReader &reader, const CityJSON
 		}
 	}
 	facts.object_types.assign(types.begin(), types.end());
+	facts.extensions = probe.metadata.extensions;
+	facts.has_extensions_member = probe.metadata.has_extensions_member;
+
+	// Likewise complete: a surface type is renamed by namespace wherever it occurs.
+	std::set<std::string> surface_types;
+	const auto collect = [&surface_types](const Geometry &geometry) {
+		if (geometry.semantics.has_value() && geometry.semantics->contains("surfaces")) {
+			CollectSurfaceTypes(geometry.semantics->at("surfaces"), surface_types);
+		}
+	};
+	for (const auto &feature : all.records) {
+		for (const auto &entry : feature.city_objects) {
+			for (const auto &geometry : entry.second.geometry) {
+				collect(geometry);
+			}
+		}
+	}
+	if (probe.metadata.geometry_templates.has_value()) {
+		for (const auto &geometry : probe.metadata.geometry_templates->templates) {
+			collect(geometry);
+		}
+	}
+	facts.surface_types.assign(surface_types.begin(), surface_types.end());
 
 	// Interned, not counted off the header: a CityJSONSeq feature may carry definitions
 	// the header never declared, and those need a sidecar just as much.
@@ -202,6 +227,7 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 			throw BinderException("Failed to read data: " + std::string(e.what()));
 		}
 		result.scan_plan = result.chunks.BuildScanPlan();
+		ReportDroppedRings(context, result.chunks.records);
 	}
 
 	InferCityJSONColumns(result, reader, options.sample_lines);
@@ -216,7 +242,12 @@ CityJSONBindData BindCityJSONReadRaw(ClientContext &context, TableFunctionBindIn
 
 	for (const auto &col : result.columns) {
 		names.push_back(col.name);
-		return_types.push_back(ColumnTypeUtils::ToDuckDBType(col.kind));
+		// `other` stays VARCHAR, like `geometry_properties_lod*.surfaces`: a JSON column
+		// needs the json extension even for LIKE, and both are JSON by name, so
+		// cityparquet_write annotates them without the type's help. An attribute column
+		// has no fixed name, so its JSON-ness has to ride on its type.
+		const bool reserved_json = col.kind == ColumnType::Json && col.name == "other";
+		return_types.push_back(reserved_json ? LogicalType::VARCHAR : ColumnTypeUtils::ToDuckDBType(col.kind));
 	}
 
 	return result;

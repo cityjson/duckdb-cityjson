@@ -10,9 +10,40 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include "duckdb/logging/logger.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 namespace cityjson {
+
+void ReportDroppedRings(ClientContext &context, const CityJSONFeature &feature) {
+	for (const auto &[id, object] : feature.city_objects) {
+		for (const auto &geometry : object.geometry) {
+			if (geometry.short_uv_rings > 0) {
+				DUCKDB_LOG_WARNING(context,
+				                   "cityjson: object '%s' (%s, lod %s): left %llu textured ring(s) untextured that "
+				                   "have fewer UV indices than vertices, so which vertex lacks one is not stated",
+				                   id, geometry.type, geometry.lod,
+				                   static_cast<unsigned long long>(geometry.short_uv_rings));
+			}
+			if (geometry.dropped_rings == 0) {
+				continue;
+			}
+			DUCKDB_LOG_WARNING(context,
+			                   "cityjson: object '%s' (%s, lod %s): dropped %llu ring(s) with fewer than three "
+			                   "vertices, which cannot form a closed WKB ring, and %llu surface(s) whose exterior "
+			                   "ring was one of them",
+			                   id, geometry.type, geometry.lod, static_cast<unsigned long long>(geometry.dropped_rings),
+			                   static_cast<unsigned long long>(geometry.dropped_surfaces));
+		}
+	}
+}
+
+void ReportDroppedRings(ClientContext &context, const std::vector<CityJSONFeature> &features) {
+	for (const auto &feature : features) {
+		ReportDroppedRings(context, feature);
+	}
+}
 
 // ============================================================
 // CityObjectUtils - Attribute Extraction
@@ -52,20 +83,18 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		return roles;
 	}
 
-	// `address` and `template`: reserved columns the spec requires present (spec
-	// "Optional data is NULL, not an omitted column"), but nothing in CityObject
-	// parses source address members or geometry-template instance data yet. Always
-	// NULL rather than surfacing a same-named source attribute here -- CityObject
-	// carries no field for either, so there is nothing to report but NULL without
-	// inventing it. (A source attribute literally named "address" or "template" is
-	// reserved-name-colliding input; it is preserved in `other`, not here.)
-	if (col.name == "address" || col.name == "template") {
+	// `address` and `implicit_geometry` are written by the scan from the object's own
+	// address member and GeometryInstance (they need its vertex pool), never from a
+	// same-named source attribute: that one is the escaped column `_address`.
+	if (col.name == "address" || col.name == "implicit_geometry") {
 		return json(nullptr);
 	}
 
 	if (col.name == "other") {
 		// `other` carries only what no column of its own carries: an attribute
-		// whose name collides with a reserved column, and so never got one.
+		// whose name differs from another's only by case, and so never got one.
+		// `emitted_columns` holds source names, so an attribute stored under an
+		// escaped column (`ID` as `_ID`) counts as having one.
 		// Attributes that DID get a column are not repeated here -- a duplicate
 		// costs a JSON blob per row and is written nowhere on COPY TO.
 		// geographicalExtent is not included: it is carried by `bbox`, which
@@ -82,8 +111,9 @@ json CityObjectUtils::GetAttributeValue(const CityObject &obj, const Column &col
 		return other_attrs;
 	}
 
-	// Dynamic attribute column - look up in attributes map
-	auto it = obj.attributes.find(col.name);
+	// Dynamic attribute column - look up in attributes map, under the source name an
+	// escaped column (`_ID`) stands for.
+	auto it = obj.attributes.find(SourceAttributeName(col.name));
 	if (it != obj.attributes.end()) {
 		return it->second;
 	}
@@ -116,23 +146,25 @@ std::vector<Column> CityObjectUtils::InferAttributeColumns(const std::vector<Cit
 		for (const auto &[city_obj_id, city_obj] : feature.city_objects) {
 			// Collect all attributes
 			for (const auto &[attr_key, attr_value] : city_obj.attributes) {
-				// Reserved columns take precedence over dynamic attributes: an attribute
-				// whose name collides (case-insensitively) with a reserved column does not
-				// get its own column. Its value is still preserved in the `other` JSON.
-				if (IsReservedColumnName(attr_key)) {
-					continue;
+				// An attribute whose name collides (case-insensitively) with a reserved
+				// column is the column `_` + its name (spec 02-object-table-schema.mdx,
+				// "Column naming and reservation rules"); GetAttributeValue reverses it.
+				//
+				// A null is the absence of a value and carries no type: it registers the
+				// attribute but casts no vote. An attribute null everywhere resolves from
+				// no samples, to VARCHAR.
+				auto &types = attribute_types[EscapeAttributeName(attr_key)];
+				if (!attr_value.is_null()) {
+					types.push_back(ColumnTypeUtils::InferFromJson(attr_value));
 				}
-
-				// Infer type from value
-				ColumnType inferred_type = ColumnTypeUtils::InferFromJson(attr_value);
-				attribute_types[attr_key].push_back(inferred_type);
 			}
 		}
 	}
 
-	// Resolve final type for each attribute. Attribute names that differ only by case
-	// would also produce duplicate DuckDB columns, so keep only the first (the map is
-	// ordered, so this is deterministic).
+	// Resolve final type for each attribute. Column names that differ only by case
+	// would produce duplicate DuckDB columns, so keep only the first (the map is
+	// ordered, so this is deterministic); the others have no column, so `other`
+	// carries them.
 	std::vector<Column> result;
 	std::set<std::string> seen_lower;
 	for (const auto &[attr_name, types] : attribute_types) {
@@ -185,7 +217,7 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 	// texture_lod* family, whose per-LoD *set* genuinely is a property of the
 	// dataset (spec: "a table whose objects have no analysis geometry at all
 	// carries none of them"), bbox is not part of that per-LoD exception: it is a
-	// single reserved column like `address` or `template`, column-nullable but
+	// single reserved column like `address` or `implicit_geometry`, column-nullable but
 	// always present. cityparquet-rs pushes it unconditionally too.
 	std::vector<Column> result;
 	result.emplace_back("bbox", ColumnType::GeographicalExtent);
@@ -201,8 +233,8 @@ std::vector<Column> CityObjectUtils::InferGeometryColumns(const std::vector<City
 		// Per-LoD appearance columns paired to the geometry by name (§11.1). Present
 		// for every LoD that has a geometry column, whether or not any row carries
 		// appearance for it (nullable).
-		result.emplace_back("material_" + suffix, ColumnType::AppearanceJson);
-		result.emplace_back("texture_" + suffix, ColumnType::AppearanceJson);
+		result.emplace_back("material_" + suffix, ColumnType::MaterialMap);
+		result.emplace_back("texture_" + suffix, ColumnType::TextureMap);
 	}
 
 	return result;
@@ -313,6 +345,12 @@ std::optional<GeographicalExtent> CityObjectUtils::GetObjectExtent(const std::st
 std::optional<GeographicalExtent> CityObjectUtils::GetGeometryExtent(const Geometry &geometry,
                                                                      const std::vector<std::array<double, 3>> &vertices,
                                                                      const std::optional<Transform> &transform) {
+	// A GeometryInstance's one vertex is the reference point its relative geometry is
+	// placed at, not an extent of what it places: it contributes none, as in the
+	// reference writer.
+	if (geometry.type == "GeometryInstance") {
+		return std::nullopt;
+	}
 	GeographicalExtent extent;
 	bool found = false;
 	CollectExtentRecursive(geometry.boundaries, vertices, transform, extent, found);
@@ -320,6 +358,115 @@ std::optional<GeographicalExtent> CityObjectUtils::GetGeometryExtent(const Geome
 		return std::nullopt;
 	}
 	return extent;
+}
+
+} // namespace cityjson
+} // namespace duckdb
+
+namespace duckdb {
+namespace cityjson {
+
+const std::vector<std::pair<std::string, std::string>> &AddressMemberNames() {
+	static const std::vector<std::pair<std::string, std::string>> names = {
+	    {"street", "thoroughfareName"}, {"house_number", "thoroughfareNumber"},
+	    {"po_box", "postBox"},          {"zip_code", "postcode"},
+	    {"city", "locality"},           {"state", "administrativeArea"},
+	    {"country", "country"},         {"free_text", "freeText"}};
+	return names;
+}
+
+Value CityObjectUtils::GetAddressValue(const CityObject &object, const std::vector<std::array<double, 3>> *vertices,
+                                       const std::optional<Transform> &transform) {
+	const auto list_type = ColumnTypeUtils::ToDuckDBType(ColumnType::AddressList);
+	if (!object.address.has_value() || !object.address->is_array()) {
+		return Value(list_type);
+	}
+	const auto &struct_type = ListType::GetChildType(list_type);
+	duckdb::vector<Value> entries;
+	for (const auto &address : object.address.value()) {
+		child_list_t<Value> fields;
+		for (const auto &field : AddressMemberNames()) {
+			const auto member = address.is_object() ? address.find(field.second) : address.end();
+			// A member that is not a string is not an address field this format can hold.
+			if (address.is_object() && member != address.end() && member->is_string()) {
+				fields.emplace_back(field.first, Value(member->get<std::string>()));
+			} else {
+				fields.emplace_back(field.first, Value(LogicalType(LogicalTypeId::VARCHAR)));
+			}
+		}
+		// `location` is a MultiPoint indexing the vertex pool; the column holds the
+		// geometry itself, so a location that does not resolve -- wrong type, a bad
+		// index -- is NULL rather than a dangling reference.
+		Value location {LogicalType(LogicalTypeId::BLOB)};
+		if (address.is_object() && address.contains("location") && address["location"].is_object() &&
+		    vertices != nullptr) {
+			const auto &geometry = address["location"];
+			if (geometry.value("type", "") == "MultiPoint" && geometry.contains("boundaries")) {
+				try {
+					auto wkb =
+					    WKBEncoder::Encode(Geometry("MultiPoint", "", geometry["boundaries"]), *vertices, transform);
+					location = Value::BLOB(wkb.data(), wkb.size());
+				} catch (const std::exception &) {
+					location = Value(LogicalType(LogicalTypeId::BLOB));
+				}
+			}
+		}
+		fields.emplace_back("location", std::move(location));
+		entries.push_back(Value::STRUCT(std::move(fields)));
+	}
+	return Value::LIST(struct_type, std::move(entries));
+}
+
+} // namespace cityjson
+} // namespace duckdb
+
+namespace duckdb {
+namespace cityjson {
+
+std::optional<ImplicitGeometryCell>
+CityObjectUtils::GetImplicitGeometry(const CityObject &object, const std::vector<std::array<double, 3>> *vertices,
+                                     const std::optional<Transform> &transform) {
+	for (const auto &geometry : object.geometry) {
+		if (geometry.type != "GeometryInstance") {
+			continue;
+		}
+		// The first instance only: the column holds one (spec open question).
+		if (!geometry.template_index.has_value() || vertices == nullptr || !geometry.boundaries.is_array() ||
+		    geometry.boundaries.empty() || !geometry.boundaries[0].is_number_unsigned()) {
+			return std::nullopt;
+		}
+		const auto index = geometry.boundaries[0].get<uint64_t>();
+		if (index >= vertices->size()) {
+			return std::nullopt;
+		}
+		ImplicitGeometryCell cell;
+		cell.id = geometry.template_index.value();
+		const auto &vertex = (*vertices)[index];
+		cell.point = WKBEncoder::EncodePoint(transform.has_value() ? transform->Apply(vertex) : vertex);
+		if (geometry.transformation_matrix.has_value()) {
+			const auto &matrix = geometry.transformation_matrix.value();
+			if (!matrix.is_array() || matrix.size() != 16 ||
+			    !std::all_of(matrix.begin(), matrix.end(), [](const json &v) { return v.is_number(); })) {
+				throw CityJSONError::InvalidGeometry("a GeometryInstance's transformationMatrix must be 16 numbers "
+				                                     "(a row-major 4x4), got " +
+				                                     matrix.dump());
+			}
+			std::vector<double> values;
+			for (const auto &value : matrix) {
+				values.push_back(value.get<double>());
+			}
+			// Spec 04-appearance-templates.mdx, "Placement": the matrix is affine, and a
+			// projective one has no meaning for an implicit geometry.
+			if (!IsAffineMatrix(values)) {
+				throw CityJSONError::InvalidGeometry("a GeometryInstance's transformationMatrix must be affine -- its "
+				                                     "last row must be 0, 0, 0, 1 -- got " +
+				                                     matrix.dump());
+			}
+			cell.transformation_matrix = std::move(values);
+		}
+		return cell;
+	}
+	return std::nullopt;
 }
 
 } // namespace cityjson

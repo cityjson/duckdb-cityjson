@@ -413,3 +413,16 @@ query TI
 SELECT version, city_objects_count FROM cityjson_metadata('__TEST_DIR__/cross_back.city.json');
 ----
 2.0	1
+
+# ============================================================
+# Unknown COPY options are rejected, not dropped silently
+# ============================================================
+
+# A misspelled option used to be ignored: the output was written with the default
+# quantisation while the user believed they had set it. Every format must reject
+# an option it does not know.
+statement error
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json'))
+TO '__TEST_DIR__/unknown_opt.city.json' (FORMAT cityjson, trasform_scale '1,1,1');
+----
+unknown option 'trasform_scale'

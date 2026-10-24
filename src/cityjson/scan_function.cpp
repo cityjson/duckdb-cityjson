@@ -1,4 +1,6 @@
 #include "cityjson/table_function.hpp"
+#include "cityjson/appearance_cell.hpp"
+#include "cityjson/appearance_flatten.hpp"
 #include "cityjson/vector_writer.hpp"
 #include "cityjson/city_object_utils.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
@@ -67,12 +69,14 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 			continue;
 		}
 
-		// Handle per-LoD appearance columns (material_lod* / texture_lod*, §11.1):
-		// emit the matching geometry's material/texture theme map verbatim, null
-		// when the geometry (or its appearance) is absent.
-		if (col.kind == ColumnType::AppearanceJson) {
+		// Handle per-LoD appearance columns (material_lod* / texture_lod*, spec
+		// "material / texture columns"): the matching geometry's themes, flattened
+		// to one entry per WKB face, typed. NULL when the geometry -- or its
+		// appearance -- is absent, and NULL when the source map carries no theme at
+		// all, since the null cell is what "no appearance" means.
+		if (col.kind == ColumnType::MaterialMap || col.kind == ColumnType::TextureMap) {
 			const Geometry *geom = bind_data.target_lod.has_value() ? target_geom : city_obj.GetGeometryAtLOD(col.lod);
-			const bool is_material = col.name.rfind("material", 0) == 0;
+			const bool is_material = col.kind == ColumnType::MaterialMap;
 			const json *appearance = nullptr;
 			if (geom != nullptr) {
 				const auto &opt = is_material ? geom->material : geom->texture;
@@ -80,50 +84,76 @@ static void WriteCityObjectRow(const CityJSONBindData &bind_data, const CityJSON
 					appearance = &opt.value();
 				}
 			}
-			if (appearance != nullptr) {
-				if (bind_data.appearance_index.has_value()) {
-					// appearance := 'sidecar'. Rewrite the source's feature-local indices
-					// into dataset-global sidecar ids, and (for textures) replace UV
-					// indices with the coordinates themselves -- the UV pool is
-					// per-feature, so a stored index would be meaningless once features
-					// share one table.
-					const auto &index = bind_data.appearance_index.value();
-					const std::vector<std::array<double, 2>> *uv_pool = nullptr;
-					if (feature.appearance.has_value()) {
-						uv_pool = &feature.appearance->vertices_texture;
-					} else if (bind_data.metadata.appearance.has_value()) {
-						uv_pool = &bind_data.metadata.appearance->vertices_texture;
-					}
-					static const std::vector<std::array<double, 2>> empty_pool;
-					const auto normalised = is_material
-					                            ? NormaliseMaterialMap(*appearance, index, feature.id)
-					                            : NormaliseTextureMap(*appearance, index, feature.id,
-					                                                  uv_pool != nullptr ? *uv_pool : empty_pool);
-					WriteJsonText(wrappers[col_idx].AsFlatMut(), normalised, output_row);
-				} else {
-					WriteJsonText(wrappers[col_idx].AsFlatMut(), *appearance, output_row);
-				}
+			const auto cell_type = is_material ? MaterialCellType() : TextureCellType();
+			if (geom == nullptr || appearance == nullptr) {
+				wrappers[col_idx].SetValue(output_row, Value(cell_type));
+				continue;
+			}
+
+			// The `appearance` option decides the id space and nothing else. In
+			// sidecar mode a source index is a feature-local one and resolves to the
+			// dataset-global sidecar id; in local mode it is carried through as the
+			// CityJSON view the source gave.
+			const AppearanceIndex *index =
+			    bind_data.appearance_index.has_value() ? &bind_data.appearance_index.value() : nullptr;
+			const std::string *feature_id = &feature.id;
+			IdResolver resolve = [](int64_t local) {
+				return local;
+			};
+			if (index != nullptr && is_material) {
+				resolve = [index, feature_id](int64_t local) {
+					return index->ResolveMaterial(*feature_id, local);
+				};
+			} else if (index != nullptr) {
+				resolve = [index, feature_id](int64_t local) {
+					return index->ResolveTexture(*feature_id, local);
+				};
+			}
+
+			// UVs are inlined in both modes: the pool is per-feature, so a stored
+			// index is meaningless once features share one table.
+			static const std::vector<std::array<double, 2>> empty_pool;
+			const std::vector<std::array<double, 2>> *uv_pool = nullptr;
+			if (feature.appearance.has_value()) {
+				uv_pool = &feature.appearance->vertices_texture;
+			} else if (bind_data.metadata.appearance.has_value()) {
+				uv_pool = &bind_data.metadata.appearance->vertices_texture;
+			}
+
+			// Value-at-a-time, not the flat writers the hot columns use: an
+			// appearance cell is sparse and deeply nested, and this is not the path
+			// a scan spends its time in.
+			if (is_material) {
+				const auto cell = FlattenMaterialMap(*geom, *appearance, resolve);
+				wrappers[col_idx].SetValue(output_row,
+				                           cell.themes.empty() ? Value(cell_type) : MaterialCellValue(cell));
 			} else {
-				wrappers[col_idx].SetNull(output_row);
+				const auto cell =
+				    FlattenTextureMap(*geom, *appearance, resolve, uv_pool != nullptr ? *uv_pool : empty_pool);
+				wrappers[col_idx].SetValue(output_row, cell.themes.empty() ? Value(cell_type) : TextureCellValue(cell));
 			}
 			continue;
 		}
 
-		// `address` and `template`: reserved columns the spec requires present (and
-		// NULL-filled) even though nothing in this reader's data model populates
-		// them yet. `template` is routed through WriteTemplateStruct directly,
-		// bypassing WriteToVector's generic top-level-null shortcut, for the same
-		// reason GeometryPropertiesStruct is above: its LIST child
-		// (transformationMatrix) needs a well-formed list_entry_t even on a null
-		// row. `address`'s LIST<STRUCT> has no LIST nested inside a STRUCT child,
-		// so a plain SetNull is safe -- the same shape "children"/"parents"
-		// (VarcharArray) already rely on.
-		if (col.kind == ColumnType::TemplateStruct) {
-			WriteTemplateStruct(wrappers[col_idx].AsStructMut(), json(nullptr), output_row);
+		// `implicit_geometry` is routed through WriteImplicitGeometryStruct directly,
+		// bypassing WriteToVector's generic top-level-null shortcut, for the same reason
+		// GeometryPropertiesStruct is above: its LIST child (transformationMatrix) needs
+		// a well-formed list_entry_t even on a null row.
+		if (col.kind == ColumnType::ImplicitGeometryStruct) {
+			std::optional<ImplicitGeometryCell> cell;
+			try {
+				cell = CityObjectUtils::GetImplicitGeometry(city_obj, vertex_pool, bind_data.metadata.transform);
+			} catch (const CityJSONError &e) {
+				throw ConversionException("object '%s': %s", city_obj_id, e.what());
+			}
+			WriteImplicitGeometryStruct(wrappers[col_idx].AsStructMut(), cell.has_value() ? &cell.value() : nullptr,
+			                            output_row);
 			continue;
 		}
+		// `address` value-at-a-time, like the appearance cells: sparse and nested.
 		if (col.kind == ColumnType::AddressList) {
-			wrappers[col_idx].SetNull(output_row);
+			wrappers[col_idx].SetValue(
+			    output_row, CityObjectUtils::GetAddressValue(city_obj, vertex_pool, bind_data.metadata.transform));
 			continue;
 		}
 
@@ -223,18 +253,15 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 	// column" test. Built once per scan rather than per row.
 	//
 	// Filtered to non-reserved names, not the raw bind_data.columns list: a
-	// reserved/structural column (bbox, geometry_vertices_lod2_2, ...) is never
-	// populated from obj.attributes, so its presence in the schema says nothing
-	// about whether a same-named attribute has "a column of its own" -- an
-	// attribute literally called geometry_vertices_lod2_2 must still land in
-	// `other` even though a column of that exact name exists (it holds the
-	// vertex pool, not the attribute). IsReservedColumnName is the same
-	// predicate InferAttributeColumns used to decide the attribute got no
-	// column in the first place, so the two stay in lockstep.
+	// reserved column (bbox, geometry_lod2_2, ...) is never populated from
+	// obj.attributes, so its presence in the schema says nothing about whether a
+	// same-named attribute has a column of its own -- an attribute literally
+	// called bbox has one, the escaped `_bbox`. Held as source names
+	// (SourceAttributeName), since those are the keys `other` is built from.
 	std::set<std::string> emitted_columns;
 	for (const auto &c : bind_data.columns) {
 		if (!IsReservedColumnName(c.name)) {
-			emitted_columns.insert(c.name);
+			emitted_columns.insert(SourceAttributeName(c.name));
 		}
 	}
 
@@ -359,7 +386,7 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 	output.Verify();
 }
 
-static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState &global_state,
+static void StreamingScan(ClientContext &context, const CityJSONBindData &bind_data, CityJSONGlobalState &global_state,
                           CityJSONLocalState &local_state, DataChunk &output) {
 	if (!global_state.streaming_reader) {
 		output.SetCardinality(0);
@@ -374,18 +401,15 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 	// column" test. Built once per scan rather than per row.
 	//
 	// Filtered to non-reserved names, not the raw bind_data.columns list: a
-	// reserved/structural column (bbox, geometry_vertices_lod2_2, ...) is never
-	// populated from obj.attributes, so its presence in the schema says nothing
-	// about whether a same-named attribute has "a column of its own" -- an
-	// attribute literally called geometry_vertices_lod2_2 must still land in
-	// `other` even though a column of that exact name exists (it holds the
-	// vertex pool, not the attribute). IsReservedColumnName is the same
-	// predicate InferAttributeColumns used to decide the attribute got no
-	// column in the first place, so the two stay in lockstep.
+	// reserved column (bbox, geometry_lod2_2, ...) is never populated from
+	// obj.attributes, so its presence in the schema says nothing about whether a
+	// same-named attribute has a column of its own -- an attribute literally
+	// called bbox has one, the escaped `_bbox`. Held as source names
+	// (SourceAttributeName), since those are the keys `other` is built from.
 	std::set<std::string> emitted_columns;
 	for (const auto &c : bind_data.columns) {
 		if (!IsReservedColumnName(c.name)) {
-			emitted_columns.insert(c.name);
+			emitted_columns.insert(SourceAttributeName(c.name));
 		}
 	}
 
@@ -399,6 +423,7 @@ static void StreamingScan(const CityJSONBindData &bind_data, CityJSONGlobalState
 			if (!next.has_value()) {
 				break;
 			}
+			ReportDroppedRings(context, next.value());
 			global_state.streaming_feature = std::move(next.value());
 			global_state.streaming_obj_it = global_state.streaming_feature->city_objects.begin();
 		}
@@ -427,7 +452,7 @@ void CityJSONScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 	auto &global_state = data.global_state->Cast<CityJSONGlobalState>();
 
 	if (bind_data.streaming) {
-		StreamingScan(bind_data, global_state, local_state, output);
+		StreamingScan(context, bind_data, global_state, local_state, output);
 	} else {
 		MaterializedScan(bind_data, global_state, local_state, output);
 	}

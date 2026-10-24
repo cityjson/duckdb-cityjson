@@ -70,6 +70,13 @@ std::vector<uint8_t> WKBEncoder::EncodeAsType(const Geometry &geometry, WKBGeome
 	return out;
 }
 
+std::vector<uint8_t> WKBEncoder::EncodePoint(const std::array<double, 3> &point) {
+	std::vector<uint8_t> out;
+	WriteHeader(out, WKBGeometryType::PointZ);
+	WritePoint3D(out, point);
+	return out;
+}
+
 WKBGeometryType WKBEncoder::GetOGCType(const std::string &cityjson_type) {
 	auto it = CITYJSON_TO_OGC_TYPE.find(cityjson_type);
 	if (it != CITYJSON_TO_OGC_TYPE.end()) {
@@ -236,9 +243,10 @@ void WKBEncoder::EncodePolygon(std::vector<uint8_t> &out, const json &surface,
 		}
 
 		// OGC requires a closed ring's first and last points to be identical.
-		// CityJSON rings never repeat the first vertex, so closing is always
-		// needed here -- a ring whose first and last vertex indices already
-		// coincide is not "already closed", it is a degenerate ring (e.g. an
+		// CityJSON rings never repeat the first vertex, and Geometry::FromJson has
+		// already stripped a closing repeat a source ring carried, so closing is
+		// always needed here -- a three-vertex ring whose first and last indices
+		// coincide is not "already closed", it is a degenerate ring (an
 		// out-and-back edge with zero area), and it still needs the closing
 		// vertex appended like any other ring.
 		bool needs_closing = !ring.empty();

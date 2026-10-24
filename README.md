@@ -78,7 +78,7 @@ TO 'delft.city.jsonl' (FORMAT cityjsonseq);
 | `cityjsonseq_metadata(path)` / `flatcitybuf_metadata(path)` | The same, for the other two formats |
 | `COPY … TO (FORMAT cityjson\|cityjsonseq\|flatcitybuf)` | Write any of the three formats |
 | `cityjson_geoparquet_geo(path)` | The `geo` + `city` Parquet footer keys for a CityParquet file |
-| `cityjson_materials/textures/geometry_templates(path)` | Appearance sidecar tables, ids interned across the file |
+| `cityjson_materials/textures/implicit_geometries(path)` | Appearance and implicit-geometry sidecar tables, ids interned across the file |
 | `cityjson_wkb_extent(blob)` | 3D extent of a WKB blob, solids included |
 | `PRAGMA cityparquet_*` / `insert_*` | Load and transactionally mutate a CityParquet package |
 

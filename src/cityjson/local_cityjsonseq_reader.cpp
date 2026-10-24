@@ -5,10 +5,23 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 namespace cityjson {
 
 using namespace json_utils; // NOLINT(google-build-using-namespace)
+
+namespace {
+// A local read is a syscall: small enough that a test fixture crosses chunk
+// boundaries, large enough that a many-megabyte file is a few hundred reads.
+constexpr idx_t LOCAL_READ_CHUNK = idx_t(16) * 1024;
+// A remote read is an HTTP range request. Start at 1 MiB and double per refill up to
+// 32 MiB -- the read-ahead httpfs itself did before DuckDB 2.0 -- so a whole file
+// costs a handful of requests and a small one is not over-fetched much.
+constexpr idx_t REMOTE_INITIAL_READ_CHUNK = idx_t(1) * 1024 * 1024;
+constexpr idx_t REMOTE_MAXIMUM_READ_CHUNK = idx_t(32) * 1024 * 1024;
+} // namespace
 
 // ============================================================
 // Constructors
@@ -42,6 +55,43 @@ void LocalCityJSONSeqReader::OpenHandle() const {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path_);
 	}
 	metadata_read_ = false;
+	line_buffer_.clear();
+	line_pos_ = 0;
+	stream_exhausted_ = false;
+	read_chunk_ = IsRemoteFile(file_path_) ? REMOTE_INITIAL_READ_CHUNK : LOCAL_READ_CHUNK;
+}
+
+std::optional<std::string> LocalCityJSONSeqReader::NextLine() const {
+	while (true) {
+		const auto newline = line_buffer_.find('\n', line_pos_);
+		std::string line;
+		if (newline != std::string::npos) {
+			line = line_buffer_.substr(line_pos_, newline - line_pos_);
+			line_pos_ = newline + 1;
+		} else if (stream_exhausted_) {
+			if (line_pos_ >= line_buffer_.size()) {
+				return std::nullopt;
+			}
+			line = line_buffer_.substr(line_pos_);
+			line_pos_ = line_buffer_.size();
+		} else {
+			line_buffer_.erase(0, line_pos_);
+			line_pos_ = 0;
+			const auto kept = line_buffer_.size();
+			line_buffer_.resize(kept + read_chunk_);
+			const auto got = handle_->Read(&line_buffer_[kept], read_chunk_);
+			line_buffer_.resize(kept + static_cast<idx_t>(std::max<int64_t>(got, 0)));
+			if (got <= 0) {
+				stream_exhausted_ = true;
+			}
+			if (read_chunk_ >= REMOTE_INITIAL_READ_CHUNK) {
+				read_chunk_ = std::min(read_chunk_ * 2, REMOTE_MAXIMUM_READ_CHUNK);
+			}
+			continue;
+		}
+		line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
+		return line;
+	}
 }
 
 void LocalCityJSONSeqReader::Rewind() const {
@@ -49,7 +99,7 @@ void LocalCityJSONSeqReader::Rewind() const {
 	// The header line has to be consumed again, not merely re-parsed. ReadMetadata()
 	// short-circuits on the cache and leaves the handle where it is, so without this the
 	// next ReadLine() would hand the header to CityJSONFeature::FromJson.
-	handle_->ReadLine();
+	NextLine();
 	metadata_read_ = true;
 }
 
@@ -67,7 +117,7 @@ CityJSON LocalCityJSONSeqReader::ReadMetadata() const {
 	}
 
 	// Read first line (metadata record)
-	std::string line = handle_->ReadLine();
+	std::string line = NextLine().value_or("");
 	if (line.empty()) {
 		throw CityJSONError::Sequence("CityJSONSeq file is empty");
 	}
@@ -116,19 +166,14 @@ std::optional<CityJSONFeature> LocalCityJSONSeqReader::ReadNextFeature() const {
 
 	std::string line;
 	while (true) {
-		try {
-			line = handle_->ReadLine();
-		} catch (const duckdb::IOException &) {
-			// End of file
+		auto next = NextLine();
+		if (!next.has_value()) {
 			return std::nullopt;
 		}
-		if (line.empty()) {
-			// Skip empty lines, but also detect EOF when ReadLine returns empty
-			if (handle_->GetFileSize() == handle_->SeekPosition()) {
-				return std::nullopt;
-			}
-			continue;
+		if (next->empty()) {
+			continue; // blank lines between features carry nothing
 		}
+		line = std::move(next.value());
 		break;
 	}
 
@@ -208,18 +253,14 @@ size_t LocalCityJSONSeqReader::CountCityObjects() const {
 
 	size_t count = 0;
 	while (true) {
-		std::string line;
-		try {
-			line = handle_->ReadLine();
-		} catch (const duckdb::IOException &) {
+		auto next = NextLine();
+		if (!next.has_value()) {
 			break;
 		}
-		if (line.empty()) {
-			if (handle_->GetFileSize() == handle_->SeekPosition()) {
-				break;
-			}
+		if (next->empty()) {
 			continue;
 		}
+		const auto &line = next.value();
 
 		try {
 			json feature_obj = ParseJson(line);
@@ -249,7 +290,7 @@ std::vector<Column> LocalCityJSONSeqReader::Columns() const {
 	std::vector<Column> geom_columns = CityObjectUtils::InferGeometryColumns(sample_features, sample_lines_);
 
 	// Reserved columns in the spec's fixed order -- head, then bbox + geometry,
-	// then the trailing run (template, other) -- and only then every attribute
+	// then the trailing run (implicit_geometry, other) -- and only then every attribute
 	// column (spec 02-object-table-schema.mdx, "Reserved columns").
 	columns.insert(columns.end(), geom_columns.begin(), geom_columns.end());
 	auto trailing_columns = LODTableUtils::GetTrailingColumns();

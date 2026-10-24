@@ -1,0 +1,6 @@
+mtllib missing.mtl
+v 0 0 0
+v 1 0 0
+v 1 1 0
+usemtl x
+f 1 2 3

@@ -1,0 +1,32 @@
+# name: test/sql/cityjson_attribute_null_typing.test
+# description: a JSON null carries no type, so it never widens an attribute column
+# group: [sql]
+
+require cityjson
+
+# Spec 02-object-table-schema.mdx, "Attribute types and promotion": a column's type
+# follows the source VALUES, and the lattice applies to values that disagree. A null
+# is the absence of a value, not a string. delft_subset.city.jsonl holds
+# `b3_bouwlagen` as 3 on six objects and null on four: an integer column, exactly what
+# delft_append.city.jsonl (one integer) and cityparquet-rs make of the same data --
+# typing it VARCHAR made every append of 3DBAG data widen the package's column.
+query II
+SELECT column_type, (SELECT column_type FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_append.city.jsonl'))
+                     WHERE column_name = 'b3_bouwlagen')
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')) WHERE column_name = 'b3_bouwlagen';
+----
+BIGINT	BIGINT
+
+query II
+SELECT COUNT(b3_bouwlagen), COUNT(*) FILTER (WHERE b3_bouwlagen IS NULL)
+FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+----
+6	14
+
+# An attribute that is null on every object (`eindregistratie`) has no value to type,
+# and stays VARCHAR.
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+WHERE column_name = 'eindregistratie';
+----
+VARCHAR

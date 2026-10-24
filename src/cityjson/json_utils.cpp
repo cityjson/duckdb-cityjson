@@ -1,6 +1,7 @@
 #include "cityjson/json_utils.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/gzip_file_system.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include <fstream>
 #include <sstream>
@@ -30,13 +31,65 @@ std::string ReadFileContent(duckdb::ClientContext &context, const std::string &f
 	if (!handle) {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path);
 	}
-	auto file_size = handle->GetFileSize();
+	// Read until the whole file is in. The positionless Read returns the bytes it
+	// actually delivered, which may be fewer than asked for -- DuckDB-Wasm's browser
+	// HTTP file system returned the first 16 KiB of a 7 MB document, so a single call
+	// left the rest as NULs.
+	const auto file_size = handle->GetFileSize();
 	std::string content(file_size, '\0');
-	handle->Read(const_cast<char *>(content.data()), file_size);
+	idx_t total = 0;
+	while (total < file_size) {
+		const auto got = handle->Read(&content[total], file_size - total);
+		if (got <= 0) {
+			throw CityJSONError::FileRead("Unexpected end of file after " + std::to_string(total) + " of " +
+			                              std::to_string(file_size) + " bytes: " + file_path);
+		}
+		total += static_cast<idx_t>(got);
+	}
+
+	// A whole-document CityJSON may be served gzip-compressed (3DBAG's published
+	// tiles are). Detect by magic bytes rather than by extension, so a `.gz` path
+	// and a gzip payload under any name both decompress, while uncompressed content
+	// passes through untouched.
+	if (content.size() >= 2 && static_cast<unsigned char>(content[0]) == 0x1F &&
+	    static_cast<unsigned char>(content[1]) == 0x8B) {
+		try {
+			return GZipFileSystem::UncompressGZIPString(content);
+		} catch (const std::exception &e) {
+			throw CityJSONError::InvalidJson("Failed to decompress gzip content: " + std::string(e.what()));
+		}
+	}
 	return content;
 }
 
+void CheckJsonDepth(const char *text, size_t size) {
+	size_t depth = 0;
+	bool in_string = false;
+	for (size_t i = 0; i < size; i++) {
+		const char c = text[i];
+		if (in_string) {
+			if (c == '\\') {
+				i++; // the escaped character, whatever it is
+			} else if (c == '"') {
+				in_string = false;
+			}
+			continue;
+		}
+		if (c == '"') {
+			in_string = true;
+		} else if (c == '[' || c == '{') {
+			if (++depth > MAX_JSON_DEPTH) {
+				throw CityJSONError::InvalidJson("JSON nests deeper than " + std::to_string(MAX_JSON_DEPTH) +
+				                                 " levels, which this extension does not parse");
+			}
+		} else if ((c == ']' || c == '}') && depth > 0) {
+			depth--;
+		}
+	}
+}
+
 json ParseJson(const std::string &str) {
+	CheckJsonDepth(str.data(), str.size());
 	try {
 		return json::parse(str);
 	} catch (const json::parse_error &e) {
@@ -50,10 +103,12 @@ json ParseJsonFile(const std::string &file_path) {
 		throw CityJSONError::FileRead("Failed to open file: " + file_path);
 	}
 
+	std::stringstream buffer;
+	buffer << file.rdbuf();
+	const auto content = buffer.str();
+	CheckJsonDepth(content.data(), content.size());
 	try {
-		json result;
-		file >> result;
-		return result;
+		return json::parse(content);
 	} catch (const json::parse_error &e) {
 		throw CityJSONError::InvalidJson("Failed to parse JSON from file: " + std::string(e.what()), file_path);
 	} catch (const std::exception &e) {

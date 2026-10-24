@@ -5,6 +5,40 @@ Things that are costly to rediscover. Read the section for a layer before changi
 Behaviour lives in [FUNCTIONS.md](FUNCTIONS.md), architecture in
 [DESIGN_DOC.md](DESIGN_DOC.md), working agreements in [../CLAUDE.md](../CLAUDE.md).
 
+## Registration and `duckdb_functions()`
+
+Every scalar, table and pragma function is registered through `RegisterDocumented`
+(`src/include/cityjson/function_docs.hpp`) with a `FunctionDoc`: its positional
+parameter names, a one-sentence description, one example and a category or two. That
+is what `duckdb_functions()` reports, and it is the only documentation an agent on a SQL
+connection can reach. `test/sql/function_descriptions.test` fails for a function
+registered without one under the extension's name prefixes (and must be told about
+any new family outside them).
+
+- **The bare `loader.RegisterFunction(fn)` overloads carry no description.** The
+  `Create*FunctionInfo` overloads do, but default to `ERROR_ON_CONFLICT` where the bare
+  ones set `ALTER_ON_CONFLICT`; the helper sets it for scalars and tables.
+- **Pragmas have no documented overload.** `ExtensionLoader` takes only a
+  `PragmaFunction` or `PragmaFunctionSet`, so the helper builds the
+  `CreatePragmaFunctionInfo` and calls the system catalog's `CreatePragmaFunction`
+  itself, as `extension_loader.cpp` does, keeping its `ERROR_ON_CONFLICT`.
+- **A description's `parameter_names` replace the whole parameter list.** For a table
+  or pragma function that list is the positional arguments followed by the named
+  parameters, and any index left unnamed shows as `col<N>` — so naming only the
+  positional ones turns `sample_lines` into `col3`. `duckdb_functions()` reads the named
+  ones from a by-value copy of the registered function (`GetFunctionByOffset`), in that
+  copy's `named_parameters` iteration order, and **copying an `unordered_map` does not
+  keep its order everywhere**: libstdc++ keeps it, libc++ (macOS, Wasm) reverses it,
+  MSVC reverses it within a bucket. How many copies registration makes differs between
+  `TableFunction` and `PragmaFunction`, so iterating the map *before* registering pairs
+  names with the wrong types off Linux. The helper appends the names after registering,
+  from the catalog entry through the same by-value copy the extractor makes. The test
+  checks each name against its type, never the order, which is hash-dependent.
+- **`parameter_types` stays empty.** A single description with no types matches every
+  overload, the `ANY`-typed appearance-cell functions included.
+- **`COPY` functions have no description slot.** The `cityjson`, `cityjsonseq`,
+  `flatcitybuf`, `obj`, `gltf` and `glb` formats are documented only in FUNCTIONS.md.
+
 ## Generated SQL and the pragma layer
 
 The package-mutation functions are `PragmaFunction`s registered with a
@@ -24,9 +58,24 @@ extension only generates text.
 - **No subqueries inside lambda bodies.** `list_filter(l, x -> x IN (SELECT ...))` is
   rejected; hoist the set into a session variable and use
   `list_contains(getvariable(...), x)`.
-- **The `JSON` type and `json_extract` are unavailable.** They live in the `json`
-  extension, which this one does not require. JSON is carried as `VARCHAR` and parsed in
-  C++ with the vendored nlohmann::json. In tests, match with `LIKE`.
+- **The `JSON` type name and `json_extract` are unavailable.** They live in the `json`
+  extension, which this one does not require: `CAST(x AS JSON)` fails to bind. The
+  readers carry JSON as `VARCHAR`, parsed in C++ with the vendored nlohmann::json; in
+  tests, match with `LIKE`. The JSON *type* itself is core (`LogicalType::JSON()`, a
+  `VARCHAR` with an alias), so `cityparquet_json` returns it and `cityparquet_write`
+  declares `other` / `surfaces` with it. That makes a package read back from disk hold
+  `JSON` columns, which text functions (`LIKE`, `regexp_matches`, a `VARCHAR`
+  parameter) refuse to bind without the `json` extension's implicit cast. Generated SQL
+  that applies one to `surfaces` or `other` must `CAST(... AS VARCHAR)` first (an
+  explicit cast needs no extension), and a type comparison must go through
+  `WithoutJsonAlias` -- `STRUCT(surfaces JSON)` and `STRUCT(surfaces VARCHAR)` are the
+  same column, and `WidenedType` would otherwise refuse an insert into a read package.
+  An attribute column whose values are objects is the exception: its JSON-ness has no
+  name to ride on, so the readers type it `JSON`. Generated SQL names that type
+  `CITYPARQUET_JSON` (`SqlTypeName`), an alias the extension registers, because the
+  name `JSON` belongs to the `json` extension; and for an attribute, JSON against
+  VARCHAR is a real difference — an object against a string — that `WidenedType`
+  resolves to `JSON`, encoding the other side with `cityparquet_to_json`.
 - **`parquet_kv_metadata` returns BLOB.** Use `decode(value)`, not `value::VARCHAR` —
   the cast escapes bytes and the JSON no longer parses.
 - **`StringUtil::Join` takes `duckdb::vector`**, which `std::vector` does not convert to.
@@ -39,14 +88,29 @@ extension only generates text.
   generated SQL then names a column the staged relation does not have.
 - **`INSERT ... BY NAME` is not symmetric.** An unmatched *destination* column is left
   NULL, but a *source* column with no destination match is a binder error. Schema
-  evolution must run over sidecars too, not only module tables — `geometry_templates`
+  evolution must run over sidecars too, not only module tables — `implicit_geometries`
   carries per-LoD columns, so its shape varies by file.
 - **`bbox` is always present from this extension's own readers, but not from every
-  table.** A source with only template geometry produces no `geometry_lod*` columns,
+  table.** A source with only implicit geometry produces no `geometry_lod*` columns,
   but `bbox` is unconditional regardless (spec 02-object-table-schema.mdx, like
-  `address`/`template`). A hand-rolled or foreign table can still lack it, so anything
+  `address`/`implicit_geometry`). A hand-rolled or foreign table can still lack it, so anything
   generating `UPDATE ... SET bbox` must check the column exists rather than assume a
   table this extension wrote.
+- **An extension declaration is not a CRS statement.** The insert pragmas record a
+  source's `city.extensions` in the bookkeeping `city` of every object table, including
+  a package that has never been written and so had no footer at all. Such a `city`
+  carries no `version` and no `crs`, and `CrsStatedExpr` counts only a footer that
+  carries one of them -- counting any non-NULL `city` would turn "states nothing" into
+  "states unknown" and refuse the next insert of a georeferenced source.
+- **Extension names are rewritten in the staged relation, not in the reader.** The
+  readers speak CityJSON, `+` included, on every path (materialised, streaming,
+  FlatCityBuf's selective decode). `insert_cityjson` renames `+` attribute columns with
+  `ALTER TABLE ... RENAME COLUMN` on the staged temp table, rewrites `object_type` in the
+  staging `REPLACE`, and rewrites surface types with
+  `cityparquet_prefix_surface_types` -- and renames `facts.columns` to match, so every
+  generated `ALTER` on the destination names the staged column. Checks that depend on
+  what the destination already declares are generated, not decided: the declaration is
+  row data.
 - **`cityparquet_write` is a table function, not a pragma.** `KV_METADATA` accepts
   `getvariable()` (so a footer *value* can be computed in generated SQL) but cannot omit a
   *key*: a NULL value writes the literal string `"NULL"`. A solid-only table must write no
@@ -72,13 +136,24 @@ a test asserts it with `SET enable_logging = true; SET logging_level = 'WARNING'
 query on `duckdb_logs`, whose in-memory storage the CLI replaces — the two views are not
 interchangeable. The package writer's result rows are a file inventory, not a report.
 
+### JSON nesting depth
+
+Every JSON text this extension parses -- a CityJSON file or line, a cell, a Parquet
+footer -- goes through `json_utils::ParseJson` / `ParseJsonFile`, or calls
+`json_utils::CheckJsonDepth` first, which refuses nesting deeper than
+`MAX_JSON_DEPTH` (256). nlohmann parses and destroys iteratively, but copies and
+`dump()`s recursively, so a valid text nested a million levels deep crashes the
+process at the first copy. A bare `json::parse` on input is therefore a bug. The
+FlatCityBuf library's own decode of an attribute's JSON payload is outside this guard
+(the selective path, `fcb_selective_convert.cpp`, is inside it).
+
 ## CRS
 
 - **The footer's `crs` is tri-state, and absent is not "unknown".** GeoParquet's
   convention, which CityParquet adopts (spec `05-metadata.mdx`, "CRS rules"): a PROJJSON
   object means known; explicit `null` means the file holds CRS-bearing coordinates whose
   CRS is unknown or unresolvable; **absent means OGC:CRS84**. The key may be omitted only
-  by a file with no CRS-bearing coordinate at all — the sidecars, since geometry templates
+  by a file with no CRS-bearing coordinate at all — the sidecars, since relative geometries
   are in local, unplaced coordinates. Both writers always emit the key for an object
   table, mirror the same value onto every `city.columns[]` / `geo.columns[]` entry, and
   never guess. An unresolvable CRS is a warning; only an explicitly supplied `crs =>` that
@@ -103,6 +178,25 @@ interchangeable. The package writer's result rows are a file inventory, not a re
   cannot be shown to be the package's one CRS), unknown vs unknown passes, and a side
   whose footers are missing states nothing and is not checked.
 
+## Scan: appearance columns
+
+- **The scan writes appearance cells value-at-a-time.** `material_lod*` /
+  `texture_lod*` go through `Value::MAP` + `Vector::SetValue`
+  (`scan_function.cpp`), not the flat-vector writers the rest of the wide
+  layout uses. That is a deliberate trade for a column that is sparse and
+  deeply nested and not where a scan spends its time — but it means the path
+  is wrong for a column expected to be densely populated: boxing every cell
+  into a `Value` first costs real time on a hot column, so a future format
+  whose appearance is not sparse should not reach for this path unchanged.
+- **A `Solid` whose source writes `material.values` (or `texture.values`) flat
+  instead of nested per shell — malformed CityJSON, since the spec requires one
+  array per shell — flattens to an all-null theme rather than erroring.**
+  `ForEachFace` (`appearance_flatten.cpp`) indexes a Solid's `values` by shell
+  first (`values[shell_index]`); a flat array of ints then reads as non-array
+  shell entries at every index, so every face comes back with no value.
+  `face_semantics` shares this same `ForEachFace` and has the identical failure
+  mode against the identical malformed input.
+
 ## COPY: what the rows cannot carry
 
 Two kinds of content are **file-level**, not row-level: the source's `metadata` header
@@ -111,14 +205,32 @@ columns, never the definitions.
 
 - **`COPY` recovers its source from the parsed SELECT.** `FindCopySourceRef`
   (`copy_source_ref.cpp`) walks `CopyInfo::select_statement` for exactly one
-  `read_cityjson[seq]` / `read_flatcitybuf` call; it survives to our bind because
-  `bind_copy.cpp:97` copies rather than moves it and `:118` hands the whole `CopyInfo` to
-  `CopyFunctionBindInput`. **An ambiguous query — no reader call, more than one, or a
-  non-literal path — returns `nullopt`, never a guess**: stamping a wrong CRS onto
-  georeferenced output is worse than stamping none. `COPY my_table TO …` is not
+  `read_cityjson[seq]` / `read_flatcitybuf` / `read_obj` call; it survives to our bind
+  because `bind_copy.cpp:97` copies rather than moves it and `:118` hands the whole
+  `CopyInfo` to `CopyFunctionBindInput`. **An ambiguous query — no reader call, more than
+  one, or a non-literal path — returns `nullopt`, never a guess**: stamping a wrong CRS
+  onto georeferenced output is worse than stamping none. `COPY my_table TO …` is not
   discoverable, which is what `metadata_from` is for; a `DUCKDB_LOG_WARNING` fires when
   neither applies. Precedence: `crs` / `metadata_query` > `metadata_from` > discovered
   source.
+- **An OBJ source has no JSON block to lift `appearance` from.** `LoadSourceAppearance`
+  builds it instead from the same `OBJReader` the bind already opened for metadata
+  (`ReadMetadata`), re-emitted via `Appearance::ToJson`; a second `OBJReader` over the
+  same path is never constructed, since the first one memoises its parse and
+  `ReadAllChunks` on it is free. The reader never renumbers a face's texture-coordinate
+  indices per object — they stay file-global into the file's one `vt` pool — so
+  `LoadSourceAppearance` only stamps an empty `{"vertices-texture": []}` marker onto
+  each feature whose geometry carries a `texture` (a feature with no texture is
+  stamped with nothing); the marker's job is to tell `BuildAppearanceBlock`
+  (`cityjson_writer.cpp`) that this feature has a definition to rebuild, not to carry
+  any UVs itself. `BuildAppearanceBlock`/`BuildTexturePool` then build the feature's
+  actual `vertices-texture` from the `[u, v]` pairs `apply_appearance` left inline on
+  its own geometry, interning them in first-use order — so a textured feature's block
+  on disk holds only the UVs it indexes, compacted, not the whole file's pool. The
+  header line is the one exception: `WriteCityJSON`/`WriteCityJSONSeq` re-attach
+  `source_appearance_header` verbatim, with no `BuildAppearanceBlock` call, so a
+  whole-document CityJSON's top-level `vertices-texture` is whatever the OBJ's file-wide
+  `vt` pool was.
 - **Appearance blocks are per-feature and their refs are feature-local.** In CityJSONSeq
   every feature carries its own `appearance`, and its material/texture indices are local
   to that block, exactly as its boundary indices are local to its own `vertices` pool.
@@ -150,6 +262,48 @@ columns, never the definitions.
   call should not pay for, and a NULL is honest where a plausible wrong number is not. All
   three metadata functions share the schema, which is why the column is NULLed rather than
   dropped.
+- **Local and sidecar appearance cells are indistinguishable.** UVs are
+  inlined in both modes, so a material or texture cell has exactly the same
+  shape whichever mode produced it — only the *numbering* of `id` differs
+  (feature-local vs dataset-global sidecar). Mesh COPY is therefore *told* the
+  form: `materials_query`/`textures_query` present means sidecar. A source read
+  with `appearance := 'sidecar'` is refused without them; `FindCopySourceRef`
+  carries that flag. The refusal only fires for a **discovered** source — a
+  materialised table (`COPY my_table TO … (FORMAT obj)`) hides the
+  `read_cityjson[seq](…, appearance := 'sidecar')` call that produced it, so the
+  form cannot be told and the cells silently resolve as local-form instead of
+  being refused.
+- **Sidecar files and the temp-rename.** `Finalize` writes the main file to
+  DuckDB's temp path, which is renamed afterwards. The `.mtl` and copied images
+  (`obj`), and the `.bin` buffer and images (`gltf`), are not covered: they are
+  written directly under the *final* stem, and `mtllib` / `buffers[0].uri` /
+  each image's `uri` reference the final basename. Naming them from the temp
+  path produces a file that references a name that never exists. A rename
+  failure after a successful finalize therefore leaves the sidecars sitting
+  beside a final path that was never created. For `obj`, images are copied
+  lazily, inside the face loop, so a failure part-way through the write can
+  leave copied images in the output directory with no `.obj` and no `.mtl`
+  beside them: `WriteOBJ` closes the `.obj` after that loop and writes the
+  `.mtl` after that again. `gltf`'s window is smaller but not absent:
+  `WriteGltfSceneToFile` builds the whole `tinygltf::Model` in memory first,
+  then writes the `.bin`, then every image, and only then opens the main file
+  — so a main file that cannot be opened, or an image that fails after an
+  earlier one succeeded, leaves those sidecars orphaned in the output
+  directory.
+- **tinygltf without stb.** Every translation unit that includes
+  `tiny_gltf.h` must see `TINYGLTF_NO_STB_IMAGE` and
+  `TINYGLTF_NO_STB_IMAGE_WRITE` (compile definitions on both targets); one TU
+  without them makes the `TinyGLTF` constructor reference the stb-backed
+  default callbacks and the link fails. With them, the default image writer
+  is absent, so the `.gltf` path installs its own (`WriteRawImage`).
+  `WriteRawImage`'s signature is tinygltf 2.9.x's eight-argument
+  `WriteImageDataFunction`; it is not a virtual override and nothing checks it
+  beyond the `SetImageWriter` call compiling, so re-check it against the
+  typedef on any tinygltf version bump.
+- **A `.gltf`'s sidecars.** tinygltf writes `buffers[0].uri` and image files
+  relative to the *output path's directory*; that is DuckDB's temp path, which
+  shares the final file's directory, so the names come from the final stem and
+  the temp name never leaks.
 
 ## Readers
 
@@ -158,8 +312,60 @@ columns, never the definitions.
   because it is the streaming scan's cursor.
 - **Per-feature vertices are local.** In CityJSONSeq each line carries its own `vertices`,
   and geometry boundary indices reference those, not the header's.
+- **An attribute column's name is not always its source name.** An attribute whose
+  name, leading `_`s removed, collides case-insensitively with a reserved column is
+  the column `_` + its name (`ID` → `_ID`, `_ID` → `__ID`). Everything that names a
+  column goes through `EscapeAttributeName`; everything that reaches the source's
+  own attributes — `GetAttributeValue`'s lookup, the source names `other` is tested
+  against, FlatCityBuf's field mask, attribute-index pushdown and post-filter, and
+  `COPY`'s attribute keys and FCB header declarations — goes back through
+  `SourceAttributeName`. A site that skips it reads NULL for an escaped column, or
+  puts the attribute into `other` as well as its column. `IsReservedColumnName` is
+  the predicate for both, so it stays anchored to the LoD suffix grammar
+  (`IsPerLodColumnName`: a minor always, canonical decimal, no bare forms): a prefix
+  match would rename an innocent `geometry_lodging`, which cityparquet-rs keeps. COPY's
+  `DetectColumnRole` uses the same grammar, or an attribute that kept its name is
+  written back as geometry.
 - **`lod=` keeps the suffixed column grammar** (`geometry_lod2_2`, not a bare `geometry`),
   which is what keeps the LoD recoverable on export.
+- **The OBJ and MTL parser is this extension's own** (`obj_parser.cpp`, a pure
+  kernel with no DuckDB types, so `test/cpp/run_obj_parser_tests.sh` can compile
+  it alone). Its rules, where OBJ leaves room: every real goes through `strtod`,
+  so a decimal literal becomes the correctly-rounded double rather than a
+  digit-by-digit accumulation one ULP off; a line whose last non-blank character
+  is `\` continues on the next, joined with a single space before anything
+  tokenises it — **except a comment**, which never continues, because the `#` on
+  the joined line would then swallow whatever followed and an exporter writing a
+  Windows path into its header would silently lose a line; a `mtllib` naming
+  several files loads every one of them, in order, and a name it has already
+  attempted is skipped; `o`, `usemtl` and `newmtl` name whatever the rest of the
+  line holds, trimmed, while `g` takes the *last* whitespace token (`g a b` is
+  group `b`); `map_Kd` drops the texture options before the file name and keeps
+  the rest of the line, so a name holding spaces survives. The MTL is read line
+  by line with no continuation: a `map_Kd` naming a Windows path ends in a
+  backslash often enough that joining there would cost more than it buys.
+- **A face's indices are raw as written** — 1-based, negative = relative to the
+  end of the list so far, 0 or unparseable = absent — and resolving them is the
+  parser's job. The count is checked first: a two-corner `f` is reported as a
+  face with fewer than three vertices, not as a bad index.
+- **OBJ state persists across `o`.** A `usemtl` or `g` before an `o` still
+  governs the faces after it. `cube.obj`'s slab pins this.
+- **A repeated `o` resumes its object**, so the reader keeps a name → index map
+  beside the object list. Resolving each `o` by scanning the objects seen so far
+  makes the parse quadratic in the object count, which a national tile
+  (hundreds of thousands of `o` lines) feels as tens of seconds.
+- **A material record must be able to say a directive was absent.** Every field
+  of `MtlMaterial` that a `.mtl` may omit is an `optional`, because a
+  default-initialised one cannot tell an unstated `Ks` from a black one, and the
+  sidecar row's answer to "what does this material say about its specular
+  colour?" is SQL NULL rather than a value the file never gave. Everything the
+  mapping does not cover — `illum`, `Ni`, `map_Ks`, `map_bump`, whatever else —
+  goes into `other` verbatim, key and rest of line. A block is created only by a
+  `newmtl` with a name, so a `.mtl` that is empty or nothing but comments
+  declares no material at all rather than one with an empty name; that is the
+  case `mtllib '…' declares no material` warns about. A `usemtl` that matches
+  nothing declared warns too, once per distinct name — the parse carries on with
+  the face unmaterialled, since a missing `.mtl` must not cost the geometry.
 
 ## FlatCityBuf
 
@@ -246,7 +452,7 @@ DuckDB error message rather than a `ReferenceError`. The `eh` artefact loads int
 browser DuckDB-Wasm instance from a local extension repository:
 
 ```sql
-SET custom_extension_repository='http://localhost:8080/ext';  -- <repo>/v1.5.4/wasm_eh/
+SET custom_extension_repository='http://localhost:8080/ext';  -- <repo>/v1.5.5/wasm_eh/
 INSTALL cityjson; LOAD cityjson;
 ```
 
@@ -273,7 +479,7 @@ DuckDB Labs. The build also writes that layout itself, at
   listed explicitly because nothing transitive survives a plain `emcc` invocation.
 
 `just test-wasm` runs `test/wasm/run_wasm_smoke.sh`, a Node harness against
-`@duckdb/duckdb-wasm` (pinned `1.33.1-dev57.0`, carrying DuckDB `v1.5.4`, the submodule's
+`@duckdb/duckdb-wasm` (pinned `1.33.1-dev64.0`, carrying DuckDB `v1.5.5`, the submodule's
 version). It needs `just wasm` to have produced the artefact (override with
 `CITYJSON_WASM_EXT`) and asserts the native build's oracle values. Every part of the
 loading incantation is load-bearing:
@@ -305,6 +511,17 @@ loading incantation is load-bearing:
   cannot be where we prove it. The harness classifies rather than skips: only that precise
   signature is XFAIL, anything else is a hard failure, so the day Node learns HTTP the
   assertion turns green on its own. `src/` carries no wasm-specific guard.
+- **Mesh output**: OBJ writes its `.obj`, `.mtl` and copied images through DuckDB's
+  FileSystem, so the host can read every file back (a set: zip them to hand to a user).
+  `gltf`/`glb` write through tinygltf's local file streams, which land in Emscripten's
+  MEMFS where the host never sees them; `just test-wasm` covers OBJ only.
+- **Under Node, a read creates the file it misses.** DuckDB-Wasm's Node runtime opens
+  every `NODE_FS` path with `O_CREAT`, so reading a file that does not exist leaves an
+  empty one behind. An OBJ whose `.mtl` names a missing texture gets that texture
+  created, 0 bytes, beside it the first time the writer looks for the image, and the
+  image then counts as found. The harness therefore reads OBJ fixtures from copies in
+  its temp directory, never from `test/data/obj`, and asserts that directory is
+  unchanged afterwards.
 
 The `_setThrew` shim and the `Atomics.wait` hang are upstream duckdb-wasm defects,
 neither reported.
@@ -316,10 +533,11 @@ neither reported.
   `small.city.jsonl`, `small.city.json`, `small.fcb` and the CityParquet package
   `small/building.parquet` + `metadata.json`, none written by this extension — so a
   disagreement between two of our readers is evidence about us rather than a circular
-  oracle. All three CityJSON-family readers agree at 68 columns with a zero name+type
-  diff; CityParquet is a superset by the reserved `address` and `template` columns,
-  plus `other_attributes` -- an ordinary attribute column that fixture's writer
-  happens to carry, not this format's reserved `other` escape hatch.
+  oracle. All three CityJSON-family readers agree at 70 columns with a zero name+type
+  diff. The hosted CityParquet file predates the spec's `implicit_geometry` name and
+  carries `template` instead, plus `other_attributes` -- an ordinary attribute column
+  that fixture's writer happens to carry, not this format's reserved `other` escape
+  hatch; every other column the readers emit is in it.
 - **Do not assert WKB byte-equality between the two JSON readers on that corpus**, however
   much sharing `wkb_encoder.cpp` invites it. Its two files are quantised against different
   transform origins (`translate` `[85088.390625, 446394.25, 45.648…]` vs

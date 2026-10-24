@@ -47,7 +47,11 @@ is the authority on the encoding; this repo implements it.
   any finding** — CI's `Tidy Check` takes ~37 minutes, so finding out there is late.
   It needs `build/tidy/compile_commands.json`, which the cmake configure inside
   `make tidy-check` writes, and costs ~10s per staged file. `SKIP_TIDY=1` (or
-  `SKIP_FORMAT=1`) bypasses one phase, `--no-verify` both.
+  `SKIP_FORMAT=1`) bypasses one phase, `--no-verify` both. **A `.cpp` new in the same
+  commit is skipped, not tidied** — it has no entry yet in a compile database
+  configured before it existed, and the hook says so rather than guessing a command
+  line. Re-run `make tidy-check` to reconfigure `build/tidy` with the new file, then
+  tidy it by hand.
 - **Version pinning differs between the two phases, deliberately.** Formatting is
   skipped outright unless clang-format is exactly 11.0.1 — another version reformats
   conforming code its own way and churns the diff forever. Tidy *prefers* CI's 18.x
@@ -66,11 +70,20 @@ is the authority on the encoding; this repo implements it.
 ## Build and test
 
 ```sh
-GEN=ninja make                 # first configure
+just build                     # first configure + full release build
 just rebuild                   # incremental: extension + duckdb CLI + unittest
-just build                     # full release build
 make test                      # the sqllogictest suite
 ```
+
+**Configuring needs vcpkg.** `find_package(nlohmann_json REQUIRED)` and
+`find_package(flatcitybuf CONFIG REQUIRED)` in `CMakeLists.txt` are both config-only,
+and flatcitybuf resolves solely from the `HideBa/vcpkg` git registry declared in
+`vcpkg.json`. CMake reaches neither unless it is configured with vcpkg's toolchain
+file, which is what puts `VCPKG_MANIFEST_DIR` on the command line and makes the
+manifest install run at all. Export `VCPKG_ROOT` and the justfile derives
+`VCPKG_TOOLCHAIN_PATH` from it, matching what CI sets on every job; an explicit
+`VCPKG_TOOLCHAIN_PATH` wins over the derivation. Driving `make release` directly,
+outside the justfile, means setting `VCPKG_TOOLCHAIN_PATH` yourself.
 
 **`just rebuild` (or the `unittest` target) is not optional.** `make test` runs
 `build/release/test/unittest` but does **not** rebuild it, so omitting the target
@@ -87,6 +100,8 @@ Interactive check:
 None of these run under `make test`.
 
 ```sh
+test/cpp/run_obj_parser_tests.sh          # the OBJ/MTL parser kernel
+test/cpp/run_face_triangulation_tests.sh  # the face triangulator kernel
 FCB_PREFIX="$(pwd)/.vendor/prefix" test/cpp/run_fcb_selective_tests.sh
 just test-remote               # HTTP reads + cross-format parity (~25 MB)
 just test-fcb-remote           # FCB HTTP range reads
@@ -149,6 +164,11 @@ hook already excludes it.
 
 ## Adding to the code
 
+- **A new function**: register it with `RegisterDocumented` (`function_docs.hpp`),
+  never the bare `loader.RegisterFunction`, and make sure
+  `test/sql/function_descriptions.test` selects it (by prefix, or by name for a new
+  family). Its description is what `duckdb_functions()`
+  shows an agent; see [docs/TRAPS.md](docs/TRAPS.md#registration-and-duckdb_functions).
 - **A new named parameter**: register it in `table_function_registration.cpp`, parse it
   in the bind (`bind_function.cpp`), store it on `CityJSONBindData`, use it in
   `scan_function.cpp`.

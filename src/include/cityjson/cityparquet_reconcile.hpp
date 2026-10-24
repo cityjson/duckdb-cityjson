@@ -51,8 +51,14 @@ using PendingTables = std::map<std::string, PendingTable>;
 
 //! `checks` selects from {"feature_id", "hierarchy", "bbox"}; empty means all three.
 //! Regardless of the order given, the script emits feature_id, then hierarchy, then bbox.
+//!
+//! `added_ids` -- SQL selecting the ids of rows an insert or merge just added -- makes the
+//! bbox phase incremental: the added rows keep the `bbox` they arrived with, unioned with
+//! their descendants', and an existing row is widened only by added descendants. Every
+//! other row keeps its `bbox` exactly as stored, including a source's declared extent
+//! some writer unioned into it, which re-deriving from geometry would lose.
 std::string BuildReconcileSQL(ClientContext &context, const std::string &schema, const std::vector<std::string> &checks,
-                              const PendingTables &pending = {});
+                              const PendingTables &pending = {}, const std::string &added_ids = std::string());
 
 //! The temp tables the reconcile script builds and drops. Exposed so cityparquet_delete
 //! can reuse the same derivation without duplicating it.

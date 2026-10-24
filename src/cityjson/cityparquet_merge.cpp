@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_merge.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
@@ -37,6 +38,13 @@ std::string OffsetSQL(const std::string &destination, const std::string &source,
 
 std::string OffsetExpr(const std::string &sidecar) {
 	return "(SELECT off FROM " + OffsetTable(sidecar) + ")";
+}
+
+//! The `city.extensions` one source file declares, as a scalar subquery: NULL when it
+//! declares none, or has no footer.
+std::string SourceExtensionsExpr(const std::string &source, const std::string &table) {
+	return "(SELECT cityparquet_city_field(city, 'extensions') FROM " + QualifiedName(source, "__cityparquet") +
+	       " WHERE role = 'object' AND table_name = " + Literal(table) + ")";
 }
 
 } // namespace
@@ -103,6 +111,16 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 		                          DeclaredCrsExpr(source), CrsStatedExpr(source));
 	}
 
+	// Extension declarations travel with the files that carry the names (spec
+	// 06-extensions.mdx). A namespace the two packages declare for different
+	// extensions would denote two extensions in one package: cityparquet_merge_extensions
+	// refuses it, and running it here, before anything is written, leaves the
+	// destination untouched.
+	for (const auto &table : source_tables) {
+		sql += "SELECT COUNT(cityparquet_merge_extensions(city, " + SourceExtensionsExpr(source, table) + ")) FROM " +
+		       QualifiedName(destination, "__cityparquet") + " WHERE role = 'object';\n";
+	}
+
 	// ---- Phase 2: schema evolution, before any INSERT ----------------------
 	std::map<std::string, std::vector<ColumnInfo>> destination_columns;
 	PendingTables pending;
@@ -159,17 +177,28 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				// IF NOT EXISTS so that batching several merges in one submission -- where
 				// each generator sees the pre-batch catalog -- cannot fail on a duplicate.
 				sql += "ALTER TABLE " + QualifiedName(destination, table) + " ADD COLUMN IF NOT EXISTS " +
-				       Quoted(column.name) + " " + column.type.ToString() + ";\n";
+				       Quoted(column.name) + " " + SqlTypeName(column.type) + ";\n";
 				existing.push_back(column);
 				continue;
 			}
 			const auto widened = WidenedType(match->type, column.type, "cityparquet_merge", column.name);
 			if (widened.id() != LogicalTypeId::INVALID) {
+				LogWidening(context, "cityparquet_merge", QualifiedName(destination, table), column.name, match->type,
+				            column.type, widened);
 				sql += "ALTER TABLE " + QualifiedName(destination, table) + " ALTER COLUMN " + Quoted(column.name) +
-				       " SET DATA TYPE " + widened.ToString() + ";\n";
+				       " SET DATA TYPE " + SqlTypeName(widened) + WidenedUsing(match->type, widened, column.name) +
+				       ";\n";
 			}
 		}
 		destination_columns[table] = existing;
+	}
+
+	// Every destination object footer, those just registered included, declares every
+	// namespace the merged files declare: the same declaration in every file.
+	for (const auto &table : source_tables) {
+		sql += "UPDATE " + QualifiedName(destination, "__cityparquet") +
+		       " SET city = cityparquet_merge_extensions(city, " + SourceExtensionsExpr(source, table) +
+		       ") WHERE role = 'object';\n";
 	}
 
 	// ---- Phase 3: sidecar merge with id remap ------------------------------
@@ -185,14 +214,15 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			       QualifiedName(destination, "__cityparquet") + " WHERE table_name = " + Literal(sidecar) + ");\n";
 		} else {
 			// A sidecar needs schema evolution just as a module table does. The
-			// geometry_templates sidecar carries per-LoD columns, so two packages whose
-			// templates use different LoDs have genuinely different sidecar schemas and
-			// the INSERT below would name a column the destination has never had.
+			// implicit_geometries sidecar carries per-LoD columns, so two packages whose
+			// relative geometries use different LoDs have genuinely different sidecar
+			// schemas and the INSERT below would name a column the destination has never
+			// had.
 			auto existing = TableColumns(context, destination, sidecar);
 			for (const auto &column : TableColumns(context, source, sidecar)) {
 				if (FindColumn(existing, column.name) == nullptr) {
 					sql += "ALTER TABLE " + QualifiedName(destination, sidecar) + " ADD COLUMN IF NOT EXISTS " +
-					       Quoted(column.name) + " " + column.type.ToString() + ";\n";
+					       Quoted(column.name) + " " + SqlTypeName(column.type) + ";\n";
 				}
 			}
 		}
@@ -213,7 +243,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			if (!HasColumn(incoming, column.name)) {
 				// A column the destination has and the source does not: NULL, cast so the
 				// INSERT's types line up.
-				values.push_back("NULL::" + column.type.ToString());
+				values.push_back("NULL::" + SqlTypeName(column.type));
 				continue;
 			}
 			const auto lowered = StringUtil::Lower(column.name);
@@ -226,12 +256,19 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 			const bool is_texture =
 			    MatchesLodSuffix(lowered, "texture_lod") &&
 			    std::find(source_sidecars.begin(), source_sidecars.end(), "textures") != source_sidecars.end();
-			if (is_material) {
-				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", 'material', " +
+			const bool is_implicit = lowered == "implicit_geometry" &&
+			                         std::find(source_sidecars.begin(), source_sidecars.end(), "implicit_geometries") !=
+			                             source_sidecars.end();
+			if (is_implicit) {
+				values.push_back(ShiftedImplicitGeometry(OffsetExpr("implicit_geometries")));
+			} else if (is_material) {
+				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
 				                 OffsetExpr("materials") + ")");
 			} else if (is_texture) {
-				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", 'texture', " +
+				values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
 				                 OffsetExpr("textures") + ")");
+			} else if (NeedsJsonEncoding(column.type, FindColumn(incoming, column.name)->type, column.name)) {
+				values.push_back("cityparquet_to_json(" + Quoted(column.name) + ")");
 			} else {
 				values.push_back(Quoted(column.name));
 			}
@@ -257,10 +294,10 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				values.push_back("id + " + OffsetExpr(sidecar));
 				continue;
 			}
-			// A geometry template holds appearance of its own, so its material and
+			// A relative geometry holds appearance of its own, so its material and
 			// texture references need the same shift the object rows got. Moving the
 			// sidecar rows while leaving their references behind would repoint every
-			// template at whichever definition already occupied that id.
+			// relative geometry at whichever definition already occupied that id.
 			const char *kind = nullptr;
 			if (has_materials && MatchesLodSuffix(lowered, "material_lod")) {
 				kind = "material";
@@ -271,7 +308,7 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 				values.push_back(Quoted(column.name));
 				continue;
 			}
-			values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", '" + kind + "', " +
+			values.push_back("cityjson_shift_appearance_ids(" + Quoted(column.name) + ", " +
 			                 OffsetExpr(std::string(kind) == "material" ? "materials" : "textures") + ")");
 		}
 		sql += "INSERT INTO " + QualifiedName(destination, sidecar) + " (" + Join(names, ", ") + ") SELECT " +
@@ -280,7 +317,13 @@ std::string BuildMergeSQL(ClientContext &context, const std::string &destination
 	}
 
 	// ---- Phase 5: derived state --------------------------------------------
-	sql += BuildReconcileSQL(context, destination, {}, pending);
+	// Incremental bbox: the destination's own rows keep their stored boxes.
+	std::vector<std::string> added;
+	added.reserve(source_tables.size());
+	for (const auto &table : source_tables) {
+		added.push_back("SELECT id FROM " + QualifiedName(source, table));
+	}
+	sql += BuildReconcileSQL(context, destination, {}, pending, Join(added, " UNION ALL "));
 	return sql;
 }
 
@@ -322,12 +365,21 @@ void RegisterCityParquetMergeFunctions(ExtensionLoader &loader) {
 	    "cityparquet_merge", PragmaMerge, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
 	pragma.named_parameters["create_tables"] = LogicalType(LogicalTypeId::BOOLEAN);
 	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-	loader.RegisterFunction(pragma);
+	RegisterDocumented(loader, std::move(pragma),
+	                   {{"destination", "source"},
+	                    "Merges one CityParquet package schema into another, renumbering sidecar ids, and refuses the "
+	                    "whole merge on an id collision or a CRS mismatch.",
+	                    "PRAGMA cityparquet_merge('delft', 'utrecht');",
+	                    {"cityparquet", "package"}});
 
 	ScalarFunction merge_sql("cityparquet_merge_sql",
 	                         {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	                         LogicalType(LogicalTypeId::VARCHAR), MergeSQLScalar);
-	loader.RegisterFunction(merge_sql);
+	RegisterDocumented(loader, std::move(merge_sql),
+	                   {{"destination", "source"},
+	                    "Returns the SQL that PRAGMA cityparquet_merge would run, without running it.",
+	                    "cityparquet_merge_sql('delft', 'utrecht')",
+	                    {"cityparquet", "package"}});
 }
 
 } // namespace cityjson

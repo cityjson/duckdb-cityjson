@@ -34,6 +34,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -252,6 +253,108 @@ async function main() {
   } catch (e) {
     fail('read_flatcitybuf(fcb_bbox_attr.fcb) count + min(height)', e);
   }
+
+  // COPY TO writes through DuckDB's FileSystem. A writer that opens its output with
+  // std::ofstream lands in Emscripten's MEMFS instead, which the host never sees: the
+  // COPY reports success and the file on disk is empty. Checked on disk (the bytes
+  // the host gets) and by reading it back (the bytes DuckDB gets).
+  //
+  // Oracle: ./build/release/duckdb -c \
+  //   "SELECT count(*) FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')"  ->  20
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cityjson-wasm-smoke-'));
+  const outputs = [
+    ['cityjsonseq', 'city.jsonl', 'read_cityjsonseq'],
+    ['cityjson', 'city.json', 'read_cityjson'],
+    ['flatcitybuf', 'fcb', 'read_flatcitybuf'],
+  ];
+  for (const [format, ext, reader] of outputs) {
+    const out = path.join(outDir, `out.${ext}`);
+    try {
+      query(
+        `COPY (SELECT * FROM read_cityjsonseq('${REPO}/test/data/delft_subset.city.jsonl')) TO '${out}' (FORMAT ${format})`
+      );
+      const bytes = fs.existsSync(out) ? fs.statSync(out).size : 0;
+      check(`COPY TO ${format} writes a non-empty file`, bytes > 1000, true);
+      check(`COPY TO ${format} reads back`, query(`SELECT count(*)::INT AS n FROM ${reader}('${out}')`), [{ n: 20 }]);
+    } catch (e) {
+      fail(`COPY TO ${format}`, e);
+    }
+  }
+
+  // The OBJ writer has three outputs -- the .obj, the .mtl beside it, and any texture
+  // image it copies -- and all three must go through DuckDB's FileSystem for the same
+  // reason as above.
+  //
+  // Every OBJ read below is of a COPY in outDir, never of test/data/obj itself:
+  // DuckDB-Wasm's Node runtime opens NODE_FS files with O_CREAT, so a read of a missing
+  // file creates it empty. cube.mtl names brick.png, which the fixture dir does not
+  // have; reading cube.obj in place would leave a 0-byte brick.png there, which
+  // test/sql/copy_obj.test then finds (docs/TRAPS.md).
+  //
+  // Oracle: ./build/release/duckdb -c \
+  //   "SELECT count(*) FROM read_obj('test/data/obj/cube.obj', lod := '2.2')"  ->  2
+  const fixtureDir = `${REPO}/test/data/obj`;
+  const fixtureBefore = fs.readdirSync(fixtureDir).sort().join(',');
+  const size = (p) => (fs.existsSync(p) ? fs.statSync(p).size : 0);
+
+  // Untextured: the cube with a .mtl that names no image.
+  const plainDir = fs.mkdtempSync(path.join(outDir, 'plain-'));
+  fs.copyFileSync(`${fixtureDir}/cube.obj`, path.join(plainDir, 'cube.obj'));
+  fs.writeFileSync(
+    path.join(plainDir, 'cube.mtl'),
+    fs.readFileSync(`${fixtureDir}/cube.mtl`, 'utf8').replace(/^map_K[ds] .*$/gm, '')
+  );
+  const plainCube = path.join(plainDir, 'cube.obj');
+  try {
+    check('read_obj reads an OBJ', query(`SELECT count(*)::INT AS n FROM read_obj('${plainCube}', lod := '2.2')`), [
+      { n: 2 },
+    ]);
+  } catch (e) {
+    fail('read_obj', e);
+  }
+  try {
+    const out = path.join(plainDir, 'cube_out.obj');
+    const mtl = path.join(plainDir, 'cube_out.mtl');
+    query(`COPY (SELECT * FROM read_obj('${plainCube}', lod := '2.2')) TO '${out}' (FORMAT obj)`);
+    check('COPY TO obj writes a non-empty .obj', size(out) > 100, true);
+    // The header alone is 28 bytes; three materials make it well over 60.
+    check('COPY TO obj writes the .mtl beside it', size(mtl) > 60, true);
+    check(
+      'COPY TO obj writes no map_Kd for an untextured source',
+      (fs.readFileSync(mtl, 'utf8').match(/^map_Kd /gm) || []).length,
+      0
+    );
+    check('COPY TO obj reads back', query(`SELECT count(*)::INT AS n FROM read_obj('${out}', lod := '2.2')`), [
+      { n: 2 },
+    ]);
+  } catch (e) {
+    fail('COPY TO obj', e);
+  }
+
+  // Textured: the texture's bytes are supplied inline, and the writer copies them beside
+  // the OBJ under the basename of its image_uri (docs/FUNCTIONS.md, COPY ... (FORMAT obj)).
+  const texDir = fs.mkdtempSync(path.join(outDir, 'tex-'));
+  fs.copyFileSync(`${fixtureDir}/cube.obj`, path.join(texDir, 'cube.obj'));
+  fs.copyFileSync(`${fixtureDir}/cube.mtl`, path.join(texDir, 'cube.mtl'));
+  const texCube = path.join(texDir, 'cube.obj');
+  try {
+    const out = path.join(texDir, 'textured.obj');
+    const image = path.join(texDir, 'brick.png');
+    query(`CREATE OR REPLACE TABLE tex_rows AS SELECT * FROM read_obj('${texCube}', lod := '2.2', appearance := 'sidecar')`);
+    query(
+      `CREATE OR REPLACE TABLE tex_defs AS SELECT id, image_uri, '\\x89PNG\\x0D\\x0A\\x1A\\x0A'::BLOB AS image_data, ` +
+        `image_type, wrapMode, textureType, borderColor, other FROM obj_textures('${texCube}')`
+    );
+    query(
+      `COPY (SELECT * FROM tex_rows) TO '${out}' (FORMAT obj, ` +
+        `materials_query 'SELECT * FROM obj_materials(''${texCube}'')', textures_query 'SELECT * FROM tex_defs')`
+    );
+    check('COPY TO obj copies a texture image beside the .obj', size(image), 8);
+  } catch (e) {
+    fail('COPY TO obj with a texture', e);
+  }
+  check('the OBJ fixture directory is untouched', fs.readdirSync(fixtureDir).sort().join(','), fixtureBefore);
+  fs.rmSync(outDir, { recursive: true, force: true });
 
   // Network-gated, same opt-in as test/sql/cityjson_fcb_remote.test. The bbox is the
   // 500 m square that test uses, valid only for the default hosted 3DBAG subset

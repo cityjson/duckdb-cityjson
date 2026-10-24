@@ -1,12 +1,15 @@
 #include "cityjson/cityjson_writer.hpp"
+#include "cityjson/file_output.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include <fcb/writer/attribute.hpp>
 #include <fcb/writer/fcb_writer.hpp>
 #endif
-#include <fstream>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <map>
 #include <algorithm>
+#include <utility>
 
 namespace duckdb {
 namespace cityjson {
@@ -113,7 +116,8 @@ static void CollectAndReplaceVertices(json &boundaries,
 
 // Determine nesting depth of geometry boundaries based on geometry type
 static int GetBoundaryDepth(const std::string &geom_type) {
-	if (geom_type == "MultiPoint") {
+	// A GeometryInstance's boundaries are its one reference-point vertex.
+	if (geom_type == "MultiPoint" || geom_type == "GeometryInstance") {
 		return 1;
 	}
 	if (geom_type == "MultiLineString") {
@@ -156,7 +160,156 @@ std::vector<std::array<int64_t, 3>> CityJSONWriter::BuildVertexPool(std::vector<
 		}
 	}
 
+	// An address `location` is a MultiPoint into the same pool.
+	for (auto &[obj_id, obj_json] : objects) {
+		auto address = obj_json.find("address");
+		if (address == obj_json.end() || !address->is_array()) {
+			continue;
+		}
+		for (auto &entry : *address) {
+			if (entry.is_object() && entry.contains("location") && entry["location"].is_object() &&
+			    entry["location"].contains("boundaries")) {
+				CollectAndReplaceVertices(entry["location"]["boundaries"], vertex_map, vertex_pool, transform,
+				                          GetBoundaryDepth("MultiPoint"));
+			}
+		}
+	}
+
 	return vertex_pool;
+}
+
+// ============================================================
+// BuildTexturePool
+// ============================================================
+
+// Number of array levels a texture theme's `values` nests above face level, mirroring
+// exactly the branches `RenestValues` (copy_function.cpp) applies when it re-nests the
+// flat cell: Solid gets one shell level, MultiSolid/CompositeSolid a solid level and a
+// shell level, everything else (MultiSurface, CompositeSurface, and any other type --
+// RenestValues' own fallthrough) stays flat, i.e. `values[i]` is already a face.
+static int TextureNestingDepth(const std::string &type) {
+	if (type == "Solid") {
+		return 1;
+	}
+	if (type == "MultiSolid" || type == "CompositeSolid") {
+		return 2;
+	}
+	return 0;
+}
+
+// Rewrite one texture theme's nested `values` in place, recursing `depth` array levels
+// (TextureNestingDepth) before treating each element as a face: a face is a list of
+// rings, each ring either `[null]` (bare -- nothing to intern) or `[id, [u, v], ...]`.
+// Every `[u, v]` pair is interned into `pool` by exact bitwise equality of both
+// components, in first-use order, and rewritten to its index in place.
+static void InternTextureValues(json &values, int depth, std::map<std::pair<uint64_t, uint64_t>, size_t> &index,
+                                std::vector<std::array<double, 2>> &pool) {
+	if (!values.is_array()) {
+		return;
+	}
+	if (depth > 0) {
+		for (auto &child : values) {
+			InternTextureValues(child, depth - 1, index, pool);
+		}
+		return;
+	}
+	for (auto &face : values) {
+		if (!face.is_array()) {
+			continue;
+		}
+		for (auto &ring : face) {
+			if (!ring.is_array() || ring.empty() || !ring[0].is_number_integer()) {
+				continue; // a bare ring: no id, nothing to intern
+			}
+			for (size_t k = 1; k < ring.size(); k++) {
+				auto &pair = ring[k];
+				if (!pair.is_array() || pair.size() < 2 || !pair[0].is_number() || !pair[1].is_number()) {
+					continue;
+				}
+				double u = pair[0].get<double>();
+				double v = pair[1].get<double>();
+				uint64_t bits_u;
+				uint64_t bits_v;
+				std::memcpy(&bits_u, &u, sizeof(bits_u));
+				std::memcpy(&bits_v, &v, sizeof(bits_v));
+				auto key = std::make_pair(bits_u, bits_v);
+				auto found = index.find(key);
+				size_t idx;
+				if (found != index.end()) {
+					idx = found->second;
+				} else {
+					idx = pool.size();
+					pool.push_back({u, v});
+					index.emplace(key, idx);
+				}
+				pair = static_cast<int64_t>(idx);
+			}
+		}
+	}
+}
+
+std::vector<std::array<double, 2>>
+CityJSONWriter::BuildTexturePool(std::vector<std::pair<std::string, json>> &objects) {
+	std::map<std::pair<uint64_t, uint64_t>, size_t> index;
+	std::vector<std::array<double, 2>> pool;
+
+	for (auto &[obj_id, obj_json] : objects) {
+		if (!obj_json.contains("geometry") || !obj_json["geometry"].is_array()) {
+			continue;
+		}
+		for (auto &geom : obj_json["geometry"]) {
+			auto tex_it = geom.find("texture");
+			if (tex_it == geom.end() || !tex_it->is_object()) {
+				continue;
+			}
+			const int depth = TextureNestingDepth(geom.value("type", ""));
+			for (auto &entry : tex_it->items()) {
+				auto &theme_json = entry.value();
+				if (!theme_json.is_object()) {
+					continue;
+				}
+				auto values_it = theme_json.find("values");
+				if (values_it == theme_json.end()) {
+					continue;
+				}
+				InternTextureValues(*values_it, depth, index, pool);
+			}
+		}
+	}
+	return pool;
+}
+
+// Build the appearance block for one scope of objects (a whole document, or one
+// CityJSONSeq/FlatCityBuf feature): the source's own `materials`/`textures` arrays
+// verbatim (their local ids line up with what this scope's geometry refs use), with
+// `vertices-texture` replaced by a pool freshly rebuilt from the inline [u, v] pairs
+// `apply_appearance` left in `objects` (`BuildTexturePool`/`InternTextureValues`,
+// mutating `objects` in place) -- or erased if nothing in this scope actually
+// references a texture, since a stale source pool would otherwise survive unused.
+// nullopt when there is neither a source definition nor anything to rebuild, so a
+// caller skips the key entirely rather than writing an empty object. One call site
+// used by `WriteCityJSON`, `WriteCityJSONSeq` and `WriteFlatCityBuf` alike.
+std::optional<json> CityJSONWriter::BuildAppearanceBlock(const std::optional<json> &source_appearance,
+                                                         std::vector<std::pair<std::string, json>> &objects) {
+	auto texture_pool = BuildTexturePool(objects);
+	bool has_definitions = source_appearance.has_value() && !source_appearance->empty();
+	if (!has_definitions && texture_pool.empty()) {
+		return std::nullopt;
+	}
+	json app = has_definitions ? source_appearance.value() : json::object();
+	if (!texture_pool.empty()) {
+		json vt = json::array();
+		for (const auto &uv : texture_pool) {
+			vt.push_back(json::array({uv[0], uv[1]}));
+		}
+		app["vertices-texture"] = std::move(vt);
+	} else {
+		app.erase("vertices-texture");
+	}
+	if (app.empty()) {
+		return std::nullopt;
+	}
+	return app;
 }
 
 // ============================================================
@@ -193,7 +346,7 @@ json CityJSONWriter::BuildMetadataJson(const CityJSONWriteMetadata &metadata) {
 // ============================================================
 
 void CityJSONWriter::WriteCityJSON(
-    const std::string &file_path, const CityJSONWriteMetadata &metadata,
+    FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order, const std::optional<json> &appearance) {
 	// Build the root CityJSON object
@@ -205,6 +358,12 @@ void CityJSONWriter::WriteCityJSON(
 	auto meta_json = BuildMetadataJson(metadata);
 	if (!meta_json.empty()) {
 		root["metadata"] = meta_json;
+	}
+
+	// Every extension a document's `+` names belong to must be declared, and a
+	// source's empty member stays a member.
+	if (metadata.extensions.has_value()) {
+		root["extensions"] = metadata.extensions.value();
 	}
 
 	// Transform
@@ -231,12 +390,31 @@ void CityJSONWriter::WriteCityJSON(
 	// Build global vertex pool (replaces coordinates with indices in-place)
 	auto vertex_pool = BuildVertexPool(all_objects, metadata.transform);
 
-	// CityObjects
 	// Definitions for the per-geometry material/texture refs. A whole-document
 	// CityJSON has exactly one block, so unlike the Seq path there is nothing to
-	// key by feature.
-	if (appearance.has_value() && !appearance->empty()) {
-		root["appearance"] = appearance.value();
+	// key by feature. `materials`/`textures` come verbatim from the source;
+	// `vertices-texture` is rebuilt fresh from what this document's geometry
+	// actually references (BuildAppearanceBlock, which also mutates `all_objects`'
+	// texture cells in place -- inline [u, v] pairs become pool indices).
+	// The templates' texture UVs, inline like an object's, go into the same pool: a
+	// template indexes the document's one `vertices-texture`. Interned through a
+	// placeholder object appended after the vertex pool was built, since template
+	// vertices are `vertices-templates`, never `vertices`.
+	const bool has_templates = metadata.geometry_templates.has_value();
+	if (has_templates) {
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		all_objects.emplace_back(std::string(),
+		                         json {{"geometry", metadata.geometry_templates->value("templates", json::array())}});
+	}
+	if (auto app = BuildAppearanceBlock(appearance, all_objects)) {
+		root["appearance"] = std::move(app.value());
+	}
+	if (has_templates) {
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		json templates = *metadata.geometry_templates;
+		templates["templates"] = std::move(all_objects.back().second["geometry"]);
+		all_objects.pop_back();
+		root["geometry-templates"] = std::move(templates);
 	}
 
 	root["CityObjects"] = json::object();
@@ -250,12 +428,9 @@ void CityJSONWriter::WriteCityJSON(
 		root["vertices"].push_back(json::array({v[0], v[1], v[2]}));
 	}
 
-	// Write to file
-	std::ofstream out(file_path);
-	if (!out.is_open()) {
-		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
-	}
-	out << root.dump();
+	FileOutput out(fs, file_path);
+	out.Stream() << root.dump();
+	out.Close();
 }
 
 // ============================================================
@@ -263,14 +438,12 @@ void CityJSONWriter::WriteCityJSON(
 // ============================================================
 
 void CityJSONWriter::WriteCityJSONSeq(
-    const std::string &file_path, const CityJSONWriteMetadata &metadata,
+    FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
     const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
     const std::vector<std::string> &feature_order, const std::optional<json> &appearance_header,
     const std::map<std::string, json> &appearance_by_feature) {
-	std::ofstream out(file_path);
-	if (!out.is_open()) {
-		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
-	}
+	FileOutput output(fs, file_path);
+	auto &out = output.Stream();
 
 	// Line 1: metadata header
 	json header;
@@ -284,6 +457,12 @@ void CityJSONWriter::WriteCityJSONSeq(
 		header["metadata"] = meta_json;
 	}
 
+	// Every extension a document's `+` names belong to must be declared, and a
+	// source's empty member stays a member.
+	if (metadata.extensions.has_value()) {
+		header["extensions"] = metadata.extensions.value();
+	}
+
 	if (metadata.transform.has_value()) {
 		header["transform"] = json::object();
 		header["transform"]["scale"] =
@@ -294,7 +473,19 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 	// The material/texture definitions the per-geometry refs index into. Without
 	// them the refs dangle and the output is invalid CityJSON.
-	if (appearance_header.has_value() && !appearance_header->empty()) {
+	if (metadata.geometry_templates.has_value()) {
+		// The header's appearance serves the templates: its `vertices-texture` is rebuilt
+		// from their inline UVs, exactly as a feature's is from its own geometry.
+		// NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+		json templates = *metadata.geometry_templates;
+		std::vector<std::pair<std::string, json>> holder;
+		holder.emplace_back(std::string(), json {{"geometry", templates.value("templates", json::array())}});
+		if (auto app = BuildAppearanceBlock(appearance_header, holder)) {
+			header["appearance"] = std::move(app.value());
+		}
+		templates["templates"] = std::move(holder.back().second["geometry"]);
+		header["geometry-templates"] = std::move(templates);
+	} else if (appearance_header.has_value() && !appearance_header->empty()) {
 		header["appearance"] = appearance_header.value();
 	}
 
@@ -313,6 +504,20 @@ void CityJSONWriter::WriteCityJSONSeq(
 		// Build per-feature vertex pool
 		auto vertex_pool = BuildVertexPool(feature_objs, metadata.transform);
 
+		// This feature's own appearance block, built (and `feature_objs`' texture
+		// cells rewritten from inline [u, v] pairs to pool indices) BEFORE the
+		// CityObjects copy below, or the copy would carry the pre-rewrite pairs to
+		// the file untouched. Its refs are LOCAL indices, so it is re-emitted onto
+		// the feature it came from and never merged with another feature's --
+		// merging would preserve every count while silently re-pointing every
+		// reference. `materials`/`textures` come verbatim from the source;
+		// `vertices-texture` is rebuilt fresh from exactly what this feature's own
+		// geometry references.
+		auto appearance_it = appearance_by_feature.find(fid);
+		std::optional<json> source_appearance =
+		    appearance_it != appearance_by_feature.end() ? std::optional<json>(appearance_it->second) : std::nullopt;
+		auto feature_appearance = BuildAppearanceBlock(source_appearance, feature_objs);
+
 		// Build CityJSONFeature line
 		json feature;
 		feature["type"] = "CityJSONFeature";
@@ -321,16 +526,11 @@ void CityJSONWriter::WriteCityJSONSeq(
 		for (const auto &[obj_id, obj_json] : feature_objs) {
 			feature["CityObjects"][obj_id] = obj_json;
 		}
-
-		// This feature's own appearance block. Its refs are LOCAL indices into it,
-		// so it is re-emitted onto the feature it came from and never merged with
-		// another feature's -- merging would preserve every count while silently
-		// re-pointing every reference.
-		{
-			auto appearance_it = appearance_by_feature.find(fid);
-			if (appearance_it != appearance_by_feature.end() && !appearance_it->second.empty()) {
-				feature["appearance"] = appearance_it->second;
-			}
+		// Re-bound in the `if` itself (rather than testing `feature_appearance`
+		// directly): clang-tidy's optional-narrowing only tracks a `.value()` back to
+		// a truthiness check made in the same `if (auto x = ...)` condition.
+		if (auto app = std::move(feature_appearance)) {
+			feature["appearance"] = std::move(app.value());
 		}
 
 		feature["vertices"] = json::array();
@@ -340,6 +540,7 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 		out << feature.dump() << "\n";
 	}
+	output.Close();
 }
 
 // ============================================================
@@ -364,12 +565,15 @@ nlohmann::ordered_json SemanticSurfaceOtherMembers(const nlohmann::ordered_json 
 
 } // namespace
 
-void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+void CityJSONWriter::WriteFlatCityBuf(FileSystem &fs, const std::string &file_path,
+                                      const CityJSONWriteMetadata &metadata,
                                       std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
                                       const std::vector<std::string> &feature_order,
                                       const std::vector<std::string> &attr_index_columns,
                                       std::optional<uint16_t> branching_factor, std::optional<uint16_t> index_node_size,
-                                      const std::vector<std::string> &declared_attr_columns) {
+                                      const std::vector<std::string> &declared_attr_columns,
+                                      const std::optional<json> &appearance_header,
+                                      const std::map<std::string, json> &appearance_by_feature) {
 	// Build the metadata header (same shape as CityJSONSeq's line 1).
 	json header;
 	header["type"] = "CityJSON";
@@ -380,6 +584,14 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 	auto meta_json = BuildMetadataJson(metadata);
 	if (!meta_json.empty()) {
 		header["metadata"] = meta_json;
+	}
+
+	// The material/texture definitions the per-geometry refs index into -- carried
+	// verbatim, same as WriteCityJSONSeq's header line. `fcb::writer::header_serializer`
+	// (`to_fcb_header`) reads `appearance` straight off this metadata line, exactly
+	// as it reads `type`/`version`/`transform`/`metadata`.
+	if (appearance_header.has_value() && !appearance_header->empty()) {
+		header["appearance"] = appearance_header.value();
 	}
 
 	// FcbWriter needs a transform to quantize/dequantize vertices -- identity if none given.
@@ -417,6 +629,22 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 		json feature;
 		feature["type"] = "CityJSONFeature";
 		feature["id"] = fid;
+
+		// This feature's own appearance block -- LOCAL indices, so re-attached to the
+		// feature it came from, with `vertices-texture` rebuilt fresh exactly as
+		// WriteCityJSONSeq does. `fcb::writer::geom_encoder` reads a geometry's own
+		// `material`/`texture` off the standard CityJSON shape already in
+		// `feature_objs`, so nothing else is needed to route it through.
+		{
+			auto appearance_it = appearance_by_feature.find(fid);
+			std::optional<json> source_appearance = appearance_it != appearance_by_feature.end()
+			                                            ? std::optional<json>(appearance_it->second)
+			                                            : std::nullopt;
+			if (auto app = BuildAppearanceBlock(source_appearance, feature_objs)) {
+				feature["appearance"] = std::move(app.value());
+			}
+		}
+
 		feature["CityObjects"] = json::object();
 		for (const auto &[obj_id, obj_json] : feature_objs) {
 			feature["CityObjects"][obj_id] = obj_json;
@@ -503,15 +731,9 @@ void CityJSONWriter::WriteFlatCityBuf(const std::string &file_path, const CityJS
 		writer.add_feature(feature);
 	}
 
-	std::ofstream out(file_path, std::ios::binary);
-	if (!out.is_open()) {
-		throw CityJSONError::FileWrite("Failed to open output file: " + file_path);
-	}
-	writer.write(out); // streaming overload -- bounded memory, unlike write()'s vector return
-	out.close();
-	if (!out) {
-		throw CityJSONError::FileWrite("Failed writing output file: " + file_path);
-	}
+	FileOutput out(fs, file_path);
+	writer.write(out.Stream()); // streaming overload -- bounded memory, unlike write()'s vector return
+	out.Close();
 }
 
 #endif // CITYJSON_HAS_FCB

@@ -1,0 +1,184 @@
+# name: test/sql/cityparquet_extension_file.test
+# description: an Extension class that specialises no core class is stored in its extension's own file
+# group: [sql]
+
+# Spec 06-extensions.mdx, "The ModuleKey": a CityJSON Extension class that declares
+# neither a module of its own nor a class it specialises gets its extension's own
+# file, named by the namespace alone. The Noise Extension's
+# `+NoiseCityFurnitureSegment` is such a class, so it is stored in `noise.parquet`
+# as `noise_NoiseCityFurnitureSegment`, while the CityFurniture bench it belongs to
+# stays in `city_furniture.parquet`.
+#
+# noise_data.city.json is the cityjson.org Extension tutorial's file, and
+# cityparquet_rs_noise the package cityparquet-rs writes from it
+# (test/data/README.md): the read side is tested on files this extension did not
+# write.
+
+require cityjson
+
+require parquet
+
+# --- write: insert routes the class to the namespace's file -------------------
+
+statement ok
+CREATE SCHEMA n
+
+statement ok
+PRAGMA cityparquet_init('n')
+
+statement ok
+PRAGMA insert_cityjson('n', 'test/data/noise_data.city.json')
+
+query TTT
+SELECT table_name, file_name, role FROM n.__cityparquet ORDER BY 1
+----
+building	building.parquet	object
+city_furniture	city_furniture.parquet	object
+noise	noise.parquet	object
+
+query TTT
+SELECT id, object_type, feature_id FROM n.noise ORDER BY id
+----
+thesegment_1	noise_NoiseCityFurnitureSegment	a_noisy_bench
+thesegment_2	noise_NoiseCityFurnitureSegment	a_noisy_bench
+
+statement ok
+PRAGMA cityparquet_validate('n')
+
+query I
+SELECT count(*) FROM cityparquet_validation WHERE severity = 'error'
+----
+0
+
+statement ok
+CREATE TABLE written AS SELECT * FROM cityparquet_write('n', '__TEST_DIR__/noise_pkg')
+
+query T
+SELECT file FROM written WHERE file LIKE '%.parquet' ORDER BY 1
+----
+building.parquet
+city_furniture.parquet
+noise.parquet
+
+# Each file holds the objects, and the object types, the reference writer puts there.
+statement ok
+CREATE MACRO package_objects(dir) AS TABLE
+SELECT parse_filename(filename, true) AS file, id, object_type, feature_id
+FROM read_parquet([dir || '/building.parquet', dir || '/city_furniture.parquet', dir || '/noise.parquet'],
+                  filename = true, union_by_name = true)
+
+query I
+SELECT count(*) FROM (
+  FROM package_objects('__TEST_DIR__/noise_pkg') EXCEPT ALL FROM package_objects('test/data/cityparquet_rs_noise')
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  FROM package_objects('test/data/cityparquet_rs_noise') EXCEPT ALL FROM package_objects('__TEST_DIR__/noise_pkg')
+)
+----
+0
+
+# The namespace file's footer declares the extension, as every object table's does.
+query T
+SELECT cityparquet_city_field(decode(value), 'extensions') FROM parquet_kv_metadata('__TEST_DIR__/noise_pkg/noise.parquet')
+WHERE decode(key) = 'city'
+----
+{"noise":{"name":"Noise","url":"https://www.cityjson.org/tutorials/files/noise.ext.json","version":"1.1"}}
+
+# The STAC Item lists it as an object table.
+query I
+SELECT content LIKE '%"noise.parquet"%' FROM read_text('__TEST_DIR__/noise_pkg/metadata.json')
+----
+true
+
+# --- read: a package's extension file is one of its object tables -------------
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_noise', 'r')
+
+query TTT
+SELECT table_name, file_name, role FROM r.__cityparquet ORDER BY 1
+----
+building	building.parquet	object
+city_furniture	city_furniture.parquet	object
+noise	noise.parquet	object
+
+# The bench's children resolve: they are in noise.parquet.
+statement ok
+PRAGMA cityparquet_validate('r')
+
+query I
+SELECT count(*) FROM cityparquet_validation WHERE severity = 'error'
+----
+0
+
+# Export writes the segments back as the Extension's class, children of the bench.
+statement ok
+COPY (
+  SELECT * FROM r.building UNION ALL BY NAME SELECT * FROM r.city_furniture UNION ALL BY NAME SELECT * FROM r.noise
+) TO '__TEST_DIR__/noise_out.city.json' (
+  FORMAT cityjson,
+  metadata_query 'SELECT max(cityparquet_city_field(city, ''extensions'')) AS extensions FROM r.__cityparquet WHERE role = ''object''')
+
+query TTT
+SELECT id, object_type, parents FROM read_cityjson('__TEST_DIR__/noise_out.city.json') ORDER BY id
+----
+1234	Building	NULL
+a_noisy_bench	CityFurniture	NULL
+onebuilding	Building	NULL
+thesegment_1	+NoiseCityFurnitureSegment	[a_noisy_bench]
+thesegment_2	+NoiseCityFurnitureSegment	[a_noisy_bench]
+
+# Written again, the package keeps the file.
+statement ok
+CREATE TABLE rewritten AS SELECT * FROM cityparquet_write('r', '__TEST_DIR__/noise_rewritten')
+
+query I
+SELECT count(*) FROM (
+  FROM package_objects('__TEST_DIR__/noise_rewritten') EXCEPT ALL FROM package_objects('test/data/cityparquet_rs_noise')
+)
+----
+0
+
+# --- what is not an extension file -------------------------------------------
+
+# A Parquet file named like a namespace whose footer declares no such extension is not
+# adopted: only files the specification names belong to the package.
+statement ok
+COPY (SELECT 'x' AS id) TO '__TEST_DIR__/noise_pkg/energy.parquet' (FORMAT parquet)
+
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/noise_pkg', 's')
+
+query T
+SELECT table_name FROM s.__cityparquet ORDER BY 1
+----
+building
+city_furniture
+noise
+
+# --- a class that specialises a core class joins that class's file -----------
+
+# extension_specialised.city.json declares, with its extension, that +ThermalZone
+# specialises `_AbstractBuilding`, so the class routes to building.
+statement ok
+CREATE SCHEMA spec
+
+statement ok
+PRAGMA cityparquet_init('spec')
+
+statement ok
+PRAGMA insert_cityjson('spec', 'test/data/extension_specialised.city.json')
+
+query TT
+SELECT id, object_type FROM spec.building
+----
+x-1	energy_ThermalZone
+
+query T
+SELECT table_name FROM spec.__cityparquet ORDER BY 1
+----
+building

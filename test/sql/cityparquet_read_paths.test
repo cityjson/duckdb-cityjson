@@ -1,0 +1,46 @@
+# name: test/sql/cityparquet_read_paths.test
+# description: cityparquet_read finds a package's files by glob -- trailing separator, missing and empty directories
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# The package files are found by globbing `<dir>/*.parquet`, which is what lists
+# files DuckDB-Wasm has registered by name (they have no directory entry). The
+# directory is consulted only to word the error when nothing matched.
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'plain');
+
+statement ok
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal/', 'slashed');
+
+# The same tables either way, and no doubled separator in what was recorded.
+query I
+SELECT COUNT(*) FROM (
+  SELECT table_name, file_name, role FROM plain.__cityparquet
+  EXCEPT ALL
+  SELECT table_name, file_name, role FROM slashed.__cityparquet);
+----
+0
+
+query I
+SELECT COUNT(*) FROM plain.__cityparquet;
+----
+7
+
+query I
+SELECT (SELECT COUNT(*) FROM plain.building) = (SELECT COUNT(*) FROM slashed.building);
+----
+true
+
+statement error
+PRAGMA cityparquet_read('test/data/no_such_package_dir', 'missing');
+----
+no such directory 'test/data/no_such_package_dir'
+
+statement error
+PRAGMA cityparquet_read('test/data/obj', 'not_a_package');
+----
+contains no CityParquet object table or sidecar

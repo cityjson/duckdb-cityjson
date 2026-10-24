@@ -64,11 +64,20 @@ SELECT cityparquet_init_sql('ams') LIKE '%CREATE TABLE IF NOT EXISTS%__cityparqu
 ----
 true
 
-# A schema with no object table is not a CityParquet package.
+# A schema with no object table initialises as a package being started -- the first
+# insert creates the tables -- but is not yet one anything can be written from.
 statement ok
 CREATE SCHEMA empty_pkg;
 
-statement error
+statement ok
 PRAGMA cityparquet_init('empty_pkg');
+
+query I
+SELECT COUNT(*) FROM empty_pkg.__cityparquet;
+----
+0
+
+statement error
+SELECT * FROM cityparquet_write('empty_pkg', '__TEST_DIR__/empty_pkg');
 ----
 no CityParquet object table

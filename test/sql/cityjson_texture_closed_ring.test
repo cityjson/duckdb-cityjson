@@ -1,0 +1,61 @@
+# name: test/sql/cityjson_texture_closed_ring.test
+# description: an explicitly closed textured ring keeps its texture; a ring one UV short is left untextured and reported
+# group: [sql]
+
+require cityjson
+
+# helsinki_tex_uv_count.city.jsonl: three real Helsinki buildings, each with one
+# textured LoD2 roof ring of four UVs (face 2 of the Solid, 1-based).
+#
+# - BID_087ea02f...: ring [0, 2, 4, 6, 0], explicitly closed. A CityJSON ring is
+#   implicitly closed, so the repeat is no vertex of its own: the stored ring is
+#   [0, 2, 4, 6] and its four UVs are one per vertex. cityparquet-rs reads it so.
+# - BID_e47016b2... ([0, 4, 4, 6, 1]) and BID_ce1e6c36... ([0, 4, 6, 8, 1]): five
+#   vertices and four UVs. Which vertex lacks its UV is not stated (CityJSON 2.0.1
+#   §6.2), so the ring is left untextured, and the reader says so.
+
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET logging_level = 'WARNING';
+
+query TTI
+SELECT id, texture_lod2_0['rgbTexture'][2][1].id IS NOT NULL, len(texture_lod2_0['rgbTexture'][2][1].uv)
+FROM read_cityjsonseq('test/data/helsinki_tex_uv_count.city.jsonl')
+ORDER BY id;
+----
+BID_087ea02f-3439-4a9c-bdb9-d6fad359fb05	true	4
+BID_ce1e6c36-47ab-4c64-a21d-e52480b8eb2e	false	NULL
+BID_e47016b2-f61c-4017-ad5b-37e009e96bc9	false	NULL
+
+# The UVs are the source's, in order.
+query T
+SELECT texture_lod2_0['rgbTexture'][2][1].uv
+FROM read_cityjsonseq('test/data/helsinki_tex_uv_count.city.jsonl')
+WHERE id = 'BID_087ea02f-3439-4a9c-bdb9-d6fad359fb05';
+----
+[[0.056625, 0.398527], [0.473111, 0.061219], [0.928907, 0.601299], [0.512576, 0.938468]]
+
+# The stored ring is four vertices and the WKB closing point, as is face 1's
+# [1, 7, 5, 3, 1]: the LoD2 Solid is a POLYHEDRALSURFACE Z (9 header bytes) of 7
+# one-ring polygons (9 header bytes each), every ring 4 + 5 * 24 bytes. Kept
+# closing repeats would add a point -- 24 bytes -- to each of those two rings.
+query I
+SELECT octet_length(geometry_lod2_0)
+FROM read_cityjsonseq('test/data/helsinki_tex_uv_count.city.jsonl')
+WHERE id = 'BID_087ea02f-3439-4a9c-bdb9-d6fad359fb05';
+----
+940
+
+# The two rings left untextured are reported, naming their objects.
+query T
+SELECT DISTINCT regexp_extract(message, 'object ''([^'']+)''', 1) FROM duckdb_logs
+WHERE message LIKE '%1 textured ring(s) untextured%fewer UV indices than vertices%'
+ORDER BY ALL;
+----
+BID_ce1e6c36-47ab-4c64-a21d-e52480b8eb2e
+BID_e47016b2-f61c-4017-ad5b-37e009e96bc9
+
+statement ok
+SET enable_logging = false;

@@ -42,10 +42,12 @@ statement ok
 LOAD httpfs;
 
 # Header-only fetch: the header lives in the first few KB of the file, so this is a
-# range read, not a download. One row, and a positive object count proves the header
-# actually parsed rather than the reader silently yielding an empty struct.
+# range read, not a download. One row, and a positive feature count proves the header
+# actually parsed rather than the reader silently yielding an empty struct. (The header
+# counts features; `city_objects_count` is NULL for FlatCityBuf, since the CityObject
+# count needs a full decode -- docs/TRAPS.md.)
 query II
-SELECT count(*), bool_and(city_objects_count > 0) FROM flatcitybuf_metadata('${FCB_REMOTE_TEST_URL}');
+SELECT count(*), bool_and(features_count > 0) FROM flatcitybuf_metadata('${FCB_REMOTE_TEST_URL}');
 ----
 1	true
 

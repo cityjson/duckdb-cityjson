@@ -1,0 +1,63 @@
+# name: test/sql/cityparquet_column_layout.test
+# description: cityparquet_write writes the spec's column order and only the LoD columns some row populates
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 02-object-table-schema.mdx: reserved columns come first, in their order, the
+# per-LoD groups ordered by LoD, attributes last -- whatever order a table's columns
+# were added in -- and "a table carries exactly the LoD columns its data needs".
+
+statement ok
+CREATE SCHEMA c;
+
+statement ok
+CREATE TABLE c.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('c');
+
+# A Helsinki building brings LoDs 1.0 and 2.0, which the insert appends after every
+# column the table already had.
+statement ok
+PRAGMA insert_cityjsonseq('c', 'test/data/address_location.city.jsonl');
+
+query I
+SELECT column_name FROM duckdb_columns()
+WHERE schema_name = 'c' AND table_name = 'building' AND column_name LIKE 'geometry_lod%' ORDER BY column_index;
+----
+geometry_lod0_0
+geometry_lod1_2
+geometry_lod1_3
+geometry_lod2_2
+geometry_lod1_0
+geometry_lod2_0
+
+# And no row keeps an LoD 1.3 geometry.
+statement ok
+UPDATE c.building SET geometry_lod1_3 = NULL;
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('c', '__TEST_DIR__/layout', crs => 'EPSG:7415');
+
+statement ok
+CREATE TABLE numbered AS
+SELECT column_name AS name, row_number() OVER () AS rn
+FROM (DESCRIBE SELECT * FROM read_parquet('__TEST_DIR__/layout/building.parquet'));
+
+query T
+SELECT string_agg(name, ' ' ORDER BY rn) FROM numbered
+WHERE name IN ('id', 'feature_id', 'object_type', 'parents', 'children', 'children_roles', 'address', 'bbox',
+               'implicit_geometry', 'other')
+   OR regexp_matches(name, '^(geometry|geometry_properties|material|texture)_lod[0-9]+_[0-9]+$');
+----
+id feature_id object_type parents children children_roles address bbox geometry_lod0_0 geometry_properties_lod0_0 material_lod0_0 texture_lod0_0 geometry_lod1_0 geometry_properties_lod1_0 material_lod1_0 texture_lod1_0 geometry_lod1_2 geometry_properties_lod1_2 material_lod1_2 texture_lod1_2 geometry_lod2_0 geometry_properties_lod2_0 material_lod2_0 texture_lod2_0 geometry_lod2_2 geometry_properties_lod2_2 material_lod2_2 texture_lod2_2 implicit_geometry other
+
+# Every reserved column precedes every attribute.
+query I
+SELECT max(rn) FILTER (WHERE name IN ('implicit_geometry', 'other')) < min(rn) FILTER (WHERE name IN ('b3_h_dak_max', 'status'))
+FROM numbered;
+----
+true

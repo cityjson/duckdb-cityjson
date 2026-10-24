@@ -1,0 +1,146 @@
+# name: test/sql/cityparquet_hilbert_order.test
+# description: cityparquet_write orders each object table's rows along a Hilbert curve, keyed as cityparquet-rs keys them
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 03-geometry-semantics.mdx, "Spatial metadata": rows MAY be written in
+# Hilbert-curve order on the bbox centroid. The key is the reference writer's
+# (cityparquet-rs, crates/core/src/order.rs): a 2D curve of 2^16 cells per axis over
+# the x/y extent of every geometry in the package; each FEATURE's key is the curve
+# index of the centre of its own geometry's extent; whole features are sorted by it,
+# stably, so a feature's rows stay together, its root first.
+
+# --- the key ------------------------------------------------------------------
+
+# The four quadrant centres of a unit extent, in the order an order-1 Hilbert curve
+# visits them: bottom-left, top-left, top-right, bottom-right.
+query IIII
+SELECT cityparquet_hilbert(0.25, 0.25, 0, 0, 1, 1) < cityparquet_hilbert(0.25, 0.75, 0, 0, 1, 1),
+       cityparquet_hilbert(0.25, 0.75, 0, 0, 1, 1) < cityparquet_hilbert(0.75, 0.75, 0, 0, 1, 1),
+       cityparquet_hilbert(0.75, 0.75, 0, 0, 1, 1) < cityparquet_hilbert(0.75, 0.25, 0, 0, 1, 1),
+       cityparquet_hilbert(0, 0, 0, 0, 1, 1) = 0;
+----
+true	true	true	true
+
+# The last cell of the curve is the bottom-right corner, and the index spans the
+# whole 32-bit range: (2^16)^2 cells.
+query I
+SELECT cityparquet_hilbert(1, 0, 0, 0, 1, 1);
+----
+4294967295
+
+# A point outside the extent clamps to the nearest edge cell; a degenerate axis maps
+# to cell 0; NULL in, NULL out.
+query IIII
+SELECT cityparquet_hilbert(-5, 5, 0, 0, 10, 10) = cityparquet_hilbert(0, 5, 0, 0, 10, 10),
+       cityparquet_hilbert(15, 5, 0, 0, 10, 10) = cityparquet_hilbert(10, 5, 0, 0, 10, 10),
+       cityparquet_hilbert(3, 4, 3, 4, 3, 4),
+       cityparquet_hilbert(NULL, 4, 0, 0, 10, 10) IS NULL;
+----
+true	true	0	true
+
+# Exact keys of four delft_subset features: each feature's x/y centre and the x/y
+# extent of the file's geometry, as the reader reports them, and the key cityparquet-rs
+# gives them -- computed by order.rs's own `hilbert_index` (monorepo commit a5227e0),
+# compiled on its own with rustc, not by this function.
+query IIII
+SELECT cityparquet_hilbert(84901.650125, 446452.86099999998, 84593.249624999997, 446447.01899999997, 85566.847624999995, 446889.73999999999),
+       cityparquet_hilbert(84740.881624999995, 446643.79450000002, 84593.249624999997, 446447.01899999997, 85566.847624999995, 446889.73999999999),
+       cityparquet_hilbert(84595.378624999998, 446461.18849999999, 84593.249624999997, 446447.01899999997, 85566.847624999995, 446889.73999999999),
+       cityparquet_hilbert(85565.300124999994, 446830.28599999996, 84593.249624999997, 446447.01899999997, 85566.847624999995, 446889.73999999999);
+----
+329563540	834472771	4212220	2885953603
+
+# --- the written order ----------------------------------------------------------
+
+statement ok
+CREATE SCHEMA h;
+
+statement ok
+CREATE TABLE h.building AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('h');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/hilbert', crs => 'EPSG:7415');
+
+# The order cityparquet-rs writes for the same source (`cityparquet convert
+# test/data/delft_subset.city.jsonl -o OUT`, default `--ordering hilbert`, order.rs as of
+# monorepo commit a5227e0; re-checked at f9e0374), read back from its building.parquet by file row number. It is not
+# the source order: the source lists ...016459 second.
+query T
+SELECT string_agg(id, ' ' ORDER BY file_row_number)
+FROM read_parquet('__TEST_DIR__/hilbert/building.parquet', file_row_number := true);
+----
+NL.IMBAG.Pand.0503100000012869 NL.IMBAG.Pand.0503100000012869-0 NL.IMBAG.Pand.0503100000000137 NL.IMBAG.Pand.0503100000000137-0 NL.IMBAG.Pand.0503100000005156 NL.IMBAG.Pand.0503100000005156-0 NL.IMBAG.Pand.0503100000032443 NL.IMBAG.Pand.0503100000032443-0 NL.IMBAG.Pand.0503100000019510 NL.IMBAG.Pand.0503100000019510-0 NL.IMBAG.Pand.0503100000019492 NL.IMBAG.Pand.0503100000019492-0 NL.IMBAG.Pand.0503100000018426 NL.IMBAG.Pand.0503100000018426-0 NL.IMBAG.Pand.0503100000018501 NL.IMBAG.Pand.0503100000018501-0 NL.IMBAG.Pand.0503100000019786 NL.IMBAG.Pand.0503100000019786-0 NL.IMBAG.Pand.0503100000016459 NL.IMBAG.Pand.0503100000016459-0
+
+# Reordering moves rows, never changes them.
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, octet_length(geometry_lod2_2), bbox FROM read_parquet('__TEST_DIR__/hilbert/building.parquet')
+  EXCEPT ALL
+  SELECT id, octet_length(geometry_lod2_2), bbox FROM h.building);
+----
+0
+
+# `ordering => 'source'` writes the table's own order, as `--ordering source` does:
+# delft_subset's features are already contiguous, each root first.
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/source_order', crs => 'EPSG:7415', ordering => 'source');
+
+query I
+SELECT COUNT(*) FROM (
+  SELECT id, file_row_number AS n FROM read_parquet('__TEST_DIR__/source_order/building.parquet', file_row_number := true)
+  EXCEPT ALL
+  SELECT id, row_number() OVER (ORDER BY rowid) - 1 FROM h.building);
+----
+0
+
+statement error
+SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/bad_order', ordering => 'zorder');
+----
+ordering must be 'hilbert' or 'source'
+
+# --- feature families -------------------------------------------------------------
+
+# Spec 02-object-table-schema.mdx: a feature's rows are contiguous within each
+# object table, its root first. zurich_interleaved.city.json holds two Zurich
+# buildings whose parts the reader returns interleaved with them -- part of B, A, B,
+# part of A -- the arrangement that split 17 features in the full dataset's Hilbert
+# order, where keys tie, and every such feature in its source order. The expected
+# orders are cityparquet-rs's for the same file (`cityparquet convert
+# test/data/zurich_interleaved.city.json -o OUT`, with `--ordering hilbert` and
+# `--ordering source`, monorepo commit 3315a6a).
+
+statement ok
+CREATE SCHEMA z;
+
+statement ok
+CREATE TABLE z.building AS SELECT * FROM read_cityjson('test/data/zurich_interleaved.city.json');
+
+statement ok
+PRAGMA cityparquet_init('z');
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('z', '__TEST_DIR__/families_hilbert');
+
+query T
+SELECT string_agg(id, ' ' ORDER BY file_row_number)
+FROM read_parquet('__TEST_DIR__/families_hilbert/building.parquet', file_row_number := true);
+----
+UUID_ea730f61-0a11-406a-a515-4f5f86f7aa26 UUID_59214446-74d2-4827-bc4a-04cb3c4bd380 UUID_654bb986-9459-4657-aef8-493ac8c7ef3e UUID_f2a5b8ad-9d43-4af3-8c08-396c70202140
+
+# `ordering => 'source'` keeps the table's order of features, each placed where its
+# root is, and gathers each feature's rows behind its root.
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('z', '__TEST_DIR__/families_source', ordering => 'source');
+
+query T
+SELECT string_agg(id, ' ' ORDER BY file_row_number)
+FROM read_parquet('__TEST_DIR__/families_source/building.parquet', file_row_number := true);
+----
+UUID_654bb986-9459-4657-aef8-493ac8c7ef3e UUID_f2a5b8ad-9d43-4af3-8c08-396c70202140 UUID_ea730f61-0a11-406a-a515-4f5f86f7aa26 UUID_59214446-74d2-4827-bc4a-04cb3c4bd380

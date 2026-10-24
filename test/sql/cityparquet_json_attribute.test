@@ -1,0 +1,168 @@
+# name: test/sql/cityparquet_json_attribute.test
+# description: an attribute whose value is a JSON object is typed JSON, written with the Parquet JSON logical type, and restored as an object
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 02-object-table-schema.mdx maps an attribute whose CityJSON value is an
+# object or a heterogeneous array to the JSON logical type. The Helsinki
+# address_location fixture carries such an attribute: `Integrate_LoD[1]`, an
+# object recording how each building was integrated.
+
+statement ok
+CREATE SCHEMA hel;
+
+statement ok
+PRAGMA cityparquet_init('hel');
+
+statement ok
+PRAGMA insert_cityjsonseq('hel', 'test/data/address_location.city.jsonl');
+
+# The reader and the inserted table type the attribute JSON, not VARCHAR.
+query T
+SELECT typeof("Integrate_LoD[1]") FROM read_cityjsonseq('test/data/address_location.city.jsonl') LIMIT 1;
+----
+JSON
+
+query T
+SELECT data_type FROM information_schema.columns
+WHERE table_schema = 'hel' AND table_name = 'building' AND column_name = 'Integrate_LoD[1]';
+----
+JSON
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('hel', '__TEST_DIR__/hel_pkg');
+
+query TT
+SELECT logical_type, converted_type FROM parquet_schema('__TEST_DIR__/hel_pkg/building.parquet')
+WHERE name = 'Integrate_LoD[1]';
+----
+JsonType()	JSON
+
+# Plain string attributes stay plain strings.
+query TT
+SELECT converted_type, logical_type FROM parquet_schema('__TEST_DIR__/hel_pkg/building.parquet')
+WHERE name = 'Katuosoite';
+----
+UTF8	NULL
+
+# COPY writes the object back as an object, not as a string holding its text.
+statement ok
+COPY (SELECT * FROM hel.building) TO '__TEST_DIR__/hel_out.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT COUNT(*) FROM read_text('__TEST_DIR__/hel_out.city.jsonl')
+WHERE content LIKE '%"Integrate_LoD[1]":{"area_diff":0%';
+----
+1
+
+query I
+SELECT COUNT(*) FROM read_text('__TEST_DIR__/hel_out.city.jsonl')
+WHERE content LIKE '%"Integrate_LoD[1]":"%';
+----
+0
+
+# A package read back from Parquet restores the object on COPY as well.
+statement ok
+PRAGMA cityparquet_read('__TEST_DIR__/hel_pkg', 'back');
+
+query T
+SELECT typeof("Integrate_LoD[1]") FROM back.building LIMIT 1;
+----
+JSON
+
+statement ok
+COPY (SELECT * FROM back.building) TO '__TEST_DIR__/back_out.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT COUNT(*) FROM read_text('__TEST_DIR__/back_out.city.jsonl')
+WHERE content LIKE '%"Integrate_LoD[1]":{"area_diff":0%';
+----
+1
+
+# --- a string array is an array -----------------------------------------------------
+
+# A LIST attribute is written as a JSON array, not as DuckDB's display text "[a, b]".
+statement ok
+COPY (SELECT *, ['Puu', 'Tiili'] AS materials_used FROM hel.building)
+TO '__TEST_DIR__/hel_list.city.jsonl' (FORMAT cityjsonseq);
+
+query I
+SELECT COUNT(*) FROM read_text('__TEST_DIR__/hel_list.city.jsonl')
+WHERE content LIKE '%"materials_used":["Puu","Tiili"]%';
+----
+1
+
+# --- one side JSON, the other not ----------------------------------------------------
+# The promotion lattice's "JSON for structured values": a column that is a string in
+# the package and an object in the incoming file becomes JSON, the package's strings
+# kept as JSON strings. The string column is made in SQL from the same real feature.
+
+statement ok
+CREATE SCHEMA w;
+
+statement ok
+CREATE TABLE w.building AS
+SELECT * REPLACE ('integrated' AS "Integrate_LoD[1]") FROM read_cityjsonseq('test/data/address_location.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('w');
+
+statement ok
+PRAGMA insert_cityjsonseq('w', 'test/data/helsinki_tex_uv_count.city.jsonl');
+
+query TI
+SELECT typeof("Integrate_LoD[1]"), COUNT(*) FROM w.building GROUP BY ALL;
+----
+JSON	4
+
+query I
+SELECT COUNT(*) FROM w.building WHERE CAST("Integrate_LoD[1]" AS VARCHAR) = '"integrated"';
+----
+1
+
+statement ok
+COPY (SELECT * FROM w.building) TO '__TEST_DIR__/w_out.city.jsonl' (FORMAT cityjsonseq);
+
+query II
+SELECT regexp_matches(content, '"Integrate_LoD\[1\]":"integrated"'),
+       len(regexp_extract_all(content, '"Integrate_LoD\[1\]":\{"area_diff":0'))
+FROM read_text('__TEST_DIR__/w_out.city.jsonl');
+----
+true	3
+
+# And the other way round, through a merge: the package's column is JSON, the incoming
+# one a number, which goes in as the JSON number it is.
+statement ok
+CREATE SCHEMA n;
+
+statement ok
+CREATE TABLE n.building AS
+SELECT * REPLACE (7 AS "Integrate_LoD[1]") FROM read_cityjsonseq('test/data/helsinki_tex_uv_count.city.jsonl');
+
+statement ok
+PRAGMA cityparquet_init('n');
+
+statement ok
+PRAGMA cityparquet_merge('hel', 'n');
+
+query TI
+SELECT typeof("Integrate_LoD[1]"), COUNT(*) FROM hel.building GROUP BY ALL;
+----
+JSON	4
+
+query I
+SELECT COUNT(*) FROM hel.building WHERE CAST("Integrate_LoD[1]" AS VARCHAR) = '7';
+----
+3
+
+statement ok
+SELECT COUNT(*) FROM cityparquet_write('hel', '__TEST_DIR__/hel_merged_pkg');
+
+query TT
+SELECT logical_type, converted_type FROM parquet_schema('__TEST_DIR__/hel_merged_pkg/building.parquet')
+WHERE name = 'Integrate_LoD[1]';
+----
+JsonType()	JSON

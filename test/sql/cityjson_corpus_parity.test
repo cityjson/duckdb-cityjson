@@ -71,13 +71,17 @@ BuildingPart	3
 # 2. Same column structure across the three CityJSON-family readers
 # ============================================================
 
+# 70 = the 26 reserved columns the spec fixes for four LoDs (id, feature_id,
+# object_type, parents, children, children_roles, address, bbox, a group of four per
+# LoD, implicit_geometry, other) + the corpus's 44 attributes.
+
 query III
 SELECT
   (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))),
   (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjson('https://cityjson.open3d.city/corpus/small.city.json'))),
   (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('https://cityjson.open3d.city/corpus/small.fcb')));
 ----
-68	68	68
+70	70	70
 
 # Names AND types, both directions. Counts alone would pass if one reader lost a
 # column and invented another.
@@ -110,16 +114,18 @@ SELECT COUNT(*) FROM (
 ----
 0
 
-# CityParquet is a superset: it adds three columns the spec defines but the
-# CityJSON readers have no source for. Nothing is MISSING, which is the claim.
-query I
-SELECT COUNT(*) FROM (
+# The hosted CityParquet file was written by cityparquet-rs before the spec named the
+# implicit-geometry column `implicit_geometry` (it carries the earlier `template`), and
+# its writer adds an ordinary `other_attributes` column. Apart from those, every column
+# the readers emit is in it.
+query T
+SELECT list(column_name ORDER BY column_name) FROM (
   SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
   EXCEPT
   SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('https://cityjson.open3d.city/corpus/small/building.parquet'))
 );
 ----
-0
+[implicit_geometry]
 
 query T
 SELECT list(column_name ORDER BY column_name) FROM (
@@ -128,7 +134,7 @@ SELECT list(column_name ORDER BY column_name) FROM (
   SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/corpus/small.city.jsonl'))
 );
 ----
-[address, other_attributes, template]
+[other_attributes, template]
 
 # ============================================================
 # 3. Same LoDs
@@ -370,4 +376,4 @@ SELECT
   (SELECT COUNT(*) FROM read_flatcitybuf('__TEST_DIR__/corpus_rt.fcb')),
   (SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_flatcitybuf('__TEST_DIR__/corpus_rt.fcb')));
 ----
-6	68
+6	70

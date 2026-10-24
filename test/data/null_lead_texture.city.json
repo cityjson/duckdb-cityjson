@@ -1,0 +1,32 @@
+{
+  "type": "CityJSON",
+  "version": "2.0",
+  "transform": {"scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]},
+  "metadata": {"referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/7415"},
+  "CityObjects": {
+    "pair": {
+      "type": "Building",
+      "geometry": [{
+        "type": "MultiSurface",
+        "lod": "2.2",
+        "boundaries": [
+          [[0, 1, 2, 3]],
+          [[4, 5, 6, 7]]
+        ],
+        "semantics": {
+          "surfaces": [{"type": "RoofSurface"}],
+          "values": [0, 0]
+        },
+        "texture": {"visual": {"values": [null, [[0, 0, 1, 2, 3]]]}}
+      }]
+    }
+  },
+  "vertices": [
+    [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+    [2, 0, 0], [3, 0, 0], [3, 1, 0], [2, 1, 0]
+  ],
+  "appearance": {
+    "textures": [{"type": "PNG", "image": "brick.png"}],
+    "vertices-texture": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+  }
+}

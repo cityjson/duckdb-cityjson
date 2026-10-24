@@ -1,12 +1,14 @@
 #ifdef CITYJSON_HAS_FCB
 
 #include "cityjson/flatcitybuf_table_function.hpp"
+#include "cityjson/function_docs.hpp"
 #include "cityjson/flatcitybuf_reader.hpp"
 #include "cityjson/table_function.hpp"
 #include "cityjson/json_utils.hpp"
 #include "cityjson/metadata_table.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/column_types.hpp"
+#include "cityjson/city_object_utils.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -169,7 +171,13 @@ void FlatCityBufPushdownComplexFilter(ClientContext &context, LogicalGet &get, F
 		if (schema_idx >= bind_data.columns.size()) {
 			continue;
 		}
-		const auto &column_name = bind_data.columns[schema_idx].name;
+		// The index and the decoded attributes know an attribute by its source name;
+		// the column may be its escaped form (`_ID` for `ID`). A reserved column is
+		// never an attribute, whatever the header indexes under the same name.
+		if (IsReservedColumnName(bind_data.columns[schema_idx].name)) {
+			continue;
+		}
+		const auto column_name = SourceAttributeName(bind_data.columns[schema_idx].name);
 		bool is_indexed =
 		    std::find(indexed_columns.begin(), indexed_columns.end(), column_name) != indexed_columns.end();
 		if (!is_indexed) {
@@ -280,6 +288,7 @@ static unique_ptr<FunctionData> FlatCityBufBind(ClientContext &context, TableFun
 	result->use_wkb_encoding = generic.use_wkb_encoding;
 	result->streaming = false;
 	result->sample_lines = generic.sample_lines;
+	result->appearance_index = generic.appearance_index;
 	result->bbox = bbox;
 	result->reader = reader;
 	return result;
@@ -317,6 +326,7 @@ static unique_ptr<GlobalTableFunctionState> FlatCityBufInitGlobal(ClientContext 
 	}
 	state.scan_plan = state.chunks.BuildScanPlan();
 	state.use_global_chunks = true;
+	ReportDroppedRings(context, state.chunks.records);
 	return result_holder;
 }
 
@@ -343,6 +353,7 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 
 	func.named_parameters["sample_lines"] = LogicalType::BIGINT;
 	func.named_parameters["lod"] = LogicalType::VARCHAR;
+	func.named_parameters["appearance"] = LogicalType::VARCHAR; // 'local' (default) or 'sidecar'
 	func.named_parameters["xmin"] = LogicalType::DOUBLE;
 	func.named_parameters["ymin"] = LogicalType::DOUBLE;
 	func.named_parameters["xmax"] = LogicalType::DOUBLE;
@@ -355,7 +366,13 @@ void RegisterFlatCityBufTableFunction(ExtensionLoader &loader) {
 	func.projection_pushdown = true;
 	func.pushdown_complex_filter = FlatCityBufPushdownComplexFilter;
 
-	loader.RegisterFunction(func);
+	RegisterDocumented(loader, std::move(func),
+	                   {{"path"},
+	                    "Reads a FlatCityBuf file (.fcb) as one row per CityObject, in read_cityjson's columns; "
+	                    "xmin, ymin, xmax and ymax together skip features outside the box via its R-tree.",
+	                    "SELECT COUNT(*) FROM read_flatcitybuf('https://flatcitybuf.open3d.city/data/delft.fcb', "
+	                    "xmin => 84900, ymin => 446200, xmax => 85200, ymax => 446500);",
+	                    {"flatcitybuf", "read"}});
 }
 
 // ============================================================
@@ -447,7 +464,13 @@ static void FcbMetadataScan(ClientContext &context, TableFunctionInput &data, Da
 void RegisterFlatCityBufMetadataTableFunction(ExtensionLoader &loader) {
 	TableFunction func("flatcitybuf_metadata", {LogicalType::VARCHAR}, FcbMetadataScan, FcbMetadataBind);
 	func.init_global = FcbMetadataInitGlobal;
-	loader.RegisterFunction(func);
+	RegisterDocumented(loader, std::move(func),
+	                   {{"path"},
+	                    "Returns one row of dataset-level metadata from a FlatCityBuf header, in cityjson_metadata's "
+	                    "columns; features_count is set and city_objects_count is NULL.",
+	                    "SELECT version, features_count FROM "
+	                    "flatcitybuf_metadata('https://flatcitybuf.open3d.city/data/delft.fcb');",
+	                    {"flatcitybuf", "metadata"}});
 }
 
 } // namespace cityjson

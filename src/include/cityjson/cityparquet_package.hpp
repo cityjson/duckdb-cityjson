@@ -19,7 +19,7 @@ inline constexpr const char *CITYPARQUET_VERSION = "0.1.0-draft";
 /**
  * A CityParquet package, as held in DuckDB, is a **schema** whose tables are named
  * exactly as the specification names the package's files: `building`,
- * `transportation`, … plus the `materials` / `textures` / `geometry_templates`
+ * `transportation`, … plus the `materials` / `textures` / `implicit_geometries`
  * sidecars. Naming is the whole binding — there is no registration state to keep in
  * sync and nothing session-scoped to go stale.
  *
@@ -35,7 +35,7 @@ inline constexpr const char *CITYPARQUET_VERSION = "0.1.0-draft";
 //! basenames, in the order the specification lists them.
 const std::vector<std::string> &ModuleTableNames();
 
-//! materials, textures, geometry_templates.
+//! materials, textures, implicit_geometries.
 const std::vector<std::string> &SidecarTableNames();
 
 //! The module table one CityObject type belongs in, per the specification's by-module
@@ -61,7 +61,10 @@ std::string CityJSONTypeForCityGMLClass(const std::string &citygml_class);
 
 //! Object tables actually present in `schema`, sorted. Throws BinderException when the
 //! schema contains none — that is not a CityParquet package.
-std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema);
+//! `allow_none` returns an empty list for a schema that holds none yet -- a package being
+//! started -- instead of refusing it.
+std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema,
+                                              bool allow_none = false);
 
 //! Sidecar tables actually present in `schema`, sorted. May legitimately be empty: a
 //! source with no appearance produces no sidecars.
@@ -69,6 +72,13 @@ std::vector<std::string> SidecarTablesInSchema(ClientContext &context, const std
 
 //! Quoted "schema"."table", safe to concatenate into generated SQL.
 std::string QualifiedName(const std::string &schema, const std::string &table);
+
+//! Quoted "catalog"."schema"."table", for SQL that runs somewhere the caller's search
+//! path does not reach — a connection of the extension's own, which resolves an
+//! unqualified schema against the default catalog. Each part is quoted separately, so a
+//! dotted "catalog.schema" handed to the two-argument overload is one identifier and
+//! resolves to nothing; pass the parts.
+std::string QualifiedName(const std::string &catalog, const std::string &schema, const std::string &table);
 
 //! Single-quoted SQL string literal (KeywordHelper::WriteQuoted). SQLString is a
 //! formatting wrapper, not a quoting function -- never use it for this.
@@ -83,14 +93,15 @@ std::vector<std::string> GeometryLodColumns(ClientContext &context, const std::s
 std::vector<std::string> AppearanceLodColumns(ClientContext &context, const std::string &schema,
                                               const std::string &table, const std::string &prefix);
 
-//! True when `name` is exactly `prefix` followed by the LoD suffix grammar: digits,
-//! optionally `_` and more digits, and nothing else.
+//! True when `name` is exactly `prefix` (ending in `_lod`) followed by the LoD suffix
+//! grammar: `<major>_<minor>` in canonical decimal, and nothing else
+//! (IsPerLodColumnName).
 //!
 //! A bare prefix test is not enough. `material_lodging` is a perfectly ordinary source
 //! attribute, and the reader already takes care not to swallow it as an appearance
 //! column (test/sql/cityjson_appearance.test). Misclassifying it hands arbitrary
-//! attribute text to cityjson_appearance_ids or cityjson_shift_appearance_ids, neither
-//! of which can parse it.
+//! attribute text to cityjson_appearance_ids or cityjson_shift_appearance_ids, whose
+//! overloads take the typed cells and so match no VARCHAR column at all.
 bool MatchesLodSuffix(const std::string &name, const std::string &prefix);
 
 //! The `all_objects AS (...)` CTE body: every object table's identity and hierarchy

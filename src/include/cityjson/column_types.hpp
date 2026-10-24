@@ -135,10 +135,10 @@ public:
  * 4. parents: LIST(VARCHAR)
  * 5. children: LIST(VARCHAR)
  * 6. children_roles: LIST(VARCHAR)
- * 7. address: LIST(STRUCT) -- always NULL until a reader parses source addresses
+ * 7. address: LIST(STRUCT) -- the CityObject's address member, NULL when it has none
  *
  * A caller assembles the full reserved order by inserting the geometry columns
- * after this, then `LODTableUtils::GetTrailingColumns()` (`template`, `other`),
+ * after this, then `LODTableUtils::GetTrailingColumns()` (`implicit_geometry`, `other`),
  * before any attribute column.
  *
  * @return Vector of predefined Column definitions
@@ -148,12 +148,11 @@ std::vector<Column> GetDefinedColumns();
 /**
  * Check if a name collides (case-insensitively) with any reserved output column.
  *
- * Reserved columns are the predefined structural columns plus the wide-layout
- * geometry columns (`geometry`, `geometry_lod*`, `geometry_properties_lod*`) and
- * `bbox`. Reserved columns take precedence over dynamic attributes: a source
- * attribute whose name collides with a reserved column must not be emitted as its
- * own column (it is preserved in the `other` JSON instead), otherwise DuckDB would
- * see duplicate column names (it is case-insensitive) and refuse to bind.
+ * Reserved columns are the predefined structural columns, `bbox`,
+ * `implicit_geometry`, `other`, and every per-LoD geometry and appearance column
+ * the LoD suffix grammar generates (`geometry_lod2_2`, `geometry_properties_lod0_0`,
+ * `material_lod3_0`, `texture_lod1_3`), compared with ASCII case folding (spec
+ * 02-object-table-schema.mdx, "Column naming and reservation rules").
  *
  * @param name Column/attribute name to check
  * @return true if the name case-insensitively matches a reserved column
@@ -161,10 +160,38 @@ std::vector<Column> GetDefinedColumns();
 bool IsReservedColumnName(const std::string &name);
 
 /**
- * Check if a column name is a per-LoD appearance column (§11): exactly
- * `material` / `texture`, or `material_lod{X}` / `texture_lod{X}` /
- * `..._lod{X}_{Y}`. Matches the reserved suffix grammar precisely so an
- * attribute like `material_lodging` is NOT misclassified.
+ * The column name a source attribute is stored under: `_` + its source name when its
+ * base (the name with every leading `_` removed) collides with a reserved column
+ * (`ID` -> `_ID`, `_ID` -> `__ID`, `other` -> `_other`), otherwise the source name.
+ */
+std::string EscapeAttributeName(const std::string &source_name);
+
+/**
+ * The source attribute name an attribute column stands for: the column name with one
+ * leading `_` removed when its base collides with a reserved column (`_ID` -> `ID`,
+ * `__ID` -> `_ID`), otherwise the column name. The inverse of EscapeAttributeName.
+ */
+std::string SourceAttributeName(const std::string &column_name);
+
+/**
+ * True when a flat row-major 4x4 matrix (16 values) is affine: its last row is exactly
+ * 0, 0, 0, 1, as an implicit geometry's transformationMatrix must be (spec
+ * 04-appearance-templates.mdx, "Placement").
+ */
+bool IsAffineMatrix(const std::vector<double> &row_major);
+
+/**
+ * Check if a name is `<prefix>_lod<major>_<minor>`, compared case-insensitively, with
+ * both parts in canonical decimal -- the LoD suffix grammar (spec
+ * 03-geometry-semantics.mdx), so `geometry_lodging`, `geometry_lod3` and
+ * `geometry_lod02_2` do not match.
+ */
+bool IsPerLodColumnName(const std::string &name, const std::string &prefix);
+
+/**
+ * Check if a column name is a per-LoD appearance column (§11):
+ * `material_lod{X}_{Y}` / `texture_lod{X}_{Y}`, per IsPerLodColumnName, so an
+ * attribute like `material_lodging` or a bare `material` is NOT misclassified.
  *
  * @param name Column name to check
  * @return true if name is an appearance column

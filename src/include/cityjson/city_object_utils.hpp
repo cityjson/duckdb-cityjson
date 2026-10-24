@@ -3,12 +3,25 @@
 #include "cityjson/types.hpp"
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/json_utils.hpp"
+#include "duckdb/common/types/value.hpp"
 #include <set>
 #include <vector>
 #include <string>
 
 namespace duckdb {
+class ClientContext;
+
 namespace cityjson {
+
+/**
+ * Report, as a DuckDB warning, every geometry of `features` that `Geometry::FromJson`
+ * normalised: rings of fewer than three vertices it dropped, and the surfaces whose
+ * exterior ring that was (spec 03-geometry-semantics.mdx: a writer that normalises a
+ * ring away SHOULD report what it removed), and textured rings left untextured because
+ * they hold fewer UV indices than vertices. One warning per affected geometry and kind.
+ */
+void ReportDroppedRings(ClientContext &context, const std::vector<CityJSONFeature> &features);
+void ReportDroppedRings(ClientContext &context, const CityJSONFeature &feature);
 
 /**
  * Utility class for CityObject attribute extraction and schema inference
@@ -118,7 +131,38 @@ public:
 	 */
 	static json GetGeometryPropertiesStruct(const Geometry &geometry,
 	                                        const std::optional<std::string> &object_id = std::nullopt);
+
+	/**
+	 * The object's `address` column value (spec 02-object-table-schema.mdx,
+	 * "Addresses"): one struct per source address, each recognised member in its field
+	 * and `location` -- a MultiPoint indexing `vertices` -- as WKB MultiPointZ. NULL when
+	 * the object has no address. See AddressMemberNames for the member vocabulary.
+	 */
+	/**
+	 * The object's `implicit_geometry` (spec 04-appearance-templates.mdx): from its
+	 * first GeometryInstance, the template index, the reference point resolved against
+	 * `vertices` into WKB PointZ, and the transformation matrix. nullopt when the object
+	 * has none, or when the instance names no template or no resolvable point -- the
+	 * spec requires both on a non-null value. A matrix that is not 16 numbers is invalid
+	 * input and throws.
+	 */
+	static std::optional<ImplicitGeometryCell> GetImplicitGeometry(const CityObject &object,
+	                                                               const std::vector<std::array<double, 3>> *vertices,
+	                                                               const std::optional<Transform> &transform);
+
+	static Value GetAddressValue(const CityObject &object, const std::vector<std::array<double, 3>> *vertices,
+	                             const std::optional<Transform> &transform);
 };
+
+/**
+ * The CityJSON address member each `address` struct field is read from and written
+ * back to, in struct field order (street, house_number, po_box, zip_code, city, state,
+ * country, free_text). CityJSON prescribes no member names; `thoroughfareName`,
+ * `thoroughfareNumber`, `postcode`, `locality` and `country` are CityJSON 2.0.1's own
+ * documented example, `postBox`, `administrativeArea` and `freeText` name the three
+ * fields it has no example for. A member spelt otherwise is not retained.
+ */
+const std::vector<std::pair<std::string, std::string>> &AddressMemberNames();
 
 } // namespace cityjson
 } // namespace duckdb

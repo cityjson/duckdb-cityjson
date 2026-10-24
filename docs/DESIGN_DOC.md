@@ -130,6 +130,20 @@ reader is a forward cursor: its "read the next feature" operation deliberately
 does *not* rewind, because that is the streaming scan's position. The bulk
 operations rewind so they can be asked more than once.
 
+`OBJReader` is the fourth reader and the first for a non-CityJSON source. The
+OBJ and MTL grammars are read by this extension's own parser (`obj_parser.cpp`,
+a pure kernel taking text and returning an `ObjDocument`), not by a library:
+every real goes through `strtod` so the doubles are correctly rounded, and the
+line dispatch a Wavefront file needs is small enough that owning it costs less
+than owning the quirks of someone else's. `OBJReader` parses the file once into
+`CityJSONFeature` records — one per `o`, each with its own vertex pool — and a
+`CityJSON` header holding the `.mtl` materials, the textured ones as textures,
+and the `vt` list as the UV pool, so the generic bind and scan (WKB,
+`geometry_properties`, `bbox`, sidecar normalisation) apply unchanged. What an OBJ cannot say is asked of the caller (`lod`, `object_type`,
+`geometry_type`) or resolved by convention (semantic surfaces from `usemtl` / `g`
+names). The appearance sidecar functions take their reader from a
+`TableFunctionInfo`, which is what lets one bind serve both input formats.
+
 ## 5. The scan path
 
 DuckDB's table function lifecycle — **bind → init global → init local → scan**,
@@ -174,12 +188,20 @@ worth stating plainly:
 ## 7. Appearance
 
 Materials and textures are kept **separate from geometry**, following OBJ /
-COLLADA / glTF precedent, and exist in two modes:
+COLLADA / glTF precedent. Each per-LoD `material_lod*` / `texture_lod*` column
+is a typed `MAP`, flat one entry per WKB face: `MAP(VARCHAR, BIGINT[])` for
+material, theme → one id (or NULL) per face; `MAP(VARCHAR, STRUCT(id BIGINT, uv
+DOUBLE[][])[][])` for texture, theme → per face → per ring → the id and its
+inlined `[u, v]` pairs, an untextured ring holding `{NULL, NULL}`. That cell
+shape is the same in both of two id-space modes:
 
 - **local** (default) — the source's own feature-local indices, passed through
-  verbatim.
-- **sidecar** — dataset-global ids into interned material/texture tables, with
-  texture UVs inlined.
+  as-is.
+- **sidecar** — dataset-global ids into interned material/texture tables.
+
+UVs are inlined in both modes — a stored index into a per-feature UV pool is
+meaningless once every feature's rows share one table, so `'local'` mode
+inlines it just as `'sidecar'` mode does.
 
 Sidecar mode exists because CityParquet needs it: once every feature's rows share
 one table, a feature-local index resolves to the wrong definition. Interning is
@@ -187,17 +209,23 @@ by **structural equality**, because CityJSON gives a material no identity of its
 own, and header-declared entries intern first so their ids keep their ordinal
 positions.
 
-Geometry templates sit slightly outside the model: they are in local, unplaced
-coordinates, exempt from the dataset transform and the file CRS, and an instance's
-own matrix places them. That exemption is why templates are the one thing in a
-package that legitimately declares no CRS.
+Implicit geometries sit slightly outside the model. The shared relative
+geometries in the `implicit_geometries` sidecar (CityJSON's geometry templates)
+are in local, unplaced coordinates, exempt from the dataset transform and the
+file CRS, and each object's `implicit_geometry` matrix and reference point place
+them. That exemption is why the sidecars are the one thing in a package that
+legitimately declares no CRS.
 
 ## 8. The package layer
 
 A CityParquet package is a **directory of Parquet files**; loaded into DuckDB it
 becomes a **schema** whose table names are the spec's file basenames, plus one
-bookkeeping table recovered from the Parquet footers. Naming is the entire
-binding — there is no registration state to keep in sync.
+bookkeeping table recovered from the Parquet footers. For the module tables and
+sidecars naming is the entire binding. An extension's own table (`noise`, for a
+class that specialises no CityGML class) has a name no fixed list holds, so it is
+an object table because the bookkeeping table registers it as one — which
+`cityparquet_read` does for a file whose footer declares the namespace that names
+it, and the insert pragmas do when they create it.
 
 **The central design decision: these functions generate SQL rather than execute
 it.** They are DuckDB pragmas whose return value is SQL text, which DuckDB then
@@ -221,6 +249,17 @@ cannot branch the shape of a `COPY`, nor can DuckDB's key-value metadata option
 omit a key. So the writer is a table function assembling metadata in C++, at the
 cost of running on an internal connection and seeing only committed state.
 
+**CityJSON's `+` stops at the package boundary.** A package names everything a
+CityJSON Extension adds with the extension's namespace as a prefix
+(`energy_heatCapacity`), so one naming rule identifies every extension name and SQL
+never has to quote a `+`. The insert pragmas apply the namespace as they stage the
+source and record the declaration in each object table's bookkeeping `city`
+footer, from which `cityparquet_write` writes `city.extensions`; `COPY` turns the
+prefix back into `+` only when handed that declaration. The mapping is a
+declaration, not a guess: a source whose `+` names cannot be attributed to exactly
+one declared extension, or whose core names look like extension names, is
+refused.
+
 Derived state is the other organising idea here. `feature_id`, `bbox`, and the
 reciprocal hierarchy arrays are *computed*, not authored, so any structural edit
 invalidates them and a single reconcile operation re-derives exactly those. This
@@ -229,16 +268,56 @@ and invalidate nothing.
 
 ## 9. Writing
 
-One shared sink serves all three output formats, so format-independent concerns —
-reassembling CityObjects from rows, the CityGML-to-CityJSON type mapping,
-quantising vertices against the transform — are implemented once. The formats
-differ only in how they lay out what the sink produces: one document with a
-global vertex pool, one line per feature with local pools, or a binary file with
-indices.
+One shared sink serves all four output formats, so format-independent concerns —
+reassembling CityObjects from rows, the CityGML-to-CityJSON type mapping — are
+implemented once. The three CityJSON-family formats differ only in how they lay
+out what the sink produces: one document with a global vertex pool, one line per
+feature with local pools, or a binary file with indices. The fourth, `obj`, takes
+the same objects down a different path (below).
 
-Vertices are quantised to integers against the transform on the way out, so the
-transform's scale *is* the output precision. The default is chosen so round trips
-stay lossless for large projected national coordinates.
+Vertices are quantised to integers against the transform on the way out of those
+three, so the transform's scale *is* the output precision. The default is chosen
+so round trips stay lossless for large projected national coordinates. The mesh
+writers do not quantise: they carry the coordinates as they came, and `precision`
+governs how many digits reach the file.
+
+The mesh writers share the CityJSON writers' bind, sink and combine: the sink
+already rebuilds each row as a CityJSON object with coordinates, semantics and
+appearance refs, and only `Finalize` differs. `BuildMeshModel` flattens those
+objects into per-object vertex pools and faces (rings, surface, material,
+texture, UVs) once per COPY; `AppearanceSource` resolves refs either through the
+source's own blocks (local form) or through the two query options (sidecar
+form), and the writer never sees the difference. A `material_lod*`/`texture_lod*`
+column is already flat, one entry per WKB face, so `BuildMeshModel` indexes it
+directly by face position and never walks a nesting. The CityJSON-family sink
+instead needs the spec's per-shell nesting: it re-nests the flat cell against
+the geometry's own `shells`, the same reconstruction `face_semantics` uses, and
+re-interns a texture's inlined `[u, v]` pairs into a per-feature (or, for a
+single-document CityJSON, per-document) `vertices-texture` pool only once every
+row of a feature has been collected — a feature's rows can land on different
+threads during this sink, and only the writer sees every one of them together.
+Faces with holes are triangulated with earcut after projection onto their
+Newell normal, shifted to the ring's first vertex so the signed-area tests do
+not drown at projected magnitudes.
+
+The glTF writer builds a `tinygltf::Model` from the same mesh model: one
+buffer, 4-byte-aligned views, positions as float32 relative to the origin,
+indices narrowed to u16 when a primitive has fewer than 65 535 vertices, and
+images as raw bytes in bufferViews — tinygltf is built without stb, so nothing
+is ever decoded. The origin subtraction is what the float32 rule costs or
+saves: one float32 ULP at 1e5 is 8 mm, so `origin 'none'` puts projected
+national coordinates into float32 at that resolution, while the 1e3 magnitudes
+an origin leaves resolve to 0.1 mm. A GLB is refused past 4 GiB, because its
+chunk headers are 32-bit and tinygltf casts into them unchecked — either up
+front, from the buffer size alone, or after writing, from the file's actual
+size; either way nothing is left on disk.
+`TriangulateFaceCorners` triangulates each face into per-*corner* indices
+rather than per-vertex ones, because a textured face's UV is a per-corner
+attribute glTF has no way to share the way it shares `POSITION`: a vertex
+visited twice with two different UVs has to become two glTF vertices.
+tinygltf was chosen over cgltf and fastgltf because it serialises `extras` and
+arbitrary extension JSON verbatim, which keeps the 3D Tiles metadata
+extensions a data change rather than a library change.
 
 ## 10. CRS handling
 
@@ -266,7 +345,9 @@ break:
    path produced it — full or selective decode, streaming or materialised.
 3. **The LoD lives in the column name**, never in a value. That is what keeps it
    recoverable on export.
-4. **The geometry property struct is the only source of CityJSON geometry type.**
+4. **The geometry property struct is the only source of the geometry type.** It holds
+   the CityGML CM name (`MultiCurve` where CityJSON says `MultiLineString`), mapped
+   back on export.
 5. **Source vertex order and ring winding are preserved** on both encode and
    decode.
 6. **Derived state is re-derivable.** Nothing that can be recomputed from

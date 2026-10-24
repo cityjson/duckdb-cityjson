@@ -2,7 +2,9 @@
 
 #include "cityjson/copy_source_ref.hpp"
 
+#include "cityjson/appearance_source.hpp"
 #include "cityjson/cityjson_types.hpp"
+#include "cityjson/cityparquet_extensions.hpp"
 #include "cityjson/json_utils.hpp"
 #include "duckdb.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -35,26 +37,47 @@ enum class CopyColumnRole {
 	Appearance,         // material_lod* / texture_lod* (per-LoD appearance, §11)
 	Bbox,               // derived bounding box — recomputed on read, ignored on write
 	Other,              // extension fields
-	Address,            // reserved `address` column — no writer round-trips it yet
-	Template,           // reserved `template` column — no writer round-trips it yet
+	Address,            // reserved `address` column — written as the CityObject's `address` member
+	ImplicitGeometry,   // reserved `implicit_geometry` column — written as a GeometryInstance
 	Attribute           // everything else -> attributes map
 };
 
-CopyColumnRole DetectColumnRole(const std::string &name);
+CopyColumnRole DetectColumnRole(const std::string &name, const LogicalType &type);
 
 // ============================================================
 // Bind data for COPY TO
 // ============================================================
 
+//! The output format a COPY TO was bound with. One enum, not a boolean per format:
+//! every dispatch site names the format it handles, and a new format cannot fall
+//! through an `else` into the CityJSON writer.
+enum class CopyFormat : uint8_t { CityJSON, CityJSONSeq, FlatCityBuf, Obj, Gltf, Glb };
+
+inline bool IsMeshFormat(CopyFormat format) {
+	return format == CopyFormat::Obj || format == CopyFormat::Gltf || format == CopyFormat::Glb;
+}
+
 struct CityJSONCopyBindData : public FunctionData {
 	std::string file_path;
-	bool is_seq = false; // true for cityjsonseq format
-	bool is_fcb = false; // true for flatcitybuf format
+	CopyFormat format = CopyFormat::CityJSON;
 
 	// FlatCityBuf write-only options (COPY TO ... FORMAT flatcitybuf).
 	std::vector<std::string> fcb_attr_index_columns; // parsed from attr_index, empty = none
 	std::optional<uint16_t> fcb_branching_factor;
 	std::optional<uint16_t> fcb_index_node_size;
+
+	// Mesh write options (COPY TO ... FORMAT obj | gltf | glb).
+	std::optional<std::string> mesh_lod; // normalised; nullopt = highest per object
+	std::string mesh_origin = "auto";    // 'auto' | 'none' | 'x,y,z'
+	bool obj_triangulate = false;
+	int obj_precision = 17;
+	bool gltf_attributes = false;
+	// Sidecar-form appearance definitions; their presence declares the form (spec appearance).
+	std::optional<std::string> materials_query;
+	std::optional<std::string> textures_query;
+	// Resolved at bind for mesh formats (from the queries, or the source's local blocks),
+	// so a bad query fails before a single row is sunk -- as metadata_query does.
+	std::optional<AppearanceSource> appearance_source;
 
 	// Metadata (from options or metadata_query)
 	std::string version = "2.0";
@@ -65,6 +88,18 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::optional<std::string> reference_date;
 	std::optional<GeographicalExtent> geographical_extent;
 	std::optional<PointOfContact> point_of_contact;
+
+	// CityJSON Extensions (spec 06-extensions.mdx). `extension_declarations` is a
+	// package's `city.extensions`, supplied through metadata_query's `extensions`
+	// column: every name carrying a declared namespace prefix is written in CityJSON's
+	// `+` form, and the document's `extensions` member is rebuilt from it. Without it,
+	// `source_extensions` -- the discovered source's own `extensions` member -- is
+	// carried across verbatim and no name is rewritten.
+	std::vector<ExtensionDeclaration> extension_declarations;
+	std::optional<json> source_extensions;
+	// The name each column is written under: its own, or its `+` form when it carries
+	// a declared namespace prefix. Parallel to column_names.
+	std::vector<std::string> output_names;
 
 	// The source file this COPY reads from, when it is statically discoverable.
 	// COPY binds a relation, not a file, so file-level content -- the metadata
@@ -91,6 +126,29 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::optional<json> source_appearance_header;
 	std::map<std::string, json> source_appearance_by_feature;
 
+	// The CityJSON family's sidecar-form definitions, from materials_query /
+	// textures_query: every row in id order, as CityJSON `appearance` entries, and
+	// each sidecar id's position there. The cells keep their sidecar ids through the
+	// sink; finalize re-points them per output scope -- the document for CityJSON,
+	// each feature for CityJSONSeq and FlatCityBuf.
+	bool sidecar_definitions = false;
+	json sidecar_materials = json::array();
+	json sidecar_textures = json::array();
+	std::map<int64_t, int64_t> sidecar_material_position;
+	std::map<int64_t, int64_t> sidecar_texture_position;
+
+	// The document's `geometry-templates` member, its texture rings' UV indices
+	// resolved to inline [u, v] pairs so the writer can re-intern them into the pool it
+	// writes. From `implicit_geometries_query` (the sidecar rows, one template each in
+	// id order) or else the discovered source's own member. `templates_by_id` maps an
+	// `implicit_geometry.id` to its template index for the former; for the latter the
+	// id IS the index.
+	std::optional<std::string> implicit_geometries_query;
+	std::optional<json> geometry_templates;
+	std::map<int64_t, int64_t> templates_by_id;
+	size_t template_count = 0;
+	bool templates_from_query = false;
+
 	// Column mapping
 	std::vector<std::string> column_names;
 	std::vector<LogicalType> column_types;
@@ -109,6 +167,8 @@ struct CityJSONCopyBindData : public FunctionData {
 	// back to `bbox`, else the member is omitted (see CityJSONCopyToSink).
 	idx_t bbox_col = DConstants::INVALID_INDEX;
 	idx_t other_col = DConstants::INVALID_INDEX;
+	idx_t address_col = DConstants::INVALID_INDEX;
+	idx_t implicit_geometry_col = DConstants::INVALID_INDEX;
 	// Legacy single properties column / fallback when a geometry column has no per-LOD
 	// properties counterpart (e.g. the old geom_lod* layout).
 	idx_t geometry_properties_col = DConstants::INVALID_INDEX;
@@ -155,6 +215,25 @@ struct CityJSONCopyLocalState : public LocalFunctionData {
 // ============================================================
 // Registration
 // ============================================================
+
+//! The COPY TO callbacks, shared by every format this extension writes -- the mesh
+//! formats register themselves elsewhere (mesh_copy.hpp) over these same five.
+unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunctionBindInput &input,
+                                            const vector<string> &names, const vector<LogicalType> &sql_types);
+unique_ptr<GlobalFunctionData> CityJSONCopyToInitGlobal(ClientContext &context, FunctionData &bind_data,
+                                                        const string &file_path);
+unique_ptr<LocalFunctionData> CityJSONCopyToInitLocal(ExecutionContext &context, FunctionData &bind_data);
+void CityJSONCopyToSink(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+                        LocalFunctionData &lstate, DataChunk &input);
+void CityJSONCopyToCombine(ExecutionContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
+                           LocalFunctionData &lstate);
+void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate);
+
+//! An attribute cell as the CityJSON value it stands for: a JSON-typed cell parsed
+//! (it holds JSON text), a LIST as an array, a timestamp as ISO 8601 in UTC, SQL NULL
+//! as JSON null. COPY TO writes attributes through it; cityparquet_to_json encodes a
+//! column with it when an insert or merge widens the column to JSON.
+json AttributeValueToJson(const Value &val);
 
 void RegisterCityJSONCopyFunction(ExtensionLoader &loader);
 void RegisterCityJSONSeqCopyFunction(ExtensionLoader &loader);

@@ -1,0 +1,61 @@
+# name: test/sql/cityjson_implicit_affine.test
+# description: an implicit geometry's transformationMatrix must be affine, its last row 0 0 0 1
+# group: [sql]
+
+require cityjson
+
+require parquet
+
+# Spec 04-appearance-templates.mdx, "Placement": the matrix's last row MUST be
+# 0, 0, 0, 1, and a reader MUST treat a projective matrix as invalid input.
+#
+# railway_vegetation.city.json is lod3_railway.city.json's 15 SolitaryVegetationObjects,
+# each a GeometryInstance with an identity matrix. projective.city.json is DERIVED from
+# it by rewriting every matrix's last row from 0,0,0,1 to 0.1,0,0,1, nothing else.
+
+statement ok
+COPY (SELECT replace(rtrim(content, chr(10)),
+                     '[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]',
+                     '[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.1,0.0,0.0,1.0]')
+      FROM read_text('test/data/railway_vegetation.city.json'))
+TO '__TEST_DIR__/projective.city.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+# The unmodified source reads.
+query I
+SELECT COUNT(implicit_geometry) FROM read_cityjson('test/data/railway_vegetation.city.json');
+----
+15
+
+statement error
+SELECT implicit_geometry FROM read_cityjson('__TEST_DIR__/projective.city.json');
+----
+its last row must be 0, 0, 0, 1
+
+statement ok
+CREATE SCHEMA v;
+
+statement ok
+PRAGMA cityparquet_init('v');
+
+statement error
+PRAGMA insert_cityjson('v', '__TEST_DIR__/projective.city.json');
+----
+its last row must be 0, 0, 0, 1
+
+# Read from CityParquet: a projective matrix in an implicit_geometry cell is refused on
+# the way back to CityJSON too.
+statement ok
+PRAGMA insert_cityjson('v', 'test/data/railway_vegetation.city.json');
+
+statement error
+COPY (SELECT * REPLACE (
+        CASE WHEN implicit_geometry IS NULL THEN NULL ELSE
+        struct_pack(id := implicit_geometry.id, point := implicit_geometry.point,
+                    "transformationMatrix" := [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                               0.0, 0.0, 1.0, 0.0, 0.1, 0.0, 0.0, 1.0]) END AS implicit_geometry)
+      FROM v.vegetation)
+TO '__TEST_DIR__/projective_out.city.jsonl'
+(FORMAT cityjsonseq, implicit_geometries_query 'SELECT * FROM v.implicit_geometries',
+ materials_query 'SELECT * FROM v.materials', textures_query 'SELECT * FROM v.textures');
+----
+its last row must be 0, 0, 0, 1

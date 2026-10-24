@@ -106,8 +106,8 @@ std::vector<Column> LODTableUtils::GetGeometryColumns(const std::string &lod) {
 	    Column("geometry_" + suffix, ColumnType::GeometryWKB),
 	    Column("geometry_properties_" + suffix, ColumnType::GeometryPropertiesStruct),
 	    // Per-LoD appearance columns paired to the geometry by name (§11).
-	    Column("material_" + suffix, ColumnType::AppearanceJson),
-	    Column("texture_" + suffix, ColumnType::AppearanceJson),
+	    Column("material_" + suffix, ColumnType::MaterialMap),
+	    Column("texture_" + suffix, ColumnType::TextureMap),
 	};
 }
 
@@ -115,7 +115,7 @@ std::vector<Column> LODTableUtils::GetTrailingColumns() {
 	// Spec 02-object-table-schema.mdx, "Reserved columns": everything after the
 	// geometry group and before any attribute column.
 	return {
-	    Column("template", ColumnType::TemplateStruct),
+	    Column("implicit_geometry", ColumnType::ImplicitGeometryStruct),
 	    Column("other", ColumnType::Json),
 	};
 }

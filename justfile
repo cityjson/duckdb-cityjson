@@ -10,7 +10,7 @@
 build_targets := "cityjson_extension cityjson_loadable_extension duckdb unittest"
 
 # Wasm toolchain pins, mirroring the CI distribution pipeline.
-# emsdk: extension-ci-tools v1.5.4 `_extension_distribution.yml` pins
+# emsdk: extension-ci-tools v1.5.5 `_extension_distribution.yml` pins
 # emscripten-core/setup-emsdk@v13 with version 3.1.71.
 # vcpkg baseline: the `builtin-baseline` commit in vcpkg.json — a plain shallow clone
 # does NOT contain it, so `wasm-setup` fetches it explicitly (manifest resolution fails
@@ -28,17 +28,32 @@ hooks:
     git config core.hooksPath .githooks
     @echo "core.hooksPath -> .githooks"
 
+# The vcpkg toolchain file, which every native configure needs.
+#
+# `find_package(nlohmann_json REQUIRED)` and `find_package(flatcitybuf CONFIG REQUIRED)`
+# in CMakeLists.txt are both config-only, and flatcitybuf resolves solely from the
+# HideBa/vcpkg git registry declared in vcpkg.json. Neither is reachable unless CMake is
+# configured with vcpkg's toolchain file, which is what puts VCPKG_MANIFEST_DIR on the
+# command line and makes the manifest install run at all. CI gets this from the
+# VCPKG_TOOLCHAIN_PATH it sets on every job; the recipes below derive the same path from
+# VCPKG_ROOT so a local `just build` mirrors CI without a per-shell export.
+#
+# An explicit VCPKG_TOOLCHAIN_PATH in the environment wins. With neither variable set
+# this is the empty string, which extension-ci-tools' Makefile treats exactly as unset.
+vcpkg_root := env_var_or_default("VCPKG_ROOT", "")
+vcpkg_toolchain := env_var_or_default("VCPKG_TOOLCHAIN_PATH", if vcpkg_root == "" { "" } else { vcpkg_root / "scripts/buildsystems/vcpkg.cmake" })
+
 # List available recipes (default).
 default:
     @just --list
 
 # Full release build (configures the project the first time; slow on a clean tree).
 build:
-    GEN=ninja make release
+    VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" GEN=ninja make release
 
 # Full debug build.
 debug:
-    GEN=ninja make debug
+    VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" GEN=ninja make debug
 
 # Fast incremental rebuild of the extension, duckdb CLI, and test binary.
 # Use this in the edit-build-test loop after `just build` has configured the tree.
@@ -47,7 +62,7 @@ rebuild:
 
 # Build with FlatCityBuf (.fcb) support enabled.
 build-fcb:
-    EXT_FLAGS="-DCITYJSON_ENABLE_FCB=ON" GEN=ninja make release
+    VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" EXT_FLAGS="-DCITYJSON_ENABLE_FCB=ON" GEN=ninja make release
 
 # Build flatbuffers + flatcitybuf (tag cpp-v0.9.0) into .vendor/prefix.
 # Re-run after a tag bump: the recipe re-checks out the pinned tag and drops the
@@ -174,7 +189,9 @@ test-remote:
 
 # The docs/TESTING.md notebook walkthrough, end to end: read every format, build a
 # CityParquet package, insert a second file into it, write it out and read it back,
-# then the FlatCityBuf spatial and attribute filters. Downloads nothing in advance
+# the FlatCityBuf spatial and attribute filters, then a package started from an empty
+# schema, Hilbert order, implicit geometry, an address round trip and an append into
+# a cityparquet-rs package. Downloads nothing in advance
 # -- every fixture is fetched by the query that needs it, which costs around 120 MB
 # of transfer for 25 MB of data, because nothing is cached between queries.
 # Opt-in; `make test` skips it.
@@ -198,6 +215,75 @@ test-wasm:
 test-ci:
     make test
 
+# Validate a GLB export of the Delft tile with the Khronos glTF validator (needs node/npm
+# and network for the tile). Zero errors is the bar; warnings are printed for reading.
+# The npm package "gltf-validator" ships no CLI (no `bin` in its package.json, checked
+# against 2.0.0-dev.3.10) -- `npx gltf-validator` always fails with "could not determine
+# executable to run", regardless of network. Its documented entry point is the JS
+# `validateBytes` API, so that is what this recipe drives.
+# Opt-in: not part of `make test` or `just ci`.
+test-gltf-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    OUT="build/gltf_validate"
+    mkdir -p "$OUT"
+    ./build/release/duckdb -c "INSTALL httpfs; LOAD httpfs; \
+      COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')) \
+      TO '$OUT/delft.glb' (FORMAT glb, lod '2.2', attributes true);"
+    npm install --no-save --prefix "$OUT" gltf-validator >/dev/null
+    NODE_PATH="$OUT/node_modules" node -e '
+      const fs = require("fs");
+      const { validateBytes } = require("gltf-validator");
+      validateBytes(new Uint8Array(fs.readFileSync(process.argv[1])))
+        .then((report) => fs.writeFileSync(process.argv[2], JSON.stringify(report)))
+        .catch((error) => { console.error(error); process.exit(1); });
+    ' "$OUT/delft.glb" "$OUT/report.json"
+    python3 - "$OUT/report.json" <<'EOF'
+    import json, sys
+    r = json.load(open(sys.argv[1]))
+    issues = r.get("issues", {})
+    print("errors:", issues.get("numErrors"), "warnings:", issues.get("numWarnings"))
+    for m in issues.get("messages", [])[:20]:
+        print(" ", m.get("severity"), m.get("code"), m.get("pointer"))
+    sys.exit(0 if issues.get("numErrors", 1) == 0 else 1)
+    EOF
+
+# Compare an OBJ export of the Delft tile with cjio's (pip install cjio). cjio triangulates
+# and writes world coordinates; ours is exported with `origin 'none'` so it also writes
+# world coordinates, and only the vertex sets are then comparable: both must contain the
+# same distinct (x, y, z) triples.
+#
+# Both sides are pinned to lod 2.2, and both are cleaned to just that lod's vertices:
+# cjio's OBJ writer emits the file's *entire* global vertex pool (every lod, orphans
+# included) ahead of the per-object faces, so `lod_filter 2.2 vertices_clean` first
+# restricts it to what lod 2.2 actually uses; our writer already emits only the
+# vertices the requested lod references. Full precision (the `precision` default of
+# 17, i.e. no `precision` option here) avoids rounding twice -- Delft's `.3f` cjio
+# format and this recipe's `round(…, 3)` follow from the tile's `transform.scale` of
+# 0.001; a tile with a coarser or finer scale needs that digit adjusted to match.
+# Opt-in: not part of `make test` or `just ci`.
+test-obj-cjio:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    OUT="build/obj_cjio"
+    mkdir -p "$OUT"
+    curl -sSL -o "$OUT/delft.city.json" https://cityjson.open3d.city/cityjson/delft.city.json
+    cjio "$OUT/delft.city.json" lod_filter 2.2 vertices_clean export obj "$OUT/cjio.obj"
+    ./build/release/duckdb -c "COPY (SELECT * FROM read_cityjson('$OUT/delft.city.json', lod := '2.2')) TO '$OUT/ours.obj' (FORMAT obj, origin 'none', lod '2.2');"
+    python3 - "$OUT/cjio.obj" "$OUT/ours.obj" <<'EOF'
+    import sys
+    def verts(p):
+        s = set()
+        for line in open(p):
+            if line.startswith("v "):
+                x, y, z = (round(float(t), 3) for t in line.split()[1:4])
+                s.add((x, y, z))
+        return s
+    a, b = verts(sys.argv[1]), verts(sys.argv[2])
+    print("cjio", len(a), "ours", len(b), "only-cjio", len(a - b), "only-ours", len(b - a))
+    sys.exit(0 if a == b else 1)
+    EOF
+
 # clang-format check — matches the CI "Format Check" job (scans src and test).
 format-check:
     make format-check
@@ -208,7 +294,7 @@ format-fix:
 
 # clang-tidy check — matches the CI "Tidy Check" job (needs a vcpkg toolchain to configure).
 tidy:
-    make tidy-check
+    VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" make tidy-check
 
 # Reproduce the CI gates locally: format check, then build, then test.
 ci: format-check build test

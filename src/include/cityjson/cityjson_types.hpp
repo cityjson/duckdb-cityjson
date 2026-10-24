@@ -154,12 +154,30 @@ struct Geometry {
 	std::optional<json> semantics; // Surface semantics (optional)
 	std::optional<json> material;  // Material information (optional)
 	std::optional<json> texture;   // Texture information (optional)
+	//! Rings with fewer than three vertices `FromJson` removed (spec
+	//! 03-geometry-semantics.mdx, "Ring closure"), and surfaces removed with them
+	//! because the dropped ring was their exterior. Carried for the reader to report.
+	size_t dropped_rings = 0;
+	size_t dropped_surfaces = 0;
+	//! Textured rings with fewer UV indices than vertices, which the readers leave
+	//! untextured: which vertex lacks its UV is not stated (CityJSON 2.0.1 §6.2 asks
+	//! for one per vertex). Carried for the reader to report.
+	size_t short_uv_rings = 0;
+	//! A GeometryInstance's `template` (an index into the document's
+	//! geometry-templates) and `transformationMatrix`; its `boundaries` hold the one
+	//! reference-point vertex.
+	std::optional<int64_t> template_index;
+	std::optional<json> transformation_matrix;
 
 	Geometry() = default;
 	Geometry(std::string type, std::string lod, json boundaries);
 
 	/**
-	 * Parse geometry from JSON object
+	 * Parse geometry from JSON object. A ring of fewer than three vertices cannot form
+	 * a closed WKB ring of four points, so it is removed here, where every reader
+	 * converges: an exterior ring takes its surface with it, and the surface's
+	 * semantic, material and texture entries go too, so every array aligned to the
+	 * surfaces stays aligned. A dropped interior ring takes its texture ring entry.
 	 */
 	static Geometry FromJson(const json &obj);
 
@@ -184,6 +202,9 @@ struct CityObject {
 	// §object-table-schema: length MUST equal children, with null for a child that
 	// has no role) -- so an unset entry has to be representable, not just absent.
 	std::optional<std::vector<std::optional<std::string>>> children_roles;
+	// The CityJSON `address` member as the source gives it: an array of address
+	// objects, each `location` a MultiPoint indexing the object's vertex pool.
+	std::optional<json> address;
 	// Root-family id per the CityParquet feature_id rule (spec
 	// 02-object-table-schema.mdx): filled by the whole-CityJSON reader, where no
 	// real CityJSONFeature exists to take it from. Empty means "use the containing
@@ -246,6 +267,7 @@ struct Material {
 	json other; // members this mapping does not cover
 
 	static Material FromJson(const json &obj);
+	json ToJson() const;
 };
 
 /**
@@ -265,6 +287,7 @@ struct Texture {
 	json other;
 
 	static Texture FromJson(const json &obj);
+	json ToJson() const;
 };
 
 /**
@@ -284,6 +307,14 @@ struct Texture {
  * transform — an instance's own transformationMatrix and reference point place it into
  * the world — so `vertices` here are raw doubles, not quantised integers.
  */
+struct ImplicitGeometryCell {
+	int64_t id = 0;
+	//! The reference point, WKB PointZ in the file CRS.
+	std::vector<uint8_t> point;
+	//! Row-major 4x4; absent means identity.
+	std::optional<std::vector<double>> transformation_matrix;
+};
+
 struct GeometryTemplates {
 	std::vector<Geometry> templates;
 	std::vector<std::array<double, 3>> vertices;
@@ -305,6 +336,7 @@ struct Appearance {
 	}
 
 	static Appearance FromJson(const json &obj);
+	json ToJson() const;
 };
 
 /**
@@ -349,11 +381,14 @@ struct CityJSONFeature {
  * Main CityJSON container
  */
 struct CityJSON {
-	std::string version;                                        // CityJSON version (e.g., "2.0")
-	std::optional<Transform> transform;                         // Transform for vertex compression
-	std::optional<CRS> crs;                                     // Coordinate reference system
-	std::optional<Metadata> metadata;                           // Dataset metadata
-	std::map<std::string, Extension> extensions;                // Active extensions
+	std::string version;                         // CityJSON version (e.g., "2.0")
+	std::optional<Transform> transform;          // Transform for vertex compression
+	std::optional<CRS> crs;                      // Coordinate reference system
+	std::optional<Metadata> metadata;            // Dataset metadata
+	std::map<std::string, Extension> extensions; // Active extensions
+	//! Whether the document has an `extensions` member at all: an empty one declares
+	//! no extension but is still the source's member, and stays one on export.
+	bool has_extensions_member = false;
 	std::optional<std::vector<std::array<double, 3>>> vertices; // Shared vertex pool (optional)
 	std::optional<Appearance> appearance;                       // Material/texture definitions
 	std::optional<GeometryTemplates> geometry_templates;        // Reusable template geometries

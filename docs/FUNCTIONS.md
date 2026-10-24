@@ -2,6 +2,16 @@
 
 Every SQL function this extension registers, with a worked example for each.
 
+From a SQL connection, `duckdb_functions()` gives every scalar, table and pragma
+function a one-sentence description, one example and its parameter names:
+
+```sql
+SELECT function_name, function_type, parameters, description, examples
+FROM duckdb_functions() WHERE function_name LIKE 'cityparquet%';
+```
+
+`COPY` formats have no entry there; they are documented only here.
+
 The examples run against two public Delft datasets, so you can paste any of them
 into a DuckDB shell and get the same numbers back:
 
@@ -31,9 +41,10 @@ LOAD cityjson;
 - [Metadata](#metadata) — `cityjson_metadata`, `cityjsonseq_metadata`, `flatcitybuf_metadata`
 - [Writing](#writing) — `COPY … TO`
 - [CityParquet footers](#cityparquet-footers) — `cityjson_geoparquet_geo`
-- [Appearance sidecars](#appearance-sidecars) — `cityjson_materials`, `cityjson_textures`, `cityjson_geometry_templates`
+- [Appearance sidecars](#appearance-sidecars) — `cityjson_materials`, `cityjson_textures`, `cityjson_implicit_geometries`
 - [Scalar helpers](#scalar-helpers) — `cityjson_wkb_extent`, `cityjson_appearance_ids`
-- [CityParquet packages](#cityparquet-packages) — the `cityparquet_*` / `insert_*` pragmas
+- [CityParquet packages](#cityparquet-packages) — the `cityparquet_*` / `insert_*` pragmas, [CityJSON Extensions](#cityjson-extensions)
+- [Mesh interchange](#mesh-interchange) — `read_obj`, `obj_materials`, `obj_textures`, `obj_metadata`, `COPY … TO (FORMAT obj)`, `COPY … TO (FORMAT gltf/glb)`
 - [Output schema](#output-schema) — column grammar in detail
 
 ---
@@ -45,7 +56,10 @@ LOAD cityjson;
 One row per **CityObject**. `read_cityjson` takes a `.city.json` document with a
 global vertex pool; `read_cityjsonseq` takes a `.city.jsonl` stream whose every
 line after the header is a `CityJSONFeature` with its own local pool. Both
-produce the same column grammar.
+produce the same column grammar. A whole-document CityJSON that is
+gzip-compressed — `.city.json.gz`, as 3DBAG's published tiles are — is
+decompressed transparently, recognised by its magic bytes rather than its
+extension.
 
 ```sql
 SELECT COUNT(*) FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
@@ -82,8 +96,8 @@ ORDER BY b3_h_dak_max DESC LIMIT 3;
 | `sample_lines` | BIGINT | Features sampled for schema inference (default 100) |
 | `appearance` | VARCHAR | `'local'` (default) or `'sidecar'` — see [Appearance sidecars](#appearance-sidecars) |
 
-`read_flatcitybuf` shares only `lod` and `sample_lines`; it takes no
-`appearance`, and adds the four bbox bounds instead.
+`read_flatcitybuf` shares `lod`, `sample_lines` and `appearance`, and adds the
+four bbox bounds.
 
 #### `lod =>` — one LoD, same column grammar
 
@@ -243,11 +257,13 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 | Option | Type | Description |
 | ------ | ---- | ----------- |
 | `version` | VARCHAR | CityJSON version to write (default `"2.0"`) |
-| `crs` | VARCHAR | CRS identifier, e.g. `'https://www.opengis.net/def/crs/EPSG/0/7415'` |
+| `crs` | VARCHAR | CRS identifier, e.g. `'https://www.opengis.net/def/crs/EPSG/0/7415'`, or PROJJSON ([below](#crs-as-projjson)) |
 | `transform_scale` | VARCHAR | Vertex quantisation scale `'x,y,z'` (default `'0.001,0.001,0.001'`) |
 | `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`) |
 | `metadata_from` | VARCHAR | Path to read metadata and appearance definitions from, when the source is not discoverable from the query itself |
-| `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct or a plain string), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date` |
+| `materials_query`, `textures_query` | VARCHAR | SQL returning `materials.parquet` / `textures.parquet`-shaped rows. **Their presence declares the `material_lod*` / `texture_lod*` cells to be sidecar ids**, and the rows become the written definitions ([below](#sidecar-appearance)) |
+| `implicit_geometries_query` | VARCHAR | SQL returning `implicit_geometries` sidecar rows, written as the document's `geometry-templates` ([below](#required-columns)); their appearance takes its definitions from `materials_query` / `textures_query` |
+| `metadata_query` | VARCHAR | SQL whose result columns supply metadata. Recognised: `version`, `crs` (or `reference_system`, as a struct, a plain string or PROJJSON), `transform_scale`, `transform_translate`, `title`, `identifier`, `reference_date`, and `extensions` — a package's `city.extensions`, which turns its namespace-prefixed names back into CityJSON's `+` form ([CityJSON Extensions](#cityjson-extensions)) |
 | `attr_index` | VARCHAR | *(flatcitybuf)* comma-separated columns to give a B+tree index |
 | `branching_factor` | BIGINT | *(flatcitybuf)* B+tree branching factor |
 | `index_node_size` | BIGINT | *(flatcitybuf)* R-tree node size |
@@ -277,6 +293,14 @@ SELECT reference_system.code FROM cityjsonseq_metadata('delft_out.city.jsonl');
 -- 7415
 ```
 
+The source's `extensions` member travels the same way, so its `+` names stay
+declared. A package's prefixed names are restored to `+` only through
+`metadata_query`'s `extensions` column ([CityJSON Extensions](#cityjson-extensions)).
+
+A `read_obj` source is discovered the same way: its `.mtl` materials and
+textures, and the `vt` UV pool they reference, travel into the written
+`appearance` block just as a CityJSON(Seq) source's would.
+
 This needs the source to be **statically discoverable**. `COPY my_table TO …`, a
 join across two sources, and a computed path are not; an ambiguous source is
 refused rather than guessed at, because stamping the wrong CRS onto georeferenced
@@ -291,6 +315,51 @@ COPY (SELECT * FROM my_table) TO 'out.city.jsonl'
 Precedence is `crs` / `metadata_query` > `metadata_from` > discovered source, so
 an explicit option always wins.
 
+<a id="crs-as-projjson"></a>**A PROJJSON CRS is written as its OGC URL.** CityJSON's
+`metadata.referenceSystem` is an OGC CRS URL, and a package states its CRS as
+PROJJSON — `cityparquet_city_field(city, 'crs')` returns it. A `crs` (the option,
+or `metadata_query`'s column) that is a JSON object is read as PROJJSON and written
+as the URL of the CRS its `id` names: an EPSG code as
+`https://www.opengis.net/def/crs/EPSG/0/<code>`, `OGC:CRS84` as
+`https://www.opengis.net/def/crs/OGC/1.3/CRS84`. PROJJSON with no `id`, or with an
+`id` of another authority, is an error rather than a `referenceSystem` no CityJSON
+reader can resolve. Any other text is written as given.
+
+```sql
+PRAGMA cityparquet_read('test/data/cityparquet_rs_delft', 'p');
+COPY (SELECT * FROM p.building) TO 'delft.city.json' (FORMAT cityjson,
+    metadata_query 'SELECT max(cityparquet_city_field(city, ''crs'')) AS crs FROM p.__cityparquet WHERE role = ''object''');
+SELECT reference_system.code FROM cityjson_metadata('delft.city.json');
+-- 7415
+```
+
+<a id="sidecar-appearance"></a>**Sidecar appearance.** A package's `material_lod*` /
+`texture_lod*` cells hold sidecar ids into `materials.parquet` / `textures.parquet`,
+which no source file's `appearance` block resolves. `materials_query` and
+`textures_query` supply those definitions, each row a CityJSON material or texture
+(in `id` order, each sidecar column under its CityJSON member name, `other`'s
+members restored), and every cell is re-pointed at its definition's position:
+
+- **CityJSON** writes every row of each query into the document's one `appearance`
+  block, so a position there is the row's rank by `id`;
+- **CityJSONSeq** and **FlatCityBuf** give each feature its own `appearance` block,
+  holding the definitions that feature's cells name, in `id` order, as CityJSONSeq
+  requires. The header carries an `appearance` block only for the geometry
+  templates.
+
+The queries' definitions replace whatever appearance a discovered source carries,
+so a source read with `appearance := 'sidecar'` is resolved through them too. A
+cell naming an id its query has no row for is an error, as is a discovered
+source's own geometry templates carrying appearance without
+`implicit_geometries_query`.
+
+```sql
+PRAGMA cityparquet_read('test/data/cityparquet_rs_minimal', 'p');
+COPY (SELECT * FROM p.building) TO 'building.city.jsonl' (
+    FORMAT cityjsonseq,
+    materials_query 'SELECT * FROM p.materials', textures_query 'SELECT * FROM p.textures');
+```
+
 Requesting `attr_index` on a column no feature carries is not an error — there is
 simply nothing to index.
 
@@ -303,16 +372,62 @@ simply nothing to index.
 | `object_type` | Yes | CityJSON type |
 | `children` / `parents` | No | Hierarchy |
 | `geometry` / `geometry_lod*` | No | WKB `BLOB` **or** DuckDB `GEOMETRY` |
-| `geometry_properties*` | No | CityParquet STRUCT **or** JSON text |
+| `geometry_properties` / `geometry_properties_lod*` | No | CityParquet STRUCT **or** JSON text |
 
-Everything else is written as a CityJSON attribute, with one exception: `bbox`,
-`other`, `address` and `template` are **recognised but not round-tripped** — a
-writer neither serialises their value into the output CityJSON nor declares them
-as attribute columns. `bbox` is derived and recomputed on read, so writing it
-back would be redundant; `other`, `address` and `template` are not written yet
-(a future writer would reassemble `other`'s members onto the CityObject, and
-`address`/`template` into their respective CityJSON members, rather than
-flattening any of the three into `attributes`).
+A per-LoD column is one whose name follows the LoD suffix grammar,
+`geometry_lod2_2` or `material_lod0_0`: `<prefix>_lod<major>_<minor>`, a minor
+always present. `geometry_lodging` or `geometry_lod3` is an attribute, and so is a
+bare `geometry` or `geometry_properties` that does not hold a geometry (a
+`BLOB`/`GEOMETRY`, or a STRUCT/JSON text).
+
+Everything else is written as a CityJSON attribute, under its source name: a
+column whose name, with every leading `_` removed, is a reserved one (`_ID`,
+`__ID`, `_children`) loses one leading `_` (`ID`, `_ID`, `children`), which
+reverses the readers' escape (below). FlatCityBuf declares and indexes the
+attribute under that source name too, so `attr_index '_ID'` indexes `ID`. Four
+reserved columns are never declared as an attribute column:
+
+- `bbox` becomes the CityObject's `geographicalExtent` (below);
+- `other`'s members are restored into the CityObject's `attributes`; a cell that
+  is not a JSON object, or a member that duplicates an attribute column, is an
+  error;
+- `address` becomes the CityObject's `address` member, each field under the
+  member name it is read from and `location` a `MultiPoint` into the written
+  vertex pool (CityJSON and CityJSONSeq; FlatCityBuf and the mesh formats carry
+  no address);
+- `implicit_geometry` becomes a `GeometryInstance` in the CityObject's
+  `geometry` (CityJSON and CityJSONSeq), its one boundary the reference point
+  indexed into the written vertices and a NULL matrix written as the identity.
+  It needs the document's `geometry-templates` (below); a cell missing `id` or
+  `point`, naming a template there is none of, holding a `point` that is not
+  WKB `PointZ`, or holding a matrix whose last row is not `0, 0, 0, 1` is an
+  error.
+
+**Geometry templates.** The `geometry-templates` an instance's `template`
+indexes come from one of two places. With `implicit_geometries_query` — SQL
+returning `implicit_geometries` sidecar rows, such as `'SELECT * FROM
+pkg.implicit_geometries'` — each row becomes one template, in `id` order, from
+its one populated LoD group (a row populating none or several is an error), its
+vertices written as `vertices-templates` unquantised; an `implicit_geometry.id`
+is written as its row's position, and an id the query has no row for is an
+error. A relative geometry's `material_lod*` / `texture_lod*` cells hold sidecar
+ids, so they need the definitions: `materials_query` and `textures_query` —
+`'SELECT * FROM pkg.materials'`, `'SELECT * FROM pkg.textures'` — become the
+document's (for CityJSONSeq, the header's) `appearance` `materials` and
+`textures`, as for an object's cells ([above](#sidecar-appearance)), the cells
+are re-pointed at their positions, and the texture UVs are interned into the
+written `vertices-texture`. Templates carrying appearance without the matching
+query are refused rather than written without it. Without the option, a discovered source's own `geometry-templates`
+member is carried across, appearance and all — its texture UVs re-interned into
+the written `vertices-texture` — and `implicit_geometry.id` is the template
+index it was read as.
+
+```sql
+COPY (SELECT * FROM pkg.vegetation) TO 'vegetation.city.jsonl' (
+    FORMAT cityjsonseq, crs 'EPSG:7415',
+    implicit_geometries_query 'SELECT * FROM pkg.implicit_geometries',
+    materials_query 'SELECT * FROM pkg.materials', textures_query 'SELECT * FROM pkg.textures');
+```
 
 **The wide CityParquet layout round-trips directly.** A Parquet object table goes
 back to CityJSON with no intermediate step, one multi-LoD CityObject per feature:
@@ -335,8 +450,8 @@ columns, not re-derived from the geometry:
 
 ```sql
 SELECT geometry_properties_lod2_2.type, geometry_properties_lod2_2.shells
-FROM read_cityjsonseq('roundtrip.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;
--- Solid | [[6]]
+FROM read_cityjsonseq('roundtrip.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL ORDER BY id LIMIT 1;
+-- Solid | [[942]]
 ```
 
 ---
@@ -415,7 +530,7 @@ wrong definition — or to nothing.
 > repository, `test/data/railway_appearance.city.jsonl`, which carries all three.
 
 ```sql
--- The sidecar tables, shaped as materials.parquet / textures.parquet
+-- The sidecar tables, shaped as materials.parquet / textures.parquet / implicit_geometries.parquet
 SELECT id, name, diffuseColor, transparency
 FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
 -- 0 | UUID_e58d9d68-… | [0.496, 0.430, 0.297] | 0.0
@@ -424,7 +539,7 @@ FROM cityjson_materials('test/data/railway_appearance.city.jsonl');
 -- 3 | UUID_0794715b-… | [0.598, 0.598, 0.598] | 0.0
 
 SELECT * FROM cityjson_textures('test/data/railway_appearance.city.jsonl');
-SELECT * FROM cityjson_geometry_templates('test/data/railway_appearance.city.jsonl');
+SELECT * FROM cityjson_implicit_geometries('test/data/railway_appearance.city.jsonl');
 ```
 
 Object rows then reference those ids rather than feature-local ones:
@@ -433,34 +548,93 @@ Object rows then reference those ids rather than feature-local ones:
 SELECT id, material_lod3_0
 FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
 WHERE material_lod3_0 IS NOT NULL LIMIT 1;
--- GMLID_855011_330784_753 | {"visual":{"values":[2,2,2,2,2,2,3,3,3,…]}}
+-- GMLID_855011_330784_753 | {visual=[2, 2, 2, 2, 2, 2, 3, 3, 3, …]}
 ```
 
-`appearance` accepts `'local'` (default, verbatim) or `'sidecar'`, on
-`read_cityjson` and `read_cityjsonseq`. **`read_flatcitybuf` does not take it** —
-sidecar normalisation is not available on the `.fcb` read path.
+`appearance` accepts `'local'` (default) or `'sidecar'`, on `read_cityjson`,
+`read_cityjsonseq` and `read_flatcitybuf`. Both modes emit the same typed
+`material_lod*` / `texture_lod*` `MAP` cells (below); the mode decides only the
+**id space** — feature-local in `'local'`, dataset-global sidecar ids in
+`'sidecar'`, the ids `cityjson_materials` / `cityjson_textures` give the same
+file — and texture UVs are inlined in both. A FlatCityBuf feature keeps its own
+definitions under local indices, as a CityJSONSeq feature does, so
+`insert_flatcitybuf` reads in sidecar mode just as `insert_cityjsonseq` does.
 
-The template sidecar carries the same per-LoD column grammar as an object table
-(`geometry_lod3_0`, `geometry_properties_lod3_0`, `material_lod3_0`,
-`texture_lod3_0` for this fixture), alongside `id` and `name`.
+`cityjson_implicit_geometries` turns the CityJSON `"geometry-templates"` member
+into the `implicit_geometries` sidecar: one row per template, each the shared
+*relative geometry* of an implicit geometry (CityGML `ImplicitGeometry`). It
+carries the same per-LoD column grammar as an object table (`geometry_lod3_0`,
+`geometry_properties_lod3_0`, `material_lod3_0`, `texture_lod3_0` for this
+fixture), alongside `id` and `name`.
 
 **Definitions are interned, not read from the header.** CityJSONSeq does not keep
 every definition in one place — the header carries some, each feature carries the
 ones it uses under its *own* local indices, so a feature's material `0` is not in
 general the header's material `0`. The sidecar is the interned union across the
 whole file, matched by structural equality (CityJSON gives a material no identity
-of its own). Header entries intern first, so their ids stay their ordinal
-positions, which is what a plain CityJSON document yields.
+of its own). Header entries intern first, so their ids are their ordinal
+positions unless the header repeats a definition, and every reference to the
+header — a plain CityJSON document's objects, the geometry templates — resolves
+through that interning.
 
-**Geometry templates are in local coordinates**, exempt from the dataset
-transform and the file CRS — an instance's `transformationMatrix` and reference
-point place it into the world — so their WKB holds raw doubles. Each row
-populates only its own LoD's columns, leaving the table sparse by construction.
+**Relative geometries are in local coordinates**, exempt from the dataset
+transform and the file CRS — an implicit geometry's `transformationMatrix` and
+reference point place it into the world — so their WKB holds raw doubles. Each
+row populates only its own LoD's columns, leaving the table sparse by
+construction. A row's `id` is its template's position in the source, which is
+what an object's `implicit_geometry.id` holds in either appearance mode; the
+package pragmas renumber the two together.
 
-**Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; sidecar
-mode emits `[texId, [u,v], [u,v], …]`. Both rewrites recurse to their leaves
-rather than assuming a nesting depth, since a `Solid` nests one level deeper than
-a `MultiSurface`.
+**Texture UVs are inlined.** A source ring is `[texId, uvIdx, uvIdx, …]`; every
+`texture_lod*` cell replaces that with one `STRUCT(id BIGINT, uv DOUBLE[][])`
+per ring — `id` the ring's (local or sidecar) texture id, `uv` one `[u, v]`
+pair per ring vertex, and an untextured ring holds `{NULL, NULL}`. A ring with
+fewer UV indices than vertices is left untextured, since which vertex lacks its
+UV is not stated, and the reader logs a warning naming the object and the count;
+a source ring explicitly closed (`[0, 2, 4, 6, 0]`) is four vertices, so four
+UVs are one per vertex. Both
+`'local'` and `'sidecar'` mode build this same struct; only `id`'s numbering
+differs. The builder walks the same per-type face nesting `face_semantics` does
+(`FlattenPerFace`) — a fixed depth per geometry type, not a recursion to whatever
+depth a geometry happens to nest.
+
+### Reading appearance cells
+
+Both columns are ordinary DuckDB `MAP`s, so `map['theme']` is the way in — it
+returns the theme's per-WKB-face list, indexed by the same face order
+`geometry_lod*`'s WKB emits:
+
+```sql
+SELECT material_lod2_2['visual'][3]
+FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
+-- 1
+```
+
+A texture cell nests one level further — face, then ring — so index twice
+before reaching the `STRUCT`'s fields:
+
+```sql
+SELECT texture_lod2_2['visual'][1][1].uv
+FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2');
+-- [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+```
+
+`UNNEST` turns a theme's face list back into rows, one per WKB face:
+
+```sql
+SELECT id, UNNEST(material_lod3_0['visual']) AS face_material_id
+FROM (
+    SELECT id, material_lod3_0
+    FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
+    WHERE material_lod3_0 IS NOT NULL LIMIT 1
+)
+LIMIT 5;
+-- GMLID_855011_330784_753 | 2
+-- GMLID_855011_330784_753 | 2
+-- GMLID_855011_330784_753 | 2
+-- GMLID_855011_330784_753 | 2
+-- GMLID_855011_330784_753 | 2
+```
 
 ---
 
@@ -478,18 +652,21 @@ WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;
 --> STRUCT(xmin, ymin, zmin, xmax, ymax, zmax DOUBLE)
 ```
 
-### `cityjson_appearance_ids(cell, kind)`
+### `cityjson_appearance_ids(cell)`
 
 The sidecar ids an appearance cell references, as a list.
 
 ```sql
-SELECT cityjson_appearance_ids(material_lod3_0, 'material') AS ids
+SELECT cityjson_appearance_ids(material_lod3_0) AS ids
 FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar')
 WHERE material_lod3_0 IS NOT NULL LIMIT 1;
 -- [2, 3]
 ```
 
-`kind` is `'material'` or `'texture'`. This is what `cityparquet_orphans` and
+There is no separate `kind` argument: `cell`'s exact type — the material cell's
+`MAP(VARCHAR, BIGINT[])` or the texture cell's `MAP(VARCHAR, STRUCT(id BIGINT,
+uv DOUBLE[][])[][])` — is what the bind checks to tell the two apart, and
+anything else is a bind error. This is what `cityparquet_orphans` and
 `cityparquet_vacuum` use to decide which sidecar rows are still reachable.
 
 ### `cityjson_wkb_geometry_type(blob)`
@@ -507,12 +684,52 @@ FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod2_2
 -- PolyhedralSurface Z     ← solid; excluded from `geo`
 ```
 
-### `cityjson_shift_appearance_ids(cell, kind, offset)`
+### `cityjson_shift_appearance_ids(cell, offset)`
 
 Shifts every sidecar id in an appearance cell by a constant. This is the
 renumbering primitive `cityparquet_merge` and `insert_cityjson` generate calls to
 when folding one package's sidecar ids onto another's numbering; you rarely call
 it directly.
+
+### `cityparquet_hilbert(x, y, xmin, ymin, xmax, ymax)`
+
+The position of `(x, y)` along a 2D Hilbert curve of 2^16 cells per axis laid
+over the extent `[xmin, xmax] × [ymin, ymax]`, as a `UINTEGER` spanning the
+whole 32-bit range — the key [`cityparquet_write`](#the-package-round-trip)
+orders features by. A point outside the extent clamps to its edge cell, an empty
+axis maps every point to cell 0, and a NULL argument gives NULL.
+
+### `cityparquet_json(text)`
+
+Returns its argument typed as DuckDB's `JSON`, after checking that it parses,
+and errors on text that is not JSON. A Parquet `COPY` annotates a `JSON` column
+with the Parquet JSON logical type, so this is how `cityparquet_write` declares
+`other` and `surfaces` without the `json` extension, which owns the `JSON` type
+name:
+
+```sql
+SELECT cityparquet_json('{"roofType": "1000"}');
+-- {"roofType": "1000"}
+```
+
+### `cityparquet_to_json(value)`
+
+Returns an attribute value as the JSON it stands for, typed `JSON`: a string
+quoted, a number or boolean as itself, a date or time as its ISO 8601 string, a
+timestamp as ISO 8601 in UTC, a list as an array, `JSON` as itself; NULL stays
+NULL. It is the encoding `insert_cityjson` and `cityparquet_merge` give an
+attribute column's values when the column becomes `JSON`:
+
+```sql
+SELECT cityparquet_to_json('Asuinrakennus');
+-- "Asuinrakennus"
+```
+
+### `cityparquet_set_city_field(city, field, value)`
+
+Returns the `city` footer JSON string with one top-level field set to the JSON text
+`value`; a NULL or unreadable footer starts as an empty object. What
+`insert_cityjson` records a package's first CRS with.
 
 ### `cityparquet_city_field(city, field)`
 
@@ -521,12 +738,31 @@ Reads one field out of a `city` footer JSON string. Note that a footer which is
 SQL NULL — the package pragmas tell those apart by counting object-table footers
 separately, because only the latter is a *stated* unknown.
 
+### `cityparquet_prefix_surface_types(surfaces, namespace)` / `cityparquet_merge_extensions(city, extensions)`
+
+The two helpers the package pragmas generate calls to for
+[CityJSON Extensions](#cityjson-extensions); you rarely call either directly.
+
+```sql
+SELECT cityparquet_prefix_surface_types('[{"type":"+PartyWallSurface"},{"type":"WallSurface"}]', 'energy');
+-- [{"type":"energy_PartyWallSurface"},{"type":"WallSurface"}]
+
+SELECT cityparquet_merge_extensions(NULL, '{"energy":{"name":"Energy","url":"https://example.org/e.json"}}');
+-- {"extensions":{"energy":{"name":"Energy","url":"https://example.org/e.json"}}}
+```
+
+`cityparquet_prefix_surface_types` gives every `+` surface type in a
+`geometry_properties_lod*.surfaces` value the namespace prefix.
+`cityparquet_merge_extensions` merges a `city.extensions` object into a footer's
+own, and raises an error when a namespace is declared differently on the two
+sides.
+
 ---
 
 ## CityParquet packages
 
 A CityParquet dataset is a *directory* of Parquet files — one object table per
-CityGML module, plus optional `materials` / `textures` / `geometry_templates`
+CityGML module, plus optional `materials` / `textures` / `implicit_geometries`
 sidecars. Loading it into DuckDB gives you queryable tables; **mutating** it is
 harder, because the package has relationships ordinary `INSERT` / `UPDATE` /
 `DELETE` knows nothing about. Deleting a parent must cascade to its children, and
@@ -540,9 +776,12 @@ These functions generate that SQL for you.
 A package becomes a DuckDB **schema** whose tables are named by the spec's file
 basenames, plus a `__cityparquet` bookkeeping table. Object tables are
 `building`, `bridge`, `tunnel`, `construction`, `transportation`, `vegetation`,
-`relief`, `water_body`, `land_use`, `city_furniture`, `generics`; sidecars are
-`materials`, `textures`, `geometry_templates`. **Naming is the whole binding** —
-there is no registration state to keep in sync.
+`relief`, `water_body`, `land_use`, `city_furniture`, `generics`, and an
+extension's own file — `noise` for the Noise Extension's classes
+([CityJSON Extensions](#cityjson-extensions)); sidecars are `materials`,
+`textures`, `implicit_geometries`. **Naming is the binding** for the module
+tables and sidecars; an extension's table, whose name no fixed list holds, is an
+object table because `__cityparquet` registers it as one.
 
 `__cityparquet` holds one row per package file (`table_name`, `file_name`,
 `role`, `city`), where `city` is the file's recovered Parquet footer.
@@ -560,6 +799,19 @@ PRAGMA cityparquet_read('./data/delft', 'delft');
 SELECT table_name, role, city IS NOT NULL AS has_footer FROM delft.__cityparquet;
 -- building | object | true
 ```
+
+Besides the files the specification names for modules and sidecars, it loads an
+extension's object table: a file whose `city` footer declares an extension whose
+namespace is the file's name (`noise.parquet`, the extension's own file) or
+prefixes it (`energy_building_physics.parquet`, an extension module). Any other
+Parquet file in the directory is left alone.
+
+An attribute whose name collides with a reserved column is stored escaped, as
+`_ID` for `ID` (below), and is loaded under that name; `COPY` restores the source
+name. An object table holding a column whose own name collides with a reserved
+one without being it — an attribute `ID` beside the reserved `id` — is refused:
+no conforming writer produces one, and DuckDB, whose column names are
+case-insensitive, could hold it only renamed.
 
 **A hand-rolled `read_parquet` load is not equivalent.** It gives you the same
 rows, but `read_parquet` returns only the data — the Parquet footer is discarded
@@ -601,6 +853,26 @@ to state it again, or use `cityparquet_read` and keep it throughout.
 
 `cityparquet_init` is idempotent; re-run it after adding a table.
 
+**Starting a package from CityJSON** needs no table of your own: initialise an empty
+schema, and the first insert creates every module table it needs and takes its CRS
+from the source.
+
+```sql
+CREATE SCHEMA delft;
+```
+
+```sql
+PRAGMA cityparquet_init('delft');
+```
+
+```sql
+PRAGMA insert_cityjsonseq('delft', 'delft.city.jsonl');
+```
+
+```sql
+SELECT * FROM cityparquet_write('delft', 'out/');   -- no crs => needed
+```
+
 > **Submit these as separate statements.** DuckDB expands *every* pragma in a
 > submitted script before running *any* of it, so a generator batched with the
 > `CREATE SCHEMA` that precedes it sees a catalog without that schema and fails.
@@ -616,9 +888,15 @@ PRAGMA insert_cityjson('delft', 'tile.city.json');
 One call. Each object is routed to its **CityGML module** table — `Building` and
 `BuildingPart` both to `building`, `Road` and `Square` both to `transportation` —
 creating the module tables and sidecars the source needs, renumbering incoming
-material / texture / template ids so they cannot collide with existing ones,
-rewriting every reference to match, and re-deriving `feature_id`, the reciprocal
-hierarchy and `bbox` afterwards.
+material / texture / implicit-geometry ids so they cannot collide with existing ones,
+rewriting every reference to match, and re-deriving `feature_id` and the reciprocal
+hierarchy afterwards. `bbox` is extended, not re-derived: an incoming object keeps
+the box its reader gave it (its own geometry and descendants, with the source's
+declared extent unioned in), widened by any descendant already in the package; an
+existing object is widened only by incoming descendants; and every other row keeps
+its `bbox` exactly as stored — including a declared extent another writer unioned
+into it, which re-deriving from geometry would narrow away and an export would then
+lose.
 
 PRAGMA named parameters use `=`, **not** `:=`:
 
@@ -628,19 +906,156 @@ PRAGMA insert_cityjson('delft', 'tile.city.json', create_tables = true);
 
 Worth knowing:
 
-- **Routing is total.** An object type belonging to no CityGML module is an
-  error, not a silently skipped row. Extension types cannot be placed without
-  their module declaration — read those with `read_cityjson` and insert yourself.
+- **Routing is total.** An object type belonging to no CityGML module, and not
+  an Extension class (marked `+`), is an error, not a silently skipped row. An
+  Extension class routes by its ModuleKey
+  ([CityJSON Extensions](#cityjson-extensions)).
+- **Extension names take their namespace.** A `+` attribute, surface type or
+  object type is stored with the declaring extension's namespace as a prefix; see
+  [CityJSON Extensions](#cityjson-extensions).
 - **The file is opened twice** — once at plan time to learn its schema and object
   types, once by the generated read. The plan-time pass reads it *whole*, because
   a sample cannot tell you a rare type appears only in the tail.
 - **Ids are identity.** An incoming id already in the destination refuses the
   entire insert.
+- **The package's column types win.** A geometry column the destination holds as
+  DuckDB `GEOMETRY` (the GeoParquet-declared LoD0 column of a package loaded with
+  `cityparquet_read`) stays `GEOMETRY`; the incoming WKB is converted into it, and a
+  `JSON` column takes the incoming JSON text as it is. A column whose shape is nested
+  — a reserved struct, or a list-valued attribute — and disagrees with the incoming
+  one refuses the insert rather than being rewritten as text: DuckDB's text form of
+  a list is not JSON.
+- **An attribute typed differently is widened, and logged.** The package's column
+  takes the specification's promotion for mixed attribute types — `BIGINT` to
+  `DOUBLE`, a mix with `JSON` (an object or array on one side) to `JSON`, any
+  other scalar mix to `VARCHAR` — for every row it holds, and a warning names the
+  column and both types. Values entering a `JSON` column from a non-`JSON` side
+  are encoded as the JSON they stand for (`cityparquet_to_json`): a string
+  becomes a JSON string, not text a JSON reader would refuse. A column that
+  already holds the wider type (`DOUBLE` for an integer, `JSON` for any scalar,
+  `VARCHAR` for any scalar) is left as it is. `cityparquet_merge` widens the
+  same way.
+- **A package's first source gives it its CRS.** A package that states no CRS and
+  holds no object yet records the source's `metadata.referenceSystem`, resolved to
+  PROJJSON, as every object table's `crs`. A package that already holds rows but
+  states no CRS (a hand-rolled load) is not given one.
 - **The CRS must match**, and reprojection is never performed. The source's
   `metadata.referenceSystem` is resolved to PROJJSON first, so it is compared
   like with like. A package states **one** CRS for every row it holds, so an
   unknown on either side is refused rather than assumed; two unknowns are fine. A
   destination with no footer at all states nothing, so nothing is checked.
+
+### CityJSON Extensions
+
+A CityParquet package stores every name a CityJSON Extension adds with the
+extension's **namespace** as a prefix, in place of CityJSON's `+`. The namespace
+is the key of the source's `extensions` member lower-cased, with every character
+outside `[a-z0-9]` removed (`"Energy"` → `energy`), and it must start with a
+letter. `insert_cityjson` (and its siblings) apply it:
+
+| Source | Stored as |
+| ------ | --------- |
+| attribute `+heatCapacity` | column `energy_heatCapacity` |
+| surface type `+PartyWallSurface` | `geometry_properties_lod*.surfaces[].type` `energy_PartyWallSurface` |
+| object type `+Building` | `object_type` `energy_Building`, routed to `building` |
+| object type `+ThermalZone` | `object_type` `energy_ThermalZone`, routed to `energy` |
+
+```sql
+PRAGMA insert_cityjson('pkg', 'test/data/extension_energy.city.json');
+```
+
+```sql
+SELECT id, object_type, energy_heatCapacity FROM pkg.building WHERE energy_heatCapacity IS NOT NULL;
+-- house-1 | Building        | 250.5
+-- house-2 | energy_Building | 125.0
+```
+
+**Where an Extension class goes** (spec 06-extensions, "The ModuleKey"). A class
+whose name without the `+` is a core class goes to that class's module table
+(`+Building` → `building`). A class the source's declaration says specialises
+another — an `allOf` member of its `extraCityObjects` schema whose `$ref` names a
+definition of `cityobjects.schema.json` — goes where that class goes, recursively:
+a City Object type to its module, `_AbstractBuilding` to `building`,
+`_AbstractTransportationComplex` to `transportation`. Every other class — one that
+specialises `_AbstractCityObject`, a definition that names no class, or nothing the
+source states — goes to its extension's own table, named by the namespace alone:
+the Noise Extension's `+NoiseCityFurnitureSegment` is stored in `noise` as
+`noise_NoiseCityFurnitureSegment`. Only the declaration in the source's
+`extensions` member is read; the schema document at its `url` is not fetched, so a
+class whose specialisation only that document states goes to the extension's own
+table. A namespace that is itself a module or sidecar name (`building`) cannot
+have a table of its own, and such a class is refused.
+
+```sql
+CREATE SCHEMA noise;
+```
+
+```sql
+PRAGMA cityparquet_init('noise');
+```
+
+```sql
+PRAGMA insert_cityjson('noise', 'test/data/noise_data.city.json');
+```
+
+```sql
+SELECT id, object_type, feature_id FROM noise.noise;
+-- thesegment_1 | noise_NoiseCityFurnitureSegment | a_noisy_bench
+-- thesegment_2 | noise_NoiseCityFurnitureSegment | a_noisy_bench
+```
+
+The table is an object table like any other: registered in `__cityparquet`,
+written as `noise.parquet` with the same footer, validated and exported with the
+rest, and loaded back by `cityparquet_read`.
+
+The package declares each namespace once, in every object table's
+`city.extensions` footer — recorded in `__cityparquet` by the insert and written
+out by `cityparquet_write`:
+
+```sql
+SELECT DISTINCT cityparquet_city_field(city, 'extensions') FROM pkg.__cityparquet WHERE role = 'object';
+-- {"energy":{"name":"Energy","url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}
+```
+
+A declaration on its own states no CRS. A source whose `extensions` member is
+present but empty declares nothing, and the package records the empty member
+(`city.extensions: {}`), so an export writes `"extensions": {}` again; `COPY` from
+such a source keeps it the same way.
+
+What a source must get right, each a hard error that refuses the whole insert:
+
+- **A `+` name needs a declared extension.** CityJSON requires one.
+- **Exactly one declared extension.** With several, attributing each `+` name to
+  one of them needs the extensions' schema documents (`extraAttributes`,
+  `extraCityObjects`, `extraSemanticSurfaces`); attribution from extension schema
+  documents is not implemented.
+- **No core name may start with a declared prefix.** A core attribute
+  `energy_label` beside the Energy extension — in the same source, or in a package
+  that declares `energy` — would read back as an extension name.
+- **A namespace denotes one extension.** A package that already declares `energy`
+  for another extension refuses the insert, and `cityparquet_merge` refuses the
+  merge.
+
+`cityparquet_merge` carries the source's declarations onto the destination's
+footers. `cityparquet_write` refuses a table still holding a `+` name — a
+hand-rolled `read_cityjson` load keeps them — and lists extension classes in the
+STAC Item's `city3d:co_types` with their `+`, the source vocabulary.
+
+**Export.** `COPY` restores the `+` from the declaration, which a package read with
+`cityparquet_read` hands over through `metadata_query`:
+
+```sql
+COPY (SELECT * FROM pkg.building) TO 'out.city.jsonl' (
+    FORMAT cityjsonseq,
+    metadata_query 'SELECT max(cityparquet_city_field(city, ''extensions'')) AS extensions
+                    FROM pkg.__cityparquet WHERE role = ''object''');
+```
+
+Every name carrying a declared prefix — attribute, surface type, object type —
+is written with `+` again, and the document's `extensions` member is rebuilt
+(`name` as the key, `url` and `version` its members). A name with no declared
+prefix is written as it is. The FlatCityBuf writer restores the names but writes
+no `extensions` member.
 
 ### Mutation
 
@@ -719,7 +1134,8 @@ Sidecar ids are renumbered onto the destination's numbering and every incoming
 reference shifted to match. The offset is `dst_max + 1 − src_min`, not
 `dst_max + 1`: a source id may be negative, and adding `dst_max + 1` alone could
 land back inside the occupied range. Schema evolution runs before any insert;
-derived state is re-derived after.
+derived state is re-derived after, `bbox` extended exactly as `insert_cityjson`
+extends it.
 
 ### The package round trip
 
@@ -727,13 +1143,65 @@ Write the schema back out as a package directory:
 
 ```sql
 SELECT * FROM cityparquet_write('delft', 'out/', crs => 'EPSG:7415');
--- building.parquet | written | 2231 | 4142901
--- metadata.json    | written |    0 |    6721
+-- building.parquet | written | 2231 | 3755583
+-- metadata.json    | written |    0 |    6764
 ```
 
-It takes two named parameters: `crs` (below) and `source_format`, which records
+It takes four named parameters: `crs` (below); `source_format`, which records
 the format the data originally came from into each file's `city` footer as
-`source_format`.
+`source_format`; `ordering` (below); and `bloom` (default `true`), which writes
+Parquet bloom filters on the object tables. DuckDB writes a filter only for a
+dictionary-encoded column chunk, and its dictionary and bloom options apply to a
+whole file, so each object table is written with 122 880-row row groups and a
+dictionary cut-off of the same size under an 8 MiB dictionary-page cap. The
+chunks DuckDB dictionary-encodes carry a filter (FPP 0.01), placed after the
+last row group — `id` and `feature_id` among them.
+
+Which other columns qualify is conditional on the chunk actually being
+dictionary-encoded, not a fixed list. That excludes a type whose writer never
+uses a dictionary — Boolean among them, PLAIN and unfiltered however small its
+vocabulary. The dictionary-page cap restricts the rest: over a full row group it
+works out at roughly 68 bytes per row for a near-unique column, so a
+high-cardinality string wider than that is written PLAIN and carries no filter,
+while a compact WKB geometry or JSON column can stay under the cap and carry one
+— in any row group, not only a short trailing one. In
+practice the filtered set is wider than the string columns: on the delft package
+(2 231 rows, one row group) 68 of 115 column chunks carry a filter, numeric and
+temporal attributes, the `bbox` leaves, list elements and the geometry columns
+included. That is an observation on the packages measured, not a guarantee about
+any input. Sidecars carry no filter; `bloom => false` writes none at all. DuckDB
+itself consults the filters for `=` and `IN` predicates, including those pushed
+down from a join.
+
+**Rows are written in Hilbert-curve order** (`ordering => 'hilbert'`, the
+default), so that features near each other on the ground land in the same or
+adjacent row groups and a spatial filter prunes more of each file. The key is
+the reference writer's, so `cityparquet-rs` and this function order the same
+input the same way: a 2D curve of 2^16 cells per axis over the x/y extent of
+every geometry in the package, and for each **feature** (every row sharing a
+`feature_id`, across every object table) the curve position of the centre of
+the x/y extent of every coordinate it carries — its geometry, and its implicit
+geometries' reference points and its addresses' locations — taken from the WKB,
+not from `bbox`, which also carries a source's declared extents. Whole features move, never single rows:
+in either ordering a feature's rows are contiguous in each table, its root
+first, as the specification requires. Features of equal key — every feature
+without geometry, which takes key 0, and features whose centres share a cell —
+keep the table's order of their roots (of their first row, where the root is in
+another table), and a feature's other rows keep the table's order. Sidecars
+keep their order. The key equals cityparquet-rs's whenever every vertex in a source
+feature's vertex pool is one the package keeps — a geometry vertex, an implicit
+geometry's reference point or an address location. cityparquet-rs centres a
+feature on its raw `vertices` pool, which can also hold vertices nothing
+references; those do not survive into a package, so a feature that has them may
+key differently, and its rows may then sit elsewhere than in cityparquet-rs's
+file. Hilbert order is a MAY in the specification and either order conforms. `ordering => 'source'` keeps the table's order of features instead, each
+feature's rows gathered behind its root.
+`cityparquet_hilbert` is the key on its own:
+
+```sql
+SELECT cityparquet_hilbert(0.75, 0.25, 0, 0, 1, 1);
+-- 3758096383
+```
 
 …and load a package directory back into a fresh schema:
 
@@ -754,6 +1222,27 @@ footer into `__cityparquet` — the one thing a hand-rolled `read_parquet` load
 throws away. `cityparquet_write` regenerates each file's `city` and `geo` footers
 from the data and writes a `metadata.json` STAC Item.
 
+**Each object table is written in the specification's column order** —
+reserved columns first, in their order, then the per-LoD groups by LoD, then the
+attributes — whatever order its columns were added in (an insert appends a new
+LoD's columns at the end), and **with only the LoD groups some row populates**:
+an LoD column every row leaves NULL, and its three companions, are not written.
+
+**JSON columns carry the JSON logical type.** `cityparquet_write` writes every
+`other` column (object tables and the `materials` / `textures` sidecars) and the
+`surfaces` field of every `geometry_properties_lod*` struct as Parquet JSON, and
+refuses a cell that does not parse — a Parquet reader validates a JSON column
+and would refuse the whole file — and an object table's `other` that is not a
+JSON object, since a reader restores its members as attributes. A package read back holds those columns as
+DuckDB `JSON`; a package written as plain UTF8 holds them as `VARCHAR`. Both
+insert into, merge with and write out of each other alike. DuckDB's text
+functions do not take `JSON` without the `json` extension, so cast first:
+
+```sql
+SELECT id FROM loaded.building
+WHERE CAST(geometry_properties_lod2_2.surfaces AS VARCHAR) LIKE '%RoofSurface%' LIMIT 1;
+```
+
 The written package opens as GeoParquet — note that its LoD0 column comes back as
 DuckDB's first-class `GEOMETRY` type, so `ST_AsText` reads it directly and
 `ST_GeomFromWKB` would fail:
@@ -761,8 +1250,8 @@ DuckDB's first-class `GEOMETRY` type, so `ST_AsText` reads it directly and
 ```sql
 LOAD spatial;
 SELECT ST_AsText(geometry_lod0_0) FROM read_parquet('out/building.parquet')
-WHERE geometry_lod0_0 IS NOT NULL LIMIT 1;
--- MULTIPOLYGON Z (((84593.249625 446461.355 0.475…)))
+WHERE geometry_lod0_0 IS NOT NULL ORDER BY id LIMIT 1;
+-- MULTIPOLYGON Z (((84842.902625 446016.17 -0.4089973754882834, …)))
 ```
 
 Three things worth knowing:
@@ -784,7 +1273,10 @@ Three things worth knowing:
 `metadata.json` is the **dataset-level** view where the footers are per-file, so
 every `city3d:*` field is a union or sum across the package. It carries the
 Projection extension (`proj:projjson`, `proj:bbox`) and each asset's `file:size`,
-but no per-asset row count. `geometry` stays null: STAC wants EPSG:4326 there and
+but no per-asset row count. `properties.datetime`, which STAC requires, is the
+source's `referenceDate` when a footer carries the source metadata
+(`city.other.source_metadata`) — a full RFC 3339 timestamp as it stands, a bare
+date as midnight UTC — and otherwise the time of writing, in UTC. `geometry` stays null: STAC wants EPSG:4326 there and
 a package's coordinates are not, so `proj:bbox` carries the real extent.
 
 Atomicity is **per file at best**. A Parquet file that already exists is replaced
@@ -838,6 +1330,710 @@ generated statements are idempotent, but two things a generator cannot do:
 
 ---
 
+## Mesh interchange
+
+### `read_obj(path, lod := …)`
+
+Reads a Wavefront OBJ into the object-table schema. An OBJ carries no level of
+detail, class, or CRS, so the caller supplies them: `lod` is required and names
+the geometry columns; `object_type` (default `'Building'`) is every object's
+class; the CRS lives on `obj_metadata` (below), because a row has nowhere to
+carry it.
+
+```sql
+SELECT id, object_type, geometry_properties_lod2_2.type AS geom, geometry_properties_lod2_2.surfaces
+FROM read_obj('test/data/obj/cube.obj', lod := '2.2');
+-- cube | Building | Solid        | [{"type":"GroundSurface"},{"type":"WallSurface"},{"type":"RoofSurface"}]
+-- slab | Building | MultiSurface | [{"type":"RoofSurface"}]
+```
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `lod` | VARCHAR | **Required.** Normalised like every reader: `'2'` yields `geometry_lod2_0` |
+| `object_type` | VARCHAR | CityGML class for every object (default `Building`) |
+| `geometry_type` | VARCHAR | `'auto'` (default): `Solid` when every edge is shared by exactly two faces, else `MultiSurface`; or force `'Solid'` / `'MultiSurface'` |
+| `appearance` | VARCHAR | `'local'` (default) or `'sidecar'`, as on the other readers |
+| `sample_lines` | BIGINT | Accepted for uniformity; the whole file is parsed regardless |
+
+Mapping:
+
+- Each `o` is one object; its name is `id` and `feature_id`, taken as the rest of
+  the line with surrounding whitespace trimmed (as `usemtl` and `newmtl` names
+  are). A file without `o` is one object named after the file stem. A repeated
+  `o` name resumes that object.
+- All faces of an object form one geometry, one outer ring each, in file order
+  and with the file's winding. OBJ cannot express holes.
+- A `usemtl` name that is a CityJSON semantic surface type (`RoofSurface`,
+  `WallSurface`, `GroundSurface`, …, or any `+`-prefixed extension name) is the
+  face's surface; failing that, the `g` name under the same rule. `usemtl`/`g`
+  state persists across `o`, as OBJ specifies.
+- `.mtl` materials are the appearance definitions in `mtllib` order
+  (`obj_materials`); a material with `map_Kd` is also a texture
+  (`obj_textures`), and faces under it with `v/vt` indices get a `texture_lod*`
+  ring whose `vt` index is resolved against the file's `vt` list and inlined as
+  a `[u, v]` pair — the same for either `appearance` mode. A face with no UV
+  carries an untextured ring (NULL `id`, NULL `uv`). A `usemtl` naming a
+  material no `mtllib` declared leaves the face without one, and warns in
+  `duckdb_logs` once per name.
+- Positive and negative (relative) indices; `v` with a fourth component; `vn`
+  ignored. A line ending in `\` continues on the next one. A `mtllib` naming
+  several files loads every one of them, in order. A missing `.mtl`, or one that
+  declares no material, is a warning in `duckdb_logs` and the geometry still
+  reads.
+- Coordinates are taken as written, Z-up, no axis swap — what cjio, 3dfier and
+  geoflow write. A `# origin x y z` header comment, as the OBJ writer emits, is
+  added back.
+
+### `obj_materials(path)` / `obj_textures(path)`
+
+The `.mtl` as `materials.parquet` / `textures.parquet` rows, same columns as
+`cityjson_materials` / `cityjson_textures`. `Kd`→`diffuseColor`, `Ks`→`specularColor`,
+`Ke`→`emissiveColor`, mean `Ka`→`ambientIntensity`, `1 − d` — or `Tr` as written, in a
+block that has no `d` — →`transparency`, `Ns / 1000`→`shininess`; every other directive
+(`illum`, `Ni`, `map_Ks`, `map_bump`, …) into `other`, key and rest of line verbatim.
+`map_Kd`→`image_uri` with `image_type` from the extension, `wrapMode` `wrap`,
+`textureType` `unknown`, `image_data` NULL; texture options before the file name
+(`-s`, `-o`, …) are dropped.
+
+A directive the block does not state is **NULL**, not a default: a material declaring
+only `Kd` says nothing about its specular colour, and reports nothing.
+
+```sql
+SELECT id, name, diffuseColor, transparency, shininess, other
+FROM obj_materials('test/data/obj/cube.obj');
+-- 0 | GroundSurface | [0.3, 0.3, 0.3]   | NULL                | NULL   | NULL
+-- 1 | brick         | [0.7, 0.3, 0.2]   | 0.30000000000000004 | 0.0007 | {"illum":"2","map_Ks":"spec.png"}
+-- 2 | RoofSurface   | [0.9, 0.06, 0.09] | 0.3                 | NULL   | NULL
+
+SELECT id, image_uri, image_type, wrapMode, textureType
+FROM obj_textures('test/data/obj/cube.obj');
+-- 0 | brick.png | PNG | wrap | unknown
+```
+
+### `obj_metadata(path [, crs := …])`
+
+One row in `cityjson_metadata`'s shape: `geographical_extent` from every vertex,
+`reference_system` from `crs` (`EPSG:7415`, the URN or the OGC URL; anything else
+is an error), everything else NULL. `features_count` equals `city_objects_count`
+— one `o` group is one feature.
+
+```sql
+SELECT reference_system, city_objects_count, features_count
+FROM obj_metadata('test/data/obj/cube.obj', crs := 'EPSG:7415');
+-- {'base_url': 'https://www.opengis.net/def/crs/', 'authority': EPSG, 'version': 0, 'code': 7415} | 2 | 2
+```
+
+This is where the CRS of an OBJ enters the stack: a `read_obj` source's
+materials and textures already travel automatically as a `COPY` source (see
+[Writing](#writing)), but its CRS exists nowhere in the file, so
+`metadata_query` must supply it from `obj_metadata`:
+
+```sql
+COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2')) TO 'cube_out.city.jsonl'
+(FORMAT cityjsonseq,
+ metadata_query 'SELECT reference_system AS crs FROM obj_metadata(''test/data/obj/cube.obj'', crs := ''EPSG:7415'')');
+
+SELECT reference_system.code FROM cityjsonseq_metadata('cube_out.city.jsonl');
+-- 7415
+```
+
+### `COPY … TO 'x.obj' (FORMAT obj)`
+
+Writes any relation the CityJSON writers accept (`id`, `feature_id`,
+`object_type`, `geometry_lod*` and companions) as Wavefront OBJ, following what
+cjio, 3dfier and geoflow write: one `o` per object, `g` per semantic surface,
+`usemtl` per material, Z-up, no axis swap.
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO 'holed.obj' (FORMAT obj, lod '2.2');
+```
+
+```text
+# Written by duckdb-cityjson
+# crs https://www.opengis.net/def/crs/EPSG/0/7415
+# origin 84500 446300 0
+mtllib holed.mtl
+o courtyard
+v 0 0 10
+v 4 0 10
+v 4 4 10
+v 0 4 10
+v 1 1 10
+v 1 3 10
+v 3 3 10
+v 3 1 10
+v 0 0 0
+v 4 0 0
+g RoofSurface
+usemtl RoofSurface
+f 1 5 6
+f 8 5 1
+f 4 1 6
+f 8 1 2
+f 3 4 6
+f 7 8 2
+f 3 6 7
+f 7 2 3
+g WallSurface
+usemtl WallSurface
+f 9 10 2 1
+```
+
+The roof has a hole, which OBJ cannot express, so it is triangulated by earcut —
+eight 3-vertex faces rather than one 8-vertex n-gon. (Which eight triangles
+earcut picks is an implementation detail; the invariant is the count.)
+
+Every `o` block opens with its own `g` and `usemtl` lines, even when the object
+carries only one surface: OBJ lets `usemtl`/`g` persist across an `o` with
+nothing to say (`read_obj`, above, relies on exactly that), so this writer
+restates both on every object rather than counting on a reader to carry state
+forward correctly. A face with no semantic surface is in group `default`:
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json', lod := '2.2'))
+TO 'minimal.obj' (FORMAT obj);
+```
+
+```text
+# Written by duckdb-cityjson
+mtllib minimal.mtl
+o building1
+v 0 0 0
+v 10 0 0
+v 10 10 0
+v 0 10 0
+g default
+usemtl Building
+f 1 2 3 4
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `lod` | highest per object | Which `geometry_lodX_Y` to export; objects with nothing there are skipped (a warning, not an error — see below) |
+| `origin` | `'auto'` | Subtract the extent's minimum corner (`'auto'`), nothing (`'none'`), or `'x,y,z'`. Recorded as `# origin x y z`, which `read_obj` adds back |
+| `triangulate` | `false` | Hole-free faces stay n-gons; faces with holes are always triangulated (OBJ cannot express holes) |
+| `precision` | `17` | Significant digits; 17 is the shortest text that round-trips |
+| `materials_query`, `textures_query` | none | SQL returning `materials.parquet` / `textures.parquet`-shaped rows. **Their presence declares the cells to be sidecar-form.** Absent, refs are local-form and resolve against the discovered source or `metadata_from`. The missing-form refusal (below) only fires for a **discovered** source — `COPY my_table TO … (FORMAT obj)` never sees the `read_cityjson[seq](…, appearance := 'sidecar')` call that produced `my_table`, so the cells silently resolve as local-form instead of being refused |
+| `metadata_from` | discovered | As for the CityJSON writers |
+
+Three things the table cannot say in a cell:
+
+- **`materials_query` and `textures_query` see committed state.** Each runs on a fresh
+  connection, as `metadata_query` does, so a table created in an open transaction that
+  has not been committed is not visible to them:
+
+  ```sql
+  BEGIN;
+  CREATE TABLE mats AS SELECT 0 AS id, 'brick' AS name;
+  COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar'))
+  TO 'tx.obj' (FORMAT obj, materials_query 'SELECT * FROM mats');
+  -- Binder Error: materials_query failed: Catalog Error: Table with name mats does not exist!
+  ```
+
+- **An `o` name is one OBJ token.** Whitespace in an id is replaced by `_`, so an id
+  carrying a space does not round-trip through `read_obj`.
+- **One theme is written.** A material or texture cell may carry several themes
+  (`{visual=…, winter=…}`); the mesh writers take the alphabetically first.
+
+The `.obj`, the `.mtl` and any copied images are written through DuckDB's
+FileSystem, like the CityJSON writers' output: `enable_external_access` and
+`allowed_directories` apply to all three, and under DuckDB-Wasm they land in the
+virtual file system the host reads back. The `.mtl` and images are written beside
+the `.obj`, in the directory of the `TO` path.
+
+A `.mtl` named after the OBJ is written beside it: `Kd`/`Ks`/`Ke`/`d`/`Ns` from the
+CityJSON material, `map_Kd` when the face carries a texture whose bytes could be
+found (`image_data`, else `image_uri` relative to the source), copied beside the OBJ
+under its own basename. A textured face gets its own entry (`brick__tex0`) because
+OBJ ties images to materials — `test/data/obj/cube.obj`'s `brick` material becomes
+two `.mtl` entries once a texture is supplied for it:
+
+```sql
+CREATE TABLE tex_rows AS
+    SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar');
+CREATE TABLE tex_defs AS
+    SELECT id, image_uri, '\x89PNG\x0D\x0A\x1A\x0A'::BLOB AS image_data,
+           image_type, wrapMode, textureType, borderColor, other
+    FROM obj_textures('test/data/obj/cube.obj');
+
+COPY (SELECT * FROM tex_rows) TO 'textured.obj'
+(FORMAT obj, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')',
+             textures_query 'SELECT * FROM tex_defs');
+```
+
+```text
+newmtl GroundSurface
+Kd 0.3 0.3 0.3
+d 1
+
+newmtl brick__tex0
+Kd 0.7 0.3 0.2
+Ks 0.1 0.1 0.1
+d 0.7
+Ns 0.7
+map_Kd brick.png
+
+newmtl RoofSurface
+Kd 0.9 0.06 0.09
+d 0.7
+```
+
+The `.obj`'s faces carry `v/vt` pairs wherever a texture is resolved, plain `v`
+otherwise (the first face is untextured, the next two are):
+
+```text
+f 1 2 3 4
+f 1/1 4/2 5/3 6/4
+f 4/1 3/2 7/3 5/4
+…
+```
+
+Faces without a material are named after their semantic surface type, else their
+class, with a fixed palette. `.mtl` entries are keyed by **identity**, not by the
+rendered name string, so two distinct identities that would render to the same
+label — two materials sharing a name, or a material and a default-coloured face
+sharing one — get distinct entries, and the later one is suffixed: `_<id>` for a
+colliding CityJSON material, `_default` for a colliding default-colour entry.
+`duplicate_material_name.city.json` has two materials both named `brick`, ids `0`
+and `1`, one on each face of a `MultiSurface`:
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/duplicate_material_name.city.json', lod := '2.2'))
+TO 'twins.obj' (FORMAT obj);
+```
+
+`twins.mtl`:
+
+```text
+# Written by duckdb-cityjson
+newmtl brick
+Kd 0.8 0.3 0.2
+d 1
+
+newmtl brick_1
+Kd 0.2 0.3 0.8
+d 1
+```
+
+and the faces of `twins.obj`:
+
+```text
+g default
+usemtl brick
+f 1 2 3 4
+usemtl brick_1
+f 5 6 7 8
+```
+
+A texture is part of an entry's identity only once its image has been found. A
+face whose texture could not be loaded keeps its material colour and writes no
+`map_Kd` — exactly what a face of the same material carrying no texture writes —
+so the two share one entry rather than being written twice under two names.
+`_default` is therefore reached only through a genuine name clash: a
+default-coloured face whose label a material has already claimed, or a semantic
+surface type that reads the same as an object class.
+
+A material or texture cell is always **flat, one entry per WKB face**,
+regardless of how deeply the source geometry nests — a `Solid`'s per-shell
+`values` are resolved against its shells before the cell is built, so the mesh
+writer indexes the cell directly by face position rather than walking shells:
+
+```sql
+SELECT material_lod2_2 FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
+-- {visual=[0, 1, 1, 1, 1, 2]}
+```
+
+Which **form** — local or sidecar — a cell is in is a separate question, and
+cannot be told from the cell itself (a `MAP(VARCHAR, BIGINT[])` either way
+regardless of form). So a source that was read with `appearance := 'sidecar'`
+and no `*_query` is refused rather than guessed:
+
+```sql
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO 'refused.obj' (FORMAT obj, lod '3');
+-- Invalid Input Error: COPY TO obj: the source was read with appearance := 'sidecar', so its
+-- material/texture cells hold sidecar ids; pass materials_query / textures_query
+-- (e.g. materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')')
+-- so they can be resolved
+
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl', appearance := 'sidecar'))
+TO 'accepted.obj' (FORMAT obj, lod '3',
+    materials_query 'SELECT * FROM cityjson_materials(''test/data/railway_appearance.city.jsonl'')');
+
+SELECT line FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('accepted.mtl'))
+WHERE line LIKE 'newmtl%';
+-- newmtl Bridge
+-- newmtl UUID_1c68ae93-720e-4b72-a46e-326b65a3fd6b
+-- newmtl UUID_0794715b-1334-4855-83d3-8e8270c11e78
+```
+
+A texture whose bytes cannot be found is not fatal — the face keeps its material
+colour, no `map_Kd` is written, and a warning is logged. `railway_appearance.city.jsonl`
+references two images that are not on disk beside the fixture, so this is a live
+example rather than a contrived one:
+
+```sql
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO 'railway.obj' (FORMAT obj, lod '3');
+-- WARNING: cityjson: texture 2: could not read 'test/data/appearances/Bruecke-Schotter.jpg':
+--          Failed to open file: test/data/appearances/Bruecke-Schotter.jpg; faces fall back to the material colour
+-- WARNING: cityjson: texture 3: could not read 'test/data/appearances/Bruecke-Beton.jpg':
+--          Failed to open file: test/data/appearances/Bruecke-Beton.jpg; faces fall back to the material colour
+
+SELECT COUNT(*) FROM (SELECT UNNEST(string_split(content, chr(10))) AS line FROM read_text('railway.mtl'))
+WHERE line LIKE 'map_Kd%';
+-- 0
+```
+
+Objects the writer skips — no geometry, nothing at the requested `lod`, missing
+`boundaries`, a degenerate ring, or the legacy `geom_lod*` STRUCT layout whose
+`boundaries` are vertex indices rather than `[x,y,z]` coordinates — produce a
+warning in `duckdb_logs`, not an error, so one malformed object does not fail the
+whole COPY:
+
+```sql
+SET enable_logging = true;
+SET logging_storage = 'memory';
+
+COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
+TO 'delft_lod12.obj' (FORMAT obj, lod '1.2');
+
+SELECT message FROM duckdb_logs() WHERE message LIKE 'cityjson:%' LIMIT 1;
+-- cityjson: object NL.IMBAG.Pand.0503100000012869: no geometry at lod '1.2'
+```
+
+### `COPY … TO 'x.glb' (FORMAT glb)` / `'x.gltf' (FORMAT gltf)`
+
+glTF 2.0: one node and one mesh per object, the node named after the id, one
+primitive per material or semantic-surface group actually used, float32
+positions relative to `origin`, a root node whose matrix turns the Z-up data
+into glTF's Y-up without touching the vertices — what cjio and py3dtiles do,
+and what the 3D Tiles specification advises for a Z-up source.
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO 'holed.gltf' (FORMAT gltf, attributes true);
+```
+
+tinygltf pretty-prints the `.gltf` as JSON, so it can be inspected directly
+(output below is from this command against the file just written):
+
+```sh
+python3 -c "
+import json
+d = json.load(open('holed.gltf'))
+print(json.dumps(d['asset']))
+print(json.dumps(d['scenes']))
+print(json.dumps(d['nodes']))
+print(len(d['meshes'][0]['primitives']))
+print(json.dumps(d['materials']))
+print(json.dumps(d['buffers']))
+"
+```
+
+```text
+{"extras": {"crs": "https://www.opengis.net/def/crs/EPSG/0/7415", "origin": [84500.0, 446300.0, 0.0], "units": "m", "up": "z"}, "generator": "duckdb-cityjson", "version": "2.0"}
+[{"nodes": [0]}]
+[{"children": [1], "matrix": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], "name": "root"}, {"extras": {"lod": "2.2", "name": "ring", "object_type": "Building"}, "mesh": 0, "name": "courtyard"}]
+2
+[{"doubleSided": true, "name": "RoofSurface", "pbrMetallicRoughness": {"baseColorFactor": [0.9, 0.06, 0.09, 1.0], "metallicFactor": 0.0}}, {"doubleSided": true, "name": "WallSurface", "pbrMetallicRoughness": {"baseColorFactor": [0.8, 0.8, 0.8, 1.0], "metallicFactor": 0.0}}]
+[{"byteLength": 204, "uri": "holed.bin"}]
+```
+
+The scene has one root, the root's matrix is the Z-up-to-Y-up rotation, its
+one child is the `courtyard` object's node — the node's own `name` is the
+object id, `courtyard`; the `name` inside its `extras` is instead that
+object's own `name` *attribute*, `"ring"`, carried there because `attributes
+true` puts every attribute column on the node, and this fixture happens to
+have one called `name`. The roof's hole (which glTF cannot express any more
+than OBJ can) is triangulated into the same two primitives — one per semantic
+surface — that the `obj` writer's own example above produces from the same
+fixture. `roughnessFactor`, `alphaMode` and a `[1,1,1,1]` `baseColorFactor`
+never appear above: tinygltf omits a value equal to its schema default
+(`roughnessFactor 1`, `alphaMode OPAQUE`, an opaque white `baseColorFactor`)
+rather than writing it out.
+
+Against a source with no CRS, `asset.extras.crs` is **absent**, not `null` —
+tinygltf drops a `null`-typed `extras` member entirely, which is what "absent"
+should mean for a value nothing states:
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/minimal.city.json', lod := '2.2'))
+TO 'minimal.gltf' (FORMAT gltf);
+```
+
+```sh
+python3 -c "import json; print(json.dumps(json.load(open('minimal.gltf'))['asset']))"
+```
+
+```text
+{"extras": {"origin": [0.0, 0.0, 0.0], "units": "m", "up": "z"}, "generator": "duckdb-cityjson", "version": "2.0"}
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `lod` | highest per object | As for `obj` |
+| `origin` | `'auto'` | As for `obj`, but there is no `# origin` header to read back from — `asset.extras.origin` is the record, in double precision. `origin 'none'` writes projected-magnitude coordinates straight into float32, where one ULP at 1e5 is 8 mm; subtracting an origin leaves magnitudes around 1e3, where it is 0.1 mm |
+| `materials_query`, `textures_query` | none | As for `obj` |
+| `metadata_from` | discovered | As for `obj` |
+| `attributes` | `false` | Every attribute column of the row, with `object_type` and `lod`, into the node's `extras` |
+
+`asset.extras` always carries `{"origin", "up": "z", "units": "m"}`, plus
+`"crs"` when the source states one, so a 3D Tiles packager can put the origin
+into a tile `transform` in double precision rather than the float32 the mesh
+itself is written in.
+
+How an attribute reaches `extras` depends on which of the two ways it arrived
+by. An attribute **column** whose value is not a plain scalar comes
+through as a **string**: a `LIST` or `STRUCT` column is rendered as DuckDB's
+own display text, not as JSON. An entry of the **`other`** column, in
+contrast, is parsed JSON by the time the writer sees it — the sink parses that
+cell and merges its members in as attributes — so it keeps whatever shape it
+had, nested objects and mixed-type arrays included:
+
+```sql
+COPY (SELECT * REPLACE ('{"nested": {"a": [1, 2.5, "s"]}, "empty_list": [], "empty_obj": {}, "nil": null}' AS other),
+             ['a', 'b']::VARCHAR[] AS tags
+      FROM read_cityjson('test/data/minimal.city.json', lod := '2.2'))
+TO 'tagged.gltf' (FORMAT gltf, attributes true);
+```
+
+```sh
+python3 -c "import json; print(json.dumps(json.load(open('tagged.gltf'))['nodes'][1]['extras']))"
+```
+
+```text
+{"empty_list": null, "empty_obj": null, "function": "residential", "lod": "2.2", "measuredHeight": 15.5, "nested": {"a": [1, 2.5, "s"]}, "object_type": "Building", "tags": "[a, b]", "yearOfConstruction": 2020}
+```
+
+`"tags": "[a, b]"` is the column path: it is not valid JSON inside a JSON
+document, and a consumer that wants a real array back has to parse it itself.
+`"nested"` is the `other` path, and arrives as the object it is.
+
+Two shapes tinygltf will not carry through: an **empty** array or object
+becomes `null` (`"empty_list"`, `"empty_obj"` above), and a member whose value
+is JSON `null` is **dropped** entirely (`"nil"` above is absent, and so is
+`asset.extras.crs` for a source with no CRS). The two stay distinguishable —
+an empty container is a member valued `null`, a `null` is no member at all —
+but neither arrives as what the source said.
+
+Materials map `diffuseColor` to `baseColorFactor` (alpha `1 − transparency`,
+`alphaMode` `BLEND` once transparency is non-zero, else the omitted default
+`OPAQUE`), `metallicFactor 0`, an implied `roughnessFactor 1`, `doubleSided
+true`. A glTF material is keyed by **identity** — the CityJSON material (or,
+absent one, the semantic surface or object class) plus whether it is textured
+— never by the rendered `name`, and unlike a `.mtl` entry a glTF material name
+need not be unique: `duplicate_material_name.city.json` (`obj`'s own example
+above, two materials both named `brick`) gets two glTF materials named
+`brick` too, with **no** `_1` suffix, because nothing here needs one:
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/duplicate_material_name.city.json', lod := '2.2'))
+TO 'twins.gltf' (FORMAT gltf);
+```
+
+```sh
+python3 -c "
+import json
+d = json.load(open('twins.gltf'))
+for m in d['materials']:
+    print(m['name'], m['pbrMetallicRoughness']['baseColorFactor'])
+"
+```
+
+```text
+brick [0.8, 0.3, 0.2, 1.0]
+brick [0.2, 0.3, 0.8, 1.0]
+```
+
+A material's transparency maps to alpha and `alphaMode`: `solid_material.city.json`
+carries no transparent material of its own, so `materials_query` overrides one
+material's `transparency` to demonstrate it (`red` alone gets `alphaMode
+BLEND`; the schema default `OPAQUE` stays omitted for the other two):
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2'))
+TO 'solid_mat.gltf'
+(FORMAT gltf,
+ materials_query 'SELECT id, name, ambientIntensity, diffuseColor, specularColor, emissiveColor,
+   CASE WHEN name = ''red'' THEN 0.4 ELSE transparency END AS transparency,
+   shininess, isSmooth, other FROM cityjson_materials(''test/data/solid_material.city.json'')');
+```
+
+```sh
+python3 -c "
+import json
+d = json.load(open('solid_mat.gltf'))
+for m in d['materials']:
+    print(m['name'], m['pbrMetallicRoughness']['baseColorFactor'], m.get('alphaMode'))
+"
+```
+
+```text
+red [1.0, 0.0, 0.0, 0.6] BLEND
+grey [0.5, 0.5, 0.5, 1.0] None
+dark [0.1, 0.1, 0.1, 1.0] None
+```
+
+Textures use `TEXCOORD_0` with the V axis flipped to glTF's top-left origin.
+A face is emitted **per corner** when it is textured — a vertex shared
+between two faces, or between two ring positions of the same face, is
+duplicated wherever its UV differs, since the UV is a per-corner attribute
+glTF has no way to share the way it shares `POSITION`; an untextured face
+shares vertices with the rest of its primitive by vertex index, same as `obj`
+shares them by `v` index:
+
+```sql
+CREATE TABLE tex_rows AS SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar');
+CREATE TABLE tex_defs AS
+SELECT id, image_uri, '\x89PNG\x0D\x0A\x1A\x0A'::BLOB AS image_data, image_type, wrapMode, textureType, borderColor, other
+FROM obj_textures('test/data/obj/cube.obj');
+
+COPY (SELECT * FROM tex_rows) TO 'cube_tex.gltf'
+(FORMAT gltf, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')', textures_query 'SELECT * FROM tex_defs');
+```
+
+```sh
+python3 -c "
+import json
+d = json.load(open('cube_tex.gltf'))
+for mesh in d['meshes']:
+    for prim in mesh['primitives']:
+        mat = d['materials'][prim['material']]
+        print(mat['name'], 'textured=', 'TEXCOORD_0' in prim['attributes'],
+              'vertices=', d['accessors'][prim['attributes']['POSITION']]['count'],
+              'indices=', d['accessors'][prim['indices']]['count'])
+"
+```
+
+```text
+GroundSurface textured= False vertices= 4 indices= 6
+brick textured= True vertices= 16 indices= 24
+RoofSurface textured= False vertices= 4 indices= 6
+RoofSurface textured= False vertices= 4 indices= 6
+```
+
+(`cube.obj` reads as two objects, `cube` and `slab` — see `read_obj` above —
+so `RoofSurface` appears twice, once per mesh. `brick` covers four quad faces
+of `cube`, each contributing four corners of its own: 4 × 4 = 16 vertices, no
+sharing across faces, against 4 × 6 = 24 indices for their two triangles
+apiece.)
+
+GLB embeds an image as a `bufferView` alongside its `mimeType`; `.gltf` writes
+it to a file beside the output and records a `uri` instead — glTF allows only
+one of the two per image, and tinygltf writes whichever applies:
+
+```sql
+COPY (SELECT * FROM tex_rows) TO 'cube.glb'
+(FORMAT glb, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')', textures_query 'SELECT * FROM tex_defs');
+```
+
+The `.glb` is binary, so it is unpacked before inspection: a 12-byte file
+header (magic, version, total length), then chunks, each with its own 8-byte
+header (length, type) — the first chunk is always `JSON`:
+
+```sh
+python3 -c "
+import json, struct
+data = open('cube.glb', 'rb').read()
+off = 12
+chunks = {}
+while off < len(data):
+    clen, ctype = struct.unpack('<I4s', data[off:off+8])
+    chunks[ctype] = data[off+8:off+8+clen]
+    off += 8 + clen
+j = json.loads(chunks[b'JSON'])
+print(j['images'])
+print(json.dumps(j['materials'][1]))
+"
+```
+
+```text
+[{'bufferView': 0, 'mimeType': 'image/png'}]
+{"alphaMode": "BLEND", "doubleSided": true, "name": "brick", "pbrMetallicRoughness": {"baseColorFactor": [0.7, 0.3, 0.2, 0.7], "baseColorTexture": {"index": 0}, "metallicFactor": 0.0}}
+```
+
+A texture whose bytes cannot be read is skipped with a warning and the
+material keeps its colour, exactly as for `obj`. A texture whose bytes were
+read but whose **file cannot be written** beside a `.gltf` is not: tinygltf
+has no way to report a partial success, so the image writer's failure fails
+the whole write and the COPY errors with `Failed writing glTF output`. `obj`
+warns and carries on there, leaving the face without its `map_Kd`. A texture whose image type
+cannot be told — no declared `image_type`, no recognisable file extension on
+its `image_uri`, and its bytes carry neither the PNG nor the JPEG magic number
+— is skipped the same way, because a GLB image with an empty `mimeType` is
+invalid:
+
+```sql
+CREATE TABLE tex_defs2 AS
+SELECT id, 'brick'::VARCHAR AS image_uri, '\xDE\xAD\xBE\xEF'::BLOB AS image_data,
+       NULL::VARCHAR AS image_type, wrapMode, textureType, borderColor, other
+FROM obj_textures('test/data/obj/cube.obj');
+
+COPY (SELECT * FROM tex_rows) TO 'cube_unknown.glb'
+(FORMAT glb, materials_query 'SELECT * FROM obj_materials(''test/data/obj/cube.obj'')', textures_query 'SELECT * FROM tex_defs2');
+-- WARNING: cityjson: texture 0: unknown image type
+```
+
+Dropped faces (a ring with no plane normal to triangulate against) and
+skipped objects (no geometry, nothing at the requested `lod`, …) produce
+`duckdb_logs` warnings, exactly as for `obj`. `railway_appearance.city.jsonl`
+exercises both an unreadable texture and a face with no plane normal in one
+real file:
+
+```sql
+SET enable_logging = true;
+SET logging_storage = 'memory';
+
+COPY (SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl'))
+TO 'railway.glb' (FORMAT glb, lod '3');
+
+SELECT message FROM duckdb_logs() WHERE message LIKE 'cityjson:%';
+-- cityjson: texture 2: could not read 'test/data/appearances/Bruecke-Schotter.jpg': Failed to open file: test/data/appearances/Bruecke-Schotter.jpg; faces fall back to the material colour
+-- cityjson: texture 3: could not read 'test/data/appearances/Bruecke-Beton.jpg': Failed to open file: test/data/appearances/Bruecke-Beton.jpg; faces fall back to the material colour
+-- cityjson: object GMLID_855011_330784_753: face 67 has no plane normal and could not be triangulated, skipped
+```
+
+Remote output paths are not supported for `gltf`/`glb`: tinygltf writes through
+local file streams, never through DuckDB's own
+filesystem abstraction, so `COPY … TO 's3://…/x.glb'` fails opening the output
+rather than reaching object storage:
+
+```sql
+COPY (SELECT * FROM read_cityjson('test/data/holed_face.city.json', lod := '2.2'))
+TO 's3://nonexistent-bucket-cityjson-test/x.glb' (FORMAT glb);
+-- Invalid Error: Failed writing glTF output: s3://nonexistent-bucket-cityjson-test/x.glb
+```
+
+The appearance-form refusal (a source read with `appearance := 'sidecar'` and
+no `*_query`) applies to every mesh format, `gltf`/`glb` included — see `obj`
+above for the message and the fix.
+
+No normals are written — viewers compute flat ones, which is what a city
+model, with no curved surfaces, wants. `EXT_mesh_features` /
+`EXT_structural_metadata` are not written; node names and `extras` carry the
+identity and the attributes instead.
+
+A GLB's chunk headers are 32-bit, so a GLB cannot exceed 4 GiB. A write whose
+geometry and embedded images would take it past that is refused rather than
+written with wrapped chunk lengths and no error — either up front, from the
+buffer size before anything is serialised, or after writing, from the file's
+actual size, whichever catches it first — and no file is left behind either
+way. Write `FORMAT gltf`, whose buffer is a separate file the limit does not
+apply to, or split the export with a lower `lod` or a `WHERE` clause.
+
+Under duckdb-wasm, prefer GLB: a `.gltf` needs its `.bin` and any images
+placed beside it, which the browser cannot do for a file it only hands to the
+user as a download.
+
+`just test-gltf-validate` (opt-in; needs `node`/`npx` for `gltf-validator`,
+and network to fetch a remote fixture and run it through httpfs) and `just
+test-obj-cjio` (opt-in; needs `cjio` and network) cross-check the writers
+against independent tools.
+
+---
+
 ## Output schema
 
 ### Predefined columns
@@ -853,19 +2049,73 @@ Reserved columns appear in the order below, before every attribute column
 | `parents` | VARCHAR[] | Parent CityObject ids |
 | `children` | VARCHAR[] | Child CityObject ids |
 | `children_roles` | VARCHAR[] | Roles, positionally aligned with `children` |
-| `address` | STRUCT[] | Reserved; always NULL — no reader parses source addresses yet |
+| `address` | STRUCT(`street, house_number, po_box, zip_code, city, state, country, free_text VARCHAR, location BLOB`)[] | The CityObject's `address` member, one struct per address (below); NULL when it has none |
 | `bbox` | STRUCT (`xmin … zmax DOUBLE`) | 3D extent in world coordinates (below) |
 | *(the per-LoD geometry group, below)* | | |
-| `template` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | Reserved; always NULL — no reader parses geometry-template instances yet |
-| `other` | JSON (VARCHAR) | Source members not mapped to a reserved or attribute column |
+| `implicit_geometry` | STRUCT(`id BIGINT, point BLOB, transformationMatrix DOUBLE[]`) | The object's first CityJSON `GeometryInstance`: its `template` as `id` (an `implicit_geometries` row), its reference point as WKB `PointZ` in the file CRS, its row-major 4×4 `transformationMatrix`. NULL when it has none, or when the instance names no template or no resolvable point. A matrix whose last row is not `0, 0, 0, 1` is an error: an implicit geometry's matrix is affine |
+| `other` | VARCHAR (JSON text) | Source members not mapped to a reserved or attribute column |
 
-Then **every attribute column** inferred from the data, last.
+Then **every attribute column** inferred from the data, last. A JSON boolean,
+integer, number or string becomes `BOOLEAN`, `BIGINT`, `DOUBLE` or `VARCHAR` (a
+string that reads as a date, time or timestamp becomes `DATE`, `TIME` or
+`TIMESTAMP WITH TIME ZONE`), an array of strings `VARCHAR[]`, and an object or a
+heterogeneous array DuckDB's `JSON`. An attribute whose samples disagree takes the
+specification's promotion: `BIGINT` with `DOUBLE` is `DOUBLE`, a mix including an
+object or an array is `JSON`, any other mix `VARCHAR`. `JSON` is the type, not
+just the text: `cityparquet_write` writes the column as Parquet JSON and `COPY`
+restores each value as the object or array it spells. Unlike `other`, which is
+`JSON` by name and so stays `VARCHAR`, a `JSON` attribute column needs the `json`
+extension for text functions — cast it to `VARCHAR` first.
+
+An attribute keeps its source name, unless that name collides with a reserved
+column: names compare case-insensitively, against every column above including
+each per-LoD `geometry_lod*` / `geometry_properties_lod*` / `material_lod*` /
+`texture_lod*` form and `other`, and a name whose *base* — the name with every
+leading `_` removed — collides is the column `_` + its source name. `ID` is `_ID`,
+`bbox` `_bbox`, `other` `_other`, and a source attribute already named `_ID` is
+`__ID`, so no two meet. A per-LoD form collides only as the LoD suffix grammar
+writes it, `<prefix>_lod<major>_<minor>`: `geometry_lodging`, `geometry_lod3` and a
+bare `geometry` or `material` name no reserved column and keep their names. `COPY` reverses the escape. Two attribute names differing only by case
+cannot both be DuckDB columns: the first in name order is, and `other` carries the
+rest.
+
+An implicit geometry contributes nothing to `bbox`: its reference point is where
+the relative geometry is placed, not the extent of what it places, so an object
+with implicit geometry only has a NULL `bbox`.
 
 `bbox` is **unioned across every stored LoD and across the object's
 descendants** — so a parent `Building` whose 3D detail lives on its
 `BuildingPart` children still gets a full-height extent, not a flat one. (The
 single exception is `lod =>` mode, which has only the one requested LoD to work
 from.)
+
+**`address`** holds each source address's recognised members and its
+`location` — the CityJSON `MultiPoint` resolved against the vertex pool into WKB
+`MultiPointZ`, in the file CRS. CityJSON prescribes no member names; the ones
+read, and written back by `COPY`, are CityJSON 2.0.1's documented example plus
+three for the fields it has no example for:
+
+| Field | CityJSON member |
+| ----- | --------------- |
+| `street` | `thoroughfareName` |
+| `house_number` | `thoroughfareNumber` |
+| `po_box` | `postBox` |
+| `zip_code` | `postcode` |
+| `city` | `locality` |
+| `state` | `administrativeArea` |
+| `country` | `country` |
+| `free_text` | `freeText` |
+
+A member spelt any other way (`Locality`, `countryName`) and any non-string
+value are not retained, as the specification's lean address allows; a `location`
+that does not resolve is NULL.
+
+```sql
+SELECT a.street, a.city, cityjson_wkb_geometry_type(a.location)
+FROM (SELECT unnest(address) AS a FROM read_cityjsonseq('test/data/address_location.city.jsonl'));
+-- Mannerheimintie | Helsinki | MultiPoint Z
+-- NULL            | Espoo    | NULL
+```
 
 A query selecting a reserved column **by name** is unaffected by this order; one
 selecting by ordinal position (`SELECT #4`, or a `SELECT *` a caller then indexes
@@ -889,11 +2139,24 @@ becomes `geometry_lod2_0`, never `geometry_lod2`:
 | ------ | ---- | ----------- |
 | `geometry_lodX_Y` | BLOB | WKB geometry for that LoD (NULL if absent) |
 | `geometry_properties_lodX_Y` | STRUCT | What WKB cannot carry (below) |
-| `material_lodX_Y` | JSON (VARCHAR) | Per-surface material map; NULL if none |
-| `texture_lodX_Y` | JSON (VARCHAR) | Per-surface texture map; NULL if none |
+| `material_lodX_Y` | `MAP(VARCHAR, BIGINT[])` | Theme → one sidecar id (or NULL) per WKB face; NULL if no material |
+| `texture_lodX_Y` | `MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])` | Theme → per WKB face → per ring → the id and its `[u, v]` pairs; NULL if no texture |
 
 On the Delft data that yields `geometry_lod0_0`, `geometry_lod1_2`,
 `geometry_lod1_3` and `geometry_lod2_2`, each with its three companions.
+
+**Every WKB ring is closed and has at least four points.** A source ring of
+fewer than three vertices cannot be one, so the readers drop it and log a
+warning naming the object, the geometry and what went. A surface whose exterior
+ring is dropped goes with it, together with its semantic value and its material
+and texture entries, so `face_semantics`, `shells` and the appearance cells stay
+aligned with the WKB faces; a dropped interior ring takes only its texture ring.
+A source ring explicitly closed, its first index repeated at the end
+(`[0, 2, 4, 6, 0]`), loses the repeat — a CityJSON ring is implicitly closed —
+while more than three vertices remain, so `[a, b, a]` keeps its three; the WKB
+closes it like any other ring. Beyond that, a ring of three or more vertices is
+written as the source gives it, zero-area or not — the format represents
+geometry, it does not validate it.
 
 ### `geometry_properties` — the part WKB cannot hold
 
@@ -907,8 +2170,8 @@ STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGE
 
 | Field | Present when | Meaning |
 | ----- | ------------ | ------- |
-| `type` | always | CityJSON geometry type (`"Solid"`, `"MultiSurface"`, …) |
-| `surfaces` | source has semantics | The CityJSON `surfaces` array verbatim as JSON text |
+| `type` | always | CityGML CM geometry type (`"Solid"`, `"MultiSurface"`, …) — CityJSON's name for every type but `MultiLineString`, which is `"MultiCurve"`; a COPY to CityJSON writes `MultiLineString` again |
+| `surfaces` | source has semantics | The CityJSON `surfaces` array verbatim as JSON text (`VARCHAR`; written to a package as the Parquet JSON logical type) |
 | `face_semantics` | source has semantics | One entry per WKB face, in WKB face order — the index of that face's surface in `surfaces`, or NULL |
 | `shells` | solid-family geometry | Per-solid, then per-shell face counts — always two levels deep, so a lone `Solid` is `[[12, 4]]` |
 

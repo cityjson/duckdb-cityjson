@@ -7,8 +7,8 @@ require cityjson
 # Fixture: two real LoD3 railway features (from the CityJSON LoD3_Railway
 # dataset), one carrying a material, one a texture — both under the "visual"
 # theme. The wide CityParquet layout emits per-LoD material_lod*/texture_lod*
-# columns paired to geometry_lod* by name (spec §11.1), carrying the CityJSON
-# theme-shaped JSON verbatim.
+# columns paired to geometry_lod* by name (spec §11.1), typed MAPs keyed by
+# theme whose values are flat per WKB face.
 
 # The appearance columns exist for the LoD present in the data (lod "3" -> the
 # suffix always carries a minor, so lod3_0 — spec §9).
@@ -16,14 +16,13 @@ query TT
 SELECT typeof(material_lod3_0), typeof(texture_lod3_0)
 FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl') LIMIT 1;
 ----
-VARCHAR	VARCHAR
+MAP(VARCHAR, BIGINT[])	MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])
 
 # The material-bearing object carries a "visual"-theme material map.
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
 WHERE id = 'GMLID_855011_330784_753'
-  AND material_lod3_0 LIKE '%"visual"%'
-  AND material_lod3_0 LIKE '%values%';
+  AND map_contains(material_lod3_0, 'visual');
 ----
 1
 
@@ -31,8 +30,7 @@ WHERE id = 'GMLID_855011_330784_753'
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
 WHERE id = 'GMLID_BUI100628_817_8083'
-  AND texture_lod3_0 LIKE '%"visual"%'
-  AND texture_lod3_0 LIKE '%values%';
+  AND map_contains(texture_lod3_0, 'visual');
 ----
 1
 
@@ -62,6 +60,51 @@ FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/railway_appearance.city
 ----
 1	1
 
+# One material id per WKB face, in the 'visual' theme. The object is a
+# MultiSurface of 101 surfaces and the encoder emits one face per surface.
+query I
+SELECT len(material_lod3_0['visual'])
+FROM read_cityjsonseq('test/data/railway_appearance.city.jsonl')
+WHERE id = 'GMLID_855011_330784_753';
+----
+101
+
+# Every material the Solid's three semantic surfaces reference survives the flattening.
+query I
+SELECT list_sort(list_distinct(material_lod2_2['visual']))
+FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
+----
+[0, 1, 2]
+
+# A whole-geometry material (`{"value": n}` in the source) is expanded to one id per
+# face: the column carries no broadcast shorthand.
+query I
+SELECT material_lod2_2['visual']
+FROM read_cityjson('test/data/solid_material_broadcast.city.json', lod := '2.2');
+----
+[1, 1, 1, 1, 1, 1]
+
+# The reader's cell is flat: a Solid's material is one id per WKB face, not one list per shell.
+query I
+SELECT material_lod2_2['visual'] FROM read_cityjson('test/data/solid_material.city.json', lod := '2.2');
+----
+[0, 1, 1, 1, 1, 2]
+
+# A texture cell nests per face, then per ring: six faces, one ring each, four UV pairs per ring,
+# UVs inlined from the feature's vertices-texture pool even in local mode.
+query III
+SELECT len(texture_lod2_2['visual']), len(texture_lod2_2['visual'][1]), len(texture_lod2_2['visual'][1][1].uv)
+FROM read_cityjson('test/data/solid_texture.city.json', lod := '2.2');
+----
+6	1	4
+
+# A face with no texture is one bare ring per ring: id and uv NULL together.
+query II
+SELECT texture_lod2_2['visual'][1][1].id IS NULL, texture_lod2_2['visual'][1][1].uv IS NULL
+FROM read_cityjson('test/data/null_lead_texture.city.json', lod := '2.2');
+----
+true	true
+
 # Appearance survives a COPY round-trip: material_lod*/texture_lod* are written
 # back onto their matching geometry (§11), not dropped or misfiled as attributes.
 statement ok
@@ -70,13 +113,13 @@ TO '__TEST_DIR__/rt_appearance.city.jsonl' (FORMAT cityjsonseq);
 
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', lod => '3')
-WHERE id = 'GMLID_855011_330784_753' AND material_lod3_0 LIKE '%"visual"%';
+WHERE id = 'GMLID_855011_330784_753' AND map_contains(material_lod3_0, 'visual');
 ----
 1
 
 query I
 SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/rt_appearance.city.jsonl', lod => '3')
-WHERE id = 'GMLID_BUI100628_817_8083' AND texture_lod3_0 LIKE '%"visual"%';
+WHERE id = 'GMLID_BUI100628_817_8083' AND map_contains(texture_lod3_0, 'visual');
 ----
 1
 

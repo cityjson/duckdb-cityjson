@@ -1,5 +1,7 @@
 #include "cityjson/cityparquet_package.hpp"
 
+#include "cityjson/column_types.hpp"
+#include "cityjson/function_docs.hpp"
 #include "cityjson/json_utils.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
@@ -10,6 +12,8 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 
 #include <algorithm>
@@ -29,7 +33,7 @@ const std::vector<std::string> &ModuleTableNames() {
 }
 
 const std::vector<std::string> &SidecarTableNames() {
-	static const std::vector<std::string> names = {"materials", "textures", "geometry_templates"};
+	static const std::vector<std::string> names = {"materials", "textures", "implicit_geometries"};
 	return names;
 }
 
@@ -110,6 +114,11 @@ std::string QualifiedName(const std::string &schema, const std::string &table) {
 	return KeywordHelper::WriteOptionallyQuoted(schema) + "." + KeywordHelper::WriteOptionallyQuoted(table);
 }
 
+std::string QualifiedName(const std::string &catalog, const std::string &schema, const std::string &table) {
+	return KeywordHelper::WriteOptionallyQuoted(catalog) + "." + KeywordHelper::WriteOptionallyQuoted(schema) + "." +
+	       KeywordHelper::WriteOptionallyQuoted(table);
+}
+
 std::string Literal(const std::string &text) {
 	return KeywordHelper::WriteQuoted(text, '\'');
 }
@@ -142,31 +151,11 @@ std::vector<std::string> Intersect(const std::set<std::string> &present, const s
 } // namespace
 
 bool MatchesLodSuffix(const std::string &name, const std::string &prefix) {
-	if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) {
+	static const std::string lod = "_lod";
+	if (prefix.size() <= lod.size() || prefix.compare(prefix.size() - lod.size(), lod.size(), lod) != 0) {
 		return false;
 	}
-	const auto rest = name.substr(prefix.size());
-	size_t i = 0;
-	auto digits = [&]() {
-		const auto start = i;
-		while (i < rest.size() && rest[i] >= '0' && rest[i] <= '9') {
-			i++;
-		}
-		return i > start;
-	};
-	if (!digits()) {
-		return false;
-	}
-	if (i < rest.size()) {
-		if (rest[i] != '_') {
-			return false;
-		}
-		i++;
-		if (!digits()) {
-			return false;
-		}
-	}
-	return i == rest.size();
+	return IsPerLodColumnName(name, prefix.substr(0, prefix.size() - lod.size()));
 }
 
 namespace {
@@ -192,9 +181,39 @@ std::vector<std::string> ColumnsWithPrefix(ClientContext &context, const std::st
 
 } // namespace
 
-std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema) {
-	auto found = Intersect(TablesInSchema(context, schema), ModuleTableNames());
-	if (found.empty()) {
+//! The tables `schema.__cityparquet` registers as object tables: the module tables, and
+//! an extension's own files (06-extensions.mdx, "The ModuleKey"), whose names no fixed
+//! list holds. Empty when the schema has no bookkeeping table.
+static std::vector<std::string> RegisteredObjectTables(ClientContext &context, const std::string &schema,
+                                                       const std::set<std::string> &present) {
+	std::vector<std::string> registered;
+	if (present.count("__cityparquet") == 0) {
+		return registered;
+	}
+	Connection connection(DatabaseInstance::GetDatabase(context));
+	auto result = connection.Query("SELECT DISTINCT lower(table_name) FROM " + QualifiedName(schema, "__cityparquet") +
+	                               " WHERE role = 'object' AND table_name IS NOT NULL");
+	if (result->HasError()) {
+		return registered;
+	}
+	for (idx_t row = 0; row < result->RowCount(); row++) {
+		registered.push_back(result->GetValue(0, row).ToString());
+	}
+	return registered;
+}
+
+std::vector<std::string> ObjectTablesInSchema(ClientContext &context, const std::string &schema, bool allow_none) {
+	const auto present = TablesInSchema(context, schema);
+	auto candidates = ModuleTableNames();
+	for (const auto &table : RegisteredObjectTables(context, schema, present)) {
+		const auto &sidecars = SidecarTableNames();
+		if (std::find(candidates.begin(), candidates.end(), table) == candidates.end() &&
+		    std::find(sidecars.begin(), sidecars.end(), table) == sidecars.end()) {
+			candidates.push_back(table);
+		}
+	}
+	auto found = Intersect(present, candidates);
+	if (found.empty() && !allow_none) {
 		throw BinderException("cityparquet: schema '%s' has no CityParquet object table "
 		                      "(expected one of building, bridge, tunnel, construction, transportation, "
 		                      "vegetation, relief, water_body, land_use, city_furniture, generics)",
@@ -256,14 +275,16 @@ std::string AllObjectsCTE(ClientContext &context, const std::string &schema,
 namespace {
 
 std::string BuildInitSQL(ClientContext &context, const std::string &schema) {
-	auto object_tables = ObjectTablesInSchema(context, schema);
+	// An empty schema initialises too: it is how a package is started, and the first
+	// insert creates the module tables it needs.
+	auto object_tables = ObjectTablesInSchema(context, schema, true);
 	auto sidecar_tables = SidecarTablesInSchema(context, schema);
 
 	const auto bookkeeping = QualifiedName(schema, "__cityparquet");
 	std::string sql;
-	// `city` is VARCHAR holding JSON text, not the JSON type: the JSON type lives in
-	// the json extension, which this one does not require, and the rest of this
-	// extension already carries JSON as VARCHAR (material_lod*, texture_lod*, other).
+	// `city` is VARCHAR holding JSON text, not the JSON type: the JSON type's name and
+	// functions live in the json extension, which this one does not require, and
+	// `city` is only ever read through cityparquet_city_field.
 	sql += "CREATE TABLE IF NOT EXISTS " + bookkeeping +
 	       " (table_name VARCHAR, file_name VARCHAR, role VARCHAR, city VARCHAR);\n";
 
@@ -297,13 +318,55 @@ std::string BuildInitSQL(ClientContext &context, const std::string &schema) {
 //! nothing in this extension consumes a CRS: it is compared for equality (the merge and
 //! insert mismatch checks, which skip on NULL) and re-emitted, never used to transform a
 //! coordinate. The day something does reproject, it must read the raw footer, not this.
+void SetCityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnifiedVectorFormat city_format;
+	UnifiedVectorFormat field_format;
+	UnifiedVectorFormat value_format;
+	args.data[0].ToUnifiedFormat(args.size(), city_format);
+	args.data[1].ToUnifiedFormat(args.size(), field_format);
+	args.data[2].ToUnifiedFormat(args.size(), value_format);
+	const auto *cities = UnifiedVectorFormat::GetData<string_t>(city_format);
+	const auto *fields = UnifiedVectorFormat::GetData<string_t>(field_format);
+	const auto *values = UnifiedVectorFormat::GetData<string_t>(value_format);
+	result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<string_t>(result);
+	for (idx_t row = 0; row < args.size(); row++) {
+		const auto city_index = city_format.sel->get_index(row);
+		const auto field_index = field_format.sel->get_index(row);
+		const auto value_index = value_format.sel->get_index(row);
+		if (!field_format.validity.RowIsValid(field_index) || !value_format.validity.RowIsValid(value_index)) {
+			FlatVector::SetNull(result, row, true);
+			continue;
+		}
+		json city = json::object();
+		if (city_format.validity.RowIsValid(city_index)) {
+			try {
+				auto parsed = json_utils::ParseJson(cities[city_index].GetString());
+				if (parsed.is_object()) {
+					city = std::move(parsed);
+				}
+			} catch (const std::exception &) {
+				// unreadable: start from an empty object
+			}
+		}
+		json value;
+		try {
+			value = json_utils::ParseJson(values[value_index].GetString());
+		} catch (const std::exception &e) {
+			throw InvalidInputException("cityparquet_set_city_field: the value is not JSON: %s", e.what());
+		}
+		city[fields[field_index].GetString()] = std::move(value);
+		out[row] = StringVector::AddString(result, city.dump());
+	}
+}
+
 void CityFieldFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::ExecuteWithNulls<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(),
 	    [&](string_t city, string_t field, ValidityMask &mask, idx_t idx) {
 		    json parsed;
 		    try {
-			    parsed = json::parse(city.GetString());
+			    parsed = json_utils::ParseJson(city.GetString());
 		    } catch (const std::exception &) {
 			    mask.SetInvalid(idx);
 			    return string_t();
@@ -339,15 +402,107 @@ void InitSQLScalar(DataChunk &args, ExpressionState &state, Vector &result) {
 
 } // namespace
 
-std::string BuildReadSQL(ClientContext &context, const std::string &directory, const std::string &schema) {
+namespace {
+
+//! A Parquet file's top-level column names as the file spells them, in order: the
+//! root's children in parquet_schema's depth-first listing, each nested subtree skipped.
+std::vector<std::string> FileColumnNames(Connection &connection, const std::string &path) {
+	auto result = connection.Query("SELECT name, COALESCE(num_children, 0) FROM parquet_schema(" + Literal(path) + ")");
+	if (result->HasError()) {
+		throw IOException("cityparquet_read: cannot read the schema of '%s': %s", path, result->GetError());
+	}
+	std::vector<std::pair<std::string, int64_t>> rows;
+	for (idx_t row = 0; row < result->RowCount(); row++) {
+		rows.emplace_back(result->GetValue(0, row).ToString(), result->GetValue(1, row).GetValue<int64_t>());
+	}
+	// Past the subtree rooted at `at`, iteratively: a footer can declare nesting as deep
+	// as it likes in its flat element list, so a recursion per level would hand the stack
+	// to the file. `pending` counts the subtree's elements not yet stepped over.
+	const auto skip = [&rows](size_t at) {
+		size_t pending = 1;
+		while (pending > 0 && at < rows.size()) {
+			pending += static_cast<size_t>(std::max<int64_t>(rows[at].second, 0));
+			pending--;
+			at++;
+		}
+		return at;
+	};
+	std::vector<std::string> names;
+	if (rows.empty()) {
+		return names;
+	}
+	size_t at = 1;
+	for (int64_t child = 0; child < rows[0].second && at < rows.size(); child++) {
+		names.push_back(rows[at].first);
+		at = skip(at);
+	}
+	return names;
+}
+
+//! Refuses an object table holding a column whose own name collides with a reserved
+//! one but is not it -- `ID` beside `id`. A conforming writer stores such an attribute
+//! escaped (`_ID`, spec 02-object-table-schema.mdx, "Column naming and reservation
+//! rules"), and DuckDB, whose column names are case-insensitive, could only hold it
+//! renamed, so it would be written back under a name the source never had.
+void RefuseCollidingColumns(Connection &connection, const std::string &path) {
+	for (const auto &name : FileColumnNames(connection, path)) {
+		const auto lowered = StringUtil::Lower(name);
+		if (name != lowered && IsReservedColumnName(name)) {
+			throw InvalidInputException(
+			    "cityparquet_read: '%s' is not a valid CityParquet object table: the column '%s' collides with the "
+			    "reserved column '%s' (names compare case-insensitively); a writer stores a colliding attribute as "
+			    "'_%s' (spec 02-object-table-schema.mdx, \"Column naming and reservation rules\")",
+			    path, name, lowered, name);
+		}
+	}
+}
+
+//! True when the file `table`.parquet at `path` is an extension's object table
+//! (06-extensions.mdx, "The ModuleKey"): its `city` footer declares an extension whose
+//! namespace is the file's name (the extension's own file, `noise.parquet`) or prefixes
+//! it (an extension module's file, `energy_building_physics.parquet`). A file this
+//! specification does not name is left alone.
+bool IsExtensionObjectFile(Connection &connection, const std::string &path, const std::string &table) {
+	auto result = connection.Query("SELECT decode(value) FROM parquet_kv_metadata(" + Literal(path) +
+	                               ") WHERE decode(key) = 'city'");
+	if (result->HasError() || result->RowCount() == 0 || result->GetValue(0, 0).IsNull()) {
+		return false;
+	}
+	json city;
+	try {
+		city = json_utils::ParseJson(result->GetValue(0, 0).ToString());
+	} catch (const std::exception &) {
+		return false;
+	}
+	const auto extensions = city.find("extensions");
+	if (!city.is_object() || extensions == city.end() || !extensions->is_object()) {
+		return false;
+	}
+	for (const auto &entry : extensions->items()) {
+		const auto &ns = entry.key();
+		if (table == ns || (table.size() > ns.size() + 1 && table.compare(0, ns.size() + 1, ns + "_") == 0)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+} // namespace
+
+std::string BuildReadSQL(ClientContext &context, const std::string &directory_arg, const std::string &schema) {
 	auto &fs = FileSystem::GetFileSystem(context);
-	if (!fs.DirectoryExists(directory)) {
-		throw BinderException("cityparquet_read: no such directory '%s'", directory);
+	// `pkg/` and `pkg` name the same package; without this, the file paths below
+	// would carry a doubled separator.
+	auto directory = directory_arg;
+	while (directory.size() > 1 && (directory.back() == '/' || directory.back() == '\\')) {
+		directory.pop_back();
 	}
 
-	// The file list comes from a directory listing at plan time -- no SQL, no data read.
-	// Only files this specification names are adopted; anything else in the directory is
-	// left alone rather than guessed at.
+	// The file list comes from a glob at plan time -- no SQL, no data read. A glob,
+	// not a directory listing: under DuckDB-Wasm a package is a set of files
+	// registered by name, with no directory entry to list or test for, and the glob
+	// is what finds them. Only files this specification names are adopted; anything
+	// else is left alone rather than guessed at.
 	std::set<std::string> known;
 	for (const auto &name : ModuleTableNames()) {
 		known.insert(name);
@@ -356,19 +511,31 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory, c
 		known.insert(name);
 	}
 
+	Connection connection(DatabaseInstance::GetDatabase(context));
 	std::vector<std::string> found;
-	fs.ListFiles(directory, [&](const std::string &name, bool) {
+	std::set<std::string> extension_tables;
+	for (const auto &info : fs.Glob(fs.JoinPath(directory, "*.parquet"))) {
+		const auto name = fs.ExtractName(info.path);
 		const auto suffix = std::string(".parquet");
 		if (name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
-			return;
+			continue;
 		}
 		const auto table = StringUtil::Lower(name.substr(0, name.size() - suffix.size()));
+		if (std::find(found.begin(), found.end(), table) != found.end()) {
+			continue;
+		}
 		if (known.count(table) > 0) {
 			found.push_back(table);
+		} else if (IsExtensionObjectFile(connection, info.path, table)) {
+			found.push_back(table);
+			extension_tables.insert(table);
 		}
-	});
+	}
 	if (found.empty()) {
-		throw BinderException("cityparquet_read: '%s' contains no CityParquet object table or sidecar", directory);
+		if (!fs.DirectoryExists(directory)) {
+			throw BinderException("cityparquet_read: no such directory '%s'", directory_arg);
+		}
+		throw BinderException("cityparquet_read: '%s' contains no CityParquet object table or sidecar", directory_arg);
 	}
 	std::sort(found.begin(), found.end());
 
@@ -380,10 +547,14 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory, c
 	for (const auto &table : found) {
 		const auto file = table + ".parquet";
 		const auto path = fs.JoinPath(directory, file);
+		const bool is_object =
+		    std::find(ModuleTableNames().begin(), ModuleTableNames().end(), table) != ModuleTableNames().end() ||
+		    extension_tables.count(table) > 0;
+		if (is_object) {
+			RefuseCollidingColumns(connection, path);
+		}
 		sql += "CREATE OR REPLACE TABLE " + QualifiedName(schema, table) + " AS SELECT * FROM read_parquet(" +
 		       Literal(path) + ");\n";
-		const bool is_object =
-		    std::find(ModuleTableNames().begin(), ModuleTableNames().end(), table) != ModuleTableNames().end();
 		// decode(), not a cast: parquet_kv_metadata returns BLOB, and casting it to
 		// VARCHAR escapes bytes so the JSON no longer parses.
 		sql += "INSERT INTO " + bookkeeping + " (table_name, file_name, role, city) SELECT " + Literal(table) + ", " +
@@ -394,20 +565,54 @@ std::string BuildReadSQL(ClientContext &context, const std::string &directory, c
 }
 
 void RegisterCityParquetPackageFunctions(ExtensionLoader &loader) {
-	loader.RegisterFunction(PragmaFunction::PragmaCall(
-	    "cityparquet_read", PragmaRead, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}));
+	RegisterDocumented(
+	    loader,
+	    PragmaFunction::PragmaCall("cityparquet_read", PragmaRead,
+	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)}),
+	    {{"path", "schema"},
+	     "Loads a CityParquet package directory into a schema, creating it if needed and replacing any "
+	     "same-named table, one table per file, with each file's Parquet footer in __cityparquet.",
+	     "PRAGMA cityparquet_read('./data/delft', 'delft');",
+	     {"cityparquet", "package"}});
 
-	loader.RegisterFunction(
-	    PragmaFunction::PragmaCall("cityparquet_init", PragmaInit, {LogicalType(LogicalTypeId::VARCHAR)}));
+	RegisterDocumented(
+	    loader, PragmaFunction::PragmaCall("cityparquet_init", PragmaInit, {LogicalType(LogicalTypeId::VARCHAR)}),
+	    {{"schema"},
+	     "Registers a schema's CityParquet object and sidecar tables in its __cityparquet bookkeeping table; "
+	     "idempotent, and unlike cityparquet_read it recovers no Parquet footers.",
+	     "PRAGMA cityparquet_init('delft');",
+	     {"cityparquet", "package"}});
 
 	ScalarFunction init_sql("cityparquet_init_sql", {LogicalType(LogicalTypeId::VARCHAR)},
 	                        LogicalType(LogicalTypeId::VARCHAR), InitSQLScalar);
-	loader.RegisterFunction(init_sql);
+	RegisterDocumented(loader, std::move(init_sql),
+	                   {{"schema"},
+	                    "Returns the SQL that PRAGMA cityparquet_init would run for a schema, without running it.",
+	                    "cityparquet_init_sql('delft')",
+	                    {"cityparquet", "package"}});
+
+	ScalarFunction set_city_field(
+	    "cityparquet_set_city_field",
+	    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
+	    LogicalType(LogicalTypeId::VARCHAR), SetCityFieldFunction);
+	set_city_field.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	RegisterDocumented(loader, std::move(set_city_field),
+	                   {{"city", "field", "value"},
+	                    "Returns a CityParquet city footer JSON string with one top-level field set to the JSON "
+	                    "text `value`; a NULL or unreadable footer starts as an empty object.",
+	                    R"(cityparquet_set_city_field(NULL, 'crs', '{"id": {"authority": "EPSG", "code": 7415}}'))",
+	                    {"cityparquet", "metadata"}});
 
 	ScalarFunction city_field("cityparquet_city_field",
 	                          {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	                          LogicalType(LogicalTypeId::VARCHAR), CityFieldFunction);
-	loader.RegisterFunction(city_field);
+	RegisterDocumented(
+	    loader, std::move(city_field),
+	    {{"city", "field"},
+	     "Returns one top-level field of a CityParquet city footer JSON string as text, or NULL when the "
+	     "footer is not a JSON object or the field is absent or null.",
+	     R"(cityparquet_city_field('{"source_format": "CityJSONSeq"}', 'source_format'))",
+	     {"cityparquet", "metadata"}});
 }
 
 } // namespace cityjson

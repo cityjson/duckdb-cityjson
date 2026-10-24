@@ -1,4 +1,5 @@
 #include "cityjson/column_types.hpp"
+#include "cityjson/appearance_cell.hpp"
 #include "cityjson/lod_table.hpp"
 #include <algorithm>
 #include <cctype>
@@ -45,12 +46,14 @@ const char *ColumnTypeUtils::ToString(ColumnType type) {
 	case ColumnType::GeometryPropertiesStruct:
 		// `surfaces` holds JSON text; see ToDuckDBType for why it is typed VARCHAR.
 		return "STRUCT(\"type\" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])";
-	case ColumnType::AppearanceJson:
-		return "JSON";
+	case ColumnType::MaterialMap:
+		return "MAP(VARCHAR, BIGINT[])";
+	case ColumnType::TextureMap:
+		return "MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])";
 	case ColumnType::AddressList:
 		return "STRUCT(street VARCHAR, house_number VARCHAR, po_box VARCHAR, zip_code VARCHAR, city VARCHAR, "
 		       "state VARCHAR, country VARCHAR, free_text VARCHAR, location BLOB)[]";
-	case ColumnType::TemplateStruct:
+	case ColumnType::ImplicitGeometryStruct:
 		return "STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])";
 	default:
 		return "UNKNOWN";
@@ -85,11 +88,12 @@ LogicalTypeId ColumnTypeUtils::ToLogicalTypeId(ColumnType type) {
 		return LogicalTypeId::BLOB;
 	case ColumnType::GeometryPropertiesStruct:
 		return LogicalTypeId::STRUCT;
-	case ColumnType::AppearanceJson:
-		return LogicalTypeId::VARCHAR; // JSON stored as VARCHAR
+	case ColumnType::MaterialMap:
+	case ColumnType::TextureMap:
+		return LogicalTypeId::MAP;
 	case ColumnType::AddressList:
 		return LogicalTypeId::LIST;
-	case ColumnType::TemplateStruct:
+	case ColumnType::ImplicitGeometryStruct:
 		return LogicalTypeId::STRUCT;
 	default:
 		return LogicalTypeId::INVALID;
@@ -113,7 +117,13 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 	case ColumnType::Time:
 		return LogicalType::TIME;
 	case ColumnType::Json:
-		return LogicalType::VARCHAR; // JSON stored as VARCHAR
+		// An attribute whose value is an object or a heterogeneous array (spec
+		// 02-object-table-schema.mdx, "Attribute types and promotion") is typed JSON,
+		// so the type travels with the column: cityparquet_write annotates it with the
+		// Parquet JSON logical type and COPY TO restores the value as JSON rather than
+		// as a string holding its text. The reserved `other` column is the exception
+		// the readers make (BindCityJSONReadRaw); see GeometryPropertiesStruct below.
+		return LogicalType::JSON();
 
 	case ColumnType::VarcharArray: {
 		// LIST(VARCHAR)
@@ -159,15 +169,13 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		// fixed shape (each may carry different attributes); the rest are typed so a
 		// query engine reads them without parsing. There is deliberately no `lod`
 		// field -- the column name carries the level of detail.
-		// `surfaces` is VARCHAR rather than LogicalType::JSON(). The spec's "JSON"
-		// names the logical content, not a physical annotation, and DuckDB's JSON
-		// type buys nothing here while costing real usability: it is a VARCHAR alias
-		// whose operators (`->`, `.field`) bind to json_extract from the `json`
-		// extension, which this extension does not depend on and which is not loaded
-		// by default -- so even `surfaces LIKE '%RoofSurface%'` fails to bind. It
-		// would not buy interoperability either: cityparquet-rs marks the same field
-		// with the Arrow extension name `arrow.json`, not the Parquet JSON logical
-		// type DuckDB emits, so the two never agreed via this mechanism anyway.
+		// `surfaces` is VARCHAR rather than LogicalType::JSON() in what the readers
+		// emit. DuckDB's JSON type is a VARCHAR alias whose operators (`->`,
+		// `.field`) and implicit casts come from the `json` extension, which this
+		// extension does not depend on -- so on a JSON column even `surfaces LIKE
+		// '%RoofSurface%'` fails to bind. The Parquet JSON logical type the spec
+		// requires is added where a package is written: cityparquet_write passes the
+		// field through cityparquet_json.
 		child_list_t<LogicalType> children;
 		children.push_back(std::make_pair("type", LogicalType::VARCHAR));
 		children.push_back(std::make_pair("surfaces", LogicalType::VARCHAR));
@@ -176,8 +184,14 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		return LogicalType::STRUCT(children);
 	}
 
-	case ColumnType::AppearanceJson:
-		return LogicalType::VARCHAR; // JSON stored as VARCHAR
+	case ColumnType::MaterialMap:
+		// Spec § "material / texture columns": a theme is an open key set, which a
+		// STRUCT cannot express and a MAP key can; what a theme holds has a fixed
+		// shape, so the map value is typed rather than JSON text.
+		return MaterialCellType();
+
+	case ColumnType::TextureMap:
+		return TextureCellType();
 
 	case ColumnType::AddressList: {
 		// Spec "Addresses": a lean subset of 3DCityDB v5's ADDRESS table. `location`
@@ -196,10 +210,12 @@ LogicalType ColumnTypeUtils::ToDuckDBType(ColumnType type) {
 		return LogicalType::LIST(LogicalType::STRUCT(fields));
 	}
 
-	case ColumnType::TemplateStruct: {
-		// Spec: geometry-template instance data. The matrix is a flat 16-element
-		// row-major 4x4, not a nested type -- there is no per-writer choice to
-		// preserve, and DOUBLE[] is what a consumer actually wants to index into.
+	case ColumnType::ImplicitGeometryStruct: {
+		// Spec: implicit geometry (CityGML ImplicitGeometry) -- the reference to a
+		// shared relative geometry, its reference point and its transformation
+		// matrix. The matrix is a flat 16-element row-major 4x4, not a nested type --
+		// there is no per-writer choice to preserve, and DOUBLE[] is what a consumer
+		// actually wants to index into.
 		child_list_t<LogicalType> children;
 		children.push_back(std::make_pair("id", LogicalType::BIGINT));
 		children.push_back(std::make_pair("point", LogicalType::BLOB));
@@ -401,7 +417,15 @@ ColumnType ColumnTypeUtils::ResolveFromSamples(const std::vector<ColumnType> &ty
 		return ColumnType::Double;
 	}
 
-	// Otherwise, fall back to Varchar for inconsistency
+	// A structured value among the samples falls back to JSON, which holds every
+	// sample as written; VARCHAR would hold an object or an array as its text and
+	// so lose it (spec 02-object-table-schema.mdx: "anything not safely unifiable ->
+	// VARCHAR, or JSON for structured values").
+	for (const auto &type : types) {
+		if (type == ColumnType::Json || type == ColumnType::VarcharArray) {
+			return ColumnType::Json;
+		}
+	}
 	return ColumnType::Varchar;
 }
 
@@ -420,8 +444,9 @@ bool ColumnTypeUtils::IsTemporal(ColumnType type) {
 bool ColumnTypeUtils::IsComplex(ColumnType type) {
 	return type == ColumnType::Json || type == ColumnType::VarcharArray || type == ColumnType::Geometry ||
 	       type == ColumnType::GeographicalExtent || type == ColumnType::GeometryWKB ||
-	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::AppearanceJson ||
-	       type == ColumnType::AddressList || type == ColumnType::TemplateStruct;
+	       type == ColumnType::GeometryPropertiesStruct || type == ColumnType::MaterialMap ||
+	       type == ColumnType::TextureMap || type == ColumnType::AddressList ||
+	       type == ColumnType::ImplicitGeometryStruct;
 }
 
 // ============================================================
@@ -432,7 +457,7 @@ std::vector<Column> GetDefinedColumns() {
 	// Spec 02-object-table-schema.mdx, "Reserved columns": this is the leading
 	// (head) run of the reserved order, up to but not including `bbox` -- callers
 	// splice geometry columns after this and LODTableUtils::GetTrailingColumns()
-	// (`template`, `other`) after that, before any attribute column.
+	// (`implicit_geometry`, `other`) after that, before any attribute column.
 	return {
 	    Column("id", ColumnType::Varchar),
 	    Column("feature_id", ColumnType::Varchar),
@@ -452,24 +477,72 @@ static std::string ToLowerAscii(const std::string &name) {
 }
 
 bool IsReservedColumnName(const std::string &name) {
+	// Spec 02-object-table-schema.mdx, "Column naming and reservation rules": the
+	// reserved columns, compared with ASCII case folding, plus every per-LoD form the
+	// LoD suffix grammar generates (03-geometry-semantics.mdx: `lod<major>_<minor>`,
+	// always with a minor, in canonical decimal). Matched on the grammar, not on the
+	// LoDs a dataset holds, and anchored: `geometry_lodging`, `geometry_lod3` and a
+	// bare `geometry` name no reserved column.
 	static const std::vector<std::string> reserved = {
-	    "id",    "feature_id", "object_type", "children", "children_roles", "parents",
-	    "other", "bbox",       "geometry",    "address",  "template"};
+	    "id",      "feature_id", "object_type",       "parents", "children", "children_roles",
+	    "address", "bbox",       "implicit_geometry", "other"};
 	const std::string lowered = ToLowerAscii(name);
 	if (std::find(reserved.begin(), reserved.end(), lowered) != reserved.end()) {
 		return true;
 	}
-	// Wide-layout per-LOD structural columns: geometry_lod*, geometry_properties*,
-	// and the paired appearance columns material_lod* / texture_lod* (§11).
-	return lowered.rfind("geometry_lod", 0) == 0 || lowered.rfind("geometry_properties", 0) == 0 ||
+	return IsPerLodColumnName(lowered, "geometry") || IsPerLodColumnName(lowered, "geometry_properties") ||
 	       IsAppearanceColumnName(lowered);
 }
 
+bool IsPerLodColumnName(const std::string &name, const std::string &prefix) {
+	// `<prefix>_lod<major>_<minor>`, both in canonical decimal (03-geometry-semantics.mdx,
+	// "Suffix grammar"). Hand-rolled rather than a regex: it runs per column, and on
+	// the COPY bind path once per column per prefix.
+	const auto lowered = ToLowerAscii(name);
+	const auto head = prefix + "_lod";
+	if (lowered.size() <= head.size() || lowered.compare(0, head.size(), head) != 0) {
+		return false;
+	}
+	size_t i = head.size();
+	const auto number = [&]() {
+		const auto start = i;
+		while (i < lowered.size() && std::isdigit(static_cast<unsigned char>(lowered[i]))) {
+			i++;
+		}
+		return i > start && (i - start == 1 || lowered[start] != '0');
+	};
+	if (!number() || i >= lowered.size() || lowered[i] != '_') {
+		return false;
+	}
+	i++;
+	return number() && i == lowered.size();
+}
+
+bool IsAffineMatrix(const std::vector<double> &row_major) {
+	return row_major.size() == 16 && row_major[12] == 0.0 && row_major[13] == 0.0 && row_major[14] == 0.0 &&
+	       row_major[15] == 1.0;
+}
+
+static std::string BaseName(const std::string &name) {
+	const auto first = name.find_first_not_of('_');
+	return first == std::string::npos ? std::string() : name.substr(first);
+}
+
+std::string EscapeAttributeName(const std::string &source_name) {
+	return IsReservedColumnName(BaseName(source_name)) ? "_" + source_name : source_name;
+}
+
+std::string SourceAttributeName(const std::string &column_name) {
+	// Only an escaped name starts with `_`; everything else is its own source name, and
+	// skipping the reserved-name test for it keeps this cheap enough to run per value.
+	if (column_name.empty() || column_name[0] != '_') {
+		return column_name;
+	}
+	return IsReservedColumnName(BaseName(column_name)) ? column_name.substr(1) : column_name;
+}
+
 bool IsAppearanceColumnName(const std::string &name) {
-	// Exactly `material`/`texture`, or those with the reserved LoD suffix grammar
-	// `_lod{X}` / `_lod{X}_{Y}`. Anchored so `material_lodging` does NOT match.
-	static const std::regex appearance_pattern(R"((material|texture)(_lod\d+(_\d+)?)?)");
-	return std::regex_match(ToLowerAscii(name), appearance_pattern);
+	return IsPerLodColumnName(name, "material") || IsPerLodColumnName(name, "texture");
 }
 
 bool IsGeometryColumn(const std::string &name) {

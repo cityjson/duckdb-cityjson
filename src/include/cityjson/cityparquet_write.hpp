@@ -26,5 +26,14 @@ namespace cityjson {
  */
 void RegisterCityParquetWriteFunction(ExtensionLoader &loader);
 
+/**
+ * The position of `(x, y)` along a 2D Hilbert curve of 2^16 cells per axis laid over the
+ * x/y extent `[xmin, xmax] x [ymin, ymax]` -- the row-ordering key of the reference
+ * writer (cityparquet-rs, `order.rs`), reproduced exactly so that both writers order the
+ * same input the same way. A coordinate outside the extent clamps to its edge cell; an
+ * axis whose extent is empty, inverted or not a number maps every point to cell 0.
+ */
+uint32_t HilbertIndex(double x, double y, double xmin, double ymin, double xmax, double ymax);
+
 } // namespace cityjson
 } // namespace duckdb

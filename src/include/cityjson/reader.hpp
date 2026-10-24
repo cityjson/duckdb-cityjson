@@ -188,8 +188,25 @@ private:
 	mutable std::unique_ptr<duckdb::FileHandle> handle_; // FileHandle for incremental reads
 	mutable bool metadata_read_ = false;                 // Whether the metadata line has been consumed
 
+	// Line splitting over the handle: bytes read but not yet returned as a line, the
+	// offset of the first unreturned byte, and whether a read has come back empty.
+	mutable std::string line_buffer_;
+	mutable size_t line_pos_ = 0;
+	mutable bool stream_exhausted_ = false;
+	// Bytes the next refill asks the handle for. A remote handle gets large, growing
+	// requests: each Read on an HTTP handle is a range request, and httpfs does not
+	// read ahead on DuckDB 2.0, so a small fixed chunk is one round trip per chunk.
+	mutable idx_t read_chunk_ = 0;
+
 	// Internal helper: open or reopen the file handle positioned at the start
 	void OpenHandle() const;
+
+	// The next line without its line terminator (every '\r' removed, as FileHandle::ReadLine
+	// does), or nullopt once the stream is exhausted. Reads the handle in fixed-size
+	// chunks, and the stream ends at the first read that returns no bytes -- never at a
+	// comparison of position against size, which a handle need not keep consistent
+	// (a browser file handle under DuckDB-Wasm does not, and the scan never ended).
+	std::optional<std::string> NextLine() const;
 
 	// Reposition at the first feature line, so a whole-file or sampling read can run
 	// again on a reader that has already been consumed.
@@ -252,7 +269,26 @@ enum class ReaderKind : uint8_t {
 	Auto,
 	//! OpenCityJSONSeqFile — CityJSONSeq only, never auto-detected.
 	CityJSONSeq,
+	//! FlatCityBuf only, via FlatCityBufReader.
+	FlatCityBuf,
+	//! Wavefront OBJ only, via OBJReader.
+	Obj,
 };
+
+/**
+ * The reader kind a read_* table function opens with.
+ *
+ * A caller replaying a recorded choice — the streaming scan in init_global, COPY's
+ * reopen of its source — names the function, not the factory, and never restates the
+ * mapping.
+ */
+ReaderKind ReaderKindForFunction(const std::string &read_function);
+
+/**
+ * The reader kind a bare path implies, for `metadata_from` where no read function
+ * names one. Suffix-based, defaulting to Auto when the suffix is unknown.
+ */
+ReaderKind ReaderKindForPath(const std::string &path);
 
 /**
  * Open `file_name` with the factory `kind` names.

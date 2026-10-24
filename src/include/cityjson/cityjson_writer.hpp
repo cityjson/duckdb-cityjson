@@ -2,6 +2,7 @@
 
 #include "cityjson/cityjson_types.hpp"
 #include "cityjson/json_utils.hpp"
+#include "duckdb/common/file_system.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -23,6 +24,12 @@ struct CityJSONWriteMetadata {
 	std::optional<std::string> reference_date;
 	std::optional<GeographicalExtent> geographical_extent;
 	std::optional<PointOfContact> point_of_contact;
+	//! The document's `extensions` member, keyed by extension name. Written by the
+	//! CityJSON and CityJSONSeq writers; the FlatCityBuf header is left without it.
+	std::optional<json> extensions;
+	//! The document's `geometry-templates` (`templates` + raw-double
+	//! `vertices-templates`), texture UVs inline. CityJSON and CityJSONSeq only.
+	std::optional<json> geometry_templates;
 };
 
 /**
@@ -33,12 +40,13 @@ public:
 	/**
 	 * Write a complete CityJSON file (.city.json)
 	 *
+	 * @param fs FileSystem the output is written through
 	 * @param file_path Output path
 	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
-	static void WriteCityJSON(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	static void WriteCityJSON(FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                          const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
 	                          const std::vector<std::string> &feature_order,
 	                          const std::optional<json> &appearance = std::nullopt);
@@ -48,13 +56,14 @@ public:
 	 * Line 1: metadata header
 	 * Line 2+: one CityJSONFeature per line with per-feature vertex pool
 	 *
+	 * @param fs FileSystem the output is written through
 	 * @param file_path Output path
 	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
 	 * @param feature_order Ordered feature IDs
 	 */
 	static void
-	WriteCityJSONSeq(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	WriteCityJSONSeq(FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                 const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects,
 	                 const std::vector<std::string> &feature_order,
 	                 const std::optional<json> &appearance_header = std::nullopt,
@@ -67,6 +76,7 @@ public:
 	 * Internally builds CityJSONSeq-style JSON (metadata header + per-feature JSON)
 	 * and feeds it to the FCB writer.
 	 *
+	 * @param fs FileSystem the output is written through
 	 * @param file_path Output path
 	 * @param metadata Write metadata (version, CRS, transform, title, etc.)
 	 * @param feature_objects Map of feature_id -> [(city_object_id, city_object_json)]
@@ -82,14 +92,25 @@ public:
 	 *        vanishes from the file. The relation's column list is the authority
 	 *        on which attributes exist; this restores the six all-null columns a
 	 *        74-column 3DBAG source otherwise loses on the way into FCB.
+	 * @param appearance_header The source's header-level appearance block, carried
+	 *        verbatim onto the FCB metadata line `fcb::FcbWriter` is constructed
+	 *        from -- `fcb::writer::geom_encoder` reads a geometry's own
+	 *        `material`/`texture` straight off the standard CityJSON JSON shape
+	 *        `apply_appearance` already produces, exactly as `to_fcb_header` reads
+	 *        `appearance` off this metadata line.
+	 * @param appearance_by_feature Each feature's own appearance block, keyed by
+	 *        feature id, re-attached with a freshly rebuilt `vertices-texture` pool
+	 *        exactly as WriteCityJSONSeq does (BuildAppearanceBlock).
 	 */
-	static void WriteFlatCityBuf(const std::string &file_path, const CityJSONWriteMetadata &metadata,
+	static void WriteFlatCityBuf(FileSystem &fs, const std::string &file_path, const CityJSONWriteMetadata &metadata,
 	                             std::map<std::string, std::vector<std::pair<std::string, json>>> feature_objects,
 	                             const std::vector<std::string> &feature_order,
 	                             const std::vector<std::string> &attr_index_columns = {},
 	                             std::optional<uint16_t> branching_factor = std::nullopt,
 	                             std::optional<uint16_t> index_node_size = std::nullopt,
-	                             const std::vector<std::string> &declared_attr_columns = {});
+	                             const std::vector<std::string> &declared_attr_columns = {},
+	                             const std::optional<json> &appearance_header = std::nullopt,
+	                             const std::map<std::string, json> &appearance_by_feature = {});
 #endif
 
 private:
@@ -104,6 +125,26 @@ private:
 	 */
 	static std::vector<std::array<int64_t, 3>> BuildVertexPool(std::vector<std::pair<std::string, json>> &objects,
 	                                                           const std::optional<Transform> &transform);
+
+	/**
+	 * Rebuild the `vertices-texture` pool from the inline [u, v] pairs
+	 * `CityJSONCopyToSink::apply_appearance` left in every geometry's `texture`
+	 * object, rewriting each ring's pairs to indices into it in-place. One call's
+	 * worth of `objects` shares one pool: per feature for WriteCityJSONSeq, or the
+	 * whole document for WriteCityJSON.
+	 */
+	static std::vector<std::array<double, 2>> BuildTexturePool(std::vector<std::pair<std::string, json>> &objects);
+
+	/**
+	 * Build the appearance block for one scope of objects (a whole document, or one
+	 * CityJSONSeq/FlatCityBuf feature): `source_appearance`'s `materials`/`textures`
+	 * arrays verbatim, with `vertices-texture` replaced by a pool rebuilt via
+	 * BuildTexturePool (mutating `objects`' texture cells in place) -- or erased if
+	 * nothing in this scope references a texture. nullopt when there is neither a
+	 * source definition nor anything to rebuild.
+	 */
+	static std::optional<json> BuildAppearanceBlock(const std::optional<json> &source_appearance,
+	                                                std::vector<std::pair<std::string, json>> &objects);
 };
 
 } // namespace cityjson

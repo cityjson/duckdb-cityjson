@@ -33,6 +33,21 @@ namespace json_utils {
 json ParseJson(const std::string &str);
 
 /**
+ * The deepest array/object nesting this extension parses. nlohmann parses and destroys
+ * iteratively, but copies and serialises recursively, so a document nested a million
+ * levels deep -- a valid JSON text a cell or a file can hold -- would exhaust the stack
+ * and take the process down. Real CityJSON nests about a dozen levels.
+ */
+constexpr size_t MAX_JSON_DEPTH = 256;
+
+/**
+ * Throws CityJSONError when `text` nests arrays/objects deeper than MAX_JSON_DEPTH.
+ * A linear scan that skips string contents; it does not otherwise validate. Every
+ * parse in this extension goes through it.
+ */
+void CheckJsonDepth(const char *text, size_t size);
+
+/**
  * Parse JSON from file
  *
  * @param file_path Path to JSON file

@@ -1,6 +1,5 @@
 #include "cityjson/appearance_normalise.hpp"
 
-#include <functional>
 #include <sstream>
 
 namespace duckdb {
@@ -81,9 +80,11 @@ std::string TextureKey(const Texture &texture) {
 int64_t AppearanceIndex::ResolveMaterial(const std::string &feature_id, int64_t local_index) const {
 	auto entry = material_map.find(feature_id);
 	if (entry == material_map.end()) {
-		// No definitions of its own: the local index is already the global id. This is
-		// the plain-CityJSON case, where there is only one appearance object.
-		return local_index >= 0 && local_index < static_cast<int64_t>(materials.size()) ? local_index : -1;
+		// No definitions of its own: the index is the header's -- the plain-CityJSON
+		// case, where there is only one appearance object, and the templates'.
+		return local_index >= 0 && local_index < static_cast<int64_t>(header_materials.size())
+		           ? header_materials[static_cast<size_t>(local_index)]
+		           : -1;
 	}
 	if (local_index < 0 || local_index >= static_cast<int64_t>(entry->second.size())) {
 		return -1;
@@ -94,7 +95,9 @@ int64_t AppearanceIndex::ResolveMaterial(const std::string &feature_id, int64_t 
 int64_t AppearanceIndex::ResolveTexture(const std::string &feature_id, int64_t local_index) const {
 	auto entry = texture_map.find(feature_id);
 	if (entry == texture_map.end()) {
-		return local_index >= 0 && local_index < static_cast<int64_t>(textures.size()) ? local_index : -1;
+		return local_index >= 0 && local_index < static_cast<int64_t>(header_textures.size())
+		           ? header_textures[static_cast<size_t>(local_index)]
+		           : -1;
 	}
 	if (local_index < 0 || local_index >= static_cast<int64_t>(entry->second.size())) {
 		return -1;
@@ -107,14 +110,14 @@ AppearanceIndex AppearanceIndex::Build(const CityJSON &header, const std::vector
 	std::map<std::string, int64_t> material_ids;
 	std::map<std::string, int64_t> texture_ids;
 
-	// Header first, so its entries keep their ordinal positions as ids. A plain CityJSON
-	// document has only this, so its ids are exactly the source array positions.
+	// Header first, so its entries take the lowest ids -- their ordinal positions, unless
+	// two of them are equal, which intern to one.
 	if (header.appearance.has_value()) {
 		for (const auto &material : header.appearance->materials) {
-			Intern(MaterialKey(material), material, material_ids, index.materials);
+			index.header_materials.push_back(Intern(MaterialKey(material), material, material_ids, index.materials));
 		}
 		for (const auto &texture : header.appearance->textures) {
-			Intern(TextureKey(texture), texture, texture_ids, index.textures);
+			index.header_textures.push_back(Intern(TextureKey(texture), texture, texture_ids, index.textures));
 		}
 	}
 
@@ -140,116 +143,6 @@ AppearanceIndex AppearanceIndex::Build(const CityJSON &header, const std::vector
 	}
 
 	return index;
-}
-
-namespace {
-
-//! Map every integer leaf through `remap`, preserving the nesting. Material values nest
-//! per shell/surface depending on geometry type, so recursion beats a fixed depth.
-json RemapMaterialValues(const json &node, const std::function<int64_t(int64_t)> &remap) {
-	if (node.is_number_integer()) {
-		const auto mapped = remap(node.get<int64_t>());
-		return mapped < 0 ? json(nullptr) : json(mapped);
-	}
-	if (!node.is_array()) {
-		return node;
-	}
-	json out = json::array();
-	for (const auto &child : node) {
-		out.push_back(RemapMaterialValues(child, remap));
-	}
-	return out;
-}
-
-//! `node` is a ring when its elements are scalars: [texId, uvIdx, uvIdx, ...].
-bool IsRing(const json &node) {
-	return node.is_array() && !node.empty() && !node[0].is_array();
-}
-
-json RemapTextureValues(const json &node, const std::function<int64_t(int64_t)> &remap,
-                        const std::vector<std::array<double, 2>> &uv_pool) {
-	if (!node.is_array()) {
-		return node;
-	}
-	if (!IsRing(node)) {
-		json out = json::array();
-		for (const auto &child : node) {
-			out.push_back(RemapTextureValues(child, remap, uv_pool));
-		}
-		return out;
-	}
-
-	// A ring with no texture is a single null and stays that way.
-	if (node[0].is_null()) {
-		return node;
-	}
-
-	json ring = json::array();
-	const auto mapped = node[0].is_number_integer() ? remap(node[0].get<int64_t>()) : -1;
-	ring.push_back(mapped < 0 ? json(nullptr) : json(mapped));
-	for (size_t i = 1; i < node.size(); i++) {
-		if (!node[i].is_number_integer()) {
-			ring.push_back(node[i]);
-			continue;
-		}
-		const auto uv_index = node[i].get<int64_t>();
-		if (uv_index < 0 || uv_index >= static_cast<int64_t>(uv_pool.size())) {
-			// A UV index outside the pool cannot be inlined. Emitting null keeps the
-			// ring's arity intact rather than silently shortening it.
-			ring.push_back(json(nullptr));
-			continue;
-		}
-		const auto &uv = uv_pool[static_cast<size_t>(uv_index)];
-		ring.push_back(json::array({uv[0], uv[1]}));
-	}
-	return ring;
-}
-
-//! Apply `rewrite` to each theme's `values` / `value` member, leaving the theme keys
-//! (a dynamic, open key set) untouched.
-json RewriteThemes(const json &map, const std::function<json(const json &)> &rewrite_values,
-                   const std::function<json(const json &)> &rewrite_value) {
-	if (!map.is_object()) {
-		return map;
-	}
-	json out = json::object();
-	for (const auto &entry : map.items()) {
-		if (!entry.value().is_object()) {
-			out[entry.key()] = entry.value();
-			continue;
-		}
-		json theme = entry.value();
-		auto values = theme.find("values");
-		if (values != theme.end()) {
-			theme["values"] = rewrite_values(*values);
-		}
-		auto value = theme.find("value");
-		if (value != theme.end() && rewrite_value) {
-			theme["value"] = rewrite_value(*value);
-		}
-		out[entry.key()] = std::move(theme);
-	}
-	return out;
-}
-
-} // namespace
-
-json NormaliseMaterialMap(const json &material_map, const AppearanceIndex &index, const std::string &feature_id) {
-	auto remap = [&](int64_t local) {
-		return index.ResolveMaterial(feature_id, local);
-	};
-	return RewriteThemes(
-	    material_map, [&](const json &values) { return RemapMaterialValues(values, remap); },
-	    [&](const json &value) { return RemapMaterialValues(value, remap); });
-}
-
-json NormaliseTextureMap(const json &texture_map, const AppearanceIndex &index, const std::string &feature_id,
-                         const std::vector<std::array<double, 2>> &uv_pool) {
-	auto remap = [&](int64_t local) {
-		return index.ResolveTexture(feature_id, local);
-	};
-	return RewriteThemes(
-	    texture_map, [&](const json &values) { return RemapTextureValues(values, remap, uv_pool); }, nullptr);
 }
 
 } // namespace cityjson

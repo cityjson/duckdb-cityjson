@@ -28,10 +28,42 @@ std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &
 //! Case-insensitive lookup; nullptr when absent.
 const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::string &name);
 
-//! The promotion lattice: BIGINT -> DOUBLE is a safe widening; anything else scalar
-//! that disagrees falls back to VARCHAR. INVALID means the destination already
-//! accommodates the source. `function` and `column_name` name the caller and the
-//! column being evolved, for the exception below.
+//! True for a geometry_properties struct type carrying its `surfaces` JSON text field.
+bool HasSurfacesField(const LogicalType &type);
+
+//! `implicit_geometry` with its `id` shifted by `offset_expr`, onto the destination's
+//! implicit_geometries numbering; a NULL cell stays NULL.
+std::string ShiftedImplicitGeometry(const std::string &offset_expr);
+
+//! `type` with every JSON alias removed, nested ones included: JSON and VARCHAR hold
+//! the same text, and compare equal through this.
+LogicalType WithoutJsonAlias(const LogicalType &type);
+
+//! `type` as generated SQL can name it: a JSON type, nested ones included, as
+//! CITYPARQUET_JSON, the alias the extension registers so that its SQL can create a
+//! JSON column without the json extension, whose type the name JSON belongs to.
+std::string SqlTypeName(const LogicalType &type);
+
+//! True when an attribute column's destination is JSON and the incoming values are
+//! not: they go in through cityparquet_to_json, as the JSON they stand for.
+bool NeedsJsonEncoding(const LogicalType &destination, const LogicalType &source, const std::string &column_name);
+
+//! The `USING` clause an `ALTER COLUMN ... SET DATA TYPE` from `from` to `to` needs:
+//! the rows' values encoded as JSON when `to` is an attribute column's JSON, else none.
+std::string WidenedUsing(const LogicalType &from, const LogicalType &to, const std::string &column_name);
+
+//! The promotion lattice (spec 02-object-table-schema.mdx, "Attribute types and
+//! promotion"), applied across the data a package holds after an insert or merge:
+//! BIGINT -> DOUBLE is a safe widening; anything else scalar that disagrees falls back
+//! to VARCHAR. INVALID means the destination already accommodates the source -- a
+//! DOUBLE takes a BIGINT, a VARCHAR any scalar. A caller that widens says so with
+//! LogWidening: the column's type changes for the rows already there. `function` and `column_name` name the caller and
+//! the column being evolved, for the exception below.
+//!
+//! An attribute column typed JSON on one side only becomes JSON (the "JSON for
+//! structured values" fallback); a caller widening a column to JSON converts its rows
+//! with cityparquet_to_json, and one inserting non-JSON values into a JSON column
+//! encodes them the same way (NeedsJsonEncoding).
 //!
 //! A nested type (STRUCT/LIST/MAP) on either side is refused outright rather than
 //! stringified: reserved structural columns (`bbox`, `children`, `children_roles`, a
@@ -40,8 +72,18 @@ const ColumnInfo *FindColumn(const std::vector<ColumnInfo> &columns, const std::
 //! coercing to text. Silently rewriting such a column to VARCHAR destroys it --
 //! `bbox.xmin` stops binding, and cityparquet_write can no longer emit the STRUCT
 //! the spec requires -- so this throws a BinderException instead.
+//!
+//! A geometry column is refused for the same reason: GEOMETRY and BLOB are two
+//! encodings of one WKB value, never text. A caller that can reconcile the pair
+//! (insert_cityjson converts staged WKB to the destination's GEOMETRY) does so before
+//! asking.
 LogicalType WidenedType(const LogicalType &destination, const LogicalType &source, const std::string &function,
                         const std::string &column_name);
+
+//! The warning a caller logs when it widens `column_name` of `table`.
+void LogWidening(ClientContext &context, const std::string &function, const std::string &table,
+                 const std::string &column_name, const LogicalType &from, const LogicalType &incoming,
+                 const LogicalType &to);
 
 //! A column reference for a WKB-consuming SQL expression, converting DuckDB-native
 //! GEOMETRY to WKB BLOB via ST_AsWKB. Any column named in a package's `geo` footer is
@@ -79,7 +121,10 @@ std::string GeometryColumnRef(const std::string &quoted_name, const LogicalType 
 std::string DeclaredCrsExpr(const std::string &schema);
 
 //! Scalar subquery: does this package state a CRS at all? False for a hand-rolled load,
-//! whose footers are NULL -- that states nothing, as opposed to stating "unknown".
+//! whose footers are NULL -- that states nothing, as opposed to stating "unknown". A
+//! footer counts when it carries `version` (every footer a writer produces does) or a
+//! CRS: the bookkeeping `city` of a package that has not been written yet may hold no
+//! more than its `extensions` declaration, which says nothing about the CRS.
 std::string CrsStatedExpr(const std::string &schema);
 
 //! Refuse a package whose own object-table footers declare more than one CRS, by name --

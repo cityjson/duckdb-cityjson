@@ -1,12 +1,16 @@
 #include "cityjson/appearance_table_function.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/error.hpp"
+#include "cityjson/appearance_cell.hpp"
+#include "cityjson/appearance_flatten.hpp"
 #include "cityjson/appearance_normalise.hpp"
 #include "cityjson/city_object_utils.hpp"
 #include "cityjson/column_types.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/reader.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/logging/logger.hpp"
 
 #include <set>
 
@@ -15,17 +19,17 @@ namespace cityjson {
 
 namespace {
 
-enum class SidecarKind { MATERIALS, TEXTURES, TEMPLATES };
-
 struct AppearanceBindData : public TableFunctionData {
 	std::string file_name;
 	SidecarKind kind;
 	AppearanceIndex index;
+	//! The source's CityJSON `geometry-templates`: each one becomes one shared relative
+	//! geometry, one row of the implicit_geometries sidecar.
 	GeometryTemplates templates;
-	// The distinct LoDs across all templates, in sorted order. Each contributes four
-	// columns, exactly as an object table does, so a template's LoD is carried by its
-	// column name rather than by a value.
-	std::vector<std::string> template_lods;
+	// The distinct LoDs across all relative geometries, in sorted order. Each contributes
+	// four columns, exactly as an object table does, so a relative geometry's LoD is
+	// carried by its column name rather than by a value.
+	std::vector<std::string> relative_geometry_lods;
 	// The document appearance's UV pool: what a template's texture rings index into.
 	std::vector<std::array<double, 2>> template_uv_pool;
 
@@ -35,7 +39,7 @@ struct AppearanceBindData : public TableFunctionData {
 		result->kind = kind;
 		result->index = index;
 		result->templates = templates;
-		result->template_lods = template_lods;
+		result->relative_geometry_lods = relative_geometry_lods;
 		result->template_uv_pool = template_uv_pool;
 		return std::move(result);
 	}
@@ -78,18 +82,29 @@ Value OtherOrNull(const json &other) {
 	return Value(other.dump());
 }
 
+struct AppearanceFunctionInfo : public TableFunctionInfo {
+	std::string function_name;
+	SidecarKind kind;
+	ReaderOpener opener;
+	AppearanceFunctionInfo(std::string function_name, SidecarKind kind, ReaderOpener opener)
+	    : function_name(std::move(function_name)), kind(kind), opener(std::move(opener)) {
+	}
+};
+
 unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names, SidecarKind kind,
-                                        const char *function_name) {
+                                        vector<LogicalType> &return_types, vector<string> &names) {
+	auto &info = input.info->Cast<AppearanceFunctionInfo>();
+	const SidecarKind kind = info.kind;
+	const char *function_name = info.function_name.c_str();
 	auto result = make_uniq<AppearanceBindData>();
 	result->file_name = StringValue::Get(input.inputs[0]);
 	result->kind = kind;
 
 	std::unique_ptr<CityJSONReader> reader;
 	try {
-		reader = OpenAnyCityJSONFile(context, result->file_name);
+		reader = info.opener(context, result->file_name);
 		auto metadata = reader->ReadMetadata();
-		if (kind == SidecarKind::TEMPLATES) {
+		if (kind == SidecarKind::IMPLICIT_GEOMETRIES) {
 			// Geometry templates are document-level and live entirely in the header, and
 			// a template's appearance can only reference the header's definitions. So
 			// build the index from the header alone and skip the feature scan -- reading
@@ -98,6 +113,25 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 			result->index = AppearanceIndex::Build(metadata, {});
 			if (metadata.geometry_templates.has_value()) {
 				result->templates = metadata.geometry_templates.value();
+			}
+			for (idx_t i = 0; i < result->templates.templates.size(); i++) {
+				const auto &geometry = result->templates.templates[i];
+				if (geometry.short_uv_rings > 0) {
+					DUCKDB_LOG_WARNING(context,
+					                   "%s: template %llu (%s, lod %s): left %llu textured ring(s) untextured that "
+					                   "have fewer UV indices than vertices, so which vertex lacks one is not stated",
+					                   function_name, static_cast<unsigned long long>(i), geometry.type, geometry.lod,
+					                   static_cast<unsigned long long>(geometry.short_uv_rings));
+				}
+				if (geometry.dropped_rings > 0) {
+					DUCKDB_LOG_WARNING(context,
+					                   "%s: template %llu (%s, lod %s): dropped %llu ring(s) with fewer than three "
+					                   "vertices, which cannot form a closed WKB ring, and %llu surface(s) whose "
+					                   "exterior ring was one of them",
+					                   function_name, static_cast<unsigned long long>(i), geometry.type, geometry.lod,
+					                   static_cast<unsigned long long>(geometry.dropped_rings),
+					                   static_cast<unsigned long long>(geometry.dropped_surfaces));
+				}
 			}
 			if (metadata.appearance.has_value()) {
 				result->template_uv_pool = metadata.appearance->vertices_texture;
@@ -115,8 +149,8 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 
 	std::vector<std::string> sidecar_names;
 	std::vector<LogicalType> sidecar_types;
-	if (kind == SidecarKind::TEMPLATES) {
-		GeometryTemplateColumns(result->templates, sidecar_names, sidecar_types, result->template_lods);
+	if (kind == SidecarKind::IMPLICIT_GEOMETRIES) {
+		ImplicitGeometryColumns(result->templates, sidecar_names, sidecar_types, result->relative_geometry_lods);
 	} else {
 		AppearanceSidecarColumns(kind == SidecarKind::MATERIALS ? "materials" : "textures", sidecar_names,
 		                         sidecar_types);
@@ -126,21 +160,6 @@ unique_ptr<FunctionData> AppearanceBind(ClientContext &context, TableFunctionBin
 		return_types.push_back(sidecar_types[i]);
 	}
 	return std::move(result);
-}
-
-unique_ptr<FunctionData> MaterialsBind(ClientContext &context, TableFunctionBindInput &input,
-                                       vector<LogicalType> &return_types, vector<string> &names) {
-	return AppearanceBind(context, input, return_types, names, SidecarKind::MATERIALS, "cityjson_materials");
-}
-
-unique_ptr<FunctionData> TemplatesBind(ClientContext &context, TableFunctionBindInput &input,
-                                       vector<LogicalType> &return_types, vector<string> &names) {
-	return AppearanceBind(context, input, return_types, names, SidecarKind::TEMPLATES, "cityjson_geometry_templates");
-}
-
-unique_ptr<FunctionData> TexturesBind(ClientContext &context, TableFunctionBindInput &input,
-                                      vector<LogicalType> &return_types, vector<string> &names) {
-	return AppearanceBind(context, input, return_types, names, SidecarKind::TEXTURES, "cityjson_textures");
 }
 
 unique_ptr<GlobalTableFunctionState> AppearanceInitGlobal(ClientContext &, TableFunctionInitInput &) {
@@ -170,16 +189,16 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 		// appearance map references.
 		output.SetValue(0, emitted, Value::BIGINT(static_cast<int64_t>(index)));
 
-		if (bind_data.kind == SidecarKind::TEMPLATES) {
+		if (bind_data.kind == SidecarKind::IMPLICIT_GEOMETRIES) {
 			const auto &geometry = bind_data.templates.templates[index];
 			const auto lod = LODTableUtils::NormalizeLOD(geometry.lod);
 			output.SetValue(1, emitted, Value(LogicalType(LogicalTypeId::VARCHAR))); // name: none in CityJSON
 
-			for (size_t l = 0; l < bind_data.template_lods.size(); l++) {
+			for (size_t l = 0; l < bind_data.relative_geometry_lods.size(); l++) {
 				const idx_t base = 2 + l * 4;
-				const bool mine = bind_data.template_lods[l] == lod;
+				const bool mine = bind_data.relative_geometry_lods[l] == lod;
 				if (!mine) {
-					// A template populates only its own LoD's columns; the table is
+					// A relative geometry populates only its own LoD's columns; the table is
 					// sparse by construction, which is the cost of keeping one LoD-naming
 					// rule across the whole format.
 					for (idx_t c = 0; c < 4; c++) {
@@ -188,28 +207,42 @@ void AppearanceScan(ClientContext &, TableFunctionInput &data, DataChunk &output
 					continue;
 				}
 				// Template vertices are raw doubles in the template's own local frame, so
-				// no dataset transform is applied -- templates are exempt from the file CRS.
+				// no dataset transform is applied -- relative geometries are exempt from
+				// the file CRS.
 				auto wkb = CityObjectUtils::GetGeometryWKB(geometry, bind_data.templates.vertices, std::nullopt);
 				output.SetValue(base, emitted, Value::BLOB(wkb.data(), wkb.size()));
 				auto props = CityObjectUtils::GetGeometryPropertiesStruct(geometry);
 				output.SetValue(base + 1, emitted, Value(props.is_null() ? std::string() : props.dump()));
-				// A template's appearance needs the same normalisation an object row's
-				// does: emitted verbatim, its rings would keep source-local texture ids
-				// and bare UV indices, which no consumer of the package can resolve.
-				// Templates are document-level, so they carry no feature id and resolve
-				// against the header's definitions and UV pool.
+				// A relative geometry's appearance is flattened and resolved like an
+				// object row's: emitted verbatim, its rings would keep source-local
+				// texture ids and bare UV indices, which no consumer of the package can
+				// resolve. Templates are document-level, so they carry no feature id and
+				// resolve against the header's definitions and UV pool.
 				static const std::vector<std::array<double, 2>> no_uvs;
 				const auto &uv_pool = bind_data.template_uv_pool;
-				output.SetValue(base + 2, emitted,
-				                geometry.material.has_value()
-				                    ? Value(NormaliseMaterialMap(geometry.material.value(), bind_data.index, "").dump())
-				                    : Value(LogicalType(LogicalTypeId::VARCHAR)));
-				output.SetValue(base + 3, emitted,
-				                geometry.texture.has_value()
-				                    ? Value(NormaliseTextureMap(geometry.texture.value(), bind_data.index, "",
-				                                                uv_pool.empty() ? no_uvs : uv_pool)
-				                                .dump())
-				                    : Value(LogicalType(LogicalTypeId::VARCHAR)));
+				const IdResolver resolve_material = [&bind_data](int64_t local) {
+					return bind_data.index.ResolveMaterial("", local);
+				};
+				const IdResolver resolve_texture = [&bind_data](int64_t local) {
+					return bind_data.index.ResolveTexture("", local);
+				};
+				Value material_cell(MaterialCellType());
+				if (geometry.material.has_value()) {
+					const auto cell = FlattenMaterialMap(geometry, geometry.material.value(), resolve_material);
+					if (!cell.themes.empty()) {
+						material_cell = MaterialCellValue(cell);
+					}
+				}
+				Value texture_cell(TextureCellType());
+				if (geometry.texture.has_value()) {
+					const auto cell = FlattenTextureMap(geometry, geometry.texture.value(), resolve_texture,
+					                                    uv_pool.empty() ? no_uvs : uv_pool);
+					if (!cell.themes.empty()) {
+						texture_cell = TextureCellValue(cell);
+					}
+				}
+				output.SetValue(base + 2, emitted, material_cell);
+				output.SetValue(base + 3, emitted, texture_cell);
 			}
 		} else if (bind_data.kind == SidecarKind::MATERIALS) {
 			const auto &material = bind_data.index.materials[index];
@@ -271,7 +304,7 @@ void AppearanceSidecarColumns(const std::string &sidecar, std::vector<std::strin
 	         varchar};
 }
 
-void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std::string> &names,
+void ImplicitGeometryColumns(const GeometryTemplates &templates, std::vector<std::string> &names,
                              std::vector<LogicalType> &types, std::vector<std::string> &lods) {
 	std::set<std::string> distinct_lods;
 	for (idx_t i = 0; i < templates.templates.size(); i++) {
@@ -281,15 +314,16 @@ void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std
 		// `geometry_lodfoo`, which no conforming reader -- including this extension's own
 		// appearance-column discovery -- will recognise.
 		if (geometry.lod.empty()) {
-			throw BinderException("cityjson_geometry_templates: template %llu has no lod; a template's LoD names "
-			                      "its columns, so it cannot be omitted",
+			throw BinderException("cityjson_implicit_geometries: template %llu has no lod; a relative geometry's "
+			                      "LoD names its columns, so it cannot be omitted",
 			                      static_cast<uint64_t>(i));
 		}
 		try {
 			std::stod(geometry.lod);
 		} catch (const std::exception &) {
-			throw BinderException("cityjson_geometry_templates: template %llu has a non-numeric lod '%s'; a "
-			                      "template's LoD names its columns and must follow the LoD suffix grammar",
+			throw BinderException("cityjson_implicit_geometries: template %llu has a non-numeric lod '%s'; a "
+			                      "relative geometry's LoD names its columns and must follow the LoD suffix "
+			                      "grammar",
 			                      static_cast<uint64_t>(i), geometry.lod);
 		}
 		distinct_lods.insert(LODTableUtils::NormalizeLOD(geometry.lod));
@@ -298,9 +332,9 @@ void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std
 
 	const auto varchar = LogicalType(LogicalTypeId::VARCHAR);
 
-	// id is BIGINT so templates remap like the other sidecars when packages are merged;
-	// `name` holds the source identifier, which CityJSON templates do not have (they are
-	// array entries) but other sources may.
+	// id is BIGINT so relative geometries remap like the other sidecars when packages are
+	// merged; `name` holds the source identifier, which CityJSON templates do not have
+	// (they are array entries) but other sources may.
 	names = {"id", "name"};
 	types = {LogicalType(LogicalTypeId::BIGINT), varchar};
 	for (const auto &lod : lods) {
@@ -310,25 +344,43 @@ void GeometryTemplateColumns(const GeometryTemplates &templates, std::vector<std
 		names.push_back("geometry_properties_" + suffix);
 		types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::GeometryPropertiesStruct));
 		names.push_back("material_" + suffix);
-		types.push_back(varchar);
+		types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::MaterialMap));
 		names.push_back("texture_" + suffix);
-		types.push_back(varchar);
+		types.push_back(ColumnTypeUtils::ToDuckDBType(ColumnType::TextureMap));
 	}
 }
 
+TableFunction CreateAppearanceTableFunction(const std::string &name, SidecarKind kind, ReaderOpener opener) {
+	TableFunction func(name, {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, AppearanceBind);
+	func.init_global = AppearanceInitGlobal;
+	func.function_info = make_shared_ptr<AppearanceFunctionInfo>(name, kind, std::move(opener));
+	return func;
+}
+
 void RegisterAppearanceTableFunctions(ExtensionLoader &loader) {
-	TableFunction materials("cityjson_materials", {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, MaterialsBind);
-	materials.init_global = AppearanceInitGlobal;
-	loader.RegisterFunction(materials);
-
-	TableFunction textures("cityjson_textures", {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan, TexturesBind);
-	textures.init_global = AppearanceInitGlobal;
-	loader.RegisterFunction(textures);
-
-	TableFunction templates("cityjson_geometry_templates", {LogicalType(LogicalTypeId::VARCHAR)}, AppearanceScan,
-	                        TemplatesBind);
-	templates.init_global = AppearanceInitGlobal;
-	loader.RegisterFunction(templates);
+	ReaderOpener any = [](ClientContext &context, const std::string &path) {
+		return OpenAnyCityJSONFile(context, path);
+	};
+	RegisterDocumented(loader, CreateAppearanceTableFunction("cityjson_materials", SidecarKind::MATERIALS, any),
+	                   {{"path"},
+	                    "Returns a CityJSON(Seq) file's materials as CityParquet materials sidecar rows, interned "
+	                    "across the whole file under dataset-global ids.",
+	                    "SELECT id, name, diffuseColor, transparency FROM "
+	                    "cityjson_materials('test/data/railway_appearance.city.jsonl');",
+	                    {"cityjson", "appearance"}});
+	RegisterDocumented(loader, CreateAppearanceTableFunction("cityjson_textures", SidecarKind::TEXTURES, any),
+	                   {{"path"},
+	                    "Returns a CityJSON(Seq) file's textures as CityParquet textures sidecar rows, interned across "
+	                    "the whole file under dataset-global ids.",
+	                    "SELECT * FROM cityjson_textures('test/data/railway_appearance.city.jsonl');",
+	                    {"cityjson", "appearance"}});
+	RegisterDocumented(
+	    loader, CreateAppearanceTableFunction("cityjson_implicit_geometries", SidecarKind::IMPLICIT_GEOMETRIES, any),
+	    {{"path"},
+	     "Returns a CityJSON(Seq) file's geometry templates as CityParquet implicit_geometries sidecar rows, one "
+	     "shared relative geometry per row, in local coordinates with one set of geometry_lod* columns per LoD.",
+	     "SELECT * FROM cityjson_implicit_geometries('test/data/railway_appearance.city.jsonl');",
+	     {"cityjson", "appearance"}});
 }
 
 } // namespace cityjson

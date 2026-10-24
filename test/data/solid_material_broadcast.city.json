@@ -1,0 +1,41 @@
+{
+  "type": "CityJSON",
+  "version": "2.0",
+  "transform": {"scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]},
+  "metadata": {"referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/7415"},
+  "CityObjects": {
+    "cube": {
+      "type": "Building",
+      "geometry": [{
+        "type": "Solid",
+        "lod": "2.2",
+        "boundaries": [
+          [
+            [[4, 5, 6, 7]],
+            [[0, 1, 5, 4]],
+            [[1, 2, 6, 5]],
+            [[2, 3, 7, 6]],
+            [[3, 0, 4, 7]],
+            [[0, 3, 2, 1]]
+          ]
+        ],
+        "semantics": {
+          "surfaces": [{"type": "RoofSurface"}, {"type": "WallSurface"}, {"type": "GroundSurface"}],
+          "values": [[0, 1, 1, 1, 1, 2]]
+        },
+        "material": {"visual": {"value": 1}}
+      }]
+    }
+  },
+  "vertices": [
+    [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]
+  ],
+  "appearance": {
+    "materials": [
+      {"name": "red", "diffuseColor": [1.0, 0.0, 0.0]},
+      {"name": "grey", "diffuseColor": [0.5, 0.5, 0.5]},
+      {"name": "dark", "diffuseColor": [0.1, 0.1, 0.1]}
+    ]
+  }
+}

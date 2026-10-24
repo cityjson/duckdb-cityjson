@@ -6,46 +6,73 @@ require cityjson
 
 # --- cityjson_appearance_ids ------------------------------------------------
 
-# material: a flat per-face list of ids, deduplicated.
+# The cell's MAP type says whether it holds materials or textures, so there is no
+# kind argument: the overload is chosen by the type.
+
+# material: one id per WKB face, deduplicated, nulls ignored.
 query T
-SELECT cityjson_appearance_ids('{"visual":{"values":[0,0,1,1,null,2]}}', 'material');
+SELECT cityjson_appearance_ids(MAP {'visual': [0, 0, 1, 1, NULL, 2]}::MAP(VARCHAR, BIGINT[]));
 ----
 [0, 1, 2]
 
-# material: the single-value form, one material for the whole geometry.
-query T
-SELECT cityjson_appearance_ids('{"visual":{"value":7}}', 'material');
-----
-[7]
-
 # Every theme contributes; the outer key set is dynamic.
 query T
-SELECT cityjson_appearance_ids('{"a":{"value":1},"b":{"value":2}}', 'material');
+SELECT cityjson_appearance_ids(MAP {'a': [1, 1], 'b': [2, NULL]}::MAP(VARCHAR, BIGINT[]));
 ----
 [1, 2]
 
-# texture: per face, then per ring; only each ring's FIRST element is an id, the
-# rest are UV references. Reading the whole ring would collect UVs as ids.
+# texture: per face, per ring. Only the struct's id is a reference -- the uv pairs
+# are coordinates -- and a bare ring contributes nothing.
 query T
-SELECT cityjson_appearance_ids('{"visual":{"values":[[[0,1,2,3]],[[5,40,41,42]]]}}', 'texture');
+SELECT cityjson_appearance_ids(MAP {'visual': [
+  [{'id': 0, 'uv': [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]}],
+  [{'id': 5, 'uv': [[0.5, 0.25], [0.5, 0.5], [0.25, 0.5]]}, {'id': NULL, 'uv': NULL}]
+]}::MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]));
 ----
 [0, 5]
 
-# A ring with no texture is [null] and contributes nothing.
+# A texture cell whose every ring is bare (no `id`, no `uv`) contributes no
+# references -- an EMPTY list, not NULL. The cell itself is present; it is
+# only every ring inside it that carries nothing.
 query T
-SELECT cityjson_appearance_ids('{"visual":{"values":[[[null]]]}}', 'texture');
+SELECT cityjson_appearance_ids(MAP {'visual': [[{'id': NULL, 'uv': NULL}]]}::MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]));
 ----
 []
 
 query I
-SELECT cityjson_appearance_ids(NULL, 'material') IS NULL;
+SELECT cityjson_appearance_ids(NULL::MAP(VARCHAR, BIGINT[])) IS NULL;
 ----
 true
 
+# Anything that is not one of the two cell types is refused at bind, which is what
+# keeps an ordinary attribute out (see the `look` schema at the end of this file).
 statement error
-SELECT cityjson_appearance_ids('{}', 'nonsense');
+SELECT cityjson_appearance_ids('{}');
 ----
-kind must be 'material' or 'texture'
+expected a MAP(VARCHAR, BIGINT[]) (material) or MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) (texture) cell
+
+# A scalar is refused the same way, at bind, before it ever reaches the appearance
+# cell readers that MapValue::GetChildren would otherwise crash on in a release
+# build.
+statement error
+SELECT cityjson_appearance_ids(42);
+----
+expected a MAP(VARCHAR, BIGINT[]) (material) or MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) (texture) cell, got INTEGER
+
+# A MAP that is neither cell type -- same key type, ordinary VARCHAR values -- is
+# refused too, rather than silently binding to whichever overload tolerates it.
+statement error
+SELECT cityjson_appearance_ids(MAP {'v': 'a'}::MAP(VARCHAR, VARCHAR));
+----
+expected a MAP(VARCHAR, BIGINT[]) (material) or MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) (texture) cell, got MAP(VARCHAR, VARCHAR)
+
+# A material cell must bind to the material overload, not fall through to the
+# texture reader (the two MAP value types differ, so the binder cannot confuse
+# them).
+query T
+SELECT cityjson_appearance_ids(MAP {'v': [1]}::MAP(VARCHAR, BIGINT[]));
+----
+[1]
 
 # --- orphans and vacuum ------------------------------------------------------
 
@@ -132,44 +159,25 @@ SELECT cityparquet_vacuum_sql('ams') LIKE '%DELETE FROM%NOT IN%';
 ----
 true
 
-# --- regressions from the 2026-07-26 review --------------------------------
+# --- relative geometries hold appearance too --------------------------------
 
-# Solid material appearance nests per shell, then per surface. Reading only the
-# top level returned nothing here, which made vacuum delete live materials.
-query T
-SELECT cityjson_appearance_ids('{"visual":{"values":[[0,0,1],[2,2]]}}', 'material');
-----
-[0, 1, 2]
-
-# MultiSolid nests one level deeper again.
-query T
-SELECT cityjson_appearance_ids('{"visual":{"values":[[[3]],[[4,5]]]}}', 'material');
-----
-[3, 4, 5]
-
-# Solid textures nest shell -> surface -> ring; the ring is still the innermost
-# array and only its first element is a texture id.
-query T
-SELECT cityjson_appearance_ids('{"visual":{"values":[[[[9,1,2,3]]],[[[8,4,5,6]]]]}}', 'texture');
-----
-[8, 9]
-
-# A material referenced only by a geometry template must not be vacuumed: the
-# template sidecar carries its own appearance columns.
+# A material referenced only by a relative geometry must not be vacuumed: the
+# implicit_geometries sidecar carries its own appearance columns.
 #
-# id is BIGINT, matching the real geometry_templates.parquet schema
-# (cityjson_geometry_templates) -- ams.building now carries a reserved `template`
-# STRUCT(id BIGINT, ...) column (spec 02-object-table-schema.mdx), so
-# ReferencedIds compares template.id against this table's id and a VARCHAR here
-# would be a type mismatch, not merely an unrealistic fixture.
+# id is BIGINT, matching the real implicit_geometries.parquet schema
+# (cityjson_implicit_geometries) -- ams.building carries a reserved
+# `implicit_geometry` STRUCT(id BIGINT, ...) column (spec
+# 02-object-table-schema.mdx), so ReferencedIds compares implicit_geometry.id
+# against this table's id and a VARCHAR here would be a type mismatch, not merely
+# an unrealistic fixture.
 statement ok
-CREATE TABLE ams.geometry_templates (id BIGINT, material_lod1_0 VARCHAR);
+CREATE TABLE ams.implicit_geometries (id BIGINT, material_lod1_0 MAP(VARCHAR, BIGINT[]));
 
 statement ok
-INSERT INTO ams.geometry_templates VALUES (1, '{"visual":{"values":[42]}}');
+INSERT INTO ams.implicit_geometries VALUES (1, MAP {'visual': [42]}::MAP(VARCHAR, BIGINT[]));
 
 statement ok
-INSERT INTO ams.materials VALUES (42, 'used-only-by-a-template');
+INSERT INTO ams.materials VALUES (42, 'used-only-by-a-relative-geometry');
 
 statement ok
 PRAGMA cityparquet_init('ams');
@@ -182,17 +190,18 @@ SELECT COUNT(*) FROM ams.materials WHERE id = 42;
 ----
 1
 
-# The template row itself must survive too -- ams.building's `template` column
-# is always NULL (this reader does not populate it yet), so a real reference
-# to id 1 is nowhere for ReferencedIds to find. That must read as
-# "undeterminable", not "nothing references template 1".
+# The relative geometry row itself must survive too -- ams.building's
+# `implicit_geometry` column is always NULL (this reader does not populate it
+# yet), so a real reference to id 1 is nowhere for ReferencedIds to find. That
+# must read as "undeterminable", not "nothing references relative geometry 1".
 query I
-SELECT COUNT(*) FROM ams.geometry_templates;
+SELECT COUNT(*) FROM ams.implicit_geometries;
 ----
 1
 
 # An ordinary attribute that merely starts with the appearance prefix is not an
-# appearance column, so orphan detection must not try to parse it.
+# appearance column, so orphan detection must not hand it to
+# cityjson_appearance_ids -- a VARCHAR attribute matches neither overload.
 statement ok
 CREATE SCHEMA look;
 

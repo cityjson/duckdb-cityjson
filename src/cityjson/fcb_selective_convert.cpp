@@ -5,6 +5,7 @@
 #include "cityjson/column_types.hpp"
 #include "cityjson/lod_table.hpp"
 #include "cityjson/error.hpp"
+#include "cityjson/json_utils.hpp"
 
 #include <fcb/cityjson.hpp>
 #include <fcb/generated/feature_generated.h>
@@ -151,7 +152,14 @@ nlohmann::json DecodeAttributesFiltered(const uint8_t *data, size_t size, const 
 					// Stored as text; re-parse so it nests as real JSON, exactly
 					// as fcb::attributes_to_json does (and non-throwing, so a
 					// malformed payload becomes `discarded` rather than an error).
-					out[col.name] = nlohmann::json::parse(body, body + len, nullptr, /*allow_exceptions=*/false);
+					// Depth-checked like every parse here (json_utils::CheckJsonDepth);
+					// a payload nested too deep becomes `discarded` like a malformed one.
+					try {
+						json_utils::CheckJsonDepth(body, len);
+						out[col.name] = nlohmann::json::parse(body, body + len, nullptr, /*allow_exceptions=*/false);
+					} catch (const CityJSONError &) {
+						out[col.name] = nlohmann::json(nlohmann::json::value_t::discarded);
+					}
 					break;
 				case ::ColumnType::Binary:
 					// Raw bytes have no faithful JSON form; a byte array is what
@@ -316,7 +324,8 @@ bool IsGeometryDerivedColumn(const Column &column) {
 	case ColumnType::GeographicalExtent:
 	case ColumnType::GeometryWKB:
 	case ColumnType::GeometryPropertiesStruct:
-	case ColumnType::AppearanceJson:
+	case ColumnType::MaterialMap:
+	case ColumnType::TextureMap:
 		return true;
 	default:
 		break;
@@ -331,7 +340,7 @@ namespace {
 
 // Structural columns the light path fills from FlatCityBuf table fields (or leaves
 // NULL) rather than from the attribute blob. Derived from GetDefinedColumns() (the
-// head reserved run) and LODTableUtils::GetTrailingColumns() (`template`, `other`)
+// head reserved run) and LODTableUtils::GetTrailingColumns() (`implicit_geometry`, `other`)
 // so the list cannot drift, minus `other` -- which is a defined column but carries
 // only attributes with no column of their own (CityObjectUtils::GetAttributeValue),
 // so it is handled separately.
@@ -375,7 +384,8 @@ FcbFieldMask ComputeFcbFieldMask(const std::vector<Column> &columns, const std::
 			continue;
 		}
 		if (mask.attributes.has_value() && StructuralColumnNames().count(column.name) == 0) {
-			mask.attributes->insert(column.name);
+			// The blob names an attribute by its source name, not its escaped column.
+			mask.attributes->insert(SourceAttributeName(column.name));
 		}
 	}
 

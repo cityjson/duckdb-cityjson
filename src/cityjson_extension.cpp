@@ -12,9 +12,12 @@
 #include "cityjson/cityparquet_insert.hpp"
 #include "cityjson/cityparquet_merge.hpp"
 #include "cityjson/cityparquet_write.hpp"
+#include "cityjson/cityparquet_extensions.hpp"
 #include "cityjson/cityparquet_appearance.hpp"
 #include "cityjson/appearance_table_function.hpp"
 #include "cityjson/copy_function.hpp"
+#include "cityjson/mesh_copy.hpp"
+#include "cityjson/obj_table_function.hpp"
 #ifdef CITYJSON_HAS_FCB
 #include "cityjson/flatcitybuf_table_function.hpp"
 #endif
@@ -62,6 +65,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register CityParquet package writer (cityparquet_write)
 	cityjson::RegisterCityParquetWriteFunction(loader);
+	// DuckDB's JSON type under a name generated SQL can use: `JSON` itself belongs to
+	// the json extension, which this one does not depend on (SqlTypeName).
+	loader.RegisterType("CITYPARQUET_JSON", LogicalType::JSON());
+
+	// Register the extension-namespace helpers the package layer's SQL calls
+	cityjson::RegisterCityParquetExtensionFunctions(loader);
 
 	// Register cityjson_appearance_ids (sidecar ids referenced by an appearance cell)
 	cityjson::RegisterAppearanceIdsFunction(loader);
@@ -69,9 +78,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register the CityParquet appearance sidecar readers
 	cityjson::RegisterAppearanceTableFunctions(loader);
 
+	// Register Wavefront OBJ input (read_obj, obj_metadata)
+	cityjson::RegisterOBJTableFunctions(loader);
+
 	// Register COPY TO functions (cityjson and cityjsonseq formats)
 	cityjson::RegisterCityJSONCopyFunction(loader);
 	cityjson::RegisterCityJSONSeqCopyFunction(loader);
+
+	// Register mesh interchange COPY TO functions (obj; gltf/glb)
+	cityjson::RegisterMeshCopyFunctions(loader);
 
 #ifdef CITYJSON_HAS_FCB
 	// Register FlatCityBuf functions

@@ -1,20 +1,22 @@
 # name: test/sql/cityjson_reserved_attr.test
-# description: Reserved columns take precedence over case-insensitively colliding attributes
+# description: an attribute colliding case-insensitively with a reserved column is the escaped column _<name>
 # group: [sql]
 
 require cityjson
 
 # The source has an attribute "ID" that collides case-insensitively with the reserved
-# "id" column. The reader must still bind (DuckDB column names are case-insensitive) by
-# NOT emitting a dedicated column for the colliding attribute.
+# "id" column. It is the column "_ID" (spec 02-object-table-schema.mdx, "Column naming
+# and reservation rules"), so the reader binds although DuckDB's column names are
+# case-insensitive.
 statement ok
 CREATE TABLE collide AS SELECT * FROM read_cityjson('test/data/reserved_attr_collision.city.json');
 
-# Exactly one reserved id column, and no separate ID attribute column.
-query I
-SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM collide) WHERE lower(column_name) = 'id';
+# One reserved id column, and the attribute under its escaped name.
+query T
+SELECT string_agg(column_name, ',' ORDER BY column_name) FROM (DESCRIBE SELECT * FROM collide)
+WHERE lower(ltrim(column_name, '_')) = 'id';
 ----
-1
+_ID,id
 
 # The structural id column holds the CityObject key, not the attribute value.
 query T
@@ -22,11 +24,11 @@ SELECT id FROM collide;
 ----
 building1
 
-# The colliding attribute's value is preserved in the `other` JSON catch-all.
-query T
-SELECT (other::VARCHAR LIKE '%"ID":"attr-id-value"%') FROM collide;
+# The attribute's value is in its own column, not in `other`.
+query TT
+SELECT "_ID", other FROM collide;
 ----
-true
+attr-id-value	NULL
 
 # Non-colliding attributes still get their own typed column.
 query R

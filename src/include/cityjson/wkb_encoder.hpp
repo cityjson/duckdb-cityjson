@@ -94,6 +94,11 @@ public:
 	 * @param transform Optional transform metadata
 	 * @return WKB bytes as vector
 	 */
+	/**
+	 * Encode one point as WKB PointZ.
+	 */
+	static std::vector<uint8_t> EncodePoint(const std::array<double, 3> &point);
+
 	static std::vector<uint8_t> EncodeAsType(const Geometry &geometry, WKBGeometryType target_type,
 	                                         const std::vector<std::array<double, 3>> &vertices,
 	                                         const std::optional<Transform> &transform = std::nullopt);

@@ -38,13 +38,14 @@ enum class ColumnType {
 	GeometryWKB,              // BLOB - WKB-encoded geometry (3D)
 	GeometryPropertiesStruct, // STRUCT("type" VARCHAR, surfaces JSON,
 	                          //        face_semantics INTEGER[], shells INTEGER[][])
-	AppearanceJson,           // JSON - per-LoD material_lod*/texture_lod* appearance (§11)
+	MaterialMap,              // MAP(VARCHAR, BIGINT[]) - per-LoD material_lod* (§11)
+	TextureMap,               // MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][]) - texture_lod* (§11)
 
 	// Reserved columns the spec requires present (NULL-filled) even when nothing in
 	// this reader's data model populates them yet (02-object-table-schema.mdx).
-	AddressList,   // LIST(STRUCT(street, house_number, po_box, zip_code, city, state,
-	               //             country, free_text VARCHAR, location BLOB))
-	TemplateStruct, // STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
+	AddressList,            // LIST(STRUCT(street, house_number, po_box, zip_code, city, state,
+	                        //             country, free_text VARCHAR, location BLOB))
+	ImplicitGeometryStruct, // STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
 };
 
 /**

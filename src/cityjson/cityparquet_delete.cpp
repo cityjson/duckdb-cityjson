@@ -1,5 +1,6 @@
 #include "cityjson/cityparquet_delete.hpp"
 
+#include "cityjson/function_docs.hpp"
 #include "cityjson/cityparquet_package.hpp"
 #include "cityjson/cityparquet_reconcile.hpp"
 #include "cityjson/cityparquet_sql_common.hpp"
@@ -234,12 +235,22 @@ void RegisterCityParquetDeleteFunctions(ExtensionLoader &loader) {
 	    "cityparquet_delete", PragmaDelete, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
 	pragma.named_parameters["cascade"] = LogicalType(LogicalTypeId::BOOLEAN);
 	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-	loader.RegisterFunction(pragma);
+	RegisterDocumented(loader, std::move(pragma),
+	                   {{"schema", "predicate"},
+	                    "Deletes the objects matching a SQL predicate from a CityParquet package schema, with their "
+	                    "descendants unless cascade = false, prunes them from survivors' hierarchy and re-derives "
+	                    "feature_id and bbox.",
+	                    "PRAGMA cityparquet_delete('delft', 'object_type = ''Building'' AND b3_h_dak_max > 20');",
+	                    {"cityparquet", "package"}});
 
 	ScalarFunction delete_sql("cityparquet_delete_sql",
 	                          {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
 	                          LogicalType(LogicalTypeId::VARCHAR), DeleteSQLScalar);
-	loader.RegisterFunction(delete_sql);
+	RegisterDocumented(loader, std::move(delete_sql),
+	                   {{"schema", "predicate"},
+	                    "Returns the SQL that PRAGMA cityparquet_delete would run, without running it.",
+	                    "cityparquet_delete_sql('delft', 'id = ''x''')",
+	                    {"cityparquet", "package"}});
 }
 
 } // namespace cityjson
