@@ -321,7 +321,7 @@ FROM parquet_kv_metadata('/tmp/cp_test/fresh/building.parquet') WHERE decode(key
 │       file       │ action  │ rows  │  bytes  │
 │     varchar      │ varchar │ int64 │  int64  │
 ├──────────────────┼─────────┼───────┼─────────┤
-│ building.parquet │ written │  2231 │ 3741462 │
+│ building.parquet │ written │  2231 │ 3741091 │
 │ metadata.json    │ written │     0 │    6764 │
 └──────────────────┴─────────┴───────┴─────────┘
 ┌──────────────────────────────────┐
@@ -460,7 +460,7 @@ LEFT JOIN read_parquet('test/data/cityparquet_rs_delft/building.parquet') s USIN
 │       file       │ action  │ rows  │ bytes │
 │     varchar      │ varchar │ int64 │ int64 │
 ├──────────────────┼─────────┼───────┼───────┤
-│ building.parquet │ written │    22 │ 72199 │
+│ building.parquet │ written │    22 │ 73904 │
 │ metadata.json    │ written │     0 │  7078 │
 └──────────────────┴─────────┴───────┴───────┘
 ┌──────────┬───────────────┐
