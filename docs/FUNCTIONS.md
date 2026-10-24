@@ -454,8 +454,8 @@ columns, not re-derived from the geometry:
 
 ```sql
 SELECT geometry_properties_lod2_2.type, geometry_properties_lod2_2.shells
-FROM read_cityjsonseq('roundtrip.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;
--- Solid | [[6]]
+FROM read_cityjsonseq('roundtrip.city.jsonl') WHERE geometry_lod2_2 IS NOT NULL ORDER BY id LIMIT 1;
+-- Solid | [[942]]
 ```
 
 ---
@@ -1128,8 +1128,8 @@ Write the schema back out as a package directory:
 
 ```sql
 SELECT * FROM cityparquet_write('delft', 'out/', crs => 'EPSG:7415');
--- building.parquet | written | 2231 | 4142901
--- metadata.json    | written |    0 |    6721
+-- building.parquet | written | 2231 | 3741091
+-- metadata.json    | written |    0 |    6764
 ```
 
 It takes four named parameters: `crs` (below); `source_format`, which records
@@ -1235,8 +1235,8 @@ DuckDB's first-class `GEOMETRY` type, so `ST_AsText` reads it directly and
 ```sql
 LOAD spatial;
 SELECT ST_AsText(geometry_lod0_0) FROM read_parquet('out/building.parquet')
-WHERE geometry_lod0_0 IS NOT NULL LIMIT 1;
--- MULTIPOLYGON Z (((84593.249625 446461.355 0.475…)))
+WHERE geometry_lod0_0 IS NOT NULL ORDER BY id LIMIT 1;
+-- MULTIPOLYGON Z (((84842.902625 446016.17 -0.4089973754882834, …)))
 ```
 
 Three things worth knowing:
