@@ -8,9 +8,9 @@
     "smoke": "node smoke.mjs"
   },
   "comments": {
-    "@duckdb/duckdb-wasm": "Pinned exactly. 1.33.1-dev64.0 embeds DuckDB v1.5.5 (source_id d8cdaa33fd) -- byte-identical to what `just build` produces here, so the wasm_mvp extension's footer matches. A different duckdb-wasm release means a different DuckDB, and the extension is rejected on its version footer; re-pin only together with the extension's DuckDB version."
+    "@duckdb/duckdb-wasm": "Pinned exactly. 1.33.1-dev65.0 embeds DuckDB v1.5.6 (source_id 069cc9f) -- byte-identical to what `just build` produces here, so the wasm_mvp extension's footer matches. A different duckdb-wasm release means a different DuckDB, and the extension is rejected on its version footer; re-pin only together with the extension's DuckDB version."
   },
   "dependencies": {
-    "@duckdb/duckdb-wasm": "1.33.1-dev64.0"
+    "@duckdb/duckdb-wasm": "1.33.1-dev65.0"
   }
 }

@@ -452,7 +452,7 @@ DuckDB error message rather than a `ReferenceError`. The `eh` artefact loads int
 browser DuckDB-Wasm instance from a local extension repository:
 
 ```sql
-SET custom_extension_repository='http://localhost:8080/ext';  -- <repo>/v1.5.5/wasm_eh/
+SET custom_extension_repository='http://localhost:8080/ext';  -- <repo>/v1.5.6/wasm_eh/
 INSTALL cityjson; LOAD cityjson;
 ```
 
@@ -479,7 +479,7 @@ DuckDB Labs. The build also writes that layout itself, at
   listed explicitly because nothing transitive survives a plain `emcc` invocation.
 
 `just test-wasm` runs `test/wasm/run_wasm_smoke.sh`, a Node harness against
-`@duckdb/duckdb-wasm` (pinned `1.33.1-dev64.0`, carrying DuckDB `v1.5.5`, the submodule's
+`@duckdb/duckdb-wasm` (pinned `1.33.1-dev65.0`, carrying DuckDB `v1.5.6`, the submodule's
 version). It needs `just wasm` to have produced the artefact (override with
 `CITYJSON_WASM_EXT`) and asserts the native build's oracle values. Every part of the
 loading incantation is load-bearing:
