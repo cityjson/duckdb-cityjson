@@ -7,7 +7,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 
 namespace duckdb {
 namespace cityjson {
@@ -24,7 +24,7 @@ std::string Join(const std::vector<std::string> &parts, const std::string &separ
 }
 
 std::string Quoted(const std::string &name) {
-	return KeywordHelper::WriteOptionallyQuoted(name);
+	return SQLIdentifier::ToString(name);
 }
 
 bool HasSurfacesField(const LogicalType &type) {
@@ -39,13 +39,18 @@ bool HasSurfacesField(const LogicalType &type) {
 	return false;
 }
 
-std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &schema, const std::string &table) {
-	std::vector<ColumnInfo> columns;
+CatalogEntry &LookupTable(ClientContext &context, const std::string &schema, const std::string &table) {
 	// The non-templated GetEntry: Catalog::GetEntry<TableCatalogEntry> ODR-uses
 	// TableCatalogEntry::Name and collides with DuckDB's own definition at link time.
-	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, INVALID_CATALOG, schema, table);
-	for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-		columns.push_back({column.Name(), column.Type()});
+	return Catalog::GetEntry(
+	    context, EntryLookupInfo(CatalogType::TABLE_ENTRY,
+	                             ::duckdb::QualifiedName(Identifier(), Identifier(schema), Identifier(table))));
+}
+
+std::vector<ColumnInfo> TableColumns(ClientContext &context, const std::string &schema, const std::string &table) {
+	std::vector<ColumnInfo> columns;
+	for (auto &column : LookupTable(context, schema, table).Cast<TableCatalogEntry>().GetColumns().Logical()) {
+		columns.push_back({column.Name().GetIdentifierName(), column.Type()});
 	}
 	return columns;
 }
@@ -95,7 +100,7 @@ std::string SqlTypeName(const LogicalType &type) {
 	case LogicalTypeId::STRUCT: {
 		vector<string> fields;
 		for (const auto &child : StructType::GetChildTypes(type)) {
-			fields.push_back(Quoted(child.first) + " " + SqlTypeName(child.second));
+			fields.push_back(Quoted(child.first.GetIdentifierName()) + " " + SqlTypeName(child.second));
 		}
 		return "STRUCT(" + StringUtil::Join(fields, ", ") + ")";
 	}
@@ -211,7 +216,7 @@ std::string CrsStatedExpr(const std::string &schema) {
 }
 
 std::string OneCrsPerPackageSQL(const std::string &function, const std::string &schema, const std::string &label) {
-	return "SELECT error('" + function + ": the " + label +
+	return std::string(CHECK_STATEMENT) + "SELECT error('" + function + ": the " + label +
 	       " package declares more than one CRS -- its object-table footers disagree, and a package '\n"
 	       "  'states one CRS for every row it holds; rewrite it with cityparquet_write(..., crs => ...)') FROM (\n"
 	       "  SELECT COUNT(DISTINCT cityparquet_city_field(city, 'crs')) AS n" +
@@ -223,7 +228,8 @@ std::string CrsPreconditionSQL(const CrsCheckWording &wording, const std::string
                                const std::string &source_stated_expr) {
 	const auto &fn = wording.function;
 	const auto &noun = wording.source_noun;
-	return "SELECT error(CASE\n"
+	return std::string(CHECK_STATEMENT) +
+	       "SELECT error(CASE\n"
 	       "  WHEN d IS NOT NULL AND s IS NOT NULL THEN\n"
 	       "    '" +
 	       fn + ": CRS mismatch -- the destination is ' || d || ' and " + noun +

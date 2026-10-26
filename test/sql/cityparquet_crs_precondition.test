@@ -42,10 +42,10 @@ statement ok
 PRAGMA cityparquet_init('src');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('src', '__TEST_DIR__/known', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('src', '{TEST_DIR}/known', crs => 'EPSG:7415');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/known', 'known');
+PRAGMA cityparquet_read('{TEST_DIR}/known', 'known');
 
 query I
 SELECT cityparquet_city_field(city, 'crs') LIKE '%Amersfoort%'
@@ -98,10 +98,10 @@ PRAGMA cityparquet_init('rail');
 
 # No crs => and no footer to carry one, so every file's `crs` is an explicit null.
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('rail', '__TEST_DIR__/unknown');
+SELECT COUNT(*) FROM cityparquet_write('rail', '{TEST_DIR}/unknown');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/unknown', 'unk');
+PRAGMA cityparquet_read('{TEST_DIR}/unknown', 'unk');
 
 query II
 SELECT city LIKE '%"crs":null%', cityparquet_city_field(city, 'crs') IS NULL
@@ -184,10 +184,10 @@ statement ok
 PRAGMA cityparquet_init('md_src');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('md_src', '__TEST_DIR__/m_known', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('md_src', '{TEST_DIR}/m_known', crs => 'EPSG:7415');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/m_known', 'm_known');
+PRAGMA cityparquet_read('{TEST_DIR}/m_known', 'm_known');
 
 # The same CRS on both sides, and the destination carries a sidecar whose footer has no
 # `crs` key at all.
@@ -201,10 +201,10 @@ statement ok
 PRAGMA cityparquet_init('ms_src');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('ms_src', '__TEST_DIR__/m_same', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('ms_src', '{TEST_DIR}/m_same', crs => 'EPSG:7415');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/m_same', 'm_same');
+PRAGMA cityparquet_read('{TEST_DIR}/m_same', 'm_same');
 
 statement ok
 PRAGMA cityparquet_merge('m_known', 'm_same');
@@ -225,10 +225,10 @@ statement ok
 PRAGMA cityparquet_init('mo_src');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('mo_src', '__TEST_DIR__/m_other', crs => 'EPSG:28992');
+SELECT COUNT(*) FROM cityparquet_write('mo_src', '{TEST_DIR}/m_other', crs => 'EPSG:28992');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/m_other', 'm_other');
+PRAGMA cityparquet_read('{TEST_DIR}/m_other', 'm_other');
 
 statement error
 PRAGMA cityparquet_merge('m_known', 'm_other');
@@ -252,10 +252,10 @@ statement ok
 PRAGMA cityparquet_init('mn_src');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('mn_src', '__TEST_DIR__/m_null');
+SELECT COUNT(*) FROM cityparquet_write('mn_src', '{TEST_DIR}/m_null');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/m_null', 'm_null');
+PRAGMA cityparquet_read('{TEST_DIR}/m_null', 'm_null');
 
 statement error
 PRAGMA cityparquet_merge('m_known', 'm_null');
@@ -282,10 +282,10 @@ statement ok
 PRAGMA cityparquet_init('mu_src');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('mu_src', '__TEST_DIR__/m_unk');
+SELECT COUNT(*) FROM cityparquet_write('mu_src', '{TEST_DIR}/m_unk');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/m_unk', 'm_unk');
+PRAGMA cityparquet_read('{TEST_DIR}/m_unk', 'm_unk');
 
 statement ok
 PRAGMA cityparquet_merge('m_null', 'm_unk');

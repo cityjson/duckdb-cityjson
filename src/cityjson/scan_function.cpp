@@ -270,7 +270,7 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 		size_t batch_index = global_state.batch_index.fetch_add(1);
 
 		if (batch_index >= active_plan.BatchCount()) {
-			output.SetCardinality(0);
+			output.SetChildCardinality(0);
 			return;
 		}
 
@@ -282,7 +282,7 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 		size_t rows_to_write = end_row - start_row;
 
 		if (rows_to_write == 0) {
-			output.SetCardinality(0);
+			output.SetChildCardinality(0);
 			return;
 		}
 
@@ -333,7 +333,7 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 			feature_idx = 0;
 		}
 
-		output.SetCardinality(output_row);
+		output.SetChildCardinality(output_row);
 	} else {
 		// Filters are active: scan sequentially from the shared source position and
 		// emit only matching rows until the output chunk is full.
@@ -380,7 +380,7 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 			}
 		}
 
-		output.SetCardinality(output_row);
+		output.SetChildCardinality(output_row);
 	}
 
 	output.Verify();
@@ -389,7 +389,7 @@ static void MaterializedScan(const CityJSONBindData &bind_data, CityJSONGlobalSt
 static void StreamingScan(ClientContext &context, const CityJSONBindData &bind_data, CityJSONGlobalState &global_state,
                           CityJSONLocalState &local_state, DataChunk &output) {
 	if (!global_state.streaming_reader) {
-		output.SetCardinality(0);
+		output.SetChildCardinality(0);
 		return;
 	}
 
@@ -442,7 +442,7 @@ static void StreamingScan(ClientContext &context, const CityJSONBindData &bind_d
 		}
 	}
 
-	output.SetCardinality(output_row);
+	output.SetChildCardinality(output_row);
 	output.Verify();
 }
 

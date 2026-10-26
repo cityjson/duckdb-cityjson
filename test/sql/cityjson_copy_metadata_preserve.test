@@ -12,11 +12,11 @@ require cityjson
 # --- the headline case: a plain COPY, no options at all ---
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/preserved.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/preserved.city.jsonl' (FORMAT cityjsonseq);
 
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjsonseq_metadata('__TEST_DIR__/preserved.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/preserved.city.jsonl');
 ----
 EPSG	7415
 
@@ -27,34 +27,34 @@ EPSG	7415
 # a header with no `metadata` -- silently dropping EPSG:7415.
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/seq_named_city_json.city.json'))
-TO '__TEST_DIR__/seq_named.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/seq_named.city.jsonl' (FORMAT cityjsonseq);
 
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjsonseq_metadata('__TEST_DIR__/seq_named.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/seq_named.city.jsonl');
 ----
 EPSG	7415
 
 # --- it survives a format change too ---
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/preserved.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/preserved.city.json' (FORMAT cityjson);
 
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjson_metadata('__TEST_DIR__/preserved.city.json');
+FROM cityjson_metadata('{TEST_DIR}/preserved.city.json');
 ----
 EPSG	7415
 
 # --- an explicit crs still overrides the inherited one ---
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/override.city.jsonl'
+TO '{TEST_DIR}/override.city.jsonl'
   (FORMAT cityjsonseq, crs 'https://www.opengis.net/def/crs/EPSG/0/28992');
 
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjsonseq_metadata('__TEST_DIR__/override.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/override.city.jsonl');
 ----
 EPSG	28992
 
@@ -63,21 +63,21 @@ statement ok
 CREATE TABLE detached AS SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl');
 
 statement ok
-COPY (SELECT * FROM detached) TO '__TEST_DIR__/detached.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM detached) TO '{TEST_DIR}/detached.city.jsonl' (FORMAT cityjsonseq);
 
 query T
-SELECT reference_system.code FROM cityjsonseq_metadata('__TEST_DIR__/detached.city.jsonl');
+SELECT reference_system.code FROM cityjsonseq_metadata('{TEST_DIR}/detached.city.jsonl');
 ----
 NULL
 
 # --- ...and metadata_from names it explicitly for exactly that case ---
 statement ok
-COPY (SELECT * FROM detached) TO '__TEST_DIR__/from_opt.city.jsonl'
+COPY (SELECT * FROM detached) TO '{TEST_DIR}/from_opt.city.jsonl'
   (FORMAT cityjsonseq, metadata_from 'test/data/delft_subset.city.jsonl');
 
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjsonseq_metadata('__TEST_DIR__/from_opt.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/from_opt.city.jsonl');
 ----
 EPSG	7415
 
@@ -90,15 +90,15 @@ COPY (
   SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
   UNION ALL
   SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
-) TO '__TEST_DIR__/ambiguous.city.jsonl' (FORMAT cityjsonseq);
+) TO '{TEST_DIR}/ambiguous.city.jsonl' (FORMAT cityjsonseq);
 
 query T
-SELECT reference_system.code FROM cityjsonseq_metadata('__TEST_DIR__/ambiguous.city.jsonl');
+SELECT reference_system.code FROM cityjsonseq_metadata('{TEST_DIR}/ambiguous.city.jsonl');
 ----
 NULL
 
 # --- the rest of the metadata header travels too, not just the CRS ---
 query I
-SELECT title IS NOT NULL FROM cityjsonseq_metadata('__TEST_DIR__/preserved.city.jsonl');
+SELECT title IS NOT NULL FROM cityjsonseq_metadata('{TEST_DIR}/preserved.city.jsonl');
 ----
 true

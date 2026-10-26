@@ -69,8 +69,8 @@ CREATE SCHEMA utr;
 statement ok
 CREATE TABLE utr.building AS
   SELECT 'U-' || id AS id, 'U-' || feature_id AS feature_id, object_type,
-         list_transform(parents, x -> 'U-' || x) AS parents,
-         list_transform(children, x -> 'U-' || x) AS children,
+         list_transform(parents, lambda x: 'U-' || x) AS parents,
+         list_transform(children, lambda x: 'U-' || x) AS children,
          children_roles, bbox, geometry_lod2_2, geometry_properties_lod2_2,
          MAP {'visual': [0]}::MAP(VARCHAR, BIGINT[]) AS material_lod2_2, texture_lod2_2
   FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') LIMIT 10;
@@ -95,6 +95,13 @@ PRAGMA cityparquet_init('utr');
 
 statement ok
 PRAGMA cityparquet_merge('ams', 'utr');
+
+# Precondition guards run as CREATE TABLE ... AS SELECT error(...); the script
+# drops that table again, so nothing is left behind in the session.
+query I
+SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = '__cp_check';
+----
+0
 
 # Both packages' objects are present.
 query I

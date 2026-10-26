@@ -10,7 +10,7 @@ require parquet
 # caller's search path. Unless it qualifies names with the caller's catalog, a
 # package that lives anywhere but the default catalog is unreachable.
 statement ok
-ATTACH '__TEST_DIR__/side.db' AS side;
+ATTACH '{TEST_DIR}/side.db' AS side;
 
 statement ok
 CREATE SCHEMA side.pkg;
@@ -26,16 +26,16 @@ statement ok
 PRAGMA cityparquet_init('pkg');
 
 statement ok
-SELECT * FROM cityparquet_write('pkg', '__TEST_DIR__/attached_out', crs => 'EPSG:7415');
+SELECT * FROM cityparquet_write('pkg', '{TEST_DIR}/attached_out', crs => 'EPSG:7415');
 
 query I
-SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/attached_out/building.parquet');
+SELECT COUNT(*) FROM read_parquet('{TEST_DIR}/attached_out/building.parquet');
 ----
 20
 
 # The footer is regenerated as usual — reaching the catalog changes nothing else.
 query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/attached_out/building.parquet')
+SELECT COUNT(*) FROM parquet_kv_metadata('{TEST_DIR}/attached_out/building.parquet')
 WHERE decode(key) = 'city';
 ----
 1

@@ -210,13 +210,13 @@ WHERE feature_id = 'NL.IMBAG.Pand.0503100000005156';
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2'))
-TO '__TEST_DIR__/delft_rt_lossless.city.jsonl'
+TO '{TEST_DIR}/delft_rt_lossless.city.jsonl'
 (FORMAT cityjsonseq, transform_scale '0.001,0.001,0.001');
 
 # All 10 geometries survive and every bbox coordinate matches within 1 cm
 query I
 WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL),
-     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
+     r AS (SELECT id, bbox FROM read_cityjsonseq('{TEST_DIR}/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) AS n
 FROM o JOIN r USING (id)
 WHERE abs(o.bbox.xmin - r.bbox.xmin) < 0.01
@@ -234,7 +234,7 @@ WHERE abs(o.bbox.xmin - r.bbox.xmin) < 0.01
 # discarded EPSG:7415. A test called "lossless" has to check the CRS.
 query TT
 SELECT reference_system.authority, reference_system.code
-FROM cityjsonseq_metadata('__TEST_DIR__/delft_rt_lossless.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/delft_rt_lossless.city.jsonl');
 ----
 EPSG	7415
 
@@ -242,7 +242,7 @@ EPSG	7415
 # same number of vertices survived, not merely the same extent.
 query I
 WITH o AS (SELECT id, geometry_lod2_2 g FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL),
-     r AS (SELECT id, geometry_lod2_2 g FROM read_cityjsonseq('__TEST_DIR__/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
+     r AS (SELECT id, geometry_lod2_2 g FROM read_cityjsonseq('{TEST_DIR}/delft_rt_lossless.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) FROM o JOIN r USING (id)
 WHERE octet_length(o.g) IS DISTINCT FROM octet_length(r.g);
 ----
@@ -254,12 +254,12 @@ WHERE octet_length(o.g) IS DISTINCT FROM octet_length(r.g);
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/delft_rt_wide.city.jsonl'
+TO '{TEST_DIR}/delft_rt_wide.city.jsonl'
 (FORMAT cityjsonseq, transform_scale '0.001,0.001,0.001');
 
 query T
 SELECT column_name
-FROM (DESCRIBE SELECT * FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.jsonl'))
+FROM (DESCRIBE SELECT * FROM read_cityjsonseq('{TEST_DIR}/delft_rt_wide.city.jsonl'))
 WHERE column_name LIKE 'geometry_lod%'
 ORDER BY column_name;
 ----
@@ -272,13 +272,13 @@ geometry_lod2_2
 query II
 SELECT COUNT(*) FILTER (WHERE geometry_lod0_0 IS NOT NULL),
        COUNT(*) FILTER (WHERE geometry_lod2_2 IS NOT NULL)
-FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.jsonl');
+FROM read_cityjsonseq('{TEST_DIR}/delft_rt_wide.city.jsonl');
 ----
 10	10
 
 # Real attributes survive the round trip
 query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/delft_rt_wide.city.jsonl')
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/delft_rt_wide.city.jsonl')
 WHERE b3_dak_type IS NOT NULL;
 ----
 10
@@ -289,17 +289,17 @@ WHERE b3_dak_type IS NOT NULL;
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/delft_cross.city.json'
+TO '{TEST_DIR}/delft_cross.city.json'
 (FORMAT cityjson, transform_scale '0.001,0.001,0.001');
 
 query TI
-SELECT version, city_objects_count FROM cityjson_metadata('__TEST_DIR__/delft_cross.city.json');
+SELECT version, city_objects_count FROM cityjson_metadata('{TEST_DIR}/delft_cross.city.json');
 ----
 2.0	20
 
 query TI
 SELECT object_type, COUNT(*) AS n
-FROM read_cityjson('__TEST_DIR__/delft_cross.city.json')
+FROM read_cityjson('{TEST_DIR}/delft_cross.city.json')
 GROUP BY object_type ORDER BY object_type;
 ----
 Building	10
@@ -317,13 +317,13 @@ BuildingPart	10
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2'))
-TO '__TEST_DIR__/delft_rt_default.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/delft_rt_default.city.jsonl' (FORMAT cityjsonseq);
 
 # Geometry is preserved and every bbox coordinate matches within 1 cm, with no
 # explicit transform passed.
 query I
 WITH o AS (SELECT id, bbox FROM read_cityjsonseq('test/data/delft_subset.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL),
-     r AS (SELECT id, bbox FROM read_cityjsonseq('__TEST_DIR__/delft_rt_default.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
+     r AS (SELECT id, bbox FROM read_cityjsonseq('{TEST_DIR}/delft_rt_default.city.jsonl', lod => '2.2') WHERE geometry_lod2_2 IS NOT NULL)
 SELECT COUNT(*) AS n
 FROM o JOIN r USING (id)
 WHERE abs(o.bbox.xmin - r.bbox.xmin) < 0.01
@@ -338,6 +338,6 @@ WHERE abs(o.bbox.xmin - r.bbox.xmin) < 0.01
 # The written header carries the default transform so readers decode correctly
 query RRR
 SELECT transform_scale.x, transform_scale.y, transform_scale.z
-FROM cityjsonseq_metadata('__TEST_DIR__/delft_rt_default.city.jsonl');
+FROM cityjsonseq_metadata('{TEST_DIR}/delft_rt_default.city.jsonl');
 ----
 0.001000	0.001000	0.001000

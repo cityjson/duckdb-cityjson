@@ -21,42 +21,42 @@ PRAGMA cityparquet_init('ams');
 # never an omitted key, which would assert OGC:CRS84 over RD New coordinates.
 # The full tri-state is pinned in cityparquet_footer.test.
 statement ok
-SELECT * FROM cityparquet_write('ams', '__TEST_DIR__/pkg_nocrs');
+SELECT * FROM cityparquet_write('ams', '{TEST_DIR}/pkg_nocrs');
 
 query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg_nocrs/building.parquet')
+SELECT COUNT(*) FROM parquet_kv_metadata('{TEST_DIR}/pkg_nocrs/building.parquet')
 WHERE decode(key) = 'city' AND decode(value) LIKE '%"crs":null%';
 ----
 1
 
 query I
-SELECT COUNT(*) > 0 FROM cityparquet_write('ams', '__TEST_DIR__/pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) > 0 FROM cityparquet_write('ams', '{TEST_DIR}/pkg', crs => 'EPSG:7415');
 ----
 true
 
 # One data file per non-empty object table.
 query T
-SELECT file FROM cityparquet_write('ams', '__TEST_DIR__/pkg', crs => 'EPSG:7415')
+SELECT file FROM cityparquet_write('ams', '{TEST_DIR}/pkg', crs => 'EPSG:7415')
 WHERE file LIKE '%.parquet' ORDER BY file;
 ----
 building.parquet
 
 # The written package reads back with every row intact.
 query I
-SELECT COUNT(*) FROM read_parquet('__TEST_DIR__/pkg/building.parquet');
+SELECT COUNT(*) FROM read_parquet('{TEST_DIR}/pkg/building.parquet');
 ----
 20
 
 # The footer carries a `city` object with the CRS resolved to PROJJSON.
 query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet')
+SELECT COUNT(*) FROM parquet_kv_metadata('{TEST_DIR}/pkg/building.parquet')
 WHERE key = 'city';
 ----
 1
 
 query T
 SELECT cityparquet_city_field(decode(value), 'version')
-FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet') WHERE key = 'city';
+FROM parquet_kv_metadata('{TEST_DIR}/pkg/building.parquet') WHERE key = 'city';
 ----
 0.1.0-draft
 
@@ -65,20 +65,20 @@ FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet') WHERE key = 'city'
 # footprint. Declaring a solid column would make the whole file unreadable to
 # Shapely, GeoPandas and DuckDB spatial, taking the good column down with it.
 query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet')
+SELECT COUNT(*) FROM parquet_kv_metadata('{TEST_DIR}/pkg/building.parquet')
 WHERE key = 'geo';
 ----
 1
 
 query T
 SELECT cityparquet_city_field(decode(value), 'primary_column')
-FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet') WHERE key = 'geo';
+FROM parquet_kv_metadata('{TEST_DIR}/pkg/building.parquet') WHERE key = 'geo';
 ----
 geometry_lod0_0
 
 # No solid column appears anywhere in the geo object.
 query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet')
+SELECT COUNT(*) FROM parquet_kv_metadata('{TEST_DIR}/pkg/building.parquet')
 WHERE key = 'geo' AND decode(value) LIKE '%PolyhedralSurface%';
 ----
 0
@@ -88,19 +88,19 @@ WHERE key = 'geo' AND decode(value) LIKE '%PolyhedralSurface%';
 # differ -- there is no rule that they match.
 query T
 SELECT cityparquet_city_field(decode(value), 'primary_column')
-FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet') WHERE key = 'city';
+FROM parquet_kv_metadata('{TEST_DIR}/pkg/building.parquet') WHERE key = 'city';
 ----
 geometry_lod2_2
 
 query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/pkg/building.parquet')
+SELECT COUNT(*) FROM parquet_kv_metadata('{TEST_DIR}/pkg/building.parquet')
 WHERE key = 'city' AND decode(value) LIKE '%PolyhedralSurface%';
 ----
 1
 
 # metadata.json is written as a STAC Item.
 query I
-SELECT COUNT(*) FROM cityparquet_write('ams', '__TEST_DIR__/pkg', crs => 'EPSG:7415')
+SELECT COUNT(*) FROM cityparquet_write('ams', '{TEST_DIR}/pkg', crs => 'EPSG:7415')
 WHERE file = 'metadata.json';
 ----
 1
@@ -108,7 +108,7 @@ WHERE file = 'metadata.json';
 # cityparquet_read loads the package back, and recovers the footer that a
 # hand-rolled read_parquet load would have thrown away.
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/pkg', 'back');
+PRAGMA cityparquet_read('{TEST_DIR}/pkg', 'back');
 
 query I
 SELECT COUNT(*) FROM back.building;
@@ -190,12 +190,12 @@ statement ok
 PRAGMA insert_cityjsonseq('pkg', 'test/data/railway_appearance.city.jsonl');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('pkg', '__TEST_DIR__/agg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('pkg', '{TEST_DIR}/agg', crs => 'EPSG:7415');
 
 statement ok
 CREATE TEMP TABLE item AS
   SELECT regexp_replace(content, '\s+', '', 'g') AS compact
-  FROM read_text('__TEST_DIR__/agg/metadata.json');
+  FROM read_text('{TEST_DIR}/agg/metadata.json');
 
 # Every asset declares STAC roles, and the `cityparquet-` prefixed one is how a
 # reader separates object tables from sidecars without parsing filenames
@@ -233,10 +233,10 @@ UPDATE dated.__cityparquet SET city = replace(city, '"source_metadata":{', '"sou
 WHERE table_name = 'building';
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('dated', '__TEST_DIR__/dated_rfc');
+SELECT COUNT(*) FROM cityparquet_write('dated', '{TEST_DIR}/dated_rfc');
 
 query I
-SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"datetime":"2021-06-30T12:34:56+02:00"%' FROM read_text('__TEST_DIR__/dated_rfc/metadata.json');
+SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"datetime":"2021-06-30T12:34:56+02:00"%' FROM read_text('{TEST_DIR}/dated_rfc/metadata.json');
 ----
 true
 
@@ -245,10 +245,10 @@ UPDATE dated.__cityparquet SET city = replace(city, '"referenceDate":"2021-06-30
 WHERE table_name = 'building';
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('dated', '__TEST_DIR__/dated_day');
+SELECT COUNT(*) FROM cityparquet_write('dated', '{TEST_DIR}/dated_day');
 
 query I
-SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"datetime":"2021-06-30T00:00:00Z"%' FROM read_text('__TEST_DIR__/dated_day/metadata.json');
+SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"datetime":"2021-06-30T00:00:00Z"%' FROM read_text('{TEST_DIR}/dated_day/metadata.json');
 ----
 true
 
@@ -356,10 +356,10 @@ statement ok
 PRAGMA cityparquet_init('tpl_only');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('tpl_only', '__TEST_DIR__/tpl', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('tpl_only', '{TEST_DIR}/tpl', crs => 'EPSG:7415');
 
 query I
 SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"city3d:lods":["1.0","2.1"]%'
-FROM read_text('__TEST_DIR__/tpl/metadata.json');
+FROM read_text('{TEST_DIR}/tpl/metadata.json');
 ----
 true

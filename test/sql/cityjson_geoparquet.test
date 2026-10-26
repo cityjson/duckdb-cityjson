@@ -103,16 +103,16 @@ SET VARIABLE city = (SELECT city FROM cityjson_geoparquet_geo('test/data/delft_s
 
 statement ok
 COPY (SELECT geometry_lod0_0 FROM read_cityjsonseq('test/data/delft_subset.city.jsonl') WHERE geometry_lod0_0 IS NOT NULL)
-TO '__TEST_DIR__/delft_geo.parquet' (FORMAT PARQUET, KV_METADATA {geo: getvariable('geo'), city: getvariable('city')});
+TO '{TEST_DIR}/delft_geo.parquet' (FORMAT PARQUET, KV_METADATA {geo: getvariable('geo'), city: getvariable('city')});
 
 query II
 SELECT (value::VARCHAR LIKE '%MultiPolygon Z%'), (value::VARCHAR LIKE '%Amersfoort%')
-FROM parquet_kv_metadata('__TEST_DIR__/delft_geo.parquet') WHERE key = 'geo';
+FROM parquet_kv_metadata('{TEST_DIR}/delft_geo.parquet') WHERE key = 'geo';
 ----
 true	true
 
 query II
 SELECT (decode(value) LIKE '%MultiPolygon Z%'), (decode(value) LIKE '%"orientation_3d":"right-handed"%')
-FROM parquet_kv_metadata('__TEST_DIR__/delft_geo.parquet') WHERE decode(key) = 'city';
+FROM parquet_kv_metadata('{TEST_DIR}/delft_geo.parquet') WHERE decode(key) = 'city';
 ----
 true	true

@@ -47,7 +47,7 @@ true
 
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/delft_subset.city.jsonl'))
-TO '__TEST_DIR__/delft_ge_roundtrip.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/delft_ge_roundtrip.city.jsonl' (FORMAT cityjsonseq);
 
 # With `other`'s geographicalExtent gone, COPY ... TO cityjson falls back to
 # `bbox` (copy_function.cpp) for every object that has one -- so the written
@@ -55,7 +55,7 @@ TO '__TEST_DIR__/delft_ge_roundtrip.city.jsonl' (FORMAT cityjsonseq);
 # declared extent.
 query I
 SELECT content LIKE '%[84593.249625,446459.603,0.47500262451171693,84597.507625,446462.774,3.225002624511717]%'
-FROM read_text('__TEST_DIR__/delft_ge_roundtrip.city.jsonl');
+FROM read_text('{TEST_DIR}/delft_ge_roundtrip.city.jsonl');
 ----
 true
 
@@ -68,7 +68,7 @@ COPY (
     FROM read_cityjsonseq('test/data/delft_subset.city.jsonl')
     WHERE object_type = 'BuildingPart'
 )
-TO '__TEST_DIR__/delft_ge_no_bbox.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/delft_ge_no_bbox.city.jsonl' (FORMAT cityjsonseq);
 
 # The object's own JSON body has no geographicalExtent key at all -- if the
 # fallback had fired wrongly it would insert alphabetically before "geometry" and
@@ -78,6 +78,6 @@ TO '__TEST_DIR__/delft_ge_no_bbox.city.jsonl' (FORMAT cityjsonseq);
 # assertion is scoped to this one CityObject's body rather than the whole file.)
 query I
 SELECT content LIKE '%"NL.IMBAG.Pand.0503100000012869-0":{"geometry":[],"parents":["NL.IMBAG.Pand.0503100000012869"],"type":"BuildingPart"}%'
-FROM read_text('__TEST_DIR__/delft_ge_no_bbox.city.jsonl');
+FROM read_text('{TEST_DIR}/delft_ge_no_bbox.city.jsonl');
 ----
 true

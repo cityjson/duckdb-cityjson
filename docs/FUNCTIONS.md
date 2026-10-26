@@ -12,6 +12,10 @@ FROM duckdb_functions() WHERE function_name LIKE 'cityparquet%';
 
 `COPY` formats have no entry there; they are documented only here.
 
+Any parameter can be passed by name with `:=`, the positional ones included, under
+the name `duckdb_functions()` lists: `read_cityjson(path := 'a.city.json', lod := '2.2')`,
+`cityjson_wkb_extent(wkb := geometry_lod2_2)`. Pragmas take named parameters with `=`.
+
 The examples run against two public Delft datasets, so you can paste any of them
 into a DuckDB shell and get the same numbers back:
 
@@ -859,23 +863,13 @@ from the source.
 
 ```sql
 CREATE SCHEMA delft;
-```
-
-```sql
 PRAGMA cityparquet_init('delft');
-```
-
-```sql
 PRAGMA insert_cityjsonseq('delft', 'delft.city.jsonl');
-```
-
-```sql
 SELECT * FROM cityparquet_write('delft', 'out/');   -- no crs => needed
 ```
 
-> **Submit these as separate statements.** DuckDB expands *every* pragma in a
-> submitted script before running *any* of it, so a generator batched with the
-> `CREATE SCHEMA` that precedes it sees a catalog without that schema and fails.
+Each pragma expands when it runs, so one script can hold all four: every
+statement sees what the ones before it did.
 
 ### Adding a CityJSON file
 
@@ -988,17 +982,8 @@ have a table of its own, and such a class is refused.
 
 ```sql
 CREATE SCHEMA noise;
-```
-
-```sql
 PRAGMA cityparquet_init('noise');
-```
-
-```sql
 PRAGMA insert_cityjson('noise', 'test/data/noise_data.city.json');
-```
-
-```sql
 SELECT id, object_type, feature_id FROM noise.noise;
 -- thesegment_1 | noise_NoiseCityFurnitureSegment | a_noisy_bench
 -- thesegment_2 | noise_NoiseCityFurnitureSegment | a_noisy_bench
@@ -1143,7 +1128,7 @@ Write the schema back out as a package directory:
 
 ```sql
 SELECT * FROM cityparquet_write('delft', 'out/', crs => 'EPSG:7415');
--- building.parquet | written | 2231 | 3755583
+-- building.parquet | written | 2231 | 3741091
 -- metadata.json    | written |    0 |    6764
 ```
 
@@ -1315,18 +1300,6 @@ SELECT insert_cityjson_sql('delft', 'tile.city.json');
 There is no `insert_cityjsonseq_sql` or `insert_flatcitybuf_sql`, and no
 `cityparquet_read_sql` — inspect those by running them in a transaction you roll
 back instead.
-
-### Batching caveats
-
-DuckDB expands every pragma in a submitted script *before* running any of it, so
-each generator sees the catalog and data as they were **before the batch**. The
-generated statements are idempotent, but two things a generator cannot do:
-
-- **Preconditions only see pre-batch state.** Two inserts in one submission whose
-  files share an object id will not catch each other; only the next
-  `cityparquet_validate` will.
-- **Cross-file derived state settles on the last reconcile**, covering the tables
-  that generator knew about.
 
 ---
 
@@ -1529,6 +1502,7 @@ Three things the table cannot say in a cell:
   COPY (SELECT * FROM read_obj('test/data/obj/cube.obj', lod := '2.2', appearance := 'sidecar'))
   TO 'tx.obj' (FORMAT obj, materials_query 'SELECT * FROM mats');
   -- Binder Error: materials_query failed: Catalog Error: Table with name mats does not exist!
+  -- Did you mean "memory.mats"?
   ```
 
 - **An `o` name is one OBJ token.** Whitespace in an id is replaced by `_`, so an id

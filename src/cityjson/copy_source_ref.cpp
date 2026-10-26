@@ -33,7 +33,7 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 		                                             "read_obj"};
 		bool is_read_function = false;
 		for (auto *name : kReadFunctions) {
-			if (call.function_name == name) {
+			if (call.FunctionName() == name) {
 				is_read_function = true;
 				break;
 			}
@@ -43,27 +43,44 @@ void CollectFromTableRef(const TableRef &ref, std::vector<CopySourceRef> &out) {
 		}
 
 		CopySourceRef found;
-		found.kind = ReaderKindForFunction(call.function_name);
+		found.kind = ReaderKindForFunction(call.FunctionName().GetIdentifierName());
 
-		// Only a literal path is recoverable. A computed or parameterised argument
-		// is not knowable at bind time, and a wrong guess is worse than none.
-		if (call.children.empty() || call.children[0]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+		// Only a string literal path is recoverable. A computed or parameterised
+		// argument is not knowable at bind time, and a wrong guess is worse than none.
+		auto &arguments = call.GetArguments();
+		auto string_literal = [](const FunctionArgument &argument) -> optional_ptr<const Literal> {
+			auto &expression = argument.GetExpression();
+			if (expression.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+				return nullptr;
+			}
+			auto &literal = expression.Cast<ConstantExpression>().GetLiteral();
+			return literal.kind == LiteralKind::STRING ? &literal : nullptr;
+		};
+		// The path is the first argument, or the one named `path`.
+		optional_ptr<const FunctionArgument> path_argument;
+		for (auto &argument : arguments) {
+			if (argument.HasName() ? argument.GetName() == "path" : &argument == &arguments[0]) {
+				path_argument = &argument;
+				break;
+			}
+		}
+		if (!path_argument) {
 			return;
 		}
-		auto &constant = call.children[0]->Cast<ConstantExpression>();
-		if (constant.value.IsNull() || constant.value.type().id() != LogicalTypeId::VARCHAR) {
+		auto path = string_literal(*path_argument);
+		if (!path) {
 			return;
 		}
-		found.path = StringValue::Get(constant.value);
+		found.path = path->text;
 
-		// Named parameters are children with an alias. Only `appearance` matters here.
-		for (auto &child : call.children) {
-			if (child->alias != "appearance" || child->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+		// Only the `appearance` named parameter matters here.
+		for (auto &argument : arguments) {
+			if (argument.GetName() != "appearance") {
 				continue;
 			}
-			auto &c = child->Cast<ConstantExpression>();
-			if (!c.value.IsNull() && c.value.type().id() == LogicalTypeId::VARCHAR) {
-				found.sidecar_appearance = StringUtil::Lower(StringValue::Get(c.value)) == "sidecar";
+			auto appearance = string_literal(argument);
+			if (appearance) {
+				found.sidecar_appearance = StringUtil::Lower(appearance->text) == "sidecar";
 			}
 		}
 		out.push_back(std::move(found));

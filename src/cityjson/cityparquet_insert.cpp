@@ -477,7 +477,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			destination_ids.push_back("SELECT id FROM " + QualifiedName(schema, table));
 		}
 		if (!destination_ids.empty()) { // a package being started holds nothing to collide with
-			sql += "SELECT error('insert_cityjson: duplicate id ' || id ||\n"
+			sql += std::string(CHECK_STATEMENT) +
+			       "SELECT error('insert_cityjson: duplicate id ' || id ||\n"
 			       "  ' -- the destination already contains it; ids are identity, so the insert is refused rather '\n"
 			       "  'than renaming silently') FROM " +
 			       routed + " s WHERE s.id IN (" + Join(destination_ids, " UNION ALL ") + ");\n";
@@ -495,7 +496,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		for (const auto &table : destination_tables) {
 			known.push_back("SELECT id FROM " + QualifiedName(schema, table));
 		}
-		sql += "SELECT error('insert_cityjson: unresolved parent ' || p ||\n"
+		sql += std::string(CHECK_STATEMENT) +
+		       "SELECT error('insert_cityjson: unresolved parent ' || p ||\n"
 		       "  ' -- named by ' || id || ', but present neither in the rows being inserted nor in the '\n"
 		       "  'destination; inserting would commit a package that fails its own hierarchy check') FROM (\n"
 		       "  SELECT id, u.p AS p FROM " +
@@ -569,7 +571,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			                     "' in '" + path + "' is not an extension name, but it starts with '" + entry.first +
 			                     "_', the prefix of an extension namespace the package declares; on export it "
 			                     "would be indistinguishable from an extension name";
-			sql += "SELECT error(" + Literal(message) + ") WHERE " + DeclaresNamespaceExpr(schema, entry.first) + ";\n";
+			sql += std::string(CHECK_STATEMENT) + "SELECT error(" + Literal(message) + ") WHERE " +
+			       DeclaresNamespaceExpr(schema, entry.first) + ";\n";
 		}
 	}
 	// Second, a namespace this source brings into the package must not be the prefix
@@ -592,8 +595,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 				const auto lowered = StringUtil::Lower(column.name);
 				if (!IsReservedColumnName(column.name) && lowered.size() > prefix.size() &&
 				    lowered.compare(0, prefix.size(), prefix) == 0) {
-					sql +=
-					    "SELECT error(" + message("attribute", Literal(column.name)) + ") WHERE " + undeclared + ";\n";
+					sql += std::string(CHECK_STATEMENT) + "SELECT error(" + message("attribute", Literal(column.name)) +
+					       ") WHERE " + undeclared + ";\n";
 				}
 				if (MatchesLodSuffix(lowered, "geometry_properties_lod") && HasSurfacesField(column.type)) {
 					// Cast: a package loaded from a file that declares the JSON logical type
@@ -605,12 +608,13 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			types.push_back("SELECT object_type AS t FROM " + QualifiedName(schema, table));
 		}
 		if (!types.empty()) { // a package being started holds no object type to collide with
-			sql += "SELECT error(" + message("object type", "t") + ") FROM (" + Join(types, " UNION ALL ") +
-			       ") WHERE starts_with(t, " + Literal(prefix) + ") AND " + undeclared + ";\n";
+			sql += std::string(CHECK_STATEMENT) + "SELECT error(" + message("object type", "t") + ") FROM (" +
+			       Join(types, " UNION ALL ") + ") WHERE starts_with(t, " + Literal(prefix) + ") AND " + undeclared +
+			       ";\n";
 		}
 		if (!surfaces.empty()) {
 			// `surfaces` is JSON text; its writers differ in whitespace, never in keys.
-			sql += "SELECT error(" +
+			sql += std::string(CHECK_STATEMENT) + "SELECT error(" +
 			       message("semantic surface type",
 			               "regexp_extract(s, " + Literal("\"type\"\\s*:\\s*\"(" + prefix + "[^\"]*)\"") + ", 1)") +
 			       ") FROM (" + Join(surfaces, " UNION ALL ") + ") WHERE regexp_matches(s, " +
@@ -619,7 +623,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		// And the package must not already declare this namespace for another extension.
 		// cityparquet_merge_extensions refuses that; running it here, before anything is
 		// written, makes the refusal leave the package untouched.
-		sql += "SELECT COUNT(cityparquet_merge_extensions(city, " +
+		sql += std::string(CHECK_STATEMENT) + "SELECT COUNT(cityparquet_merge_extensions(city, " +
 		       Literal(DeclarationsToFooterJson(extension.declarations).dump()) + ")) FROM " +
 		       QualifiedName(schema, "__cityparquet") + " WHERE role = 'object';\n";
 	}
@@ -669,22 +673,13 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			       std::string(kStage) + " WHERE false;\n";
 			// No FROM on the outer SELECT, deliberately. With `ANY_VALUE(city) FROM
 			// __cityparquet` up here the statement is an aggregate query, which yields
-			// exactly one row whatever the WHERE says -- so the NOT EXISTS guard never
-			// fired and two pragmas batched in one submission each added a row for the
-			// same table. The aggregate belongs in a scalar subquery.
+			// exactly one row whatever the WHERE says, so the NOT EXISTS guard would never
+			// fire. The aggregate belongs in a scalar subquery.
 			sql += "INSERT INTO " + QualifiedName(schema, "__cityparquet") +
 			       " (table_name, file_name, role, city) SELECT " + Literal(table) + ", " +
 			       Literal(table + ".parquet") + ", 'object', (SELECT ANY_VALUE(city) FROM " +
 			       QualifiedName(schema, "__cityparquet") + ") WHERE NOT EXISTS (SELECT 1 FROM " +
 			       QualifiedName(schema, "__cityparquet") + " WHERE table_name = " + Literal(table) + ");\n";
-			// The CREATE above is IF NOT EXISTS, so when two inserts are batched in one
-			// submission -- both seeing the pre-batch catalog, both taking this branch --
-			// the second one's CREATE does nothing and its own columns would never be
-			// added. Evolving unconditionally afterwards makes the branch idempotent.
-			for (const auto &column : facts.columns) {
-				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ADD COLUMN IF NOT EXISTS " +
-				       Quoted(column.name) + " " + SqlTypeName(ColumnTypeUtils::ToDuckDBType(column.kind)) + ";\n";
-			}
 			// It does not exist for the reconcile that follows either, so its columns are
 			// handed over rather than looked up.
 			pending[table] = PendingTable {incoming_geometry_columns, incoming_has_bbox, incoming_has_children_roles};
@@ -697,8 +692,6 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			const auto type = ColumnTypeUtils::ToDuckDBType(column.kind);
 			const auto *match = FindColumn(existing, column.name);
 			if (match == nullptr) {
-				// IF NOT EXISTS because two inserts batched in one submission each see the
-				// pre-batch catalog and would otherwise collide on the same new column.
 				sql += "ALTER TABLE " + QualifiedName(schema, table) + " ADD COLUMN IF NOT EXISTS " +
 				       Quoted(column.name) + " " + SqlTypeName(type) + ";\n";
 				existing.push_back({column.name, type});
@@ -722,8 +715,8 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 			}
 		}
 		if (evolved) {
-			// An ALTER above is invisible to BuildReconcileSQL, which reads the pre-batch
-			// catalog: it would compute the bbox from the table's *old* geometry columns
+			// An ALTER above is invisible to BuildReconcileSQL, which reads the catalog as
+			// it was before this script runs: it would compute the bbox from the table's *old* geometry columns
 			// and so ignore the very column the incoming rows carry their geometry in,
 			// setting their bbox to NULL. `existing` is the post-ALTER shape.
 			PendingTable entry;
@@ -806,7 +799,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		// dst_max + 1 - src_min, not dst_max + 1: a source id may be negative, and adding
 		// dst_max + 1 alone could land back inside the destination's occupied range.
 		// Computed by the generated SQL because it depends on row data, which a
-		// generator's pre-batch view of the database cannot see.
+		// generator does not read.
 		sql += "CREATE OR REPLACE TEMP TABLE " + OffsetTable(sidecar) +
 		       " AS SELECT (SELECT coalesce(max(id), -1) FROM " + QualifiedName(schema, sidecar) +
 		       ") + 1 - (SELECT coalesce(min(id), 0) FROM " + StageTable(sidecar) + ") AS off;\n";
@@ -903,6 +896,7 @@ std::string BuildInsertSQL(ClientContext &context, const std::string &schema, co
 		sql += "DROP TABLE IF EXISTS " + StageTable(sidecar) + ";\n";
 		sql += "DROP TABLE IF EXISTS " + OffsetTable(sidecar) + ";\n";
 	}
+	sql += CHECK_CLEANUP;
 	return sql;
 }
 
@@ -962,10 +956,13 @@ void RegisterOne(ExtensionLoader &loader, const char *name, pragma_query_t query
                  const char *example) {
 	auto pragma = PragmaFunction::PragmaCall(
 	    name, query, {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)});
-	pragma.named_parameters["create_tables"] = LogicalType(LogicalTypeId::BOOLEAN);
-	pragma.named_parameters["tables"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-	pragma.named_parameters["lod"] = LogicalType(LogicalTypeId::VARCHAR);
-	pragma.named_parameters["sample_lines"] = LogicalType(LogicalTypeId::BIGINT);
+	// Named parameters: a call that leaves one out does not pass it.
+	pragma.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("create_tables", LogicalType(LogicalTypeId::BOOLEAN));
+		options.Add("tables", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
+		options.Add("lod", LogicalType(LogicalTypeId::VARCHAR));
+		options.Add("sample_lines", LogicalType(LogicalTypeId::BIGINT));
+	});
 	RegisterDocumented(loader, std::move(pragma),
 	                   {{"schema", "path"},
 	                    std::string("Inserts a ") + source +

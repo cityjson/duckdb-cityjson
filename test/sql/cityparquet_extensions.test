@@ -171,17 +171,17 @@ SELECT COUNT(*) FROM ext.building;
 # --- the package files -------------------------------------------------------
 
 statement ok
-SELECT * FROM cityparquet_write('ext', '__TEST_DIR__/ext_pkg', crs => 'EPSG:7415');
+SELECT * FROM cityparquet_write('ext', '{TEST_DIR}/ext_pkg', crs => 'EPSG:7415');
 
 query I
-SELECT COUNT(*) FROM parquet_kv_metadata('__TEST_DIR__/ext_pkg/building.parquet')
+SELECT COUNT(*) FROM parquet_kv_metadata('{TEST_DIR}/ext_pkg/building.parquet')
 WHERE decode(key) = 'city'
   AND decode(value) LIKE '%"extensions":{"energy":{"name":"Energy","url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}%';
 ----
 1
 
 query T
-SELECT name FROM parquet_schema('__TEST_DIR__/ext_pkg/building.parquet') WHERE name LIKE '%heatCapacity%';
+SELECT name FROM parquet_schema('{TEST_DIR}/ext_pkg/building.parquet') WHERE name LIKE '%heatCapacity%';
 ----
 energy_heatCapacity
 
@@ -189,18 +189,18 @@ energy_heatCapacity
 query TT
 SELECT regexp_replace(content, '\s+', '', 'g') LIKE '%"city3d:co_types":["+Building","Building","CityFurniture"]%',
        content LIKE '%energy_Building%'
-FROM read_text('__TEST_DIR__/ext_pkg/metadata.json');
+FROM read_text('{TEST_DIR}/ext_pkg/metadata.json');
 ----
 true	false
 
 # --- export: the prefix becomes `+` again ------------------------------------
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/ext_pkg', 'back');
+PRAGMA cityparquet_read('{TEST_DIR}/ext_pkg', 'back');
 
 statement ok
 COPY (SELECT * FROM back.building WHERE id LIKE 'house-%')
-TO '__TEST_DIR__/ext_out.city.jsonl' (
+TO '{TEST_DIR}/ext_out.city.jsonl' (
     FORMAT cityjsonseq,
     metadata_query 'SELECT max(cityparquet_city_field(city, ''extensions'')) AS extensions FROM back.__cityparquet WHERE role = ''object''');
 
@@ -211,18 +211,18 @@ SELECT content LIKE '%"+heatCapacity":250.5%',
        regexp_replace(content, '\s+', '', 'g')
            LIKE '%"extensions":{"Energy":{"url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}%',
        content LIKE '%energy\_%' ESCAPE '\'
-FROM read_text('__TEST_DIR__/ext_out.city.jsonl');
+FROM read_text('{TEST_DIR}/ext_out.city.jsonl');
 ----
 true	true	true	true	false
 
 query TT
-SELECT id, object_type FROM read_cityjsonseq('__TEST_DIR__/ext_out.city.jsonl') ORDER BY id;
+SELECT id, object_type FROM read_cityjsonseq('{TEST_DIR}/ext_out.city.jsonl') ORDER BY id;
 ----
 house-1	Building
 house-2	+Building
 
 query I
-SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('__TEST_DIR__/ext_out.city.jsonl'))
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM read_cityjsonseq('{TEST_DIR}/ext_out.city.jsonl'))
 WHERE column_name = '+heatCapacity';
 ----
 1
@@ -231,24 +231,24 @@ WHERE column_name = '+heatCapacity';
 # through a declared namespace.
 statement ok
 COPY (SELECT * FROM back.building WHERE id = 'house-1')
-TO '__TEST_DIR__/ext_undeclared.city.jsonl' (FORMAT cityjsonseq, crs 'EPSG:7415');
+TO '{TEST_DIR}/ext_undeclared.city.jsonl' (FORMAT cityjsonseq, crs 'EPSG:7415');
 
 query TT
 SELECT content LIKE '%"energy_heatCapacity":250.5%', content LIKE '%"extensions"%'
-FROM read_text('__TEST_DIR__/ext_undeclared.city.jsonl');
+FROM read_text('{TEST_DIR}/ext_undeclared.city.jsonl');
 ----
 true	false
 
 # A CityJSON-to-CityJSON copy carries the source's own `extensions` member across.
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/extension_energy.city.json'))
-TO '__TEST_DIR__/ext_pass.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/ext_pass.city.json' (FORMAT cityjson);
 
 query TT
 SELECT regexp_replace(content, '\s+', '', 'g')
            LIKE '%"extensions":{"Energy":{"url":"https://example.org/extensions/energy.ext.json","version":"3.0"}}%',
        content LIKE '%"+heatCapacity"%'
-FROM read_text('__TEST_DIR__/ext_pass.city.json');
+FROM read_text('{TEST_DIR}/ext_pass.city.json');
 ----
 true	true
 
@@ -265,7 +265,7 @@ statement ok
 PRAGMA cityparquet_init('raw');
 
 statement error
-SELECT * FROM cityparquet_write('raw', '__TEST_DIR__/raw_pkg', crs => 'EPSG:7415');
+SELECT * FROM cityparquet_write('raw', '{TEST_DIR}/raw_pkg', crs => 'EPSG:7415');
 ----
 carries CityJSON's extension marker
 

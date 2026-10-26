@@ -21,10 +21,10 @@ SELECT COUNT(*) FROM read_cityjsonseq('test/data/sample.city.jsonl');
 # Generate source CityJSON from CityJSONSeq
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
-TO '__TEST_DIR__/source.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/source.city.json' (FORMAT cityjson);
 
 query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/source.city.json');
+SELECT COUNT(*) FROM read_cityjson('{TEST_DIR}/source.city.json');
 ----
 2
 
@@ -34,21 +34,21 @@ SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/source.city.json');
 
 # CityJSON → CityJSON
 statement ok
-COPY (SELECT * FROM read_cityjson('__TEST_DIR__/source.city.json'))
-TO '__TEST_DIR__/cj_to_cj.city.json' (FORMAT cityjson);
+COPY (SELECT * FROM read_cityjson('{TEST_DIR}/source.city.json'))
+TO '{TEST_DIR}/cj_to_cj.city.json' (FORMAT cityjson);
 
 query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/cj_to_cj.city.json');
+SELECT COUNT(*) FROM read_cityjson('{TEST_DIR}/cj_to_cj.city.json');
 ----
 2
 
 # CityJSON → CityJSONSeq
 statement ok
-COPY (SELECT * FROM read_cityjson('__TEST_DIR__/source.city.json'))
-TO '__TEST_DIR__/cj_to_cjseq.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM read_cityjson('{TEST_DIR}/source.city.json'))
+TO '{TEST_DIR}/cj_to_cjseq.city.jsonl' (FORMAT cityjsonseq);
 
 query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cj_to_cjseq.city.jsonl');
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/cj_to_cjseq.city.jsonl');
 ----
 2
 
@@ -59,20 +59,20 @@ SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cj_to_cjseq.city.jsonl');
 # CityJSONSeq → CityJSON
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
-TO '__TEST_DIR__/cjseq_to_cj.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/cjseq_to_cj.city.json' (FORMAT cityjson);
 
 query I
-SELECT COUNT(*) FROM read_cityjson('__TEST_DIR__/cjseq_to_cj.city.json');
+SELECT COUNT(*) FROM read_cityjson('{TEST_DIR}/cjseq_to_cj.city.json');
 ----
 2
 
 # CityJSONSeq → CityJSONSeq
 statement ok
 COPY (SELECT * FROM read_cityjsonseq('test/data/sample.city.jsonl'))
-TO '__TEST_DIR__/cjseq_to_cjseq.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/cjseq_to_cjseq.city.jsonl' (FORMAT cityjsonseq);
 
 query I
-SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cjseq_to_cjseq.city.jsonl');
+SELECT COUNT(*) FROM read_cityjsonseq('{TEST_DIR}/cjseq_to_cjseq.city.jsonl');
 ----
 2
 
@@ -82,23 +82,23 @@ SELECT COUNT(*) FROM read_cityjsonseq('__TEST_DIR__/cjseq_to_cjseq.city.jsonl');
 
 # CityJSON metadata
 query T
-SELECT version FROM cityjson_metadata('__TEST_DIR__/cj_to_cj.city.json');
+SELECT version FROM cityjson_metadata('{TEST_DIR}/cj_to_cj.city.json');
 ----
 2.0
 
 query T
-SELECT version FROM cityjson_metadata('__TEST_DIR__/cjseq_to_cj.city.json');
+SELECT version FROM cityjson_metadata('{TEST_DIR}/cjseq_to_cj.city.json');
 ----
 2.0
 
 # CityJSONSeq metadata
 query T
-SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/cj_to_cjseq.city.jsonl');
+SELECT version FROM cityjsonseq_metadata('{TEST_DIR}/cj_to_cjseq.city.jsonl');
 ----
 2.0
 
 query T
-SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/cjseq_to_cjseq.city.jsonl');
+SELECT version FROM cityjsonseq_metadata('{TEST_DIR}/cjseq_to_cjseq.city.jsonl');
 ----
 2.0
 
@@ -109,7 +109,7 @@ SELECT version FROM cityjsonseq_metadata('__TEST_DIR__/cjseq_to_cjseq.city.jsonl
 # Check CityJSON output preserves attributes
 query TI
 SELECT object_type, yearOfConstruction
-FROM read_cityjson('__TEST_DIR__/cjseq_to_cj.city.json')
+FROM read_cityjson('{TEST_DIR}/cjseq_to_cj.city.json')
 ORDER BY yearOfConstruction;
 ----
 Building	2020
@@ -118,7 +118,7 @@ Building	2021
 # Check CityJSONSeq output preserves attributes
 query TI
 SELECT object_type, yearOfConstruction
-FROM read_cityjsonseq('__TEST_DIR__/cj_to_cjseq.city.jsonl')
+FROM read_cityjsonseq('{TEST_DIR}/cj_to_cjseq.city.jsonl')
 ORDER BY yearOfConstruction;
 ----
 Building	2020

@@ -59,11 +59,11 @@ SELECT COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json') WHE
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/railway_vegetation.city.json'))
-TO '__TEST_DIR__/vegetation.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/vegetation.city.json' (FORMAT cityjson);
 
 statement ok
 COPY (SELECT * FROM read_cityjson('test/data/railway_vegetation.city.json'))
-TO '__TEST_DIR__/vegetation.city.jsonl' (FORMAT cityjsonseq);
+TO '{TEST_DIR}/vegetation.city.jsonl' (FORMAT cityjsonseq);
 
 # The instance is a GeometryInstance again, its one boundary an index into the written
 # vertices. Points are compared to 1e-9: the written vertices are quantised against
@@ -71,7 +71,7 @@ TO '__TEST_DIR__/vegetation.city.jsonl' (FORMAT cityjsonseq);
 # away.
 query I
 SELECT regexp_matches(content, '"GMLID_SO092422_3593_9527":\{"attributes":\{[^}]*\},"geometry":\[\{"boundaries":\[[0-9]+\],"template":2,"transformationMatrix":\[1\.0,0\.0,0\.0,0\.0,0\.0,1\.0,0\.0,0\.0,0\.0,0\.0,1\.0,0\.0,0\.0,0\.0,0\.0,1\.0\],"type":"GeometryInstance"\}\]')
-FROM read_text('__TEST_DIR__/vegetation.city.json');
+FROM read_text('{TEST_DIR}/vegetation.city.json');
 ----
 true
 
@@ -83,7 +83,7 @@ SELECT COUNT(*) FROM (
   EXCEPT ALL
   SELECT id, implicit_geometry.id, implicit_geometry.transformationMatrix,
          [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
-  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e FROM read_cityjson('__TEST_DIR__/vegetation.city.json')));
+  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e FROM read_cityjson('{TEST_DIR}/vegetation.city.json')));
 ----
 0
 
@@ -95,7 +95,7 @@ SELECT COUNT(*) FROM (
   EXCEPT ALL
   SELECT id, implicit_geometry.id, implicit_geometry.transformationMatrix,
          [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
-  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e FROM read_cityjsonseq('__TEST_DIR__/vegetation.city.jsonl')));
+  FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e FROM read_cityjsonseq('{TEST_DIR}/vegetation.city.jsonl')));
 ----
 0
 
@@ -104,7 +104,7 @@ query I
 SELECT COUNT(*) FROM (
   SELECT * FROM cityjson_implicit_geometries('test/data/railway_vegetation.city.json')
   EXCEPT ALL
-  SELECT * FROM cityjson_implicit_geometries('__TEST_DIR__/vegetation.city.json'));
+  SELECT * FROM cityjson_implicit_geometries('{TEST_DIR}/vegetation.city.json'));
 ----
 0
 
@@ -112,7 +112,7 @@ query I
 SELECT COUNT(*) FROM (
   SELECT * FROM cityjson_implicit_geometries('test/data/railway_vegetation.city.json')
   EXCEPT ALL
-  SELECT * FROM cityjson_implicit_geometries('__TEST_DIR__/vegetation.city.jsonl'));
+  SELECT * FROM cityjson_implicit_geometries('{TEST_DIR}/vegetation.city.jsonl'));
 ----
 0
 
@@ -154,15 +154,15 @@ WHERE t.geometry_lod3_0 = pt.geometry_lod3_0 AND s.implicit_geometry.point = p.i
 15
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('v', '__TEST_DIR__/vegetation_pkg', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('v', '{TEST_DIR}/vegetation_pkg', crs => 'EPSG:7415');
 
 statement ok
-PRAGMA cityparquet_read('__TEST_DIR__/vegetation_pkg', 'vr');
+PRAGMA cityparquet_read('{TEST_DIR}/vegetation_pkg', 'vr');
 
 # Back to CityJSON from the package: the sidecar rows become the geometry-templates,
 # numbered by position, and each instance's template follows its id.
 statement ok
-COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/vegetation_pkg.city.jsonl'
+COPY (SELECT * FROM vr.vegetation) TO '{TEST_DIR}/vegetation_pkg.city.jsonl'
 (FORMAT cityjsonseq, crs 'EPSG:7415', implicit_geometries_query 'SELECT * FROM vr.implicit_geometries',
  materials_query 'SELECT * FROM vr.materials', textures_query 'SELECT * FROM vr.textures');
 
@@ -174,15 +174,15 @@ SELECT COUNT(*) FROM (
   EXCEPT ALL
   SELECT id, implicit_geometry.transformationMatrix, [round(e.xmin, 9), round(e.ymin, 9), round(e.zmin, 9)]
   FROM (SELECT *, cityjson_wkb_extent(implicit_geometry.point) AS e
-        FROM read_cityjsonseq('__TEST_DIR__/vegetation_pkg.city.jsonl')));
+        FROM read_cityjsonseq('{TEST_DIR}/vegetation_pkg.city.jsonl')));
 ----
 0
 
 query I
 SELECT COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json') s
-JOIN read_cityjsonseq('__TEST_DIR__/vegetation_pkg.city.jsonl') o USING (id)
+JOIN read_cityjsonseq('{TEST_DIR}/vegetation_pkg.city.jsonl') o USING (id)
 JOIN cityjson_implicit_geometries('test/data/railway_vegetation.city.json') t ON t.id = s.implicit_geometry.id
-JOIN cityjson_implicit_geometries('__TEST_DIR__/vegetation_pkg.city.jsonl') ot ON ot.id = o.implicit_geometry.id
+JOIN cityjson_implicit_geometries('{TEST_DIR}/vegetation_pkg.city.jsonl') ot ON ot.id = o.implicit_geometry.id
 WHERE t.geometry_lod3_0 = ot.geometry_lod3_0
   AND t.geometry_properties_lod3_0 IS NOT DISTINCT FROM ot.geometry_properties_lod3_0;
 ----
@@ -193,7 +193,7 @@ WHERE t.geometry_lod3_0 = ot.geometry_lod3_0
 statement ok
 CREATE TABLE vp_pairs AS
 SELECT DISTINCT s.implicit_geometry.id AS sid, o.implicit_geometry.id AS oid
-FROM read_cityjson('test/data/railway_vegetation.city.json') s JOIN read_cityjsonseq('__TEST_DIR__/vegetation_pkg.city.jsonl') o USING (id)
+FROM read_cityjson('test/data/railway_vegetation.city.json') s JOIN read_cityjsonseq('{TEST_DIR}/vegetation_pkg.city.jsonl') o USING (id)
 WHERE s.implicit_geometry IS NOT NULL;
 
 query II
@@ -205,8 +205,8 @@ WITH src AS (
 out AS (
   SELECT p.sid, f.i, m.name, m.diffuseColor FROM vp_pairs p
   JOIN (SELECT id, unnest(material_lod3_0['visual']) AS mid, unnest(range(len(material_lod3_0['visual']))) AS i
-        FROM cityjson_implicit_geometries('__TEST_DIR__/vegetation_pkg.city.jsonl')) f ON f.id = p.oid
-  LEFT JOIN cityjson_materials('__TEST_DIR__/vegetation_pkg.city.jsonl') m ON m.id = f.mid)
+        FROM cityjson_implicit_geometries('{TEST_DIR}/vegetation_pkg.city.jsonl')) f ON f.id = p.oid
+  LEFT JOIN cityjson_materials('{TEST_DIR}/vegetation_pkg.city.jsonl') m ON m.id = f.mid)
 SELECT (SELECT COUNT(*) FROM src WHERE name IS NOT NULL), (SELECT COUNT(*) FROM (SELECT * FROM src EXCEPT ALL SELECT * FROM out));
 ----
 292	0
@@ -220,8 +220,8 @@ WITH src AS (
 out AS (
   SELECT p.sid, g.i, x.image_uri, r.ring.uv FROM vp_pairs p
   JOIN (SELECT id, unnest(texture_lod3_0['visual']) AS face, unnest(range(len(texture_lod3_0['visual']))) AS i
-        FROM cityjson_implicit_geometries('__TEST_DIR__/vegetation_pkg.city.jsonl')) g ON g.id = p.oid,
-  unnest(g.face) AS r(ring) LEFT JOIN cityjson_textures('__TEST_DIR__/vegetation_pkg.city.jsonl') x ON x.id = r.ring.id)
+        FROM cityjson_implicit_geometries('{TEST_DIR}/vegetation_pkg.city.jsonl')) g ON g.id = p.oid,
+  unnest(g.face) AS r(ring) LEFT JOIN cityjson_textures('{TEST_DIR}/vegetation_pkg.city.jsonl') x ON x.id = r.ring.id)
 SELECT (SELECT COUNT(*) FROM src WHERE image_uri IS NOT NULL) > 0, (SELECT COUNT(*) FROM (SELECT * FROM src EXCEPT ALL SELECT * FROM out));
 ----
 true	0
@@ -229,7 +229,7 @@ true	0
 # A relative geometry's appearance needs the definitions its sidecar ids name; without
 # them the export is refused rather than written without it.
 statement error
-COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/no_appearance.city.jsonl'
+COPY (SELECT * FROM vr.vegetation) TO '{TEST_DIR}/no_appearance.city.jsonl'
 (FORMAT cityjsonseq, crs 'EPSG:7415', implicit_geometries_query 'SELECT * FROM vr.implicit_geometries');
 ----
 pass materials_query
@@ -237,7 +237,7 @@ pass materials_query
 # A relative geometry is one geometry at one LoD: a row populating two LoD groups is
 # refused, not cut down to its first.
 statement error
-COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/two_lods.city.jsonl'
+COPY (SELECT * FROM vr.vegetation) TO '{TEST_DIR}/two_lods.city.jsonl'
 (FORMAT cityjsonseq, crs 'EPSG:7415',
  implicit_geometries_query 'SELECT id, geometry_lod3_0, geometry_lod3_0 AS geometry_lod2_0 FROM vr.implicit_geometries');
 ----
@@ -245,7 +245,7 @@ populates 2 LoD geometry columns
 
 # An id the query's rows do not have cannot be placed.
 statement error
-COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/dangling.city.jsonl'
+COPY (SELECT * FROM vr.vegetation) TO '{TEST_DIR}/dangling.city.jsonl'
 (FORMAT cityjsonseq, crs 'EPSG:7415', implicit_geometries_query 'SELECT * FROM vr.implicit_geometries WHERE id <> 5',
  materials_query 'SELECT * FROM vr.materials', textures_query 'SELECT * FROM vr.textures');
 ----
@@ -292,7 +292,7 @@ COPY (SELECT * REPLACE (struct_pack(id := implicit_geometry.id,
                                     point := unhex(substr(hex(implicit_geometry.point), 1, 20)),
                                     "transformationMatrix" := implicit_geometry."transformationMatrix") AS implicit_geometry)
       FROM read_cityjson('test/data/railway_vegetation.city.json') WHERE implicit_geometry IS NOT NULL)
-TO '__TEST_DIR__/truncated_point.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/truncated_point.city.json' (FORMAT cityjson);
 ----
 implicit_geometry.point is not valid WKB
 
@@ -300,13 +300,13 @@ implicit_geometry.point is not valid WKB
 statement error
 COPY (SELECT * REPLACE ({'id': 0, 'point': 'not wkb'} AS implicit_geometry)
       FROM read_cityjson('test/data/railway_vegetation.city.json'))
-TO '__TEST_DIR__/bad_implicit.city.json' (FORMAT cityjson);
+TO '{TEST_DIR}/bad_implicit.city.json' (FORMAT cityjson);
 ----
 the `implicit_geometry` column must be STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
 
 # So is a relative geometry that is not WKB.
 statement error
-COPY (SELECT * FROM vr.vegetation) TO '__TEST_DIR__/bad_template.city.jsonl'
+COPY (SELECT * FROM vr.vegetation) TO '{TEST_DIR}/bad_template.city.jsonl'
 (FORMAT cityjsonseq, crs 'EPSG:7415',
  implicit_geometries_query 'SELECT id, unhex(substr(hex(geometry_lod3_0), 1, 30)) AS geometry_lod3_0 FROM vr.implicit_geometries');
 ----
@@ -334,15 +334,15 @@ WHERE r.implicit_geometry = d.implicit_geometry;
 15
 
 statement ok
-COPY (SELECT * FROM rs.vegetation) TO '__TEST_DIR__/rs_vegetation.city.jsonl'
+COPY (SELECT * FROM rs.vegetation) TO '{TEST_DIR}/rs_vegetation.city.jsonl'
 (FORMAT cityjsonseq, implicit_geometries_query 'SELECT * FROM rs.implicit_geometries',
  materials_query 'SELECT * FROM rs.materials', textures_query 'SELECT * FROM rs.textures');
 
 query I
 SELECT COUNT(*) FROM read_cityjson('test/data/railway_vegetation.city.json') s
-JOIN read_cityjsonseq('__TEST_DIR__/rs_vegetation.city.jsonl') o USING (id)
+JOIN read_cityjsonseq('{TEST_DIR}/rs_vegetation.city.jsonl') o USING (id)
 JOIN cityjson_implicit_geometries('test/data/railway_vegetation.city.json') t ON t.id = s.implicit_geometry.id
-JOIN cityjson_implicit_geometries('__TEST_DIR__/rs_vegetation.city.jsonl') ot ON ot.id = o.implicit_geometry.id
+JOIN cityjson_implicit_geometries('{TEST_DIR}/rs_vegetation.city.jsonl') ot ON ot.id = o.implicit_geometry.id
 WHERE t.geometry_lod3_0 = ot.geometry_lod3_0;
 ----
 15
@@ -352,7 +352,7 @@ WHERE t.geometry_lod3_0 = ot.geometry_lod3_0;
 statement ok
 CREATE TABLE rp_pairs AS
 SELECT DISTINCT s.implicit_geometry.id AS sid, o.implicit_geometry.id AS oid
-FROM read_cityjson('test/data/railway_vegetation.city.json') s JOIN read_cityjsonseq('__TEST_DIR__/rs_vegetation.city.jsonl') o USING (id)
+FROM read_cityjson('test/data/railway_vegetation.city.json') s JOIN read_cityjsonseq('{TEST_DIR}/rs_vegetation.city.jsonl') o USING (id)
 WHERE s.implicit_geometry IS NOT NULL;
 
 query II
@@ -364,8 +364,8 @@ WITH src AS (
 out AS (
   SELECT p.sid, f.i, m.name, m.diffuseColor FROM rp_pairs p
   JOIN (SELECT id, unnest(material_lod3_0['visual']) AS mid, unnest(range(len(material_lod3_0['visual']))) AS i
-        FROM cityjson_implicit_geometries('__TEST_DIR__/rs_vegetation.city.jsonl')) f ON f.id = p.oid
-  LEFT JOIN cityjson_materials('__TEST_DIR__/rs_vegetation.city.jsonl') m ON m.id = f.mid)
+        FROM cityjson_implicit_geometries('{TEST_DIR}/rs_vegetation.city.jsonl')) f ON f.id = p.oid
+  LEFT JOIN cityjson_materials('{TEST_DIR}/rs_vegetation.city.jsonl') m ON m.id = f.mid)
 SELECT (SELECT COUNT(*) FROM src WHERE name IS NOT NULL), (SELECT COUNT(*) FROM (SELECT * FROM src EXCEPT ALL SELECT * FROM out));
 ----
 292	0
@@ -379,8 +379,8 @@ WITH src AS (
 out AS (
   SELECT p.sid, g.i, x.image_uri, r.ring.uv FROM rp_pairs p
   JOIN (SELECT id, unnest(texture_lod3_0['visual']) AS face, unnest(range(len(texture_lod3_0['visual']))) AS i
-        FROM cityjson_implicit_geometries('__TEST_DIR__/rs_vegetation.city.jsonl')) g ON g.id = p.oid,
-  unnest(g.face) AS r(ring) LEFT JOIN cityjson_textures('__TEST_DIR__/rs_vegetation.city.jsonl') x ON x.id = r.ring.id)
+        FROM cityjson_implicit_geometries('{TEST_DIR}/rs_vegetation.city.jsonl')) g ON g.id = p.oid,
+  unnest(g.face) AS r(ring) LEFT JOIN cityjson_textures('{TEST_DIR}/rs_vegetation.city.jsonl') x ON x.id = r.ring.id)
 SELECT (SELECT COUNT(*) FROM src WHERE image_uri IS NOT NULL) > 0, (SELECT COUNT(*) FROM (SELECT * FROM src EXCEPT ALL SELECT * FROM out));
 ----
 true	0

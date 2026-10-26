@@ -32,11 +32,11 @@ WHERE geometry_lod2_2 IS NOT NULL AND geometry_properties_lod2_2.surfaces IS NOT
 LIMIT 1;
 
 statement ok
-COPY (SELECT * FROM cp) TO '__TEST_DIR__/cp_struct.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM cp) TO '{TEST_DIR}/cp_struct.city.jsonl' (FORMAT cityjsonseq);
 
 # The exported geometry keeps its LoD (2.2, from the column-name suffix) …
 query I
-SELECT count(*) FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+SELECT count(*) FROM read_cityjsonseq('{TEST_DIR}/cp_struct.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL;
 ----
 1
@@ -44,7 +44,7 @@ WHERE geometry_lod2_2 IS NOT NULL;
 # … and the semantic surfaces reconstructed from the STRUCT survive the round trip.
 query I
 SELECT geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%'
-FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+FROM read_cityjsonseq('{TEST_DIR}/cp_struct.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL;
 ----
 true
@@ -52,7 +52,7 @@ true
 # Exact face_semantics values survive (not corrupted, re-typed, or NULL-mangled).
 query I
 SELECT geometry_properties_lod2_2.face_semantics
-FROM read_cityjsonseq('__TEST_DIR__/cp_struct.city.jsonl', lod => '2.2')
+FROM read_cityjsonseq('{TEST_DIR}/cp_struct.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL;
 ----
 [0, 1, 2, 2, 2, 3]
@@ -77,12 +77,12 @@ WHERE geometry_lod2_2 IS NOT NULL AND geometry_properties_lod2_2.surfaces IS NOT
 LIMIT 1;
 
 statement ok
-COPY (SELECT * FROM cp2) TO '__TEST_DIR__/cp2.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM cp2) TO '{TEST_DIR}/cp2.city.jsonl' (FORMAT cityjsonseq);
 
 query II
 SELECT geometry_properties_lod2_2.shells,
        geometry_properties_lod2_2.face_semantics
-FROM read_cityjsonseq('__TEST_DIR__/cp2.city.jsonl', lod => '2.2')
+FROM read_cityjsonseq('{TEST_DIR}/cp2.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL;
 ----
 [[3, 3]]	[0, 0, 0, 1, 1, 1]
@@ -104,12 +104,12 @@ WHERE geometry_lod2_2 IS NOT NULL
 LIMIT 1;
 
 statement ok
-COPY (SELECT * FROM cp_json) TO '__TEST_DIR__/cp_json.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM cp_json) TO '{TEST_DIR}/cp_json.city.jsonl' (FORMAT cityjsonseq);
 
 query II
 SELECT geometry_properties_lod2_2.surfaces LIKE '%RoofSurface%',
        geometry_properties_lod2_2.shells
-FROM read_cityjsonseq('__TEST_DIR__/cp_json.city.jsonl', lod => '2.2')
+FROM read_cityjsonseq('{TEST_DIR}/cp_json.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL;
 ----
 true	[[3, 3]]
@@ -130,13 +130,13 @@ WHERE geometry_lod2_2 IS NOT NULL
 LIMIT 1;
 
 statement ok
-COPY (SELECT * FROM cp_flat) TO '__TEST_DIR__/cp_flat.city.jsonl' (FORMAT cityjsonseq);
+COPY (SELECT * FROM cp_flat) TO '{TEST_DIR}/cp_flat.city.jsonl' (FORMAT cityjsonseq);
 
 # Re-read in the canonical nested form: the two shells were preserved.
 query II
 SELECT geometry_properties_lod2_2.shells,
        geometry_properties_lod2_2.face_semantics
-FROM read_cityjsonseq('__TEST_DIR__/cp_flat.city.jsonl', lod => '2.2')
+FROM read_cityjsonseq('{TEST_DIR}/cp_flat.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL;
 ----
 [[3, 3]]	[0, 0, 0, 1, 1, 1]

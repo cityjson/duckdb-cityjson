@@ -41,7 +41,7 @@ struct MetadataGlobalState : public GlobalTableFunctionState {
 
 // Bind function for cityjson_metadata
 static unique_ptr<FunctionData> MetadataBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<MetadataBindData>();
 
 	// Get file path from argument
@@ -71,7 +71,7 @@ static unique_ptr<FunctionData> MetadataBind(ClientContext &context, TableFuncti
 
 	// Set return types and names
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
-	names = MetadataTableUtils::GetMetadataTableNames();
+	names = StringsToIdentifiers(MetadataTableUtils::GetMetadataTableNames());
 
 	return result;
 }
@@ -87,7 +87,7 @@ static void MetadataScan(ClientContext &context, TableFunctionInput &data, DataC
 	auto &global_state = data.global_state->Cast<MetadataGlobalState>();
 
 	if (global_state.done) {
-		output.SetCardinality(0);
+		output.SetChildCardinality(0);
 		return;
 	}
 
@@ -100,7 +100,7 @@ static void MetadataScan(ClientContext &context, TableFunctionInput &data, DataC
 	// vector.cpp) -- the output co-owns the data, the string heap and the STRUCT children,
 	// so nothing dangles when metadata_chunk goes out of scope. Same pattern, and the same
 	// column types, as FcbMetadataScan.
-	output.SetCardinality(1);
+	output.SetChildCardinality(1);
 	for (idx_t col = 0; col < metadata_chunk->ColumnCount(); col++) {
 		output.data[col].Reference(metadata_chunk->data[col]);
 	}
@@ -126,7 +126,7 @@ void RegisterMetadataTableFunction(ExtensionLoader &loader) {
 
 // Bind function for cityjsonseq_metadata — always uses LocalCityJSONSeqReader
 static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<MetadataBindData>();
 
 	// Get file path from argument
@@ -159,7 +159,7 @@ static unique_ptr<FunctionData> SeqMetadataBind(ClientContext &context, TableFun
 
 	// Set return types and names
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
-	names = MetadataTableUtils::GetMetadataTableNames();
+	names = StringsToIdentifiers(MetadataTableUtils::GetMetadataTableNames());
 
 	return result;
 }

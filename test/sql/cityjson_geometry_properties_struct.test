@@ -97,7 +97,7 @@ query I
 SELECT count(*) FROM delft
 WHERE geometry_properties_lod2_2.face_semantics IS NOT NULL
   AND len(geometry_properties_lod2_2.face_semantics)
-      <> list_sum(list_transform(geometry_properties_lod2_2.shells, s -> list_sum(s)));
+      <> list_sum(list_transform(geometry_properties_lod2_2.shells, lambda s: list_sum(s)));
 ----
 0
 

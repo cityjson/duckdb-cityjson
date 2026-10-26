@@ -66,7 +66,7 @@ statement ok
 PRAGMA cityparquet_init('h');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/hilbert', crs => 'EPSG:7415');
+SELECT COUNT(*) FROM cityparquet_write('h', '{TEST_DIR}/hilbert', crs => 'EPSG:7415');
 
 # The order cityparquet-rs writes for the same source (`cityparquet convert
 # test/data/delft_subset.city.jsonl -o OUT`, default `--ordering hilbert`, order.rs as of
@@ -74,14 +74,14 @@ SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/hilbert', crs => 'EPSG
 # the source order: the source lists ...016459 second.
 query T
 SELECT string_agg(id, ' ' ORDER BY file_row_number)
-FROM read_parquet('__TEST_DIR__/hilbert/building.parquet', file_row_number := true);
+FROM read_parquet('{TEST_DIR}/hilbert/building.parquet', file_row_number := true);
 ----
 NL.IMBAG.Pand.0503100000012869 NL.IMBAG.Pand.0503100000012869-0 NL.IMBAG.Pand.0503100000000137 NL.IMBAG.Pand.0503100000000137-0 NL.IMBAG.Pand.0503100000005156 NL.IMBAG.Pand.0503100000005156-0 NL.IMBAG.Pand.0503100000032443 NL.IMBAG.Pand.0503100000032443-0 NL.IMBAG.Pand.0503100000019510 NL.IMBAG.Pand.0503100000019510-0 NL.IMBAG.Pand.0503100000019492 NL.IMBAG.Pand.0503100000019492-0 NL.IMBAG.Pand.0503100000018426 NL.IMBAG.Pand.0503100000018426-0 NL.IMBAG.Pand.0503100000018501 NL.IMBAG.Pand.0503100000018501-0 NL.IMBAG.Pand.0503100000019786 NL.IMBAG.Pand.0503100000019786-0 NL.IMBAG.Pand.0503100000016459 NL.IMBAG.Pand.0503100000016459-0
 
 # Reordering moves rows, never changes them.
 query I
 SELECT COUNT(*) FROM (
-  SELECT id, octet_length(geometry_lod2_2), bbox FROM read_parquet('__TEST_DIR__/hilbert/building.parquet')
+  SELECT id, octet_length(geometry_lod2_2), bbox FROM read_parquet('{TEST_DIR}/hilbert/building.parquet')
   EXCEPT ALL
   SELECT id, octet_length(geometry_lod2_2), bbox FROM h.building);
 ----
@@ -90,18 +90,18 @@ SELECT COUNT(*) FROM (
 # `ordering => 'source'` writes the table's own order, as `--ordering source` does:
 # delft_subset's features are already contiguous, each root first.
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/source_order', crs => 'EPSG:7415', ordering => 'source');
+SELECT COUNT(*) FROM cityparquet_write('h', '{TEST_DIR}/source_order', crs => 'EPSG:7415', ordering => 'source');
 
 query I
 SELECT COUNT(*) FROM (
-  SELECT id, file_row_number AS n FROM read_parquet('__TEST_DIR__/source_order/building.parquet', file_row_number := true)
+  SELECT id, file_row_number AS n FROM read_parquet('{TEST_DIR}/source_order/building.parquet', file_row_number := true)
   EXCEPT ALL
   SELECT id, row_number() OVER (ORDER BY rowid) - 1 FROM h.building);
 ----
 0
 
 statement error
-SELECT COUNT(*) FROM cityparquet_write('h', '__TEST_DIR__/bad_order', ordering => 'zorder');
+SELECT COUNT(*) FROM cityparquet_write('h', '{TEST_DIR}/bad_order', ordering => 'zorder');
 ----
 ordering must be 'hilbert' or 'source'
 
@@ -126,21 +126,21 @@ statement ok
 PRAGMA cityparquet_init('z');
 
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('z', '__TEST_DIR__/families_hilbert');
+SELECT COUNT(*) FROM cityparquet_write('z', '{TEST_DIR}/families_hilbert');
 
 query T
 SELECT string_agg(id, ' ' ORDER BY file_row_number)
-FROM read_parquet('__TEST_DIR__/families_hilbert/building.parquet', file_row_number := true);
+FROM read_parquet('{TEST_DIR}/families_hilbert/building.parquet', file_row_number := true);
 ----
 UUID_ea730f61-0a11-406a-a515-4f5f86f7aa26 UUID_59214446-74d2-4827-bc4a-04cb3c4bd380 UUID_654bb986-9459-4657-aef8-493ac8c7ef3e UUID_f2a5b8ad-9d43-4af3-8c08-396c70202140
 
 # `ordering => 'source'` keeps the table's order of features, each placed where its
 # root is, and gathers each feature's rows behind its root.
 statement ok
-SELECT COUNT(*) FROM cityparquet_write('z', '__TEST_DIR__/families_source', ordering => 'source');
+SELECT COUNT(*) FROM cityparquet_write('z', '{TEST_DIR}/families_source', ordering => 'source');
 
 query T
 SELECT string_agg(id, ' ' ORDER BY file_row_number)
-FROM read_parquet('__TEST_DIR__/families_source/building.parquet', file_row_number := true);
+FROM read_parquet('{TEST_DIR}/families_source/building.parquet', file_row_number := true);
 ----
 UUID_654bb986-9459-4657-aef8-493ac8c7ef3e UUID_f2a5b8ad-9d43-4af3-8c08-396c70202140 UUID_ea730f61-0a11-406a-a515-4f5f86f7aa26 UUID_59214446-74d2-4827-bc4a-04cb3c4bd380

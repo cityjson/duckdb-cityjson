@@ -45,7 +45,7 @@ OBJReadOptions ParseOBJReadOptions(const TableFunctionBindInput &input, const st
 }
 
 static unique_ptr<FunctionData> OBJBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, vector<Identifier> &names) {
 	if (input.inputs.empty()) {
 		throw BinderException("read_obj requires a file path");
 	}
@@ -87,7 +87,7 @@ struct OBJMetadataGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> OBJMetadataBind(ClientContext &context, TableFunctionBindInput &input,
-                                         vector<LogicalType> &return_types, vector<string> &names) {
+                                         vector<LogicalType> &return_types, vector<Identifier> &names) {
 	if (input.inputs.empty()) {
 		throw BinderException("obj_metadata requires a file path");
 	}
@@ -117,7 +117,7 @@ unique_ptr<FunctionData> OBJMetadataBind(ClientContext &context, TableFunctionBi
 		throw BinderException("obj_metadata: failed to read '" + result->file_name + "': " + e.what());
 	}
 	return_types = MetadataTableUtils::GetMetadataTableTypes();
-	names = MetadataTableUtils::GetMetadataTableNames();
+	names = StringsToIdentifiers(MetadataTableUtils::GetMetadataTableNames());
 	return std::move(result);
 }
 
@@ -129,12 +129,12 @@ void OBJMetadataScan(ClientContext &, TableFunctionInput &data, DataChunk &outpu
 	auto &bind_data = data.bind_data->Cast<OBJMetadataBindData>();
 	auto &state = data.global_state->Cast<OBJMetadataGlobalState>();
 	if (state.done) {
-		output.SetCardinality(0);
+		output.SetChildCardinality(0);
 		return;
 	}
 	auto chunk = MetadataTableUtils::CreateMetadataChunk(bind_data.metadata, optional_idx(bind_data.count),
 	                                                     optional_idx(bind_data.count));
-	output.SetCardinality(1);
+	output.SetChildCardinality(1);
 	for (idx_t col = 0; col < chunk->ColumnCount(); col++) {
 		output.data[col].Reference(chunk->data[col]);
 	}
@@ -145,11 +145,14 @@ void OBJMetadataScan(ClientContext &, TableFunctionInput &data, DataChunk &outpu
 
 void RegisterOBJTableFunctions(ExtensionLoader &loader) {
 	TableFunction read_obj("read_obj", {LogicalType::VARCHAR}, CityJSONScan, OBJBind);
-	read_obj.named_parameters["lod"] = LogicalType::VARCHAR;
-	read_obj.named_parameters["object_type"] = LogicalType::VARCHAR;
-	read_obj.named_parameters["geometry_type"] = LogicalType::VARCHAR;
-	read_obj.named_parameters["appearance"] = LogicalType::VARCHAR; // 'local' (default) or 'sidecar'
-	read_obj.named_parameters["sample_lines"] = LogicalType::BIGINT;
+	// Named parameters: a call that leaves one out does not pass it.
+	read_obj.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("lod", LogicalType::VARCHAR);
+		options.Add("object_type", LogicalType::VARCHAR);
+		options.Add("geometry_type", LogicalType::VARCHAR);
+		options.Add("appearance", LogicalType::VARCHAR); // 'local' (default) or 'sidecar'
+		options.Add("sample_lines", LogicalType::BIGINT);
+	});
 	read_obj.init_global = CityJSONInitGlobal;
 	read_obj.init_local = CityJSONInitLocal;
 	read_obj.cardinality = CityJSONCardinality;
@@ -186,7 +189,9 @@ void RegisterOBJTableFunctions(ExtensionLoader &loader) {
 	                    {"obj", "appearance"}});
 
 	TableFunction obj_metadata("obj_metadata", {LogicalType::VARCHAR}, OBJMetadataScan, OBJMetadataBind);
-	obj_metadata.named_parameters["crs"] = LogicalType::VARCHAR;
+	// Named parameters: a call that leaves one out does not pass it.
+	obj_metadata.GetSignature().WithTypedKwargs("options",
+	                                            [](TypedKwargs &options) { options.Add("crs", LogicalType::VARCHAR); });
 	obj_metadata.init_global = OBJMetadataInitGlobal;
 	RegisterDocumented(loader, std::move(obj_metadata),
 	                   {{"path"},

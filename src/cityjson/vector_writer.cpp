@@ -4,6 +4,9 @@
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 
 namespace duckdb {
 namespace cityjson {
@@ -82,7 +85,7 @@ std::vector<VectorWrapper> CreateVectors(DataChunk &output, const std::vector<Co
 // Template for numeric types
 template <typename T>
 void WritePrimitive(Vector *vec, size_t row, const T &value) {
-	auto data = FlatVector::GetData<T>(*vec);
+	auto data = FlatVector::GetDataMutable<T>(*vec);
 	data[row] = value;
 }
 
@@ -91,7 +94,7 @@ void WritePrimitive(Vector *vec, size_t row, const T &value) {
 // instantiation here whose copy is worth avoiding.
 template <>
 void WritePrimitive<std::string>(Vector *vec, size_t row, const std::string &value) {
-	FlatVector::GetData<string_t>(*vec)[row] = StringVector::AddString(*vec, value);
+	FlatVector::GetDataMutable<string_t>(*vec)[row] = StringVector::AddString(*vec, value);
 }
 
 // Explicit instantiations for common types
@@ -111,8 +114,8 @@ void WriteVarcharArray(Vector *list_vec, const json &value, size_t row) {
 	}
 
 	// Get list data and child vector
-	auto list_data = FlatVector::GetData<list_entry_t>(*list_vec);
-	auto &child_vec = ListVector::GetEntry(*list_vec);
+	auto list_data = FlatVector::GetDataMutable<list_entry_t>(*list_vec);
+	auto &child_vec = ListVector::GetChildMutable(*list_vec);
 	auto list_size = ListVector::GetListSize(*list_vec);
 
 	// Set list entry metadata
@@ -127,7 +130,7 @@ void WriteVarcharArray(Vector *list_vec, const json &value, size_t row) {
 		const auto &elem = value[i];
 		if (elem.is_string()) {
 			std::string str = elem.get<std::string>();
-			FlatVector::GetData<string_t>(child_vec)[list_size + i] = StringVector::AddString(child_vec, str);
+			FlatVector::GetDataMutable<string_t>(child_vec)[list_size + i] = StringVector::AddString(child_vec, str);
 		} else {
 			// Non-string element - set NULL
 			FlatVector::SetNull(child_vec, list_size + i, true);
@@ -149,33 +152,33 @@ void WriteGeometry(Vector *struct_vec, const Geometry &geom, size_t row) {
 	auto &children = StructVector::GetEntries(*struct_vec);
 
 	// Write lod (index 0)
-	WritePrimitive(children[0].get(), row, geom.lod);
+	WritePrimitive(&children[0], row, geom.lod);
 
 	// Write type (index 1)
-	WritePrimitive(children[1].get(), row, geom.type);
+	WritePrimitive(&children[1], row, geom.type);
 
 	// Write boundaries as JSON string (index 2)
-	WritePrimitive(children[2].get(), row, geom.boundaries.dump());
+	WritePrimitive(&children[2], row, geom.boundaries.dump());
 
 	// Write semantics as JSON string (index 3) - nullable
 	if (geom.semantics.has_value()) {
-		WritePrimitive(children[3].get(), row, geom.semantics->dump());
+		WritePrimitive(&children[3], row, geom.semantics->dump());
 	} else {
-		FlatVector::SetNull(*children[3], row, true);
+		FlatVector::SetNull(children[3], row, true);
 	}
 
 	// Write material as JSON string (index 4) - nullable
 	if (geom.material.has_value()) {
-		WritePrimitive(children[4].get(), row, geom.material->dump());
+		WritePrimitive(&children[4], row, geom.material->dump());
 	} else {
-		FlatVector::SetNull(*children[4], row, true);
+		FlatVector::SetNull(children[4], row, true);
 	}
 
 	// Write texture as JSON string (index 5) - nullable
 	if (geom.texture.has_value()) {
-		WritePrimitive(children[5].get(), row, geom.texture->dump());
+		WritePrimitive(&children[5], row, geom.texture->dump());
 	} else {
-		FlatVector::SetNull(*children[5], row, true);
+		FlatVector::SetNull(children[5], row, true);
 	}
 }
 
@@ -222,12 +225,12 @@ void WriteGeographicalExtent(Vector *struct_vec, const json &value, size_t row) 
 	auto &children = StructVector::GetEntries(*struct_vec);
 
 	// Write all 6 fields
-	WritePrimitive(children[0].get(), row, extent.min_x);
-	WritePrimitive(children[1].get(), row, extent.min_y);
-	WritePrimitive(children[2].get(), row, extent.min_z);
-	WritePrimitive(children[3].get(), row, extent.max_x);
-	WritePrimitive(children[4].get(), row, extent.max_y);
-	WritePrimitive(children[5].get(), row, extent.max_z);
+	WritePrimitive(&children[0], row, extent.min_x);
+	WritePrimitive(&children[1], row, extent.min_y);
+	WritePrimitive(&children[2], row, extent.min_z);
+	WritePrimitive(&children[3], row, extent.max_x);
+	WritePrimitive(&children[4], row, extent.max_y);
+	WritePrimitive(&children[5], row, extent.max_z);
 }
 
 // ============================================================
@@ -378,7 +381,7 @@ void WriteGeometryWKB(Vector *blob_vec, const std::vector<uint8_t> &wkb_data, si
 	// Create blob from WKB data
 	auto blob =
 	    StringVector::AddStringOrBlob(*blob_vec, reinterpret_cast<const char *>(wkb_data.data()), wkb_data.size());
-	FlatVector::GetData<string_t>(*blob_vec)[row] = blob;
+	FlatVector::GetDataMutable<string_t>(*blob_vec)[row] = blob;
 }
 
 // Append one LIST<INTEGER> row from a flat json array of ints, honouring per-item
@@ -388,13 +391,13 @@ static void AppendIntList(Vector &list_vec, const json &arr, size_t row) {
 	const size_t n = arr.is_array() ? arr.size() : 0;
 	auto list_size = ListVector::GetListSize(list_vec);
 
-	FlatVector::GetData<list_entry_t>(list_vec)[row] = list_entry_t(list_size, n);
+	FlatVector::GetDataMutable<list_entry_t>(list_vec)[row] = list_entry_t(list_size, n);
 	ListVector::Reserve(list_vec, list_size + n);
 
 	// Fetch the child data pointer only after Reserve -- reserving can reallocate
 	// the child's buffer and invalidate any pointer taken before it.
-	auto &child = ListVector::GetEntry(list_vec);
-	auto child_data = FlatVector::GetData<int32_t>(child);
+	auto &child = ListVector::GetChildMutable(list_vec);
+	auto child_data = FlatVector::GetDataMutable<int32_t>(child);
 	for (size_t i = 0; i < n; i++) {
 		if (arr[i].is_number_integer()) {
 			child_data[list_size + i] = arr[i].get<int32_t>();
@@ -412,11 +415,11 @@ static void AppendDoubleList(Vector &list_vec, const json &arr, size_t row) {
 	const size_t n = arr.is_array() ? arr.size() : 0;
 	auto list_size = ListVector::GetListSize(list_vec);
 
-	FlatVector::GetData<list_entry_t>(list_vec)[row] = list_entry_t(list_size, n);
+	FlatVector::GetDataMutable<list_entry_t>(list_vec)[row] = list_entry_t(list_size, n);
 	ListVector::Reserve(list_vec, list_size + n);
 
-	auto &child = ListVector::GetEntry(list_vec);
-	auto child_data = FlatVector::GetData<double>(child);
+	auto &child = ListVector::GetChildMutable(list_vec);
+	auto child_data = FlatVector::GetDataMutable<double>(child);
 	for (size_t i = 0; i < n; i++) {
 		if (arr[i].is_number()) {
 			child_data[list_size + i] = arr[i].get<double>();
@@ -433,10 +436,10 @@ static void AppendIntListList(Vector &list_vec, const json &arr, size_t row) {
 	const size_t n_solids = arr.is_array() ? arr.size() : 0;
 	auto outer_size = ListVector::GetListSize(list_vec);
 
-	FlatVector::GetData<list_entry_t>(list_vec)[row] = list_entry_t(outer_size, n_solids);
+	FlatVector::GetDataMutable<list_entry_t>(list_vec)[row] = list_entry_t(outer_size, n_solids);
 	ListVector::Reserve(list_vec, outer_size + n_solids);
 
-	auto &solid_vec = ListVector::GetEntry(list_vec); // LIST<INTEGER>
+	auto &solid_vec = ListVector::GetChildMutable(list_vec); // LIST<INTEGER>
 	auto inner_start = ListVector::GetListSize(solid_vec);
 
 	// Reserve the grandchild once for every count across every solid, so the int
@@ -447,9 +450,9 @@ static void AppendIntListList(Vector &list_vec, const json &arr, size_t row) {
 	}
 	ListVector::Reserve(solid_vec, inner_start + total_counts);
 
-	auto solid_data = FlatVector::GetData<list_entry_t>(solid_vec);
-	auto &count_vec = ListVector::GetEntry(solid_vec); // INTEGER
-	auto count_data = FlatVector::GetData<int32_t>(count_vec);
+	auto solid_data = FlatVector::GetDataMutable<list_entry_t>(solid_vec);
+	auto &count_vec = ListVector::GetChildMutable(solid_vec); // INTEGER
+	auto count_data = FlatVector::GetDataMutable<int32_t>(count_vec);
 
 	size_t inner_pos = inner_start;
 	for (size_t s = 0; s < n_solids; s++) {
@@ -472,10 +475,10 @@ static void AppendIntListList(Vector &list_vec, const json &arr, size_t row) {
 void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 	// STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
 	auto &children = StructVector::GetEntries(*vec);
-	auto &type_vec = *children[0];
-	auto &surfaces_vec = *children[1];
-	auto &face_semantics_vec = *children[2];
-	auto &shells_vec = *children[3];
+	auto &type_vec = children[0];
+	auto &surfaces_vec = children[1];
+	auto &face_semantics_vec = children[2];
+	auto &shells_vec = children[3];
 
 	// A null struct still needs well-formed children at this row: an uninitialised
 	// list_entry_t carries a garbage offset/length that later flatten/copy passes
@@ -489,7 +492,7 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 	// `type` -- non-null for any real geometry.
 	if (!is_null && properties.contains("type") && properties["type"].is_string()) {
 		auto type_str = properties["type"].get<std::string>();
-		FlatVector::GetData<string_t>(type_vec)[row] = StringVector::AddString(type_vec, type_str);
+		FlatVector::GetDataMutable<string_t>(type_vec)[row] = StringVector::AddString(type_vec, type_str);
 	} else {
 		FlatVector::SetNull(type_vec, row, true);
 	}
@@ -498,7 +501,7 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 	// VARCHAR, so it takes a plain string write.
 	if (!is_null && properties.contains("surfaces") && properties["surfaces"].is_array()) {
 		auto surfaces_str = properties["surfaces"].dump();
-		FlatVector::GetData<string_t>(surfaces_vec)[row] = StringVector::AddString(surfaces_vec, surfaces_str);
+		FlatVector::GetDataMutable<string_t>(surfaces_vec)[row] = StringVector::AddString(surfaces_vec, surfaces_str);
 	} else {
 		FlatVector::SetNull(surfaces_vec, row, true);
 	}
@@ -508,7 +511,7 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 	if (!is_null && properties.contains("face_semantics") && properties["face_semantics"].is_array()) {
 		AppendIntList(face_semantics_vec, properties["face_semantics"], row);
 	} else {
-		FlatVector::GetData<list_entry_t>(face_semantics_vec)[row] = list_entry_t(0, 0);
+		FlatVector::GetDataMutable<list_entry_t>(face_semantics_vec)[row] = list_entry_t(0, 0);
 		FlatVector::SetNull(face_semantics_vec, row, true);
 	}
 
@@ -517,7 +520,7 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 	if (!is_null && properties.contains("shells") && properties["shells"].is_array()) {
 		AppendIntListList(shells_vec, properties["shells"], row);
 	} else {
-		FlatVector::GetData<list_entry_t>(shells_vec)[row] = list_entry_t(0, 0);
+		FlatVector::GetDataMutable<list_entry_t>(shells_vec)[row] = list_entry_t(0, 0);
 		FlatVector::SetNull(shells_vec, row, true);
 	}
 }
@@ -529,9 +532,9 @@ void WriteGeometryProperties(Vector *vec, const json &properties, size_t row) {
 void WriteImplicitGeometryStruct(Vector *vec, const ImplicitGeometryCell *cell, size_t row) {
 	// STRUCT(id BIGINT, point BLOB, transformationMatrix DOUBLE[])
 	auto &children = StructVector::GetEntries(*vec);
-	auto &id_vec = *children[0];
-	auto &point_vec = *children[1];
-	auto &matrix_vec = *children[2];
+	auto &id_vec = children[0];
+	auto &point_vec = children[1];
+	auto &matrix_vec = children[2];
 
 	// Same trap as WriteGeometryProperties: a null struct still needs a
 	// well-formed (empty) list_entry_t on its LIST child, or a later flatten/copy
@@ -542,15 +545,15 @@ void WriteImplicitGeometryStruct(Vector *vec, const ImplicitGeometryCell *cell, 
 		FlatVector::SetNull(id_vec, row, true);
 		FlatVector::SetNull(point_vec, row, true);
 	} else {
-		FlatVector::GetData<int64_t>(id_vec)[row] = cell->id;
-		FlatVector::GetData<string_t>(point_vec)[row] = StringVector::AddStringOrBlob(
+		FlatVector::GetDataMutable<int64_t>(id_vec)[row] = cell->id;
+		FlatVector::GetDataMutable<string_t>(point_vec)[row] = StringVector::AddStringOrBlob(
 		    point_vec, reinterpret_cast<const char *>(cell->point.data()), cell->point.size());
 	}
 
 	if (cell != nullptr && cell->transformation_matrix.has_value()) {
 		AppendDoubleList(matrix_vec, json(cell->transformation_matrix.value()), row);
 	} else {
-		FlatVector::GetData<list_entry_t>(matrix_vec)[row] = list_entry_t(0, 0);
+		FlatVector::GetDataMutable<list_entry_t>(matrix_vec)[row] = list_entry_t(0, 0);
 		FlatVector::SetNull(matrix_vec, row, true);
 	}
 }

@@ -1,18 +1,20 @@
-# 3.24, not the previous 3.5: find_package(... GLOBAL) below (flatcitybuf) requires it.
+# 3.24, not the previous 3.5: find_package(... GLOBAL) below (flatcitybuf)
+# requires it.
 cmake_minimum_required(VERSION 3.24)
 
 # Set extension name here
 set(TARGET_NAME cityjson)
 
-# DuckDB's extension distribution supports vcpkg. As such, dependencies can be added in ./vcpkg.json and then
-# used in cmake with find_package. Feel free to remove or replace with other dependencies.
-# Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
+# DuckDB's extension distribution supports vcpkg. As such, dependencies can be
+# added in ./vcpkg.json and then used in cmake with find_package. Feel free to
+# remove or replace with other dependencies. Note that it should also be removed
+# from vcpkg.json to prevent needlessly installing it..
 find_package(nlohmann_json REQUIRED)
 
 # Two header-only uses. tinygltf carries its implementation behind
-# TINYGLTF_IMPLEMENTATION, and compiling it into our own objects is what keeps the wasm
-# side-module link free of a second archive to hand over (see the flatcitybuf block
-# below for what that costs).
+# TINYGLTF_IMPLEMENTATION, and compiling it into our own objects is what keeps
+# the wasm side-module link free of a second archive to hand over (see the
+# flatcitybuf block below for what that costs).
 find_path(TINYGLTF_INCLUDE_DIR tiny_gltf.h REQUIRED)
 find_path(EARCUT_INCLUDE_DIR mapbox/earcut.hpp REQUIRED)
 include_directories(${TINYGLTF_INCLUDE_DIR} ${EARCUT_INCLUDE_DIR})
@@ -100,66 +102,70 @@ set(EXTENSION_SOURCES
     src/cityjson/mesh_model.cpp
     src/cityjson/obj_writer.cpp
     src/cityjson/gltf_writer.cpp
-    src/cityjson/mesh_copy.cpp
-)
+    src/cityjson/mesh_copy.cpp)
 
-# Declared here rather than next to the find_package below, because the wasm block
-# immediately after this needs to test it and runs earlier than that.
+# Declared here rather than next to the find_package below, because the wasm
+# block immediately after this needs to test it and runs earlier than that.
 option(CITYJSON_ENABLE_FCB "Enable FlatCityBuf (.fcb) support" ON)
 
 # Wasm: hand flatcitybuf's archives to the side-module link.
 #
-# On every other platform the loadable extension is a real shared library, so the
-# LINK_LIBRARIES property set further down (flatcitybuf::flatcitybuf) is what pulls
-# fcb:: in. Under Emscripten it is not: build_loadable_extension() makes the target a
-# *static library*, for which LINK_LIBRARIES is inert, and then post-builds the real
-# artifact with a separate command --
-#   emcc <the archive> -o <name>.wasm -O3 -sSIDE_MODULE=2 -sEXPORTED_FUNCTIONS=... ${TO_BE_LINKED}
-# (duckdb/extension/extension_build_tools.cmake:186-198). Only our own objects are on
-# that line, and -sSIDE_MODULE leaves unresolved symbols as *imports* rather than
-# erroring -- so the build succeeded while emitting a .wasm with 50 undefined fcb::
-# imports, which dlopen then rejected at LOAD time with
-#   bad export type for '_ZN3fcb11RangeReader10read_batch...': undefined
+# On every other platform the loadable extension is a real shared library, so
+# the LINK_LIBRARIES property set further down (flatcitybuf::flatcitybuf) is
+# what pulls fcb:: in. Under Emscripten it is not: build_loadable_extension()
+# makes the target a *static library*, for which LINK_LIBRARIES is inert, and
+# then post-builds the real artifact with a separate command -- emcc <the
+# archive> -o <name>.wasm -O3 -sSIDE_MODULE=2 -sEXPORTED_FUNCTIONS=...
+# ${TO_BE_LINKED} (duckdb/extension/extension_build_tools.cmake:186-198). Only
+# our own objects are on that line, and -sSIDE_MODULE leaves unresolved symbols
+# as *imports* rather than erroring -- so the build succeeded while emitting a
+# .wasm with 50 undefined fcb:: imports, which dlopen then rejected at LOAD time
+# with bad export type for '_ZN3fcb11RangeReader10read_batch...': undefined
 #
-# TO_BE_LINKED is read from DUCKDB_EXTENSION_<NAME>_LINKED_LIBS, DuckDB's sanctioned
-# knob for exactly this. It is consumed inside build_loadable_extension(), hence set
-# here, before the call. The generator expressions are fine to reference targets that
-# find_package(flatcitybuf) only creates further down: they resolve at generate time,
-# not at this line. Space-separated, because the function runs separate_arguments() on
-# it. flatbuffers is flatcitybuf's own dependency and needs listing explicitly for the
-# same reason -- nothing transitive survives the trip through a plain emcc invocation.
+# TO_BE_LINKED is read from DUCKDB_EXTENSION_<NAME>_LINKED_LIBS, DuckDB's
+# sanctioned knob for exactly this. It is consumed inside
+# build_loadable_extension(), hence set here, before the call. The generator
+# expressions are fine to reference targets that find_package(flatcitybuf) only
+# creates further down: they resolve at generate time, not at this line.
+# Space-separated, because the function runs separate_arguments() on it.
+# flatbuffers is flatcitybuf's own dependency and needs listing explicitly for
+# the same reason -- nothing transitive survives the trip through a plain emcc
+# invocation.
 if(EMSCRIPTEN AND CITYJSON_ENABLE_FCB)
   set(DUCKDB_EXTENSION_CITYJSON_LINKED_LIBS
-      "$<TARGET_FILE:flatcitybuf::flatcitybuf> $<TARGET_FILE:flatbuffers::flatbuffers>")
+      "$<TARGET_FILE:flatcitybuf::flatcitybuf> $<TARGET_FILE:flatbuffers::flatbuffers>"
+  )
 endif()
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-# C++20, explicitly. std::span (src/include/cityjson/cityjson_types.hpp) requires it,
-# and nothing else guarantees it: DuckDB's default is CMAKE_CXX_STANDARD 11, and the
-# c++20 flag previously leaked in transitively from the (now removed) vendored cjseq
-# target's PUBLIC compile feature.
+# C++20, explicitly. std::span (src/include/cityjson/cityjson_types.hpp)
+# requires it, and nothing else guarantees it: DuckDB's default is
+# CMAKE_CXX_STANDARD 11, and the c++20 flag previously leaked in transitively
+# from the (now removed) vendored cjseq target's PUBLIC compile feature.
 #
 # PRIVATE, emphatically not PUBLIC. DuckDB's link_extension_libraries()
-# (extension/extension_build_tools.cmake:55-65) links ${EXTENSION_NAME} into duckdb,
-# unittest, the shell and tools/plan_serializer as a *target*, so a PUBLIC feature
-# would raise DuckDB's own translation units from C++11 to C++20 -- at which point
-# BufferedFileWriter::DEFAULT_OPEN_FLAGS becomes an inline variable, plan_serializer.cpp
-# emits its own comdat copy, and the link dies on "multiple definition" against the
-# strong one already in libduckdb_static.a. Nothing outside this extension compiles our
-# headers, so the requirement belongs to our own sources only. (The old cjseq route was
-# accidentally private in the same way: it arrived through LINK_LIBRARIES, which does
-# not feed INTERFACE_COMPILE_FEATURES.)
+# (extension/extension_build_tools.cmake:55-65) links ${EXTENSION_NAME} into
+# duckdb, unittest, the shell and tools/plan_serializer as a *target*, so a
+# PUBLIC feature would raise DuckDB's own translation units from C++11 to C++20
+# -- at which point BufferedFileWriter::DEFAULT_OPEN_FLAGS becomes an inline
+# variable, plan_serializer.cpp emits its own comdat copy, and the link dies on
+# "multiple definition" against the strong one already in libduckdb_static.a.
+# Nothing outside this extension compiles our headers, so the requirement
+# belongs to our own sources only. (The old cjseq route was accidentally private
+# in the same way: it arrived through LINK_LIBRARIES, which does not feed
+# INTERFACE_COMPILE_FEATURES.)
 target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_20)
 target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_20)
 
 # tinygltf configuration, on every TU that includes the header: without stb, the
-# TinyGLTF constructor must not reference the stb-backed default image callbacks, and
-# that decision is made per-TU at include time.
+# TinyGLTF constructor must not reference the stb-backed default image
+# callbacks, and that decision is made per-TU at include time.
 foreach(tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
-  target_compile_definitions(${tgt} PRIVATE TINYGLTF_NO_STB_IMAGE TINYGLTF_NO_STB_IMAGE_WRITE
-                                            TINYGLTF_NO_EXTERNAL_IMAGE)
+  target_compile_definitions(
+    ${tgt} PRIVATE TINYGLTF_NO_STB_IMAGE TINYGLTF_NO_STB_IMAGE_WRITE
+                   TINYGLTF_NO_EXTERNAL_IMAGE)
 endforeach()
 
 # No fused multiply-add, on any platform. The writer's output must be
@@ -167,12 +173,12 @@ endforeach()
 #
 # Every coordinate this extension emits -- WKB geometry, `bbox`, and the
 # `geographicalExtent` COPY TO derives from it -- comes out of
-# `Transform::Apply` (src/cityjson/cityjson_types.cpp), which computes
-# `vertex * scale + translate`. That is textbook contraction bait: a compiler
-# targeting hardware with an FMA instruction is allowed to fuse the multiply and
-# the add into one instruction that rounds once instead of twice, and clang's
-# default `-ffp-contract=on` does exactly that. The results differ in the last
-# bit -- for 3DBAG's Delft subset, index -45173 with scale 0.001 and translate
+# `Transform::Apply` (src/cityjson/cityjson_types.cpp), which computes `vertex *
+# scale + translate`. That is textbook contraction bait: a compiler targeting
+# hardware with an FMA instruction is allowed to fuse the multiply and the add
+# into one instruction that rounds once instead of twice, and clang's default
+# `-ffp-contract=on` does exactly that. The results differ in the last bit --
+# for 3DBAG's Delft subset, index -45173 with scale 0.001 and translate
 # 45.64800262451172 is 0.47500262451171693 unfused and 0.47500262451171782
 # fused.
 #
@@ -191,112 +197,142 @@ if(NOT MSVC)
   target_compile_options(${LOADABLE_EXTENSION_NAME} PRIVATE -ffp-contract=off)
 endif()
 
-# Optional: FlatCityBuf support (native C++ library). In CI it is resolved from the
-# HideBa/vcpkg git registry (flatcitybuf@0.9.0, upstream tag cpp-v0.9.0) — see the
-# `registries` entry in vcpkg.json; local dev uses `just vendor-fcb`'s .vendor/prefix.
-# Portable C++ source, so no platform/arch restrictions. The option itself is declared
-# further up, next to build_loadable_extension, which needs to branch on it.
+# Optional: FlatCityBuf support (native C++ library). In CI it is resolved from
+# the HideBa/vcpkg git registry (flatcitybuf@0.9.0, upstream tag cpp-v0.9.0) —
+# see the `registries` entry in vcpkg.json; local dev uses `just vendor-fcb`'s
+# .vendor/prefix. Portable C++ source, so no platform/arch restrictions. The
+# option itself is declared further up, next to build_loadable_extension, which
+# needs to branch on it.
 if(CITYJSON_ENABLE_FCB)
-  # GLOBAL (CMake 3.24+): promotes the imported flatcitybuf::flatcitybuf target (and
-  # its own transitive flatbuffers::flatbuffers dependency) to global visibility.
-  # Without it, this find_package call's imported targets are only visible within
-  # this subdirectory's own scope -- invisible to sibling directories (tools/,
-  # tools/shell/, test/extension/, other extensions/) that DUCKDB_EXTRA_LINK_FLAGS
-  # below needs to reach.
+  # GLOBAL (CMake 3.24+): promotes the imported flatcitybuf::flatcitybuf target
+  # (and its own transitive flatbuffers::flatbuffers dependency) to global
+  # visibility. Without it, this find_package call's imported targets are only
+  # visible within this subdirectory's own scope -- invisible to sibling
+  # directories (tools/, tools/shell/, test/extension/, other extensions/) that
+  # DUCKDB_EXTRA_LINK_FLAGS below needs to reach.
   find_package(flatcitybuf CONFIG REQUIRED GLOBAL)
-  # Plain (non-keyword) set_property, not target_link_libraries(... PRIVATE ...): both
-  # targets already receive plain-signature target_link_libraries calls elsewhere in
-  # DuckDB's own extension_build_tools.cmake, and CMake forbids mixing plain and keyword
-  # signatures for the same target.
-  set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
-  set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
+  # Plain (non-keyword) set_property, not target_link_libraries(... PRIVATE
+  # ...): both targets already receive plain-signature target_link_libraries
+  # calls elsewhere in DuckDB's own extension_build_tools.cmake, and CMake
+  # forbids mixing plain and keyword signatures for the same target.
+  set_property(
+    TARGET ${EXTENSION_NAME}
+    APPEND
+    PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
+  set_property(
+    TARGET ${LOADABLE_EXTENSION_NAME}
+    APPEND
+    PROPERTY LINK_LIBRARIES flatcitybuf::flatcitybuf)
 
-  # The static extension (.a) gets linked into the shell/duckdb/unittest/plan_serializer
-  # binaries as a raw archive file path (see tools/CMakeLists.txt, tools/shell/
-  # CMakeLists.txt), not via target_link_libraries(<exe> cityjson_extension) -- so
-  # CMake's normal transitive INTERFACE_LINK_LIBRARIES propagation from an imported
-  # target never reaches them, and flatcitybuf's own symbols stay unresolved at that
-  # final link step. DUCKDB_EXTRA_LINK_FLAGS is DuckDB's own sanctioned mechanism for
-  # exactly this case (see its uses in extension_build_tools.cmake and tools/
-  # CMakeLists.txt): unlike the old code's use of it (which stuffed literal
-  # "OpenSSL::SSL"/"OpenSSL::Crypto" strings in here, naming targets that the
-  # find_package creating them had not yet run for on a fresh configure -- see git
-  # history), this references flatcitybuf::flatcitybuf directly, a target that already
-  # exists by this point, so there's no such ordering hazard.
+  # The static extension (.a) gets linked into the
+  # shell/duckdb/unittest/plan_serializer binaries as a raw archive file path
+  # (see tools/CMakeLists.txt, tools/shell/ CMakeLists.txt), not via
+  # target_link_libraries(<exe> cityjson_extension) -- so CMake's normal
+  # transitive INTERFACE_LINK_LIBRARIES propagation from an imported target
+  # never reaches them, and flatcitybuf's own symbols stay unresolved at that
+  # final link step. DUCKDB_EXTRA_LINK_FLAGS is DuckDB's own sanctioned
+  # mechanism for exactly this case (see its uses in extension_build_tools.cmake
+  # and tools/ CMakeLists.txt): unlike the old code's use of it (which stuffed
+  # literal "OpenSSL::SSL"/"OpenSSL::Crypto" strings in here, naming targets
+  # that the find_package creating them had not yet run for on a fresh configure
+  # -- see git history), this references flatcitybuf::flatcitybuf directly, a
+  # target that already exists by this point, so there's no such ordering
+  # hazard.
   #
-  # DUCKDB_EXTRA_LINK_FLAGS gets inserted BEFORE extension/cityjson/libcityjson_extension.a
-  # in these binaries' link lines (its insertion point is controlled by tools/CMakeLists.txt
-  # and extension_build_tools.cmake, not by us) -- but GNU ld resolves static-archive
-  # symbols in a single left-to-right pass, so a dependency listed before its dependent
-  # is invisible to it. --whole-archive/--no-whole-archive sidesteps that entirely by
-  # forcing every object file in flatcitybuf (and its own flatbuffers dependency) into
-  # the final binary unconditionally, regardless of position or reference order.
-  # --whole-archive/--no-whole-archive is GNU ld/lld syntax -- Apple's ld64 spells the
-  # same idea -force_load and wants the resolved archive file path rather than a bare
-  # target name, hence the branch.
+  # DUCKDB_EXTRA_LINK_FLAGS gets inserted BEFORE
+  # extension/cityjson/libcityjson_extension.a in these binaries' link lines
+  # (its insertion point is controlled by tools/CMakeLists.txt and
+  # extension_build_tools.cmake, not by us) -- but GNU ld resolves
+  # static-archive symbols in a single left-to-right pass, so a dependency
+  # listed before its dependent is invisible to it.
+  # --whole-archive/--no-whole-archive sidesteps that entirely by forcing every
+  # object file in flatcitybuf (and its own flatbuffers dependency) into the
+  # final binary unconditionally, regardless of position or reference order.
+  # --whole-archive/--no-whole-archive is GNU ld/lld syntax -- Apple's ld64
+  # spells the same idea -force_load and wants the resolved archive file path
+  # rather than a bare target name, hence the branch.
   #
-  # MSVC needs no such wrapper: link.exe re-scans the libraries on its command line
-  # until a pass resolves nothing new, so the single-pass ordering hazard that
-  # --whole-archive exists to defeat simply does not arise. It gets the bare target,
-  # which also carries flatcitybuf's own flatbuffers::flatbuffers dependency across
-  # transitively -- a resolved file path would not. And a /-prefixed item cannot go
-  # through here at all: every consumer of DUCKDB_EXTRA_LINK_FLAGS (tools/CMakeLists.txt,
-  # tools/shell/CMakeLists.txt, extension_build_tools.cmake, and the fixup below) passes
-  # it to target_link_libraries, where CMake reads a leading / as an absolute path to a
-  # library and files it in the ninja graph as a build input -- which ninja then fails to
-  # stat, before compiling a single translation unit.
+  # MSVC needs no such wrapper: link.exe re-scans the libraries on its command
+  # line until a pass resolves nothing new, so the single-pass ordering hazard
+  # that --whole-archive exists to defeat simply does not arise. It gets the
+  # bare target, which also carries flatcitybuf's own flatbuffers::flatbuffers
+  # dependency across transitively -- a resolved file path would not. And a
+  # /-prefixed item cannot go through here at all: every consumer of
+  # DUCKDB_EXTRA_LINK_FLAGS (tools/CMakeLists.txt, tools/shell/CMakeLists.txt,
+  # extension_build_tools.cmake, and the fixup below) passes it to
+  # target_link_libraries, where CMake reads a leading / as an absolute path to
+  # a library and files it in the ninja graph as a build input -- which ninja
+  # then fails to stat, before compiling a single translation unit.
   if(APPLE)
-    set(DUCKDB_EXTRA_LINK_FLAGS "-Wl,-force_load,$<TARGET_FILE:flatcitybuf::flatcitybuf>"
+    set(DUCKDB_EXTRA_LINK_FLAGS
+        "-Wl,-force_load,$<TARGET_FILE:flatcitybuf::flatcitybuf>"
         CACHE INTERNAL "Extra link flags" FORCE)
   elseif(MSVC)
-    set(DUCKDB_EXTRA_LINK_FLAGS "flatcitybuf::flatcitybuf"
+    set(DUCKDB_EXTRA_LINK_FLAGS
+        "flatcitybuf::flatcitybuf"
         CACHE INTERNAL "Extra link flags" FORCE)
   else()
-    set(DUCKDB_EXTRA_LINK_FLAGS "-Wl,--whole-archive" "flatcitybuf::flatcitybuf" "-Wl,--no-whole-archive"
+    set(DUCKDB_EXTRA_LINK_FLAGS
+        "-Wl,--whole-archive" "flatcitybuf::flatcitybuf"
+        "-Wl,--no-whole-archive"
         CACHE INTERNAL "Extra link flags" FORCE)
   endif()
 
-  # DUCKDB_EXTRA_LINK_FLAGS only reaches the binaries that actually reference it.
-  # tools/shell/CMakeLists.txt:32 and tools/CMakeLists.txt:8 do, so the `duckdb`
-  # shell links. Two upstream targets do NOT, and both link the cityjson archive:
+  # DUCKDB_EXTRA_LINK_FLAGS only reaches the binaries that actually reference
+  # it. tools/shell/CMakeLists.txt:32 and tools/CMakeLists.txt:8 do, so the
+  # `duckdb` shell links. Two upstream targets do NOT, and both link the
+  # cityjson archive:
   #
-  #   duckdb/test/CMakeLists.txt:56  target_link_libraries(unittest duckdb_static test_helpers)
-  #   duckdb/src/CMakeLists.txt:107  add_library(duckdb SHARED ...)
-  #                                  target_link_libraries(duckdb PUBLIC ${DUCKDB_SYSTEM_LIBS})
+  # duckdb/test/CMakeLists.txt:56  target_link_libraries(unittest duckdb_static
+  # test_helpers) duckdb/src/CMakeLists.txt:107  add_library(duckdb SHARED ...)
+  # target_link_libraries(duckdb PUBLIC ${DUCKDB_SYSTEM_LIBS})
   #
-  # Without the fixup below, `unittest` fails on undefined fcb:: symbols (the whole
-  # SQL suite unbuildable) and the `duckdb` SHARED target -- src/libduckdb.{so,dylib}
-  # -- fails the same way, which breaks a plain `make release` even though every
-  # target anyone runs has already been built, and takes the test/cpp/*.sh harnesses
-  # (they link -lduckdb) with it. The duckdb/ submodule is upstream and not ours to
-  # patch, so fix both up from here instead.
+  # Without the fixup below, `unittest` fails on undefined fcb:: symbols (the
+  # whole SQL suite unbuildable) and the `duckdb` SHARED target --
+  # src/libduckdb.{so,dylib} -- fails the same way, which breaks a plain `make
+  # release` even though every target anyone runs has already been built, and
+  # takes the test/cpp/*.sh harnesses (they link -lduckdb) with it. The duckdb/
+  # submodule is upstream and not ours to patch, so fix both up from here
+  # instead.
   #
-  # Neither target exists yet at this point -- duckdb/src and duckdb/test are added
-  # later in the configure -- so the fixup is deferred to the end of the top-level
-  # directory's processing, by which time they do. Guarded by if(TARGET) because a
-  # duckdb configured without tests never creates `unittest`, and one built without
-  # BUILD_SHARED_LIBS never creates `duckdb`.
+  # Neither target exists yet at this point -- duckdb/src and duckdb/test are
+  # added later in the configure -- so the fixup is deferred to the end of the
+  # top-level directory's processing, by which time they do. Guarded by
+  # if(TARGET) because a duckdb configured without tests never creates
+  # `unittest`, and one built without BUILD_SHARED_LIBS never creates `duckdb`.
   function(cityjson_fcb_link_upstream_targets)
     foreach(_tgt unittest duckdb)
       if(TARGET ${_tgt})
-        set_property(TARGET ${_tgt} APPEND PROPERTY LINK_LIBRARIES ${DUCKDB_EXTRA_LINK_FLAGS})
+        set_property(
+          TARGET ${_tgt}
+          APPEND
+          PROPERTY LINK_LIBRARIES ${DUCKDB_EXTRA_LINK_FLAGS})
       endif()
     endforeach()
   endfunction()
-  cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL cityjson_fcb_link_upstream_targets)
+  cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL
+                 cityjson_fcb_link_upstream_targets)
 
   target_compile_definitions(${EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
-  target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE CITYJSON_HAS_FCB)
+  target_compile_definitions(${LOADABLE_EXTENSION_NAME}
+                             PRIVATE CITYJSON_HAS_FCB)
   message(STATUS "FlatCityBuf support enabled (native C++, vendored)")
 endif()
 
-# nlohmann_json is the extension's one true library dependency besides flatcitybuf:
-# every JSON path (readers, writers, footer metadata) goes through it. Plain
-# set_property for the same reason as the flatcitybuf linking above -- these targets
-# already receive plain-signature target_link_libraries calls from DuckDB's own
-# extension_build_tools.cmake, and the two signatures cannot be mixed.
-set_property(TARGET ${EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES nlohmann_json::nlohmann_json)
-set_property(TARGET ${LOADABLE_EXTENSION_NAME} APPEND PROPERTY LINK_LIBRARIES nlohmann_json::nlohmann_json)
+# nlohmann_json is the extension's one true library dependency besides
+# flatcitybuf: every JSON path (readers, writers, footer metadata) goes through
+# it. Plain set_property for the same reason as the flatcitybuf linking above --
+# these targets already receive plain-signature target_link_libraries calls from
+# DuckDB's own extension_build_tools.cmake, and the two signatures cannot be
+# mixed.
+set_property(
+  TARGET ${EXTENSION_NAME}
+  APPEND
+  PROPERTY LINK_LIBRARIES nlohmann_json::nlohmann_json)
+set_property(
+  TARGET ${LOADABLE_EXTENSION_NAME}
+  APPEND
+  PROPERTY LINK_LIBRARIES nlohmann_json::nlohmann_json)
 
 install(
   TARGETS ${EXTENSION_NAME}

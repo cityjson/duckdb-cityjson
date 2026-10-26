@@ -175,7 +175,7 @@ int64_t ParseTimeString(const std::string &time_str) {
 
 		// Convert to DuckDB time (microseconds since midnight)
 		dtime_t time = Time::FromTime(hour, minute, second, static_cast<int32_t>(microseconds));
-		return time.micros;
+		return time.value;
 
 	} catch (const std::exception &e) {
 		throw CityJSONError::Conversion("Failed to parse time: " + time_str + " - " + std::string(e.what()));

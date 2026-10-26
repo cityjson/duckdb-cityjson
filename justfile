@@ -7,16 +7,25 @@
 # The recipes below mirror those so you can reproduce CI before pushing.
 
 # Build a fast release binary. Optional: pass CORE_EXTENSIONS="httpfs" etc. via env.
-build_targets := "cityjson_extension cityjson_loadable_extension duckdb unittest"
+# DuckDB derives its version from release_version.txt and a commit count, and cmake
+# re-runs its configure step inside `cmake --build` whenever a CMakeLists.txt changes.
+# Exported here as the Makefile exports it, so that re-configure keeps the release
+# version rather than falling back to v2.0.0-dev<N>, whose footer a released DuckDB
+# refuses to load.
+export DUCKDB_VERSION := env("DUCKDB_VERSION", `git -C duckdb describe --tags --exact-match 2>/dev/null || true`)
+
+# The test runner links no extension: `require cityjson` loads the copy in
+# build/release/repository, which only duckdb_local_extension_repo refreshes.
+build_targets := "cityjson_extension cityjson_loadable_extension duckdb unittest duckdb_local_extension_repo"
 
 # Wasm toolchain pins, mirroring the CI distribution pipeline.
-# emsdk: extension-ci-tools v1.5.5 `_extension_distribution.yml` pins
-# emscripten-core/setup-emsdk@v13 with version 3.1.71.
+# emsdk: extension-ci-tools v2.0-cyanoptera `_extension_distribution.yml` pins
+# emscripten-core/setup-emsdk@v16 with version 6.0.9.
 # vcpkg baseline: the `builtin-baseline` commit in vcpkg.json — a plain shallow clone
 # does NOT contain it, so `wasm-setup` fetches it explicitly (manifest resolution fails
 # otherwise).
-emsdk_version := "3.1.71"
-vcpkg_baseline := "84bab45d415d22042bd0b9081aea57f362da3f35"
+emsdk_version := "6.0.9"
+vcpkg_baseline := "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
 
 # Install the repo's git hooks (pre-commit auto-formats staged files with the
 # CI-pinned tools). One command per clone; core.hooksPath is local config, so it
@@ -55,7 +64,7 @@ build:
 debug:
     VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" GEN=ninja make debug
 
-# Fast incremental rebuild of the extension, duckdb CLI, and test binary.
+# Fast incremental rebuild of the extension, duckdb CLI, test binary and local extension repository.
 # Use this in the edit-build-test loop after `just build` has configured the tree.
 rebuild:
     cmake --build build/release --target {{build_targets}}
