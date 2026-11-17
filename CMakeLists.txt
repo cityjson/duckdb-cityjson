@@ -198,7 +198,7 @@ if(NOT MSVC)
 endif()
 
 # Optional: FlatCityBuf support (native C++ library). In CI it is resolved from
-# the HideBa/vcpkg git registry (flatcitybuf@0.9.0, upstream tag cpp-v0.9.0) —
+# the HideBa/vcpkg git registry (flatcitybuf@0.10.0, the cpp-v0.10.0 release) —
 # see the `registries` entry in vcpkg.json; local dev uses `just vendor-fcb`'s
 # .vendor/prefix. Portable C++ source, so no platform/arch restrictions. The
 # option itself is declared further up, next to build_loadable_extension, which

@@ -394,8 +394,9 @@ the builtin baseline. The entry is removed once the upstream microsoft/vcpkg PR 
 
 - **`cpp-v<version>` tags are the C++ releases.** The bare `v<version>` tags in
   `cityjson/flatcitybuf` are the Rust crate cut from the same train, so `v0.7.7` and
-  `cpp-v0.7.7` are *not* the same code. The port is at `cpp-v0.9.0`.
-- **`just vendor-fcb`** builds flatbuffers v25.9.23 and flatcitybuf `cpp-v0.9.0` into the
+  `cpp-v0.7.7` are *not* the same code. The port is at 0.10.0 and pins that release's
+  commit.
+- **`just vendor-fcb`** builds flatbuffers v25.9.23 and flatcitybuf 0.10.0 into the
   gitignored `.vendor/prefix` with `-DCMAKE_POSITION_INDEPENDENT_CODE=ON` — the loadable
   extension is a shared object, so both static libs need PIC. Point CMake at it with
   `-Dflatcitybuf_DIR` / `-Dflatbuffers_DIR` or `CMAKE_PREFIX_PATH`. **Never a session
