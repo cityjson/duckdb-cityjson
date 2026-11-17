@@ -354,6 +354,12 @@ std::vector<Column> FlatCityBufReader::Columns() const {
 	{
 		auto fcb_reader = OpenFcbReader();
 		for (const auto &col : fcb_reader.header().info().columns) {
+			// The primary-key column carries the index over City Object ids. Its value
+			// is the object's id, which the reserved `id` column already holds; no
+			// attribute blob has it.
+			if (col.primary_key) {
+				continue;
+			}
 			// Under the same escaped name the sample gives it: a header attribute
 			// literally named `bbox` or `ID` is the column `_bbox` / `_ID`, never a
 			// second column beside the reserved one.

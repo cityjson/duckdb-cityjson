@@ -73,7 +73,7 @@ rebuild:
 build-fcb:
     VCPKG_TOOLCHAIN_PATH="{{vcpkg_toolchain}}" EXT_FLAGS="-DCITYJSON_ENABLE_FCB=ON" GEN=ninja make release
 
-# Build flatbuffers + flatcitybuf (tag cpp-v0.9.0) into .vendor/prefix.
+# Build flatbuffers + flatcitybuf (the cpp-v0.10.0 release) into .vendor/prefix.
 # Re-run after a tag bump: the recipe re-checks out the pinned tag and drops the
 # stale build tree, so an existing .vendor/src clone upgrades instead of lingering.
 # The loadable extension is a shared object, so both static libs need PIC.
@@ -94,12 +94,14 @@ vendor-fcb:
         -DFLATBUFFERS_BUILD_FLATLIB=ON -DFLATBUFFERS_BUILD_SHAREDLIB=OFF \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX="$PREFIX"
     cmake --build "$SRC/flatbuffers/build" -j && cmake --install "$SRC/flatbuffers/build"
+    # The commit of the cpp-v0.10.0 release, the one the vcpkg port builds.
+    FCB_REV=fb651f9e4800675972e0c22e8c73897507fe2ced
     if [ ! -d "$SRC/flatcitybuf" ]; then
-        git clone --depth 1 --branch cpp-v0.9.0 https://github.com/cityjson/flatcitybuf "$SRC/flatcitybuf"
-    else
-        git -C "$SRC/flatcitybuf" fetch --depth 1 origin tag cpp-v0.9.0
-        git -C "$SRC/flatcitybuf" checkout cpp-v0.9.0
+        git init -q "$SRC/flatcitybuf"
+        git -C "$SRC/flatcitybuf" remote add origin https://github.com/cityjson/flatcitybuf
     fi
+    git -C "$SRC/flatcitybuf" fetch --depth 1 origin "$FCB_REV"
+    git -C "$SRC/flatcitybuf" checkout -q FETCH_HEAD
     rm -rf "$SRC/flatcitybuf/build"
     cmake -S "$SRC/flatcitybuf/src/cpp" -B "$SRC/flatcitybuf/build" -DCMAKE_BUILD_TYPE=Release \
         -DFCB_WITH_JSON=ON -DFCB_WITH_CURL=OFF -DFCB_BUILD_TESTS=OFF -DFCB_BUILD_EXAMPLES=OFF \

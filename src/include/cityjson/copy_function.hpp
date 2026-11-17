@@ -83,6 +83,8 @@ struct CityJSONCopyBindData : public FunctionData {
 	std::string version = "2.0";
 	std::optional<std::string> crs;
 	std::optional<Transform> transform;
+	//! True when `transform` is the 1 mm default, not one an option or the source gave.
+	bool transform_is_default = false;
 	std::optional<std::string> title;
 	std::optional<std::string> identifier;
 	std::optional<std::string> reference_date;

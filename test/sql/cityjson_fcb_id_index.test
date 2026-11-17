@@ -1,0 +1,48 @@
+# name: test/sql/cityjson_fcb_id_index.test
+# description: a FlatCityBuf file with an index over City Object ids reads and writes without an extra id column
+# group: [sql]
+
+# test/data/fcb_id_index.fcb is FlatCityBuf's own conformance fixture id_index.fcb,
+# written by the Rust writer: 4 features, 6 City Objects, and a header column `id`
+# (primary key) that carries the id index and is no attribute of any object.
+
+require cityjson
+
+# The id index column is not an attribute: the only attribute column is `name`.
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('test/data/fcb_id_index.fcb'))
+WHERE column_name IN ('_id', 'name') ORDER BY column_name;
+----
+name
+
+query I
+SELECT count(*) FROM read_flatcitybuf('test/data/fcb_id_index.fcb');
+----
+6
+
+query II
+SELECT id, name FROM read_flatcitybuf('test/data/fcb_id_index.fcb') WHERE id = 'alpha';
+----
+alpha	first
+
+# A child object is found by its own id.
+query II
+SELECT id, feature_id FROM read_flatcitybuf('test/data/fcb_id_index.fcb') WHERE id = 'alpha-0';
+----
+alpha-0	alpha
+
+# The writer indexes ids by default; what it writes reads back with the columns of its source.
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'))
+TO '{TEST_DIR}/id_index.fcb' (FORMAT flatcitybuf);
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_flatcitybuf('{TEST_DIR}/id_index.fcb'))
+EXCEPT ALL
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_cityjsonseq('test/data/fcb_bbox_attr.city.jsonl'));
+----
+
+query I
+SELECT feature_id FROM read_flatcitybuf('{TEST_DIR}/id_index.fcb') WHERE id = 'b2';
+----
+f2

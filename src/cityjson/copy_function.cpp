@@ -121,6 +121,7 @@ unique_ptr<FunctionData> CityJSONCopyBindData::Copy() const {
 	result->version = version;
 	result->crs = crs;
 	result->transform = transform;
+	result->transform_is_default = transform_is_default;
 	result->title = title;
 	result->identifier = identifier;
 	result->reference_date = reference_date;
@@ -896,6 +897,7 @@ unique_ptr<FunctionData> CityJSONCopyToBind(ClientContext &context, CopyFunction
 	// carry the source transform, via the transform_* options / metadata_query.
 	if (!bind_data->transform.has_value()) {
 		bind_data->transform = Transform({0.001, 0.001, 0.001}, {0.0, 0.0, 0.0});
+		bind_data->transform_is_default = true;
 	}
 
 	// Map columns to roles
@@ -2529,6 +2531,7 @@ void CityJSONCopyToFinalize(ClientContext &context, FunctionData &bind_data_p, G
 	write_meta.version = bind_data.version;
 	write_meta.crs = bind_data.crs;
 	write_meta.transform = bind_data.transform;
+	write_meta.transform_is_default = bind_data.transform_is_default;
 	write_meta.title = bind_data.title;
 	write_meta.identifier = bind_data.identifier;
 	write_meta.reference_date = bind_data.reference_date;

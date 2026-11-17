@@ -263,7 +263,7 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 | `version` | VARCHAR | CityJSON version to write (default `"2.0"`) |
 | `crs` | VARCHAR | CRS identifier, e.g. `'https://www.opengis.net/def/crs/EPSG/0/7415'`, or PROJJSON ([below](#crs-as-projjson)) |
 | `transform_scale` | VARCHAR | Vertex quantisation scale `'x,y,z'` (default `'0.001,0.001,0.001'`) |
-| `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`) |
+| `transform_translate` | VARCHAR | Quantisation offset `'x,y,z'` (default `'0.0,0.0,0.0'`; for `flatcitybuf`, the data's lowest corner when no transform is given) |
 | `metadata_from` | VARCHAR | Path to read metadata and appearance definitions from, when the source is not discoverable from the query itself |
 | `materials_query`, `textures_query` | VARCHAR | SQL returning `materials.parquet` / `textures.parquet`-shaped rows. **Their presence declares the `material_lod*` / `texture_lod*` cells to be sidecar ids**, and the rows become the written definitions ([below](#sidecar-appearance)) |
 | `implicit_geometries_query` | VARCHAR | SQL returning `implicit_geometries` sidecar rows, written as the document's `geometry-templates` ([below](#required-columns)); their appearance takes its definitions from `materials_query` / `textures_query` |
@@ -274,7 +274,10 @@ TO 'delft_tall.city.jsonl' (FORMAT cityjsonseq);
 
 Vertices are quantised to integers against the transform, so `transform_scale`
 sets the output precision. The 1 mm default keeps round-trips lossless even for
-large projected coordinates. Carry the source's own transform through instead:
+large projected coordinates. A FlatCityBuf vertex is 32-bit, so `flatcitybuf`
+pairs the default scale with a translate at the data's lowest corner, rounded
+down to a whole unit; a transform that puts a vertex outside the 32-bit range
+is an error. Carry the source's own transform through instead:
 
 ```sql
 COPY (SELECT * FROM read_cityjson('https://cityjson.open3d.city/cityjson/delft.city.json'))
