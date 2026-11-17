@@ -19,6 +19,10 @@ struct CityJSONWriteMetadata {
 	std::string version = "2.0";
 	std::optional<std::string> crs;
 	std::optional<Transform> transform;
+	//! True when `transform` is the writer's default rather than one the caller or
+	//! the source supplied. FlatCityBuf then takes its translate from the data,
+	//! because its vertices are 32-bit.
+	bool transform_is_default = false;
 	std::optional<std::string> title;
 	std::optional<std::string> identifier;
 	std::optional<std::string> reference_date;

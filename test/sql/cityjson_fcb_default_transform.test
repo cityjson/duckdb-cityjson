@@ -1,0 +1,38 @@
+# name: test/sql/cityjson_fcb_default_transform.test
+# description: COPY TO FlatCityBuf without a transform keeps coordinates far from the origin
+# group: [sql]
+
+# A FlatCityBuf vertex is 32-bit. address_location.city.jsonl has northings near
+# 6 679 km, which at the 1 mm default scale fit only when the translate comes from
+# the data.
+
+require cityjson
+
+statement ok
+COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '{TEST_DIR}/far.fcb' (FORMAT flatcitybuf);
+
+query I
+SELECT count(*) FROM (
+  SELECT id, round(bbox.xmin, 3), round(bbox.ymin, 3), round(bbox.zmin, 3),
+         round(bbox.xmax, 3), round(bbox.ymax, 3), round(bbox.zmax, 3)
+  FROM read_flatcitybuf('{TEST_DIR}/far.fcb')
+  EXCEPT ALL
+  SELECT id, round(bbox.xmin, 3), round(bbox.ymin, 3), round(bbox.zmin, 3),
+         round(bbox.xmax, 3), round(bbox.ymax, 3), round(bbox.zmax, 3)
+  FROM read_cityjsonseq('test/data/address_location.city.jsonl')
+);
+----
+0
+
+query I
+SELECT bbox.ymin > 6679000 FROM read_flatcitybuf('{TEST_DIR}/far.fcb');
+----
+true
+
+# A transform the caller gives is used as given.
+statement error
+COPY (SELECT * FROM read_cityjsonseq('test/data/address_location.city.jsonl'))
+TO '{TEST_DIR}/far_zero.fcb' (FORMAT flatcitybuf, transform_scale '0.001,0.001,0.001');
+----
+outside the 32-bit range

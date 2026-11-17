@@ -551,6 +551,64 @@ void CityJSONWriter::WriteCityJSONSeq(
 
 namespace {
 
+// Lowers `corner` to the coordinates under `boundaries`, read at the nesting depth
+// CollectAndReplaceVertices reads them at.
+void LowerToCoordinates(const json &boundaries, int depth, std::optional<std::array<double, 3>> &corner) {
+	if (!boundaries.is_array()) {
+		return;
+	}
+	for (const auto &child : boundaries) {
+		const bool is_coordinate = child.is_array() && child.size() == 3 && child[0].is_number() &&
+		                           child[1].is_number() && child[2].is_number();
+		if (depth <= 1 && is_coordinate) {
+			const std::array<double, 3> coord = {child[0].get<double>(), child[1].get<double>(),
+			                                     child[2].get<double>()};
+			if (!corner.has_value()) {
+				corner = coord;
+			} else {
+				auto &lowest = corner.value();
+				for (size_t axis = 0; axis < 3; axis++) {
+					lowest[axis] = std::min(lowest[axis], coord[axis]);
+				}
+			}
+		} else if (depth > 0) {
+			LowerToCoordinates(child, depth - 1, corner);
+		}
+	}
+}
+
+// The lowest x, y and z over every geometry and address location still holding
+// coordinates, or nothing when there is no vertex.
+std::optional<std::array<double, 3>>
+MinimumCorner(const std::map<std::string, std::vector<std::pair<std::string, json>>> &feature_objects) {
+	std::optional<std::array<double, 3>> corner;
+	for (const auto &feature : feature_objects) {
+		for (const auto &object : feature.second) {
+			const json &obj_json = object.second;
+			auto geometry = obj_json.find("geometry");
+			if (geometry != obj_json.end() && geometry->is_array()) {
+				for (const auto &geom : *geometry) {
+					auto boundaries = geom.find("boundaries");
+					if (boundaries != geom.end()) {
+						LowerToCoordinates(*boundaries, GetBoundaryDepth(geom.value("type", "MultiSurface")), corner);
+					}
+				}
+			}
+			auto address = obj_json.find("address");
+			if (address == obj_json.end() || !address->is_array()) {
+				continue;
+			}
+			for (const auto &entry : *address) {
+				if (entry.is_object() && entry.contains("location") && entry["location"].is_object() &&
+				    entry["location"].contains("boundaries")) {
+					LowerToCoordinates(entry["location"]["boundaries"], GetBoundaryDepth("MultiPoint"), corner);
+				}
+			}
+		}
+	}
+	return corner;
+}
+
 // Mirrors upstream's write_cityjson.cpp example: everything on a semantic surface
 // besides type/parent/children is an indexable "other" attribute.
 nlohmann::ordered_json SemanticSurfaceOtherMembers(const nlohmann::ordered_json &surface) {
@@ -595,15 +653,20 @@ void CityJSONWriter::WriteFlatCityBuf(FileSystem &fs, const std::string &file_pa
 	}
 
 	// FcbWriter needs a transform to quantize/dequantize vertices -- identity if none given.
-	{
-		auto &t = metadata.transform;
-		header["transform"] = json::object();
-		header["transform"]["scale"] = json::array(
-		    {t.has_value() ? t->scale[0] : 1.0, t.has_value() ? t->scale[1] : 1.0, t.has_value() ? t->scale[2] : 1.0});
-		header["transform"]["translate"] =
-		    json::array({t.has_value() ? t->translate[0] : 0.0, t.has_value() ? t->translate[1] : 0.0,
-		                 t.has_value() ? t->translate[2] : 0.0});
+	// A FlatCityBuf vertex is 32-bit, so a default transform takes its translate from
+	// the data: at 1 mm, a zero translate reaches only 2 147 km from the origin, which
+	// most projected northings exceed.
+	Transform transform = metadata.transform.value_or(Transform({1.0, 1.0, 1.0}, {0.0, 0.0, 0.0}));
+	if (metadata.transform_is_default) {
+		if (auto corner = MinimumCorner(feature_objects)) {
+			transform.translate = {std::floor(corner.value()[0]), std::floor(corner.value()[1]),
+			                       std::floor(corner.value()[2])};
+		}
 	}
+	header["transform"] = json::object();
+	header["transform"]["scale"] = json::array({transform.scale[0], transform.scale[1], transform.scale[2]});
+	header["transform"]["translate"] =
+	    json::array({transform.translate[0], transform.translate[1], transform.translate[2]});
 
 	// Build each feature's per-feature vertex pool exactly like WriteCityJSONSeq does,
 	// and convert both header and features to nlohmann::ordered_json -- the concrete
@@ -624,7 +687,7 @@ void CityJSONWriter::WriteFlatCityBuf(FileSystem &fs, const std::string &file_pa
 			continue;
 		}
 		auto &feature_objs = it->second;
-		auto vertex_pool = BuildVertexPool(feature_objs, metadata.transform);
+		auto vertex_pool = BuildVertexPool(feature_objs, transform);
 
 		json feature;
 		feature["type"] = "CityJSONFeature";
